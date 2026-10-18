@@ -466,3 +466,6 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
     slash drawn over one speaker (its drawing code gone).
   - Tried on the board: the tray at −9, −30 and −50 dB and muted, and a folder window's window
     menu, in screenshots. The firmware is 1,328,784 bytes, the ROM 1,067,328 (159 icons).
+
+**Benchmarks moved (2026-10-17):** `fsbench` became `fs.smallfiles` and `win bench icons` became
+`gui.icons` (`devplan/bench.md` §11). The figures above were taken with the old commands.

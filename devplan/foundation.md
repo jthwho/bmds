@@ -252,3 +252,6 @@ longer be the one that ships.
   `build/bmds.elf` (function, file:line).
 - Cost when on: about 2 KB of code, 48 KB of PSRAM, a hash insert or remove per internal
   allocation (not on any hot path: they are allocated at start).
+
+**Benchmarks moved (2026-10-17):** `win bench` became the `gui.glyphs` benchmark, and the display
+test's animation `display.anim` (`devplan/bench.md` §11).

@@ -13,6 +13,6 @@ idf_component_register(SRCS src/images.cpp
                             src/simdcommand.cpp
                        INCLUDE_DIRS include
                        REQUIRES bmds_core bmds_fs bmds_kernel
-                       PRIV_REQUIRES bmds_drivers bmds_shell bmds_sysconf bmds_ui
+                       PRIV_REQUIRES bmds_bench bmds_drivers bmds_shell bmds_sysconf bmds_ui
                        WHOLE_ARCHIVE)
 bmds_target_options(${COMPONENT_LIB})

@@ -87,3 +87,8 @@ test picture scanning out the whole time. Per pass: four CPU patterns, then the 
   stress with 0 underruns. Not run: a cold boot (powered off a while, tested at once). With the
   default image: boot to the picture in 0.45 s, `memtest -p 2` 0 errors with the scan running,
   0 underruns.
+
+**Benchmarks moved (2026-10-17):** `memtest`'s rates became `memory.psram.cpu` and
+`memory.psram.dma`, and `display stress` became `memory.traffic` (`bench run memory`,
+`devplan/bench.md` §11); `memtest` now reports only errors. The figures above were taken with the
+old commands.

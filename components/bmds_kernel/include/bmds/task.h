@@ -105,6 +105,9 @@ class Task {
                  */
                 static void sleep(unsigned int delayMs);
 
+                /** @brief Returns the core the calling task runs on now (it may move unless pinned). @nonblocking */
+                static int currentCore();
+
         private:
                 TaskHandle_t   _handle = nullptr;
                 StaticTask_t  *_tcb = nullptr;

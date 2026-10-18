@@ -35,13 +35,15 @@ namespace {
                                 if (name == "mb") return "16";
                                 if (name == "bad") return "12x";
                                 if (name == "huge") return "99999999999999999999";
+                                if (name == "runs") return "7";
+                                if (name == "warmup") return "500";
                                 return {};
                         }
                         bool  isCancelled() const override { return false; }
                         Error measureWith(StringView, StringView, bmds::BenchBetter, Sample, void *) override {
                                 return Error::Ok;
                         }
-                        void report(StringView, StringView, bmds::BenchBetter, double) override {}
+                        void reportSamples(StringView, StringView, bmds::BenchBetter, bmds::Span<double>) override {}
                         void note(const char *, ...) override {}
         };
 
@@ -145,6 +147,8 @@ TEST_CASE("BenchContext: unsigned parameters") {
         CHECK(ctx.paramUnsigned("bad", v) == Error::Invalid);
         CHECK(ctx.paramUnsigned("huge", v) == Error::Invalid);
         CHECK(ctx.paramUnsigned("missing", v) == Error::Invalid);
+        CHECK(ctx.runs() == 7);
+        CHECK(ctx.warmup() == 1); // 500 is past the most: the default
 }
 
 TEST_CASE("Stopwatch: microseconds and cycles go forward") {

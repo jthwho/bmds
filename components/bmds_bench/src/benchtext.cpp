@@ -70,6 +70,16 @@ Error BenchContext::paramUnsigned(StringView name, uint64_t &out) const {
         return Error::Ok;
 }
 
+uint32_t BenchContext::runs() const {
+        uint64_t v = 5;
+        return paramUnsigned("runs", v).isOk() && v >= 1 && v <= 1000 ? uint32_t(v) : 5;
+}
+
+uint32_t BenchContext::warmup() const {
+        uint64_t v = 1;
+        return paramUnsigned("warmup", v).isOk() && v <= 100 ? uint32_t(v) : 1;
+}
+
 BenchStats BenchText::summarize(Span<double> samples) {
         BenchStats s;
         if (samples.size() == 0) return s;

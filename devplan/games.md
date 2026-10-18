@@ -1274,3 +1274,8 @@ typedef struct {
 - **Also found:** fills read stale memory. Their line in internal RAM is cached too, and wasn't
   written back after being filled. Fixed.
 - **After the fixes:** image, fill, buffer and mixed runs, 18,000 blits in all: 0 bad pixels.
+
+**Benchmarks moved (2026-10-17):** `display ppa`'s timings, `ppa path`, `ppa soak` and `ppa
+blitcost` became the `display.ppa.scale`, `display.ppa.path`, `display.ppa.soak` and
+`display.blitcost` benchmarks (`devplan/bench.md` §11); `display ppa` keeps the checks. The figures
+above were taken with the old commands.

@@ -226,6 +226,15 @@ struct ScanoutIsr {
                         return;
                 }
 
+                // std::atomic<bool>::load isn't always inlined (-Os): out of line it is a weak
+                // function in flash, which these interrupts can't call (they run while the flash is
+                // written, the cache off: a cache error, devplan/bench.md §11). The builtin always is.
+                BMDS_ISR_ATTR static inline __attribute__((always_inline)) bool
+                loadRelaxed(const std::atomic<bool> &flag) {
+                        static_assert(sizeof(std::atomic<bool>) == sizeof(bool));
+                        return __atomic_load_n(reinterpret_cast<const bool *>(&flag), __ATOMIC_RELAXED);
+                }
+
                 BMDS_ISR_ATTR static bool blockSent(dw_gdma_channel_handle_t, const dw_gdma_trans_done_event_data_t *,
                                                     void *arg) {
                         const uint32_t started = esp_cpu_get_cycle_count();
@@ -250,7 +259,7 @@ struct ScanoutIsr {
                         const bool wrapped = s._primed && at < s._lastItem;
                         s._sent.fetch_add(s._primed ? (at + blocks - s._lastItem) % blocks : at,
                                           std::memory_order_relaxed);
-                        if (s._halt.load(std::memory_order_relaxed)) {
+                        if (loadRelaxed(s._halt)) {
                                 // A switch stops the DMA at the frame's end: the first descriptor
                                 // not valid once the last is under way, and nothing made valid again.
                                 if (at == blocks - 1) item(s, 0)->ctrl_hi.val = hw.ctrlInvalid;
@@ -308,7 +317,7 @@ struct ScanoutIsr {
                 BMDS_ISR_ATTR static bool invalidBlock(dw_gdma_channel_handle_t, const dw_gdma_break_event_data_t *,
                                                        void *arg) {
                         auto &s = *static_cast<Scanout *>(arg);
-                        if (s._halt.load(std::memory_order_relaxed)) {
+                        if (loadRelaxed(s._halt)) {
                                 s._halted.store(true, std::memory_order_release); // asked for: no stall
                                 return false;
                         }

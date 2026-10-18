@@ -7,7 +7,8 @@
  *
  * The `memtest` command (devplan/psram.md): writes and verifies the free
  * PSRAM, through the CPU (with the caches written back and invalidated, so
- * the reads come from the PSRAM) and through the AXI GDMA.
+ * the reads come from the PSRAM) and through the AXI GDMA. Their speeds are the `memory.psram.*`
+ * benchmarks (devplan/bench.md).
  */
 
 #include <cstdlib>
@@ -85,10 +86,6 @@ namespace {
                 return true;
         }
 
-        unsigned mbPerS(size_t bytes, uint64_t us) {
-                return us == 0 ? 0 : static_cast<unsigned>(uint64_t(bytes) * 1'000'000 / us >> 20);
-        }
-
         // Takes free PSRAM, largest blocks first, up to @p wanted bytes (0: all
         // but the reserve).
         void allocate(Run &run, size_t wanted) {
@@ -114,35 +111,27 @@ namespace {
         // The CPU path: fill every chunk and push it out of the caches, then
         // read it all back from the PSRAM.
         void cpuPattern(Run &run, MemTest::Pattern pattern, uint32_t seed) {
-                size_t   bytes = 0;
-                uint64_t writeUs = 0, readUs = 0;
-                size_t   before = run.errors;
+                const size_t before = run.errors;
                 for (size_t r = 0; r < run.count && !run.interrupted; ++r) {
-                        const Region  &region = run.regions[r];
-                        const uint64_t start = System::uptimeUs();
+                        const Region &region = run.regions[r];
                         for (size_t off = 0; off < region.bytes && run.keepGoing(); off += Chunk) {
                                 uint32_t *w = region.words + off / 4;
                                 MemTest::fill(pattern, seed, w, Chunk / 4, reinterpret_cast<uintptr_t>(w));
                                 (void)esp_cache_msync(w, Chunk,
                                                       ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
                         }
-                        writeUs += System::uptimeUs() - start;
                 }
                 for (size_t r = 0; r < run.count && !run.interrupted; ++r) {
-                        const Region  &region = run.regions[r];
-                        const uint64_t start = System::uptimeUs();
+                        const Region &region = run.regions[r];
                         for (size_t off = 0; off < region.bytes && run.keepGoing(); off += Chunk) {
                                 const uint32_t  *w = region.words + off / 4;
                                 MemTest::Failure f[MaxReported];
                                 run.record(f, MemTest::verify(pattern, seed, w, Chunk / 4,
                                                               reinterpret_cast<uintptr_t>(w), f, MaxReported));
                         }
-                        readUs += System::uptimeUs() - start;
-                        bytes += region.bytes;
                 }
                 if (run.interrupted) return;
-                run.ctx.printf("  %-8s write %4u MB/s  read %4u MB/s  %u errors\n", MemTest::name(pattern),
-                               mbPerS(bytes, writeUs), mbPerS(bytes, readUs),
+                run.ctx.printf("  %-8s %u errors\n", MemTest::name(pattern),
                                static_cast<unsigned>(run.errors - before));
                 return;
         }
@@ -155,11 +144,9 @@ namespace {
         // The DMA path: random words in each region's first half, copied by
         // the GDMA onto its second half, checked there against the source's keys.
         void dmaPattern(Run &run, async_memcpy_handle_t mcp, uint32_t seed) {
-                Semaphore done{1, 0};
-                size_t    bytes = 0;
-                uint64_t  copyUs = 0;
-                size_t    before = run.errors;
-                bool      failed = false;
+                Semaphore    done{1, 0};
+                const size_t before = run.errors;
+                bool         failed = false;
                 for (size_t r = 0; r < run.count && !run.interrupted && !failed; ++r) {
                         const Region &region = run.regions[r];
                         const size_t  half = region.bytes / 2 / DmaChunk * DmaChunk;
@@ -172,7 +159,6 @@ namespace {
                                 (void)esp_cache_msync(w, Chunk,
                                                       ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
                         }
-                        const uint64_t start = System::uptimeUs();
                         for (size_t off = 0; off < half && run.keepGoing(); off += DmaChunk) {
                                 const esp_err_t err =
                                         esp_async_memcpy(mcp, dst + off, src + off, DmaChunk, dmaDone, &done);
@@ -182,7 +168,6 @@ namespace {
                                         break;
                                 }
                         }
-                        copyUs += System::uptimeUs() - start;
                         // In chunks: a cache operation runs with interrupts off.
                         for (size_t off = 0; off < half; off += Chunk)
                                 (void)esp_cache_msync(dst + off, Chunk, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
@@ -192,12 +177,10 @@ namespace {
                                 run.record(f, MemTest::verify(MemTest::Pattern::Random, seed, w, Chunk / 4,
                                                               reinterpret_cast<uintptr_t>(src + off), f, MaxReported));
                         }
-                        bytes += half;
                 }
                 if (failed) ++run.errors;
                 if (run.interrupted) return;
-                run.ctx.printf("  %-8s copy  %4u MB/s                 %u errors\n", "dma", mbPerS(bytes, copyUs),
-                               static_cast<unsigned>(run.errors - before));
+                run.ctx.printf("  %-8s %u errors\n", "dma", static_cast<unsigned>(run.errors - before));
                 return;
         }
 

@@ -373,3 +373,5 @@ for `/rom`).
   board, 15 combinations of `-r` 34, 170, 850 and `-p` 50, 65, 100, 140, 200 aloud: no underrun,
   nothing limited, no problem.
 
+**Benchmarks moved (2026-10-17):** `win bench icons` became the `gui.icons` benchmark
+(`devplan/bench.md` §11). The figures above were taken with the old command.

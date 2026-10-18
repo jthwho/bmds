@@ -66,6 +66,8 @@ def params_key(bench):
     params = dict(bench.get("params", {}))
     params.pop("runs", None)
     params.pop("warmup", None)
+    if params.get("probe") == "none":
+        params.pop("probe")
     return tuple(sorted(params.items()))
 
 
@@ -112,7 +114,7 @@ def show_against(data, earlier):
             history.setdefault(key, []).append(r)
     for key, r in results(data).items():
         name, params, metric = key
-        line = "%-30s %-20s %10s %-8s" % (label(name, params), metric, fmt(r["median"]), r["unit"])
+        line = "%-36s %-24s %10s %-8s" % (label(name, params), metric, fmt(r["median"]), r["unit"])
         past = history.get(key, [])
         if not past:
             print(line + "  (first run)")
@@ -244,7 +246,7 @@ def cmd_compare(args):
         vb = rb.get(key, {}).get("median")
         unit = (ra.get(key) or rb.get(key))["unit"]
         delta = "%+.1f%%" % change(vb, va) if va is not None and vb is not None else ""
-        print("%-30s %-20s %10s %10s %-8s %s" % (label(name, params), metric, fmt(va), fmt(vb), unit, delta))
+        print("%-36s %-24s %10s %10s %-8s %s" % (label(name, params), metric, fmt(va), fmt(vb), unit, delta))
     # What differs in the systems (tasks and uptime always do: left out).
     sa = flatten({k: v for k, v in a.get("system", {}).items() if k not in ("tasks", "uptime_us")})
     sb = flatten({k: v for k, v in b.get("system", {}).items() if k not in ("tasks", "uptime_us")})

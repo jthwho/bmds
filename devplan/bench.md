@@ -1,6 +1,6 @@
 # Bench: one system benchmark for all tuning
 
-Status: **step 1 built** (2026-10-17, the user's request; decisions agreed the same day, §10). Replaces the
+Status: **steps 1 and 2 built** (2026-10-17, the user's request; decisions agreed the same day; §10, §11). Replaces the
 benchmarks spread across `sd`, `fsbench`, `simd`, `memtest`, `display`, `win` and `progtest`
 (§3). Comes before Quake (`games.md`), whose renderer and presentation need a baseline.
 
@@ -40,8 +40,9 @@ called directly in two places), and every command dispatches its subcommands by 
 | `fsbench DIR ...` | `fs.smallfiles` (`dir=`, `files=`, `bytes=`, `pace=`) | the stall spinner becomes the general meanwhile probe (§4d) |
 | `simd bench [KERNEL]` | `simd.KERNEL` (scale, glyphs, swap24, pngfilter, softjpeg, orient, blend, repeat16) | scalar and PIE times and the ratio; `simd test` and `stress` stay |
 | `memtest`'s MB/s | `memory.psram.cpu`, `memory.psram.dma` | `memtest` stays as the correctness test, without its rates |
-| `display test`, `fill`, `present`, `anim`, `stress`, `ppa` (`path`, `soak`, hidden `blitcost`) | `display.draw`, `display.fill`, `display.present`, `display.anim`, `display.stress.*`, `display.ppa.*`, `display.blitcost` | `display stats`, `rows`, `try` stay |
-| `win bench [CELLS]`, `bench icons`, `textbench`, `shuffle`, `drag`, `scroll` | `gui.glyphs`, `gui.icons`, `gui.text`, `gui.shuffle`, `gui.drag`, `gui.scroll` | `win stats` and `check` stay |
+| `display test`'s and `fill`'s times, `present`, `anim`, `ppa`'s timings (`path`, `soak`, hidden `blitcost`) | `display.draw`, `display.fill`, `display.present`, `display.anim`, `display.ppa.scale`, `display.ppa.path`, `display.ppa.soak`, `display.blitcost` | `display test` and `fill` still draw; `display ppa` keeps its checks; `stats`, `rows`, `try` stay |
+| `display stress psram`, `write`, `internal` | `memory.traffic` | memcpy and memset, PSRAM and internal |
+| `win bench [CELLS]`, `bench icons`, `textbench`, `shuffle`, `drag`'s and `scroll`'s times | `gui.glyphs`, `gui.icons`, `gui.text`, `gui.shuffle`, `gui.drag`, `gui.scroll` | on test windows of their own; `win drag` and `scroll` still move; `win stats` and `check` stay |
 | `progtest sched`, `rtnet`, `net`, `synthload`, `mididecode`, `image`'s time | `kernel.sleep`, `net.rt.roundtrip` (peer), `net.loopback`, `audio.synth.load`, `midi.decode`, `images.decode` | a program bench (`benchprog`, §4f); `progtest` keeps its correctness tests |
 | `netlat` | `net.latency.*` (peer), a descriptor running `netlat --bench` | `netlat` stays as a tool |
 
@@ -261,4 +262,66 @@ has not shipped.
   (samples, metrics, the counter and task snapshots) and gives it back.
 - **Next:** step 2, the firmware's other benchmarks moved in (`fsbench`, `simd bench`,
   `memtest`'s rates, `display`'s and `win`'s timings), the old forms removed.
+
+## 11. As built: step 2, the firmware's benchmarks moved in (2026-10-17)
+
+- **27 benchmarks** in five components, each next to the code it measures:
+  - `bmds_storage`: `storage.sd.read`, `fs.smallfiles` (was `fsbench`; `dir=` /tmp by default,
+    `files=`, `bytes=`, `pace=`, `probe=stall` by default).
+  - `bmds_images`: `simd.scale`, `.glyphs`, `.swap24`, `.blend`, `.pngfilter`, `.softjpeg`,
+    `.orient`, `.repeat16` (scalar and PIE each, where the build has PIE).
+  - `bmds_drivers`: `memory.psram.cpu`, `memory.psram.dma`, `memory.traffic`;
+    `display.ppa.scale`, `.ppa.path`, `.ppa.soak`, `display.blitcost` (scratch pictures);
+    `display.draw`, `.fill`, `.present`, `.anim` (surface 0).
+  - `bmds_ui`: `gui.glyphs`, `gui.icons`; `gui.shuffle`, `.drag`, `.scroll`, `.text` (on test
+    windows they open and close).
+- **Removed:** `fsbench`; `simd bench`; `memtest`'s rates; `display present`, `anim`, `stress` and
+  the times `display test` and `fill` printed; `display ppa`'s timings and its `path`, `soak` and
+  `blitcost` forms (`display ppa` keeps the checks: interpolation, the CLUT, the doubling kernel);
+  `win bench`, `bench icons`, `shuffle`, `textbench` and the times `win drag` and `scroll`
+  printed. Each devplan that quoted them has a note saying what replaced them; their figures
+  stay as history.
+- **The framework grew:**
+  - `BenchContext::reportSamples()`, for a run that gives several metrics at once (`fs.smallfiles`'
+    seven, `display.anim`'s three); `runs()` and `warmup()`.
+  - A benchmark may set its own defaults for the common parameters (the PPA's `runs=20`, the
+    soak's `runs=1 warmup=0`); `bench info` shows them. The common ones in one table: `runs`,
+    `warmup`, `probe`.
+  - **`probe=stall`** (§4d): a spinner in flash at the idle priority on the core the benchmark
+    isn't on; its counts lost against a rate measured first (0.5 s) are reported as `stopped_ms`
+    and `stopped_percent`. `fs.smallfiles` on `/flash`: 5.6 ms of pause an operation in bursts,
+    3-5.5 ms paced 300 ms apart, as `fsbench` measured (§13d: 4.6 and 4.5 ms).
+  - **Skipped, not failed:** a benchmark returning `Busy`, `NotReady`, `NoMedia` or
+    `NotSupported` can't run here (surface 0's while the desktop has the display, no card):
+    `skipped: REASON`, `"status": "skipped"` with a `reason`, and the exit status unchanged.
+  - `Task::currentCore()`.
+- **Two crashes found on the way:**
+  - **The probe's first two designs:** on core 1 at priority 1 the benchmark's own work counted
+    as stopped (15.6 ms an operation, not 4.5); on core 0 the board reset by watchdog with nothing
+    on the console. Read with a serial capture: core 1 in the panic handler, core 0 at its vector
+    table, `HP_SYS_HP_WDT_RESET`. With a 4 KB stack (from 2) the panic printed.
+  - **What it printed: a latent bug in the scanout's interrupt.** `ScanoutIsr::blockSent` and
+    `invalidBlock` (IRAM-safe: they run while the flash is written) called an out-of-line
+    `std::atomic<bool>::load`, which is in flash; when `/flash`'s writer ran on core 0, the
+    interrupt on core 1 took a cache error. Fixed with `__atomic_load_n` (always inline); six
+    paced runs on `/flash` since, no reset. Any `/flash` write on core 0 (a `sysconf save`) could
+    have hit it. A scan of `.iram0.text` for calls into flash found no other in an interrupt that
+    runs with the cache off (`docs/platforms/esp32p4.md` §7). The three resets tripped the crash
+    counter: the board started recovery once, and `reboot` there brought the main firmware back.
+- **On the board** (the desktop running; the figures agree with those recorded by the old
+  commands): `simd.scale` 789 / 301 ms scalar / PIE, `simd.pngfilter` 597 / 70 µs,
+  `gui.glyphs` 754 / 403 cycles a cell, `display.ppa.scale` 30.9 ms for Blocks' 2× job,
+  `memory.psram.dma` 71 MB/s, `memory.psram.cpu` 31 MB/s each way, `gui.shuffle` 30 ms a change,
+  `gui.text` 27 ms for 29 rows of 99 cells. `memory.traffic`'s PSRAM copy is 32 MB/s against
+  `display stress psram`'s 102 on 2026-10-05, before the desktop scanned and composed beside it.
+  Short benchmarks in internal RAM come out noisy with the desktop up (`simd.repeat16`, parts of
+  `display.ppa.path`): their medians hold, the flag says so. Surface 0's benchmarks were only
+  seen to skip (the desktop has the display): they weren't run.
+- **Changed from the plan:** `display.stress.*` became `memory.traffic`; `gui.glyphs` compares
+  the kernels by a hash of their rows (two 61 KB strips no longer fit in internal RAM together);
+  `memory.traffic`'s internal copy is 32 KB (two 64 KB blocks didn't fit).
+- **Cost:** the image grew 8,080 bytes over step 1 (the measuring moved, each `measure()` an
+  instantiation; the hand-written dispatch and printing went).
+- **Next:** step 3, programs' benchmarks (descriptors, `libbmdsbench`, `progtest`'s timings,
+  `netlat --bench`, Doom's timedemo).
 

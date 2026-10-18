@@ -15,6 +15,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <new>
 #include <sdkconfig.h>
 #include <bmds/bench.h>
 #include <bmds/benchtext.h>
@@ -24,9 +25,11 @@
 #include <bmds/memory.h>
 #include <bmds/shell.h>
 #include <bmds/stats.h>
+#include <bmds/semaphore.h>
 #include <bmds/stopwatch.h>
 #include <bmds/sysconf.h>
 #include <bmds/system.h>
+#include <bmds/task.h>
 #include <bmds/tasklist.h>
 #include <bmds/version.h>
 #include <bmds/vfs.h>
@@ -44,12 +47,25 @@ namespace {
 
         using Args = Span<char *const>;
 
-        constexpr uint32_t DefaultRuns = 5;
         constexpr uint32_t MaxRuns = 1000;
         constexpr uint32_t MaxWarmup = 100;
         constexpr size_t   MaxMetrics = 32;
         constexpr size_t   MaxTasks = 96;
         constexpr size_t   MaxNotesBytes = 4096;
+
+        // Every benchmark's parameters (one may set its own defaults for them).
+        constexpr BenchParam CommonParams[] = {
+                {"runs", "5", "Runs of each metric, after the warm-up (1-1000)"},
+                {"warmup", "1", "Runs first, not kept (0-100)"},
+                {"probe", "none", "stall: how long the whole system stood still meanwhile"},
+        };
+
+        bool isCommon(StringView name) {
+                for (const BenchParam &p : CommonParams) {
+                        if (name == p.name) return true;
+                }
+                return false;
+        }
 
         Span<const Bench> benches() {
                 return Span<const Bench>(_bmds_bench_start, static_cast<size_t>(_bmds_bench_end - _bmds_bench_start));
@@ -60,6 +76,12 @@ namespace {
                         if (name == StringView(b.name)) return &b;
                 }
                 return nullptr;
+        }
+
+        // A benchmark that can't run here and now (the display the desktop's, no card): skipped, not failed.
+        bool isSkipped(Error err) {
+                return err == Error::Busy || err == Error::NotReady || err == Error::NoMedia ||
+                       err == Error::NotSupported;
         }
 
         bool isAssignment(const char *arg) {
@@ -100,11 +122,15 @@ namespace {
                 ctx.printf("Parameters:\n");
                 for (size_t i = 0; i < b->paramCount; ++i) {
                         const BenchParam &p = b->params[i];
-                        ctx.printf("  %-10s %-8s %s\n", p.name, p.defaultValue, p.help);
+                        if (!isCommon(p.name)) ctx.printf("  %-10s %-8s %s\n", p.name, p.defaultValue, p.help);
                 }
-                ctx.printf("  %-10s %-8u %s\n", "runs", unsigned(DefaultRuns),
-                           "Runs of each metric, after the warm-up");
-                ctx.printf("  %-10s %-8u %s\n", "warmup", 1u, "Runs first, not kept");
+                for (const BenchParam &common : CommonParams) {
+                        const char *value = common.defaultValue; // the bench's own default, if it sets one
+                        for (size_t i = 0; i < b->paramCount; ++i) {
+                                if (StringView(b->params[i].name) == common.name) value = b->params[i].defaultValue;
+                        }
+                        ctx.printf("  %-10s %-8s %s\n", common.name, value, common.help);
+                }
                 return Shell::ExitSuccess;
         }
 
@@ -291,6 +317,78 @@ namespace {
                         }
         };
 
+        // `probe=stall`: the rest of the system as a loop in flash at the idle tasks' priority on
+        // the core the benchmark isn't on (on its own, the benchmark's work would count as
+        // stopped): it stops whenever the flash does (the caches off), so the counts it loses
+        // against its rate measured first are how long the whole system stood still. At priority
+        // 0 it takes only idle time.
+        class StallProbe {
+                public:
+                        static constexpr unsigned CalibrateMs = 500;
+
+                        ~StallProbe() { (void)stop(0); }
+
+                        void start() {
+                                if (_shared != nullptr) return;
+                                void *mem = Memory::alloc(MemSpace::Internal, sizeof(Shared));
+                                if (mem == nullptr) return;
+                                _shared = ::new (mem) Shared();
+                                Task::Config tc;
+                                tc.name = "benchspin";
+                                tc.stackBytes =
+                                        4096; // with 2 KB, a panic on core 0 hung in its handler, unseen until a watchdog
+                                tc.priority = 0;
+                                tc.core = Task::currentCore() == 0 ? 1 : 0;
+                                if (_shared->task.start(tc, spin, _shared).isError()) {
+                                        release();
+                                        return;
+                                }
+                                const uint32_t first = _shared->count;
+                                Task::sleep(CalibrateMs);
+                                _rate = double(_shared->count - first) / (CalibrateMs * 1000.0); // counts a µs
+                                _start = _shared->count;
+                                return;
+                        }
+
+                        // Stops it; the milliseconds lost in the last @p windowUs.
+                        double stop(int64_t windowUs) {
+                                if (_shared == nullptr) return 0;
+                                const uint32_t counted = _shared->count - _start;
+                                _shared->run = false;
+                                (void)_shared->stopped.acquire(WaitForever);
+                                (void)_shared->task.stop();
+                                release();
+                                const double expected = _rate * double(windowUs);
+                                return _rate > 0 && expected > counted ? (expected - counted) / _rate / 1000.0 : 0;
+                        }
+
+                private:
+                        struct Shared {
+                                        volatile uint32_t count = 0;
+                                        volatile bool     run = true;
+                                        Task              task;
+                                        Semaphore         stopped{1, 0};
+                        };
+
+                        static void spin(void *arg) {
+                                auto *s = static_cast<Shared *>(arg);
+                                while (s->run) s->count = s->count + 1;
+                                s->stopped.release();
+                                for (;;) Task::sleep(1000);
+                        }
+
+                        void release() {
+                                _shared->~Shared();
+                                Memory::free(_shared);
+                                _shared = nullptr;
+                                return;
+                        }
+
+                        Shared  *_shared = nullptr;
+                        double   _rate = 0;
+                        uint32_t _start = 0;
+        };
+
         // ---- Running ----
 
         struct Metric {
@@ -344,14 +442,15 @@ namespace {
                                         }
                                 }
                                 if (given) return found;
-                                if (name == "runs") return "5";
-                                if (name == "warmup") return "1";
-                                if (_bench != nullptr) {
+                                if (_bench != nullptr) { // a bench may set its own default for a common one
                                         for (size_t i = 0; i < _bench->paramCount; ++i) {
                                                 if (name == StringView(_bench->params[i].name))
                                                         return _bench->params[i].defaultValue;
                                         }
                                 }
+                                if (name == "runs") return "5";
+                                if (name == "warmup") return "1";
+                                if (name == "probe") return "none";
                                 return {};
                         }
 
@@ -359,17 +458,14 @@ namespace {
 
                         Error measureWith(StringView metric, StringView unit, BenchBetter better, Sample sample,
                                           void *arg) override {
-                                uint64_t runs = DefaultRuns;
-                                uint64_t warmup = 1;
-                                (void)paramUnsigned("runs", runs);
-                                (void)paramUnsigned("warmup", warmup);
-                                for (uint64_t i = 0; i < warmup; ++i) {
+                                const uint32_t count = runs();
+                                for (uint32_t i = 0; i < warmup(); ++i) {
                                         if (isCancelled()) return Error::Cancelled;
                                         double discard = 0;
                                         if (Error err = sample(arg, discard); err.isError()) return err;
                                 }
                                 size_t kept = 0;
-                                for (uint64_t i = 0; i < runs; ++i) {
+                                for (uint32_t i = 0; i < count; ++i) {
                                         if (isCancelled()) return Error::Cancelled;
                                         double v = 0;
                                         if (Error err = sample(arg, v); err.isError()) return err;
@@ -379,9 +475,9 @@ namespace {
                                 return Error::Ok;
                         }
 
-                        void report(StringView metric, StringView unit, BenchBetter better, double value) override {
-                                double one = value;
-                                add(metric, unit, better, BenchText::summarize(Span<double>(&one, 1)));
+                        void reportSamples(StringView metric, StringView unit, BenchBetter better,
+                                           Span<double> samples) override {
+                                add(metric, unit, better, BenchText::summarize(samples));
                                 return;
                         }
 
@@ -404,6 +500,8 @@ namespace {
                                 _metricCount = 0;
                                 _notes.clear();
                                 _ctx.printf("%s\n", bench.name);
+                                const bool stall = param("probe") == "stall";
+                                if (stall) _stall.start();
                                 _counters.start();
                                 _tasks.start();
                                 Stopwatch     watch;
@@ -411,8 +509,20 @@ namespace {
                                 const int64_t elapsedUs = watch.elapsedUs();
                                 _counters.stop();
                                 _tasks.stop();
-                                if (result.isError() && result != Error::Cancelled)
+                                if (stall) {
+                                        // How long the whole system stood still meanwhile (the flash's writes).
+                                        const double stoppedMs = _stall.stop(elapsedUs);
+                                        if (result.isOk()) {
+                                                report("stopped_ms", "ms", BenchBetter::Lower, stoppedMs);
+                                                report("stopped_percent", "%", BenchBetter::Lower,
+                                                       elapsedUs > 0 ? stoppedMs * 100000.0 / double(elapsedUs) : 0);
+                                        }
+                                }
+                                if (isSkipped(result)) {
+                                        _ctx.printf("  skipped: %s\n", result.desc());
+                                } else if (result.isError() && result != Error::Cancelled) {
                                         _ctx.printf("  failed: %s\n", result.desc());
+                                }
                                 if (!_quiet) printProblems();
                                 if (json != nullptr) write(*json, result, elapsedUs);
                                 _bench = nullptr;
@@ -456,12 +566,18 @@ namespace {
                                 json.member("name", _bench->name);
                                 json.key("params");
                                 json.beginObject();
-                                for (size_t i = 0; i < _bench->paramCount; ++i)
-                                        json.member(_bench->params[i].name, param(_bench->params[i].name));
-                                json.member("runs", param("runs"));
-                                json.member("warmup", param("warmup"));
+                                for (size_t i = 0; i < _bench->paramCount; ++i) {
+                                        if (!isCommon(_bench->params[i].name))
+                                                json.member(_bench->params[i].name, param(_bench->params[i].name));
+                                }
+                                for (const BenchParam &common : CommonParams)
+                                        json.member(common.name, param(common.name));
                                 json.endObject();
-                                json.member("status", result.isOk() ? "ok" : result.name());
+                                json.member("status", result.isOk()       ? "ok"
+                                                      : isSkipped(result) ? "skipped"
+                                                                          : result.name());
+                                if (result.isError() && result != Error::Cancelled)
+                                        json.member("reason", result.desc());
                                 json.member("elapsed_us", elapsedUs);
                                 json.key("results");
                                 json.beginArray();
@@ -554,6 +670,7 @@ namespace {
                         String          _notes{MemSpace::Psram};
                         Counters        _counters;
                         Tasks           _tasks;
+                        StallProbe      _stall;
         };
 
         // ---- The results file ----
@@ -650,13 +767,17 @@ namespace {
                         const StringView text(a);
                         const StringView key = text.left(text.indexOf('='));
                         const StringView value = text.mid(text.indexOf('=') + 1);
-                        bool             known = key == "runs" || key == "warmup";
+                        bool             known = isCommon(key);
                         for (size_t c = 0; c < chosenCount && !known; ++c) {
                                 for (size_t p = 0; p < chosen[c]->paramCount; ++p)
                                         known = known || key == StringView(chosen[c]->params[p].name);
                         }
                         if (!known) {
                                 ctx.eprintf("bench: %.*s: no benchmark chosen takes it\n", int(key.size()), key.data());
+                                return Shell::ExitUsage;
+                        }
+                        if (key == "probe" && value != "none" && value != "stall") {
+                                ctx.eprintf("bench: %s: none or stall\n", a);
                                 return Shell::ExitUsage;
                         }
                         if (key == "runs" || key == "warmup") {
@@ -717,7 +838,7 @@ namespace {
                                 status = Shell::ExitInterrupted;
                                 break;
                         }
-                        if (err.isError()) status = Shell::ExitFailure;
+                        if (err.isError() && !isSkipped(err)) status = Shell::ExitFailure;
                 }
                 if (save) {
                         json.endArray();

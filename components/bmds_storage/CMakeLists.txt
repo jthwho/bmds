@@ -5,17 +5,17 @@
 # /flash), embedded by tools/embedfiles.py (devplan/gui.md G14). /rom's image is built from
 # rom/ by tools/mkrom.py and written to the partition "rom" by idf.py flash (devplan/rom.md).
 #
-# WHOLE_ARCHIVE: nothing references sdcommand.cpp by symbol -- its command is
-# found through the linker section -- so without it the linker would never
+# WHOLE_ARCHIVE: nothing references sdcommand.cpp or the benchmarks by symbol -- they are
+# found through the linker sections -- so without it the linker would never
 # pull that object out of the archive.
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
-idf_component_register(SRCS src/benchsd.cpp
+idf_component_register(SRCS src/benchfs.cpp
+                            src/benchsd.cpp
                             src/cfg.cpp
                             src/flashdisk.cpp
                             src/flashpartition.cpp
-                            src/fsbench.cpp
                             src/romcommand.cpp
                             src/romdisk.cpp
                             src/sdcard.cpp

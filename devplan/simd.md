@@ -174,3 +174,7 @@ capture clean. To check PIE's state across switches:
   Solitaire's bouncing cards running, none different.
 - **Rule:** nothing writes CFG after boot. A program using PIE someday must not either (or the
   switch must start saving it).
+
+**Benchmarks moved (2026-10-17):** `simd bench` became the `simd.*` benchmarks (`bench run simd`,
+`devplan/bench.md` §11); `simd test` and `simd stress` stay. The figures above were taken with the
+old command.

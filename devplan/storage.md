@@ -1115,3 +1115,7 @@ and changes a name's case on the card and on `/tmp`; the compatibility corpus pa
 board restarted about 12 s after a flash, just as the first `progtest posix` run ended; three
 reboots with the same runs at the same moment didn't do it again. The boot log didn't say why,
 so it now does (`Reset: panic`, `task watchdog`, `USB`, ...).
+
+**Benchmarks moved (2026-10-17):** `fsbench` became the `fs.smallfiles` benchmark, its spinner the
+bench's `probe=stall` (`devplan/bench.md` §11), and `sd bench` became `storage.sd.read` (§10). The
+figures above were taken with the old commands.

@@ -1040,3 +1040,8 @@ ones once it exists.
   PSRAM (`UnderBytes`). Measured: 60 moves over the desktop, 60 rounds of 0.47 ms on average, no
   redraws and none put off; `win check` 0 wrong, with a terminal scrolling 400 lines under the
   pointer, with typing hiding it, over a window's edge (another shape) and after a resize.
+
+**Benchmarks moved (2026-10-17):** `win bench`, `win scroll`'s and `win drag`'s times became the
+`gui.glyphs`, `gui.scroll` and `gui.drag` benchmarks, on test windows of their own
+(`devplan/bench.md` §11); `display stress` became `memory.traffic`. The figures above were taken
+with the old commands.

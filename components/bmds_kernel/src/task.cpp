@@ -81,4 +81,8 @@ void Task::sleep(unsigned int delayMs) {
         return;
 }
 
+int Task::currentCore() {
+        return static_cast<int>(xPortGetCoreID());
+}
+
 BMDS_NAMESPACE_END

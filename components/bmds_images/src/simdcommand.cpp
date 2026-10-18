@@ -5,10 +5,11 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The `simd` command (devplan/simd.md §3): each vector kernel timed against its scalar twin, and
- * checked byte for byte against it on random input; `stress` does that from tasks on both cores
- * switching mid-kernel, and checks PIE's registers survive the switches (simd.md §5). Its output
- * format is a userspace interface: keep the lines and their fields, add new ones only at the end.
+ * The `simd` command (devplan/simd.md §3): each vector kernel checked byte for byte against its
+ * scalar twin on random input; `stress` does that from tasks on both cores switching mid-kernel,
+ * and checks PIE's registers survive the switches (simd.md §5). The kernels' timings are the
+ * `simd.*` benchmarks (devplan/bench.md). Its output format is a userspace interface: keep the
+ * lines and their fields, add new ones only at the end.
  */
 
 #include <atomic>
@@ -16,6 +17,8 @@
 #include <new>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <cstdio>
+#include <bmds/bench.h>
 #include <bmds/command.h>
 #include <bmds/font.h>
 #include <bmds/glyphrenderer.h>
@@ -27,6 +30,7 @@
 #include <bmds/pngfilter.h>
 #include <bmds/shell.h>
 #include <bmds/simd.h>
+#include <bmds/stopwatch.h>
 #include <bmds/system.h>
 #include <bmds/task.h>
 
@@ -58,8 +62,26 @@ namespace {
                         ~Block() { Memory::free(p); }
         };
 
-        uint32_t msSince(uint64_t startUs) {
-                return uint32_t((System::uptimeUs() - startUs) / 1000);
+        // Times @p work (one call: `work(kernel)`) with the scalar kernel and, where the build has
+        // them, the vector one: metrics `PREFIXscalar_UNIT` and `PREFIXpie_UNIT`, each sample the
+        // time divided by @p per (items a call) in @p unit ("ms" or "us").
+        template <typename Work>
+        Error scalarAndPie(BenchContext &ctx, const char *prefix, const char *unit, double per, Work work) {
+                const double divide = (unit[0] == 'm' ? 1000.0 : 1.0) * per;
+                for (const Simd::Kernel k : {Simd::Kernel::Scalar, Simd::Kernel::Pie}) {
+                        if (k == Simd::Kernel::Pie && !Simd::hasPie()) continue;
+                        char metric[BenchContext::MaxMetricName + 1];
+                        std::snprintf(metric, sizeof(metric), "%s%s_%s", prefix,
+                                      k == Simd::Kernel::Scalar ? "scalar" : "pie", unit);
+                        const Error err = ctx.measure(metric, unit, BenchBetter::Lower, [&](double &out) {
+                                Stopwatch watch;
+                                work(k);
+                                out = double(watch.elapsedUs()) / divide;
+                                return Error(Error::Ok);
+                        });
+                        if (err.isError()) return err;
+                }
+                return Error::Ok;
         }
 
         const char *formatName(PixelFormat f) {
@@ -107,32 +129,6 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
-        void benchScale(CommandContext &ctx) {
-                ImageBuffer in, out;
-                in.width = 1920;
-                in.height = 1080;
-                in.stride = 1920 * 3;
-                out.width = 1280;
-                out.height = 720;
-                out.stride = 1280 * 3;
-                Block src(MemSpace::Psram, in.stride * in.height), dst(MemSpace::Psram, out.stride * out.height);
-                if (src.p == nullptr || dst.p == nullptr) return;
-                Noise noise;
-                noise.fill(src.p, in.stride * in.height);
-                in.pixels = src.p;
-                out.pixels = dst.p;
-                uint32_t ms[2];
-                for (int k = 0; k < 2; ++k) {
-                        const uint64_t t = System::uptimeUs();
-                        (void)ImageScaler::scale(in, out, MemSpace::Psram,
-                                                 k == 0 ? Simd::Kernel::Scalar : Simd::Kernel::Pie);
-                        ms[k] = msSince(t);
-                }
-                ctx.printf("scale 1920x1080 to 1280x720 bgr24: scalar %u ms, pie %u ms\n", unsigned(ms[0]),
-                           unsigned(ms[1]));
-                return;
-        }
-
         // Glyphs: random cells (characters, colours, bold, underline) drawn both ways.
         constexpr uint16_t GlyphStripWidth = 640;
 
@@ -170,23 +166,6 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
-        void benchGlyphs(CommandContext &ctx) {
-                const size_t  stride = size_t(GlyphStripWidth) * 3;
-                Block         a(MemSpace::Internal, stride * Fonts::unscii16.height());
-                GlyphRenderer r[2] = {GlyphRenderer(GlyphRenderer::Kernel::Scalar),
-                                      GlyphRenderer(GlyphRenderer::Kernel::Pie)};
-                if (a.p == nullptr) return;
-                uint32_t us[2];
-                for (int k = 0; k < 2; ++k) {
-                        Noise          noise;
-                        const uint64_t t = System::uptimeUs();
-                        for (int i = 0; i < 100; ++i) drawCells(r[k], noise, a.p, stride);
-                        us[k] = uint32_t(System::uptimeUs() - t) / 100;
-                }
-                ctx.printf("glyphs 80 cells of 8x16: scalar %u us, pie %u us\n", unsigned(us[0]), unsigned(us[1]));
-                return;
-        }
-
         int testSwap24(CommandContext &ctx, Noise &noise) {
                 Block in(MemSpace::Internal, 3 * 512 + 32), a(MemSpace::Internal, 3 * 512 + 32),
                         b(MemSpace::Internal, 3 * 512 + 32);
@@ -206,20 +185,6 @@ namespace {
                 }
                 ctx.printf("swap24: 2000 cases, the same\n");
                 return Shell::ExitSuccess;
-        }
-
-        void benchSwap24(CommandContext &ctx) {
-                const size_t n = 1920 * 1080;
-                Block        in(MemSpace::Psram, 3 * n), out(MemSpace::Psram, 3 * n);
-                if (in.p == nullptr || out.p == nullptr) return;
-                uint32_t ms[2];
-                for (int k = 0; k < 2; ++k) {
-                        const uint64_t t = System::uptimeUs();
-                        Pixels::swap24(in.p, out.p, n, k == 0 ? Simd::Kernel::Scalar : Simd::Kernel::Pie);
-                        ms[k] = msSince(t);
-                }
-                ctx.printf("swap24 1920x1080 psram: scalar %u ms, pie %u ms\n", unsigned(ms[0]), unsigned(ms[1]));
-                return;
         }
 
         // Alpha as icons have it: mostly clear or opaque, the edges between.
@@ -260,36 +225,6 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
-        // As the painter draws icons: 48 × 48 into a strip in internal RAM, from PSRAM (where the
-        // icon themes are) and from internal RAM (the kernel's own speed).
-        void benchBlend(CommandContext &ctx) {
-                constexpr size_t Side = 48, Icons = 64;
-                Block in(MemSpace::Psram, 4 * Side * Side * Icons), near(MemSpace::Internal, 4 * Side * Side),
-                        out(MemSpace::Internal, 3 * Side * Side);
-                if (in.p == nullptr || near.p == nullptr || out.p == nullptr) return;
-                Noise noise;
-                iconPixels(noise, reinterpret_cast<uint32_t *>(in.p), Side * Side * Icons);
-                std::memcpy(near.p, in.p, 4 * Side * Side);
-                for (const bool psram : {true, false}) {
-                        uint32_t us[2];
-                        for (int k = 0; k < 2; ++k) {
-                                const uint64_t t = System::uptimeUs();
-                                for (size_t i = 0; i < Icons; ++i) {
-                                        const auto *icon = reinterpret_cast<const uint32_t *>(
-                                                psram ? in.p + 4 * Side * Side * i : near.p);
-                                        for (size_t r = 0; r < Side; ++r)
-                                                Pixels::fromArgb(icon + r * Side, Side, out.p + r * Side * 3,
-                                                                 PixelFormat::Bgr24, 0xc0c0c0,
-                                                                 k == 0 ? Simd::Kernel::Scalar : Simd::Kernel::Pie);
-                                }
-                                us[k] = uint32_t(System::uptimeUs() - t) / Icons;
-                        }
-                        ctx.printf("blend a 48x48 icon from %s: scalar %u us, pie %u us\n",
-                                   psram ? "psram" : "internal", unsigned(us[0]), unsigned(us[1]));
-                }
-                return;
-        }
-
         // PNG's filters: rows of a smooth picture with noise (so each filter wins somewhere), any length.
         void pngRows(Noise &noise, uint8_t *prev, uint8_t *cur, size_t bytes) {
                 const unsigned kind = noise.below(4);
@@ -319,27 +254,6 @@ namespace {
                 }
                 ctx.printf("pngfilter: 2000 rows, the same\n");
                 return Shell::ExitSuccess;
-        }
-
-        void benchPngFilter(CommandContext &ctx) {
-                constexpr size_t Bytes = 1920 * 3;
-                Block            buf(MemSpace::Internal, 2 * (Bytes + 16) + Bytes + 1);
-                if (buf.p == nullptr) return;
-                uint8_t *prev = buf.p + 16, *cur = prev + Bytes + 16, *out = cur + Bytes;
-                std::memset(buf.p, 0, 2 * (Bytes + 16));
-                Noise    noise;
-                uint32_t us[2];
-                pngRows(noise, prev, cur, Bytes);
-                cur[7] ^= 1; // not equal to the last row (that's quick both ways)
-                for (int k = 0; k < 2; ++k) {
-                        const uint64_t t = System::uptimeUs();
-                        for (int r = 0; r < 100; ++r)
-                                PngFilter::row(cur, prev, Bytes, out,
-                                               k == 0 ? Simd::Kernel::Scalar : Simd::Kernel::Pie);
-                        us[k] = uint32_t(System::uptimeUs() - t) / 100;
-                }
-                ctx.printf("pngfilter a 1920-pixel row: scalar %u us, pie %u us\n", unsigned(us[0]), unsigned(us[1]));
-                return;
         }
 
         // TJpgDec's output: JPEGs made by the codec (every sampling, odd sizes), decoded both ways at
@@ -432,55 +346,6 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
-        void benchSoftJpeg(CommandContext &ctx) {
-                Bytes jpeg;
-                jpeg.room = 2 * 1024 * 1024;
-                Block store(MemSpace::Psram, jpeg.room), pic(MemSpace::Psram, 1920 * 1080 * 3);
-                jpeg.p = store.p;
-                Noise noise;
-                if (jpeg.p == nullptr || pic.p == nullptr ||
-                    !makeJpeg(noise, 1920, 1080, JpegHeader::Sampling::Yuv420, jpeg))
-                        return;
-                for (unsigned shift : {0u, 2u}) {
-                        ImageBuffer out;
-                        out.width = 1920 >> shift;
-                        out.height = 1080 >> shift;
-                        out.stride = size_t(out.width) * 3;
-                        out.pixels = pic.p;
-                        uint32_t ms[2];
-                        for (int k = 0; k < 2; ++k) {
-                                const uint64_t t = System::uptimeUs();
-                                (void)SoftJpeg::decode(ByteSpan(jpeg.p, jpeg.n), out, shift, MemSpace::Internal,
-                                                       k == 0 ? Simd::Kernel::Scalar : Simd::Kernel::Pie);
-                                ms[k] = msSince(t);
-                        }
-                        ctx.printf("softjpeg 1920x1080 4:2:0 at 1/%u: scalar %u ms, pie %u ms\n", 1u << shift,
-                                   unsigned(ms[0]), unsigned(ms[1]));
-                }
-                return;
-        }
-
-        // Orienting (not a vector kernel: timed alone): a 1920 × 1080 picture turned a quarter right.
-        int testOrient(CommandContext &ctx, Noise &) {
-                ctx.printf("orient: no vector kernel (bench only)\n");
-                return Shell::ExitSuccess;
-        }
-
-        void benchOrient(CommandContext &ctx) {
-                ImageBuffer in, out;
-                in.width = out.height = 1920;
-                in.height = out.width = 1080;
-                in.stride = 1920 * 3;
-                out.stride = 1080 * 3;
-                Block a(MemSpace::Psram, in.stride * in.height), b(MemSpace::Psram, out.stride * out.height);
-                if (a.p == nullptr || b.p == nullptr) return;
-                in.pixels = a.p;
-                out.pixels = b.p;
-                const uint64_t t = System::uptimeUs();
-                (void)ImageScaler::orient(in, out, 6);
-                ctx.printf("orient 1920x1080 bgr24 a quarter right: %u ms\n", unsigned(msSince(t)));
-                return;
-        }
 
         // repeat16 at 2 (the PIE case: aligned, whole steps and a scalar tail).
         int testRepeat16(CommandContext &ctx, Noise &noise) {
@@ -503,23 +368,6 @@ namespace {
                 }
                 ctx.printf("repeat16: 2000 cases, the same\n");
                 return Shell::ExitSuccess;
-        }
-
-        void benchRepeat16(CommandContext &ctx) {
-                Block in(MemSpace::Internal, 640 * 2), out(MemSpace::Internal, 1280 * 2);
-                if (in.p == nullptr || out.p == nullptr) return;
-                uint32_t us[2];
-                for (int k = 0; k < 2; ++k) {
-                        const uint64_t t = System::uptimeUs();
-                        for (int i = 0; i < 360; ++i)
-                                Pixels::repeat16(reinterpret_cast<const uint16_t *>(in.p), 640,
-                                                 reinterpret_cast<uint16_t *>(out.p), 2,
-                                                 k == 0 ? Simd::Kernel::Scalar : Simd::Kernel::Pie);
-                        us[k] = uint32_t(System::uptimeUs() - t);
-                }
-                ctx.printf("repeat16 360 rows of 640 at 2: scalar %u us, pie %u us\n", unsigned(us[0]),
-                           unsigned(us[1]));
-                return;
         }
 
         // ---- Stress (simd.md §5): the kernels from tasks that switch mid-kernel, and PIE's registers
@@ -777,22 +625,27 @@ namespace {
                 return status;
         }
 
-        // The kernels: a name, a test (random cases, both ways compared) and a bench.
+        // The kernels: a name and a test (random cases, both ways compared). Their timings are
+        // benchmarks (`bench run simd`, below).
         struct Kernel {
                         const char *name;
                         int (*test)(CommandContext &ctx, Noise &noise);
-                        void (*bench)(CommandContext &ctx);
         };
 
         const Kernel Kernels[] = {
-                {"scale", [](CommandContext &ctx, Noise &noise) { return testScale(ctx, noise, 200); }, benchScale},
-                {"glyphs", [](CommandContext &ctx, Noise &) { return testGlyphs(ctx, 500); }, benchGlyphs},
-                {"swap24", testSwap24, benchSwap24},
-                {"pngfilter", testPngFilter, benchPngFilter},
-                {"softjpeg", testSoftJpeg, benchSoftJpeg},
-                {"orient", testOrient, benchOrient},
-                {"blend", testBlend, benchBlend},
-                {"repeat16", testRepeat16, benchRepeat16},
+                {"scale",
+                 [](CommandContext &ctx, Noise &noise) {
+                         return testScale(ctx, noise, 200);
+                 }},
+                {"glyphs",
+                 [](CommandContext &ctx, Noise &) {
+                         return testGlyphs(ctx, 500);
+                 }},
+                {"swap24", testSwap24},
+                {"pngfilter", testPngFilter},
+                {"softjpeg", testSoftJpeg},
+                {"blend", testBlend},
+                {"repeat16", testRepeat16},
         };
 
         int runSimd(CommandContext &ctx) {
@@ -805,16 +658,12 @@ namespace {
                 const StringView what(args[1]);
                 const StringView which = args.size() == 3 ? StringView(args[2]) : StringView();
                 if (what == "stress") return runStress(ctx, which);
-                if (what != "bench" && what != "test") return ctx.usage();
+                if (what != "test") return ctx.usage();
                 int  status = Shell::ExitSuccess;
                 bool found = which.isEmpty();
                 for (const Kernel &k : Kernels) {
                         if (!which.isEmpty() && which != k.name) continue;
                         found = true;
-                        if (what == "bench") {
-                                k.bench(ctx);
-                                continue;
-                        }
                         Noise noise;
                         if (k.test(ctx, noise) != Shell::ExitSuccess) status = Shell::ExitFailure;
                 }
@@ -825,10 +674,156 @@ namespace {
                 return status;
         }
 
+        // ---- The benchmarks (devplan/bench.md; were `simd bench`): each kernel, scalar and PIE.
+
+        Error benchScale(BenchContext &ctx) {
+                ImageBuffer in, out;
+                in.width = 1920;
+                in.height = 1080;
+                in.stride = 1920 * 3;
+                out.width = 1280;
+                out.height = 720;
+                out.stride = 1280 * 3;
+                Block src(MemSpace::Psram, in.stride * in.height), dst(MemSpace::Psram, out.stride * out.height);
+                if (src.p == nullptr || dst.p == nullptr) return Error::NoMem;
+                Noise noise;
+                noise.fill(src.p, in.stride * in.height);
+                in.pixels = src.p;
+                out.pixels = dst.p;
+                return scalarAndPie(ctx, "", "ms", 1,
+                                    [&](Simd::Kernel k) { (void)ImageScaler::scale(in, out, MemSpace::Psram, k); });
+        }
+
+        Error benchGlyphs(BenchContext &ctx) {
+                const size_t stride = size_t(GlyphStripWidth) * 3;
+                Block        a(MemSpace::Internal, stride * Fonts::unscii16.height());
+                if (a.p == nullptr) return Error::NoMem;
+                Noise noise;
+                return scalarAndPie(ctx, "", "us", 100, [&](Simd::Kernel k) {
+                        GlyphRenderer r(k == Simd::Kernel::Scalar ? GlyphRenderer::Kernel::Scalar
+                                                                  : GlyphRenderer::Kernel::Pie);
+                        for (int i = 0; i < 100; ++i) drawCells(r, noise, a.p, stride);
+                });
+        }
+
+        Error benchSwap24(BenchContext &ctx) {
+                const size_t n = 1920 * 1080;
+                Block        in(MemSpace::Psram, 3 * n), out(MemSpace::Psram, 3 * n);
+                if (in.p == nullptr || out.p == nullptr) return Error::NoMem;
+                return scalarAndPie(ctx, "", "ms", 1, [&](Simd::Kernel k) { Pixels::swap24(in.p, out.p, n, k); });
+        }
+
+        // As the painter draws icons: 48 × 48 into a strip in internal RAM, from PSRAM (where the
+        // icon themes are) and from internal RAM (the kernel's own speed); time an icon.
+        Error benchBlend(BenchContext &ctx) {
+                constexpr size_t Side = 48, Icons = 64;
+                Block in(MemSpace::Psram, 4 * Side * Side * Icons), near(MemSpace::Internal, 4 * Side * Side),
+                        out(MemSpace::Internal, 3 * Side * Side);
+                if (in.p == nullptr || near.p == nullptr || out.p == nullptr) return Error::NoMem;
+                Noise noise;
+                iconPixels(noise, reinterpret_cast<uint32_t *>(in.p), Side * Side * Icons);
+                std::memcpy(near.p, in.p, 4 * Side * Side);
+                for (const bool psram : {true, false}) {
+                        const Error err =
+                                scalarAndPie(ctx, psram ? "psram_" : "internal_", "us", Icons, [&](Simd::Kernel k) {
+                                        for (size_t i = 0; i < Icons; ++i) {
+                                                const auto *icon = reinterpret_cast<const uint32_t *>(
+                                                        psram ? in.p + 4 * Side * Side * i : near.p);
+                                                for (size_t r = 0; r < Side; ++r)
+                                                        Pixels::fromArgb(icon + r * Side, Side, out.p + r * Side * 3,
+                                                                         PixelFormat::Bgr24, 0xc0c0c0, k);
+                                        }
+                                });
+                        if (err.isError()) return err;
+                }
+                return Error::Ok;
+        }
+
+        // A 1920-pixel row filtered (the encoder's choice of filter), time a row.
+        Error benchPngFilter(BenchContext &ctx) {
+                constexpr size_t Bytes = 1920 * 3;
+                Block            buf(MemSpace::Internal, 2 * (Bytes + 16) + Bytes + 1);
+                if (buf.p == nullptr) return Error::NoMem;
+                uint8_t *prev = buf.p + 16, *cur = prev + Bytes + 16, *out = cur + Bytes;
+                std::memset(buf.p, 0, 2 * (Bytes + 16));
+                Noise noise;
+                pngRows(noise, prev, cur, Bytes);
+                cur[7] ^= 1; // not equal to the last row (that's quick both ways)
+                return scalarAndPie(ctx, "", "us", 100, [&](Simd::Kernel k) {
+                        for (int r = 0; r < 100; ++r) PngFilter::row(cur, prev, Bytes, out, k);
+                });
+        }
+
+        // A 1920 × 1080 4:2:0 JPEG decoded whole and at a quarter.
+        Error benchSoftJpeg(BenchContext &ctx) {
+                Bytes jpeg;
+                jpeg.room = 2 * 1024 * 1024;
+                Block store(MemSpace::Psram, jpeg.room), pic(MemSpace::Psram, 1920 * 1080 * 3);
+                jpeg.p = store.p;
+                Noise noise;
+                if (jpeg.p == nullptr || pic.p == nullptr) return Error::NoMem;
+                if (!makeJpeg(noise, 1920, 1080, JpegHeader::Sampling::Yuv420, jpeg)) return Error::NoMem;
+                for (unsigned shift : {0u, 2u}) {
+                        ImageBuffer out;
+                        out.width = 1920 >> shift;
+                        out.height = 1080 >> shift;
+                        out.stride = size_t(out.width) * 3;
+                        out.pixels = pic.p;
+                        const Error err =
+                                scalarAndPie(ctx, shift == 0 ? "full_" : "quarter_", "ms", 1, [&](Simd::Kernel k) {
+                                        (void)SoftJpeg::decode(ByteSpan(jpeg.p, jpeg.n), out, shift, MemSpace::Internal,
+                                                               k);
+                                });
+                        if (err.isError()) return err;
+                }
+                return Error::Ok;
+        }
+
+        // Orienting (no vector kernel): a 1920 × 1080 picture turned a quarter right.
+        Error benchOrient(BenchContext &ctx) {
+                ImageBuffer in, out;
+                in.width = out.height = 1920;
+                in.height = out.width = 1080;
+                in.stride = 1920 * 3;
+                out.stride = 1080 * 3;
+                Block a(MemSpace::Psram, in.stride * in.height), b(MemSpace::Psram, out.stride * out.height);
+                if (a.p == nullptr || b.p == nullptr) return Error::NoMem;
+                in.pixels = a.p;
+                out.pixels = b.p;
+                return ctx.measure("quarter_right_ms", "ms", BenchBetter::Lower, [&](double &ms) {
+                        Stopwatch watch;
+                        (void)ImageScaler::orient(in, out, 6);
+                        ms = double(watch.elapsedUs()) / 1000;
+                        return Error(Error::Ok);
+                });
+        }
+
+        // repeat16 at 2: 360 rows of 640 (a scaled window's 565 rows).
+        Error benchRepeat16(BenchContext &ctx) {
+                Block in(MemSpace::Internal, 640 * 2), out(MemSpace::Internal, 1280 * 2);
+                if (in.p == nullptr || out.p == nullptr) return Error::NoMem;
+                return scalarAndPie(ctx, "", "us", 1, [&](Simd::Kernel k) {
+                        for (int i = 0; i < 360; ++i)
+                                Pixels::repeat16(reinterpret_cast<const uint16_t *>(in.p), 640,
+                                                 reinterpret_cast<uint16_t *>(out.p), 2, k);
+                });
+        }
+
 } // namespace
 
-BMDS_SHELL_COMMAND(simd, runSimd, "bench [KERNEL] | test [KERNEL] | stress [SECONDS]",
-                   "Time the PIE vector kernels against their scalar twins, check them byte for byte, or both "
-                   "from tasks switching on both cores (PIE's registers kept across switches)")
+BMDS_BENCH(simdScale, "simd.scale", benchScale, BenchQuick, "The scaler: 1920x1080 to 1280x720 BGR24 in PSRAM")
+BMDS_BENCH(simdGlyphs, "simd.glyphs", benchGlyphs, BenchQuick, "Glyphs: 80 cells of 8x16 into internal RAM")
+BMDS_BENCH(simdSwap24, "simd.swap24", benchSwap24, BenchQuick, "BGR to RGB: 1920x1080 in PSRAM")
+BMDS_BENCH(simdBlend, "simd.blend", benchBlend, BenchQuick,
+           "Icons' alpha: a 48x48 icon from PSRAM and from internal RAM")
+BMDS_BENCH(simdPngFilter, "simd.pngfilter", benchPngFilter, BenchQuick, "PNG's filters: a 1920-pixel row")
+BMDS_BENCH(simdSoftJpeg, "simd.softjpeg", benchSoftJpeg, BenchQuick,
+           "The JPEG decoder: 1920x1080 4:2:0, whole and at a quarter")
+BMDS_BENCH(simdOrient, "simd.orient", benchOrient, BenchQuick, "Orienting: 1920x1080 BGR24 turned a quarter right")
+BMDS_BENCH(simdRepeat16, "simd.repeat16", benchRepeat16, BenchQuick, "565 pixels doubled: 360 rows of 640")
+
+BMDS_SHELL_COMMAND(simd, runSimd, "test [KERNEL] | stress [SECONDS]",
+                   "Check the PIE vector kernels byte for byte against their scalar twins, or from tasks switching "
+                   "on both cores (PIE's registers kept across switches); their speed: 'bench run simd'")
 
 BMDS_NAMESPACE_END

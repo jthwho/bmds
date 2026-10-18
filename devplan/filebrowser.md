@@ -1045,3 +1045,6 @@ Board checks at each step; each step is usable alone.
   did both)? The status bar is free; tooltips cost a window.
 - **Thumbnails** (a future view) need a decoder per format and a cache; not before PNG and a
   JPEG decoder are worth it.
+
+**Benchmarks moved (2026-10-17):** `win shuffle` became the `gui.shuffle` benchmark, on four test
+windows of its own (`devplan/bench.md` §11). The figures above were taken with the old command.

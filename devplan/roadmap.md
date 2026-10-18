@@ -175,8 +175,10 @@ Plan: [`input.md`](input.md).
   memory, and `JsonWriter`, streaming; JSONTestSuite passes), `Stopwatch`, `bmds_bench`
   (`BMDS_BENCH`, `bench list|info|run`, the results file with the system's facts and every
   counter's and task's change), `bench/folder`, `storage.sd.read` (was `sd bench`), and
-  `tools/bmds-bench` (`run`, `pull`, `history`, `compare`). Next: step 2 (the firmware's other
-  benchmarks moved in); then Quake.
+  `tools/bmds-bench` (`run`, `pull`, `history`, `compare`). Step 2 done (§11): 27 benchmarks
+  (storage, filesystems, SIMD, memory, display, GUI), the old forms removed, `probe=stall`,
+  skipped benchmarks; a latent cache error in the scanout's interrupt found and fixed. Next:
+  step 3 (programs' benchmarks); then Quake.
 - [x] Settings, the control panel (`controlpanel.md`, planned 2026-10-16, the user's request):
   the one place to change every sysconf setting graphically, laid out like the Mac's System
   Settings (groups with icons on the left, the group's page on the right). Changes apply and

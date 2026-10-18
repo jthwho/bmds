@@ -13,6 +13,7 @@
 #include <type_traits>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/span.h>
 #include <bmds/stringview.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -52,7 +53,8 @@ class BenchContext;
 struct Bench {
                 const char *name;                ///< Dotted: `storage.sd.read`.
                 const char *help;                ///< One line saying what it measures.
-                Error (*run)(BenchContext &ctx); ///< `Ok`, or what stopped it.
+                Error (*run)(BenchContext &ctx); ///< `Ok`, or what stopped it; `Busy`, `NotReady`,
+                                                 ///< `NoMedia`, `NotSupported`: can't run here (skipped).
                 uint16_t          tags;          ///< `BenchTag` bits.
                 const BenchParam *params;        ///< Its parameters (`runs` and `warmup` are every bench's).
                 uint8_t           paramCount;
@@ -99,6 +101,12 @@ class BenchContext {
                  */
                 Error paramUnsigned(StringView name, uint64_t &out) const;
 
+                /** @brief Returns `runs=`: how many runs each metric keeps (5 unless given). */
+                uint32_t runs() const;
+
+                /** @brief Returns `warmup=`: how many runs come first, not kept (1 unless given). */
+                uint32_t warmup() const;
+
                 /** @brief Returns true after Ctrl-C: stop between runs (`measure()` checks on its own). */
                 virtual bool isCancelled() const = 0;
 
@@ -121,8 +129,20 @@ class BenchContext {
                                 &sample);
                 }
 
+                /**
+                 * @brief Reports figures the benchmark took itself, a run each (for runs
+                 *        that give several metrics at once: `runs()` and `warmup()` say
+                 *        how many). @p samples are sorted in place.
+                 */
+                virtual void reportSamples(StringView metric, StringView unit, BenchBetter better,
+                                           Span<double> samples) = 0;
+
                 /** @brief Reports a figure the benchmark worked out itself (one run). */
-                virtual void report(StringView metric, StringView unit, BenchBetter better, double value) = 0;
+                void report(StringView metric, StringView unit, BenchBetter better, double value) {
+                        double one = value;
+                        reportSamples(metric, unit, better, Span<double>(&one, 1));
+                        return;
+                }
 
                 /** @brief Prints a line of text under the benchmark, and keeps it in the results. */
                 virtual void note(const char *fmt, ...) BMDS_PRINTF_FORMAT(2, 3) = 0;

@@ -16,6 +16,8 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_DRIVERS_PORTABLE_SRCS}
+                                    src/benchdisplay.cpp
+                                    src/benchmemory.cpp
                                     src/display.cpp
                                     src/displaycommand.cpp
                                     src/displayppa.cpp
@@ -30,7 +32,7 @@ if(COMMAND idf_component_register)
                                     src/surface.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_shell bmds_sysconf esp_driver_i2c esp_driver_jpeg esp_hw_support esp_hal_lcd esp_mm esp_timer
+                               PRIV_REQUIRES bmds_bench bmds_board bmds_shell bmds_sysconf esp_driver_i2c esp_driver_jpeg esp_hw_support esp_hal_lcd esp_mm esp_timer
                                              spi_flash
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})

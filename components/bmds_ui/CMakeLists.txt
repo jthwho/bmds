@@ -43,7 +43,7 @@ if(COMMAND idf_component_register)
                                     src/wmconfig.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_console bmds_core bmds_drivers bmds_input bmds_kernel
-                               PRIV_REQUIRES bmds_fs bmds_shell bmds_sysconf esp_mm esp_rom
+                               PRIV_REQUIRES bmds_bench bmds_fs bmds_shell bmds_sysconf esp_mm esp_rom
                                WHOLE_ARCHIVE)
         # Screenshots move megabytes through the filters: speed over size here.
         set_source_files_properties(src/png.cpp PROPERTIES COMPILE_OPTIONS -O2)

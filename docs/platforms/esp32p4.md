@@ -469,14 +469,32 @@ until silicon v3; then test again.
   was double: a tenth of its synthesis; in `float`, 11 % faster (`devplan/speech.md` §12). Look
   for `double` and unsuffixed constants (`0.5`) in vendored DSP code.
 - **`#pragma GCC unroll 4` didn't help** the voice loop (68 cycles a sample either way).
+- **`std::atomic<bool>::load` isn't always inlined at `-Os`,** and an out-of-line copy is a weak
+  function in flash. The scanout's DW-GDMA interrupt (`BMDS_ISR_ATTR`, IRAM-safe: it runs while
+  the flash is written, the cache off) called it, so when `/flash`'s write worker ran on core 0
+  and the interrupt came on core 1, core 1 took a **cache error** (`Guru Meditation ... Cache
+  error`, MEPC in flash at `std::atomic<bool>::load`). Latent since the scanout's `_halt` flag;
+  found when `bench`'s stall probe moved the write worker onto core 0 (2026-10-17,
+  `devplan/bench.md` §11). In IRAM code use the builtins (`__atomic_load_n`), which always
+  inline. To check a build: disassemble `.iram0.text` and look for calls into flash,
+  `riscv32-esp-elf-objdump -d -C -j .iram0.text build/bmds.elf`, then each `jalr` whose target is
+  a `0x40...` address. Only interrupts allowed while the flash is busy matter (the DW-GDMA's and
+  I2S's here: `CONFIG_DW_GDMA_ISR_IRAM_SAFE`, `CONFIG_I2S_ISR_IRAM_SAFE`).
+- **A panic on a task with a small stack can hang in the handler,** which runs on that stack:
+  the console shows nothing and the chip resets later by the hardware watchdog
+  (`rst:0x7 (HP_SYS_HP_WDT_RESET)`, the other core's saved PC in `panic_handler`'s busy-wait).
+  The same crash on a 4 KB stack printed the cache error above. Read the console with a bounded
+  pyserial loop (opening the USB serial port resets the chip, so start reading before the
+  failure).
 
 ## 8. Measuring
 
 - **Cycles:** `csrr rd, mcycle` around a section (360 MHz on this silicon). Remove the
   instrumentation after. A `printf` in the synth, running in a background `play`, never showed on
   the console; `bmdsInfo()` did (read with `log show`).
-- **`simd bench`** times each vector kernel against its scalar twin; **`simd test`** checks them
-  byte for byte on random input (sizes, offsets, formats). A kernel goes in with both.
+- **`bench run simd`** times each vector kernel against its scalar twin (`devplan/bench.md`;
+  `Stopwatch` for microseconds and cycles); **`simd test`** checks them byte for byte on random
+  input (sizes, offsets, formats). A kernel goes in with both, and a `simd.*` benchmark.
 - **Compare against an exact reference, not a library's idea of it:** Pillow's "box" filter isn't
   an area average (`devplan/images.md`).
 - **CPU spent on a job:** the board's busy time before and after (`stats`' `cpu.core0.busy_us`

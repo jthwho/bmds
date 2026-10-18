@@ -455,3 +455,8 @@ Superseded for text by `windows.md` (2026-10-05): a desktop with windows, the te
   stats`: "pictures switched to"). And the surface leaving the scan is let go as soon as the
   hardware stops, before the ~100 ms restart: the desktop's next present waited for a frame that
   wasn't coming (74 ms, `surface.wait_us_max` critical for as long as Doom ran).
+
+**Benchmarks moved (2026-10-17):** `display present`, `display anim` and `display stress` became the
+`display.present`, `display.anim` and `memory.traffic` benchmarks, and `display test` and `display
+fill` no longer print times (`display.draw`, `display.fill`) (`devplan/bench.md` §11). The figures
+above were taken with the old commands.

@@ -18,7 +18,7 @@
 #include <new>
 #include <sdkconfig.h>
 #include <esp_cache.h>
-#include <esp_cpu.h>
+#include <bmds/bench.h>
 #include <bmds/command.h>
 #include <bmds/display.h>
 #include <bmds/bevel.h>
@@ -29,6 +29,7 @@
 #include <bmds/keyboarddecoder.h>
 #include <bmds/memory.h>
 #include <bmds/shell.h>
+#include <bmds/stopwatch.h>
 #include <bmds/system.h>
 #include <bmds/task.h>
 #include <bmds/utf8.h>
@@ -306,35 +307,18 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
-        // win new [X Y W H] [TITLE...]
-        int runNew(CommandContext &ctx, WindowManager &wm, Args args) {
-                auto [info, lerr] = wm.windows();
-                if (lerr.isError()) return report(ctx, lerr);
-                const size_t                open = info.size();
+        // Opens a test window at @p rect titled @p title ("": "Window N"); its number.
+        Result<uint8_t> openTestWindow(WindowManager &wm, Rect rect, StringView title) {
                 WindowManager::WindowConfig config;
-                config.rect = Rect{uint16_t(64 + 48 * open), uint16_t(48 + 36 * open), 400, 300};
-                size_t next = 2;
-                if (args.size() >= 6) {
-                        long v[4];
-                        for (int i = 0; i < 4; ++i)
-                                if (!parseNumber(args[2 + i], UINT16_MAX, v[i])) return ctx.usage();
-                        config.rect = Rect{uint16_t(v[0]), uint16_t(v[1]), uint16_t(v[2]), uint16_t(v[3])};
-                        next = 6;
-                }
-                char title[WindowManager::MaxTitle + 1] = {};
-                for (size_t i = next, used = 0; i < args.size(); ++i) {
-                        const int wrote =
-                                std::snprintf(title + used, sizeof(title) - used, "%s%s", used > 0 ? " " : "", args[i]);
-                        if (wrote < 0) break;
-                        used += size_t(wrote);
-                        if (used >= sizeof(title)) break;
-                }
+                config.rect = rect;
+                char text[WindowManager::MaxTitle + 1] = {};
+                std::snprintf(text, sizeof(text), "%.*s", int(title.size()), title.data());
                 config.rect.width = static_cast<uint16_t>((config.rect.width + 3) & ~3u); // as it will be placed
                 config.redraw = redrawTest;
                 config.resized = resizedTest;
                 config.closed = closedTest;
                 TestWindow *tw = takeTestWindow();
-                if (tw == nullptr) return report(ctx, Error::NoMem);
+                if (tw == nullptr) return makeError<uint8_t>(Error::NoMem);
                 TestWindow &t = *tw;
                 // Its number, colors and title once it has its number: drawn again then.
                 t.id = 0;
@@ -345,11 +329,11 @@ namespace {
                 t.width = client.width; // until the window is placed (below)
                 t.height = client.height;
                 config.arg = &t;
-                config.title = title;
+                config.title = text;
                 auto [id, err] = wm.open(config);
                 if (err.isError()) {
                         t.taken.store(false, std::memory_order_release);
-                        return report(ctx, err);
+                        return makeError<uint8_t>(err);
                 }
                 t.a = Palette[(id - 1u) % (sizeof(Palette) / sizeof(Palette[0]))][0];
                 t.b = Palette[(id - 1u) % (sizeof(Palette) / sizeof(Palette[0]))][1];
@@ -359,11 +343,38 @@ namespace {
                         t.width = placed.width;
                         t.height = placed.height;
                 }
-                if (title[0] == '\0') {
-                        std::snprintf(title, sizeof(title), "Window %u", id);
-                        (void)wm.setTitle(id, StringView(title));
+                if (text[0] == '\0') {
+                        std::snprintf(text, sizeof(text), "Window %u", id);
+                        (void)wm.setTitle(id, StringView(text));
                 }
                 (void)wm.update(id);
+                return makeResult(uint8_t(id));
+        }
+
+        // win new [X Y W H] [TITLE...]
+        int runNew(CommandContext &ctx, WindowManager &wm, Args args) {
+                auto [info, lerr] = wm.windows();
+                if (lerr.isError()) return report(ctx, lerr);
+                const size_t open = info.size();
+                Rect         rect{uint16_t(64 + 48 * open), uint16_t(48 + 36 * open), 400, 300};
+                size_t       next = 2;
+                if (args.size() >= 6) {
+                        long v[4];
+                        for (int i = 0; i < 4; ++i)
+                                if (!parseNumber(args[2 + i], UINT16_MAX, v[i])) return ctx.usage();
+                        rect = Rect{uint16_t(v[0]), uint16_t(v[1]), uint16_t(v[2]), uint16_t(v[3])};
+                        next = 6;
+                }
+                char title[WindowManager::MaxTitle + 1] = {};
+                for (size_t i = next, used = 0; i < args.size(); ++i) {
+                        const int wrote =
+                                std::snprintf(title + used, sizeof(title) - used, "%s%s", used > 0 ? " " : "", args[i]);
+                        if (wrote < 0) break;
+                        used += size_t(wrote);
+                        if (used >= sizeof(title)) break;
+                }
+                auto [id, err] = openTestWindow(wm, rect, StringView(title));
+                if (err.isError()) return report(ctx, err);
                 ctx.printf("win %u\n", id);
                 return Shell::ExitSuccess;
         }
@@ -387,7 +398,6 @@ namespace {
                 for (size_t i = 0; i < n; ++i)
                         if (info[i].id == id) from = &info[i].rect;
                 if (from == nullptr) return report(ctx, Error::NotFound);
-                const uint64_t start = System::uptimeUs();
                 for (int step = 1; step <= DragSteps && !ctx.isInterrupted(); ++step) {
                         const long  px = from->x + (x - from->x) * step / DragSteps;
                         const long  py = from->y + (y - from->y) * step / DragSteps;
@@ -395,14 +405,9 @@ namespace {
                         if (err.isError()) return report(ctx, err);
                         (void)wm.sync(SyncTimeoutMs);
                 }
-                const uint64_t dragged = System::uptimeUs() - start;
-                Error          err = wm.drop();
+                Error err = wm.drop();
                 if (err.isOk()) err = wm.sync(SyncTimeoutMs);
-                if (err.isError()) return report(ctx, err);
-                ctx.printf("drag:     %d steps in %llu ms, dropped in %llu ms\n", DragSteps,
-                           static_cast<unsigned long long>(dragged / 1000),
-                           static_cast<unsigned long long>((System::uptimeUs() - start - dragged) / 1000));
-                return Shell::ExitSuccess;
+                return report(ctx, err);
         }
 
         bool inside(const Rect &r, uint32_t x, uint32_t y) {
@@ -619,108 +624,6 @@ namespace {
                 return wrong == 0 ? Shell::ExitSuccess : Shell::ExitFailure;
         }
 
-        // win shuffle N: N random raises and moves, each drawn before the next.
-        int runShuffle(CommandContext &ctx, WindowManager &wm, long count) {
-                uint32_t state = static_cast<uint32_t>(System::uptimeUs());
-                auto     next = [&state](uint32_t limit) {
-                        state = state * 1103515245u + 12345u;
-                        return (state >> 8) % limit;
-                };
-                const uint64_t start = System::uptimeUs();
-                uint64_t       longest = 0;
-                long           done = 0;
-                for (; done < count && !ctx.isInterrupted(); ++done) {
-                        auto [info, lerr] = wm.windows();
-                        if (lerr.isError()) return report(ctx, lerr);
-                        const size_t n = info.size();
-                        if (n == 0) break;
-                        const WindowManager::Info &w = info[next(uint32_t(n))];
-                        const uint64_t             t = System::uptimeUs();
-                        Error                      err;
-                        if (next(2) == 0) {
-                                err = wm.raise(w.id);
-                        } else {
-                                auto [d, derr] = Display::display(0);
-                                if (derr.isError()) return report(ctx, derr);
-                                const Surface &s = d->surface();
-                                err = wm.move(w.id, uint16_t(next(uint32_t(s.width() - w.rect.width + 1))),
-                                              uint16_t(next(uint32_t(s.height() - w.rect.height + 1))));
-                        }
-                        if (err.isOk()) err = wm.sync(SyncTimeoutMs);
-                        if (err.isError()) return report(ctx, err);
-                        const uint64_t us = System::uptimeUs() - t;
-                        if (us > longest) longest = us;
-                }
-                const uint64_t us = System::uptimeUs() - start;
-                ctx.printf("shuffle:  %ld changes in %llu ms, %llu us each on average, %llu at most\n", done,
-                           static_cast<unsigned long long>(us / 1000),
-                           static_cast<unsigned long long>(done > 0 ? us / uint64_t(done) : 0),
-                           static_cast<unsigned long long>(longest));
-                return Shell::ExitSuccess;
-        }
-
-        // win bench: the glyph kernels on a 1280-pixel row of cells, timed and
-        // compared byte for byte.
-        int runBench(CommandContext &ctx, unsigned Cells) {
-                constexpr unsigned MaxCells = 160, Rounds = 50;
-                if (Cells == 0 || Cells > MaxCells) Cells = MaxCells;
-                const unsigned Width = Cells * 8;
-                const Font    &font = Fonts::unscii16;
-                const size_t   stride = size_t(Width) * 3, bytes = stride * font.height();
-                uint8_t       *strips[2] = {};
-                for (uint8_t *&strip : strips)
-                        strip = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::Internal, bytes, 64));
-                if (strips[0] == nullptr || strips[1] == nullptr) {
-                        Memory::free(strips[0]);
-                        Memory::free(strips[1]);
-                        return report(ctx, Error::NoMem);
-                }
-                // A terminal-like row: text, a color change every 7 cells, some styled.
-                // In internal RAM: the shell's stack is in PSRAM.
-                struct Work {
-                                TextCell      cells[MaxCells];
-                                GlyphRenderer renderers[2] = {GlyphRenderer(GlyphRenderer::Kernel::Scalar),
-                                                              GlyphRenderer(GlyphRenderer::Kernel::Pie)};
-                };
-                void *workMemory = Memory::allocAligned(MemSpace::Internal, sizeof(Work), 16);
-                if (workMemory == nullptr) {
-                        Memory::free(strips[0]);
-                        Memory::free(strips[1]);
-                        return report(ctx, Error::NoMem);
-                }
-                Work     *work = new (workMemory) Work();
-                TextCell *cells = work->cells;
-                for (unsigned i = 0; i < Cells; ++i) {
-                        cells[i].codepoint = 0x21 + (i * 7) % 94;
-                        cells[i].fg = (i / 7) % 2 != 0 ? 0xffff40 : 0xc0c0c0;
-                        cells[i].bg = (i / 7) % 3 != 0 ? 0x000000 : 0x202080;
-                        cells[i].flags = i % 11 == 0 ? TextCell::Bold : (i % 13 == 0 ? TextCell::Underline : 0);
-                }
-                const GlyphRenderer::Kernel kernels[2] = {GlyphRenderer::Kernel::Scalar, GlyphRenderer::Kernel::Pie};
-                uint32_t                    cycles[2] = {};
-                for (int k = 0; k < 2; ++k) {
-                        GlyphRenderer &renderer = work->renderers[k];
-                        std::memset(strips[k], 0, bytes);
-                        const uint32_t start = esp_cpu_get_cycle_count();
-                        size_t         used = 0;
-                        for (unsigned r = 0; r < Rounds; ++r)
-                                (void)renderer.drawCells(Span<const TextCell>(cells, Cells), font, strips[k], stride,
-                                                         uint16_t(Width), used);
-                        cycles[k] = esp_cpu_get_cycle_count() - start;
-                }
-                const bool same = std::memcmp(strips[0], strips[1], bytes) == 0;
-                for (int k = 0; k < 2; ++k)
-                        ctx.printf("%-8s %lu cycles a cell (%lu us a 1280-pixel row)%s\n", k == 0 ? "scalar:" : "pie:",
-                                   static_cast<unsigned long>(cycles[k] / (Cells * Rounds)),
-                                   static_cast<unsigned long>(cycles[k] / (Cells * Rounds) * 160 / 360),
-                                   GlyphRenderer::isSupported(kernels[k]) ? "" : " (not in this build: scalar)");
-                ctx.printf("compare:  %s\n", same ? "the same bytes" : "DIFFERENT");
-                Memory::free(strips[0]);
-                Memory::free(strips[1]);
-                Memory::free(workMemory);
-                return same ? Shell::ExitSuccess : Shell::ExitFailure;
-        }
-
         // One 32 x 32 icon blended into an RGB888 strip, as Painter::image() does. @hotpath
         void blendIcon(const uint32_t *src, uint8_t *strip) {
                 for (int r = 0; r < 32; ++r) {
@@ -733,58 +636,6 @@ namespace {
                         }
                 }
                 return;
-        }
-
-        // win bench icons (devplan/rom.md §3f): the bmds theme's 32-pixel icons drawn where they
-        // lie (the ROM, through the flash cache) against copies in PSRAM and in internal RAM: each
-        // icon once (more than the caches hold), and one icon again and again (cached).
-        int runIconBench(CommandContext &ctx) {
-                auto [bytes, merr] = Vfs::map("/rom/share/icons/bmds.icons", Vfs::Context());
-                if (merr.isError()) return report(ctx, merr);
-                auto [pack, perr] = IconPack::open(bytes);
-                if (perr.isError()) return report(ctx, perr);
-                constexpr size_t IconWords = 32 * 32, Again = 200;
-                const uint32_t   n = pack.count();
-                auto            *psram = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, n * IconWords * 4));
-                auto *internal = static_cast<uint32_t *>(Memory::allocAligned(MemSpace::Internal, IconWords * 4, 64));
-                auto *strip = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::Internal, IconWords * 3, 64));
-                if (psram == nullptr || internal == nullptr || strip == nullptr) {
-                        Memory::free(psram);
-                        Memory::free(internal);
-                        Memory::free(strip);
-                        return report(ctx, Error::NoMem);
-                }
-                for (uint32_t id = 0; id < n; ++id)
-                        std::memcpy(psram + id * IconWords, pack.pixels(id, 32), IconWords * 4);
-                std::memcpy(internal, pack.pixels(0, 32), IconWords * 4);
-                // Cycles an icon: every icon from @p base (the ROM's when null), or @p one again and again.
-                const auto every = [&](const uint32_t *base) {
-                        const uint32_t start = esp_cpu_get_cycle_count();
-                        for (uint32_t id = 0; id < n; ++id)
-                                blendIcon(base != nullptr ? base + id * IconWords : pack.pixels(id, 32), strip);
-                        return (esp_cpu_get_cycle_count() - start) / n;
-                };
-                const auto again = [&](const uint32_t *one) {
-                        blendIcon(one, strip);
-                        const uint32_t start = esp_cpu_get_cycle_count();
-                        for (size_t i = 0; i < Again; ++i) blendIcon(one, strip);
-                        return (esp_cpu_get_cycle_count() - start) / Again;
-                };
-                const uint32_t mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
-                const auto     line = [&](const char *what, uint32_t cycles) {
-                        ctx.printf("%-28s %6lu cycles, %4lu us an icon\n", what, static_cast<unsigned long>(cycles),
-                                       static_cast<unsigned long>(cycles / mhz));
-                };
-                ctx.printf("%lu icons of 32 x 32, each blended into internal RAM\n", static_cast<unsigned long>(n));
-                line("each once, ROM (flash):", every(nullptr));
-                line("each once, PSRAM:", every(psram));
-                line("one again, ROM (flash):", again(pack.pixels(0, 32)));
-                line("one again, PSRAM:", again(psram));
-                line("one again, internal RAM:", again(internal));
-                Memory::free(psram);
-                Memory::free(internal);
-                Memory::free(strip);
-                return Shell::ExitSuccess;
         }
 
         // win term [N]: /bin/terminal in a window, started and not waited for (the Nth cascaded:
@@ -1054,10 +905,6 @@ namespace {
                         if (err.isOk()) wm->stop();
                         return Shell::ExitSuccess;
                 }
-                if (args.size() == 3 && std::strcmp(args[1], "bench") == 0 && std::strcmp(args[2], "icons") == 0)
-                        return runIconBench(ctx);
-                if (args.size() >= 2 && std::strcmp(args[1], "bench") == 0)
-                        return runBench(ctx, args.size() > 2 ? unsigned(std::atoi(args[2])) : 0);
                 WindowManager *wm = running(ctx);
                 if (wm == nullptr) return Shell::ExitFailure;
                 if (args.size() == 1 || (args.size() == 2 && std::strcmp(args[1], "list") == 0))
@@ -1067,11 +914,6 @@ namespace {
                 if (args.size() == 2 && std::strcmp(what, "check") == 0) return runCheck(ctx, *wm);
                 if (args.size() == 2 && std::strcmp(what, "stats") == 0) return runStats(ctx, *wm);
                 if (args.size() == 2 && std::strcmp(what, "dnd") == 0) return runDnd(ctx, *wm);
-                if (args.size() == 3 && std::strcmp(what, "shuffle") == 0) {
-                        long count = 0;
-                        if (!parseNumber(args[2], 1'000'000, count)) return ctx.usage();
-                        return runShuffle(ctx, *wm, count);
-                }
                 uint8_t id = 0;
                 if (args.size() <= 3 && std::strcmp(what, "term") == 0) return runTerm(ctx, *wm, args);
                 if (args.size() >= 4 && std::strcmp(what, "type") == 0) return runType(ctx, *wm, args);
@@ -1086,7 +928,6 @@ namespace {
                         t->pending.fetch_add(int32_t(dy));
                         Error e = wm->update(id);
                         if (e.isOk()) e = wm->sync(SyncTimeoutMs);
-                        if (e.isOk()) ctx.printf("scroll:   %lu us\n", static_cast<unsigned long>(t->scrollUs));
                         return report(ctx, e);
                 }
                 if (args.size() == 3 && std::strcmp(what, "pointer") == 0) {
@@ -1116,23 +957,6 @@ namespace {
                         if (err.isOk())
                                 ctx.printf("pointer:  drawn in %ux%u at %u,%u\n", at.width, at.height, at.x, at.y);
                         return report(ctx, err);
-                }
-                if (args.size() == 3 && std::strcmp(what, "textbench") == 0) {
-                        if (!parseId(ctx, args[2], id)) return Shell::ExitUsage;
-                        TestWindow *found = testWindow(id);
-                        if (found == nullptr) return report(ctx, Error::NotFound);
-                        TestWindow &t = *found;
-                        t.textBench.store(true);
-                        Error e = wm->update(id);
-                        if (e.isOk()) e = wm->sync(SyncTimeoutMs);
-                        if (e.isError()) return report(ctx, e);
-                        ctx.printf("text:     %u rows of %u cells in %lu us\n", t.height / 16u,
-                                   unsigned(t.width / 8u < MaxRowCells ? t.width / 8u : MaxRowCells),
-                                   static_cast<unsigned long>(t.textUs));
-                        // The pattern back.
-                        e = wm->invalidate(id, Rect{0, 0, t.width, t.height});
-                        if (e.isOk()) e = wm->sync(SyncTimeoutMs);
-                        return report(ctx, e);
                 }
                 if (args.size() == 3 && std::strcmp(what, "close") == 0)
                         return parseId(ctx, args[2], id) ? report(ctx, wm->close(id)) : Shell::ExitUsage;
@@ -1208,12 +1032,307 @@ namespace {
                 return ctx.usage();
         }
 
+        // ---- The benchmarks (devplan/bench.md; were `win bench`, `bench icons`, `shuffle`, `drag`,
+        // `scroll` and `textbench`). Those on the desktop open test windows of their own, closed after.
+
+        constexpr BenchParam GlyphParams[] = {
+                {"cells", "160", "Cells in the row (1-160)"},
+        };
+
+        constexpr BenchParam ShuffleParams[] = {
+                {"changes", "50", "Raises and moves a run"},
+        };
+
+        constexpr BenchParam ScrollParams[] = {
+                {"rows", "16", "Rows scrolled each time"},
+        };
+
+        // The glyph kernels on a terminal-like row of cells (text, a color change every 7 cells, some
+        // styled), in cycles a cell; both kernels' rows compared (by hash: one strip fits in internal RAM).
+        Error benchGlyphs(BenchContext &ctx) {
+                constexpr unsigned MaxCells = 160, Rounds = 50;
+                uint64_t           count = 0;
+                if (ctx.paramUnsigned("cells", count).isError() || count == 0 || count > MaxCells)
+                        return Error::Invalid;
+                const unsigned Cells = unsigned(count), Width = Cells * 8;
+                const Font    &font = Fonts::unscii16;
+                const size_t   stride = size_t(Width) * 3, bytes = stride * font.height();
+                // In internal RAM: the shell's stack is in PSRAM.
+                struct Work {
+                                TextCell      cells[MaxCells];
+                                GlyphRenderer renderers[2] = {GlyphRenderer(GlyphRenderer::Kernel::Scalar),
+                                                              GlyphRenderer(GlyphRenderer::Kernel::Pie)};
+                };
+                auto    *strip = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::Internal, bytes, 64));
+                void    *memory = Memory::allocAligned(MemSpace::Internal, sizeof(Work), 16);
+                Error    err = strip == nullptr || memory == nullptr ? Error(Error::NoMem) : Error(Error::Ok);
+                uint32_t hashes[2] = {};
+                Work    *work = err.isOk() ? new (memory) Work() : nullptr;
+                for (unsigned i = 0; i < Cells && work != nullptr; ++i) {
+                        TextCell &c = work->cells[i];
+                        c.codepoint = 0x21 + (i * 7) % 94;
+                        c.fg = (i / 7) % 2 != 0 ? 0xffff40 : 0xc0c0c0;
+                        c.bg = (i / 7) % 3 != 0 ? 0x000000 : 0x202080;
+                        c.flags = i % 11 == 0 ? TextCell::Bold : (i % 13 == 0 ? TextCell::Underline : 0);
+                }
+                for (int k = 0; k < 2 && err.isOk(); ++k) {
+                        if (k == 1 && !GlyphRenderer::isSupported(GlyphRenderer::Kernel::Pie)) break;
+                        GlyphRenderer &renderer = work->renderers[k];
+                        std::memset(strip, 0, bytes);
+                        err = ctx.measure(k == 0 ? "scalar_cycles_a_cell" : "pie_cycles_a_cell", "cycles",
+                                          BenchBetter::Lower, [&](double &out) {
+                                                  Stopwatch watch;
+                                                  size_t    used = 0;
+                                                  for (unsigned r = 0; r < Rounds; ++r)
+                                                          (void)renderer.drawCells(
+                                                                  Span<const TextCell>(work->cells, Cells), font, strip,
+                                                                  stride, uint16_t(Width), used);
+                                                  out = double(watch.cycles()) / (Cells * Rounds);
+                                                  return Error(Error::Ok);
+                                          });
+                        uint32_t h = 2166136261u; // FNV-1a of the row drawn
+                        for (size_t i = 0; err.isOk() && i < bytes; ++i) h = (h ^ strip[i]) * 16777619u;
+                        hashes[k] = h;
+                }
+                if (err.isOk() && GlyphRenderer::isSupported(GlyphRenderer::Kernel::Pie) && hashes[0] != hashes[1]) {
+                        ctx.note("the kernels' rows differ");
+                        err = Error::CorruptData;
+                }
+                Memory::free(strip);
+                Memory::free(memory);
+                return err;
+        }
+
+        // The bmds theme's 32-pixel icons drawn where they lie (the ROM, through the flash cache) against
+        // copies in PSRAM and in internal RAM: each icon once (more than the caches hold), and one icon
+        // again and again (cached), in cycles an icon (devplan/rom.md §3f).
+        Error benchIcons(BenchContext &ctx) {
+                auto [bytes, merr] = Vfs::map("/rom/share/icons/bmds.icons", Vfs::Context());
+                if (merr.isError()) return merr;
+                auto [pack, perr] = IconPack::open(bytes);
+                if (perr.isError()) return perr;
+                constexpr size_t IconWords = 32 * 32, Again = 200;
+                const uint32_t   n = pack.count();
+                auto            *psram = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, n * IconWords * 4));
+                auto *internal = static_cast<uint32_t *>(Memory::allocAligned(MemSpace::Internal, IconWords * 4, 64));
+                auto *strip = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::Internal, IconWords * 3, 64));
+                Error err = psram == nullptr || internal == nullptr || strip == nullptr ? Error(Error::NoMem)
+                                                                                        : Error(Error::Ok);
+                if (err.isOk()) {
+                        for (uint32_t id = 0; id < n; ++id)
+                                std::memcpy(psram + id * IconWords, pack.pixels(id, 32), IconWords * 4);
+                        std::memcpy(internal, pack.pixels(0, 32), IconWords * 4);
+                }
+                // Every icon from @p base (the ROM's when null), or @p one again and again.
+                const auto every = [&](const char *metric, const uint32_t *base) {
+                        return ctx.measure(metric, "cycles", BenchBetter::Lower, [&](double &out) {
+                                Stopwatch watch;
+                                for (uint32_t id = 0; id < n; ++id)
+                                        blendIcon(base != nullptr ? base + id * IconWords : pack.pixels(id, 32), strip);
+                                out = double(watch.cycles()) / n;
+                                return Error(Error::Ok);
+                        });
+                };
+                const auto again = [&](const char *metric, const uint32_t *one) {
+                        return ctx.measure(metric, "cycles", BenchBetter::Lower, [&](double &out) {
+                                blendIcon(one, strip);
+                                Stopwatch watch;
+                                for (size_t i = 0; i < Again; ++i) blendIcon(one, strip);
+                                out = double(watch.cycles()) / Again;
+                                return Error(Error::Ok);
+                        });
+                };
+                if (err.isOk()) err = every("rom_each", nullptr);
+                if (err.isOk()) err = every("psram_each", psram);
+                if (err.isOk()) err = again("rom_again", pack.pixels(0, 32));
+                if (err.isOk()) err = again("psram_again", psram);
+                if (err.isOk()) err = again("internal_again", internal);
+                Memory::free(psram);
+                Memory::free(internal);
+                Memory::free(strip);
+                return err;
+        }
+
+        // Display 0's window manager, if it runs.
+        Error desktop(WindowManager *&out) {
+                auto [wm, err] = WindowManager::manager(0);
+                if (err.isError()) return err;
+                if (!wm->isRunning()) return Error::NotReady;
+                out = wm;
+                return Error::Ok;
+        }
+
+        // Test windows opened for a benchmark, closed when it ends.
+        struct BenchWindows {
+                        WindowManager &wm;
+                        uint8_t        ids[4] = {};
+                        size_t         count = 0;
+
+                        explicit BenchWindows(WindowManager &w) : wm(w) {}
+
+                        ~BenchWindows() {
+                                for (size_t i = 0; i < count; ++i) (void)wm.close(ids[i]);
+                                (void)wm.sync(SyncTimeoutMs);
+                        }
+
+                        Result<uint8_t> open(Rect rect) {
+                                if (count == sizeof(ids)) return makeError<uint8_t>(Error::Full);
+                                auto [id, err] = openTestWindow(wm, rect, "Benchmark");
+                                if (err.isError()) return makeError<uint8_t>(err);
+                                ids[count++] = id;
+                                const Error synced = wm.sync(SyncTimeoutMs);
+                                return synced.isOk() ? makeResult(uint8_t(id)) : makeError<uint8_t>(synced);
+                        }
+        };
+
+        // Raises and moves among four test windows, each drawn before the next (a fixed sequence): the
+        // time a change takes, on average and at most.
+        Error benchShuffle(BenchContext &ctx) {
+                uint64_t changes = 0;
+                if (ctx.paramUnsigned("changes", changes).isError() || changes == 0 || changes > 10000)
+                        return Error::Invalid;
+                WindowManager *wm = nullptr;
+                if (Error err = desktop(wm); err.isError()) return err;
+                auto [d, derr] = Display::display(0);
+                if (derr.isError()) return derr;
+                const uint16_t sw = d->surface().width(), sh = d->surface().height();
+                BenchWindows   windows(*wm);
+                for (int i = 0; i < 4; ++i) {
+                        auto [id, err] = windows.open(Rect{uint16_t(80 + 60 * i), uint16_t(60 + 40 * i), 400, 300});
+                        if (err.isError()) return err;
+                }
+                const uint32_t runs = ctx.runs(), warmup = ctx.warmup();
+                double *samples = static_cast<double *>(Memory::alloc(MemSpace::Psram, 2 * runs * sizeof(double)));
+                if (samples == nullptr) return Error::NoMem;
+                uint32_t state = 12345; // the same sequence every time
+                auto     next = [&state](uint32_t limit) {
+                        state = state * 1103515245u + 12345u;
+                        return (state >> 8) % limit;
+                };
+                Error err;
+                for (uint32_t r = 0; r < warmup + runs && err.isOk(); ++r) {
+                        if (ctx.isCancelled()) err = Error::Cancelled;
+                        uint64_t total = 0, longest = 0;
+                        for (uint64_t c = 0; c < changes && err.isOk(); ++c) {
+                                const uint8_t id = windows.ids[next(4)];
+                                Stopwatch     watch;
+                                if (next(2) == 0) {
+                                        err = wm->raise(id);
+                                } else {
+                                        err = wm->move(id, uint16_t(next(uint32_t(sw - 420))),
+                                                       uint16_t(next(uint32_t(sh - 340))));
+                                }
+                                if (err.isOk()) err = wm->sync(SyncTimeoutMs);
+                                const uint64_t us = uint64_t(watch.elapsedUs());
+                                total += us;
+                                if (us > longest) longest = us;
+                        }
+                        if (err.isOk() && r >= warmup) {
+                                samples[r - warmup] = double(total) / double(changes);
+                                samples[runs + r - warmup] = double(longest);
+                        }
+                }
+                if (err.isOk()) {
+                        ctx.reportSamples("change_us", "us", BenchBetter::Lower, Span<double>(samples, runs));
+                        ctx.reportSamples("change_max_us", "us", BenchBetter::Lower,
+                                          Span<double>(samples + runs, runs));
+                }
+                Memory::free(samples);
+                return err;
+        }
+
+        // A test window's outline dragged across the screen over DragSteps frames and dropped, back and
+        // forth: the drag's time and the drop's.
+        Error benchDrag(BenchContext &ctx) {
+                WindowManager *wm = nullptr;
+                if (Error err = desktop(wm); err.isError()) return err;
+                BenchWindows windows(*wm);
+                auto [id, oerr] = windows.open(Rect{100, 100, 400, 300});
+                if (oerr.isError()) return oerr;
+                const uint32_t runs = ctx.runs(), warmup = ctx.warmup();
+                double         drag[64], drop[64];
+                if (runs > 64) return Error::Invalid;
+                Error err;
+                for (uint32_t r = 0; r < warmup + runs && err.isOk(); ++r) {
+                        if (ctx.isCancelled()) err = Error::Cancelled;
+                        const long fromX = (r & 1) ? 600 : 100, toX = (r & 1) ? 100 : 600;
+                        Stopwatch  watch;
+                        for (int step = 1; step <= DragSteps && err.isOk(); ++step) {
+                                err = wm->drag(id, uint16_t(fromX + (toX - fromX) * step / DragSteps), 100);
+                                if (err.isOk()) err = wm->sync(SyncTimeoutMs);
+                        }
+                        const int64_t dragged = watch.elapsedUs();
+                        if (err.isOk()) err = wm->drop();
+                        if (err.isOk()) err = wm->sync(SyncTimeoutMs);
+                        if (err.isOk() && r >= warmup) {
+                                drag[r - warmup] = double(dragged) / 1000;
+                                drop[r - warmup] = double(watch.elapsedUs() - dragged) / 1000;
+                        }
+                }
+                if (err.isError()) return err;
+                ctx.reportSamples("drag_ms", "ms", BenchBetter::Lower, Span<double>(drag, runs));
+                ctx.reportSamples("drop_ms", "ms", BenchBetter::Lower, Span<double>(drop, runs));
+                return Error::Ok;
+        }
+
+        // A test window's content scrolled (the band moved, the rest drawn): the scroll's time, in the
+        // window manager's redraw.
+        Error benchScroll(BenchContext &ctx) {
+                uint64_t rows = 0;
+                if (ctx.paramUnsigned("rows", rows).isError() || rows == 0 || rows > 256) return Error::Invalid;
+                WindowManager *wm = nullptr;
+                if (Error err = desktop(wm); err.isError()) return err;
+                BenchWindows windows(*wm);
+                auto [id, oerr] = windows.open(Rect{100, 100, 640, 480});
+                if (oerr.isError()) return oerr;
+                TestWindow *t = testWindow(id);
+                if (t == nullptr) return Error::NotFound;
+                int sign = 1;
+                return ctx.measure("scroll_us", "us", BenchBetter::Lower, [&](double &out) {
+                        t->pending.fetch_add(int32_t(rows) * (sign = -sign));
+                        Error e = wm->update(id);
+                        if (e.isOk()) e = wm->sync(SyncTimeoutMs);
+                        out = double(t->scrollUs);
+                        return e;
+                });
+        }
+
+        // A terminal's full redraw: rows of cells across a test window's client area.
+        Error benchText(BenchContext &ctx) {
+                WindowManager *wm = nullptr;
+                if (Error err = desktop(wm); err.isError()) return err;
+                BenchWindows windows(*wm);
+                auto [id, oerr] = windows.open(Rect{100, 100, 800, 500});
+                if (oerr.isError()) return oerr;
+                TestWindow *t = testWindow(id);
+                if (t == nullptr) return Error::NotFound;
+                ctx.note("%u rows of %u cells", t->height / 16u,
+                         unsigned(t->width / 8u < MaxRowCells ? t->width / 8u : MaxRowCells));
+                return ctx.measure("redraw_us", "us", BenchBetter::Lower, [&](double &out) {
+                        t->textBench.store(true);
+                        Error e = wm->update(id);
+                        if (e.isOk()) e = wm->sync(SyncTimeoutMs);
+                        out = double(t->textUs);
+                        return e;
+                });
+        }
+
 } // namespace
+
+BMDS_BENCH_WITH(guiGlyphs, "gui.glyphs", benchGlyphs, BenchQuick, GlyphParams,
+                "The glyph kernels drawing a terminal's row of cells, scalar and PIE (cycles a cell)")
+BMDS_BENCH(guiIcons, "gui.icons", benchIcons, BenchQuick,
+           "32-pixel icons blended from the ROM, PSRAM and internal RAM (cycles an icon)")
+BMDS_BENCH_WITH(guiShuffle, "gui.shuffle", benchShuffle, BenchScreen, ShuffleParams,
+                "Raises and moves among four test windows, each drawn before the next")
+BMDS_BENCH(guiDrag, "gui.drag", benchDrag, BenchScreen, "A test window's outline dragged across the screen and dropped")
+BMDS_BENCH_WITH(guiScroll, "gui.scroll", benchScroll, BenchScreen, ScrollParams, "A test window's content scrolled")
+BMDS_BENCH(guiText, "gui.text", benchText, BenchScreen, "A terminal's full redraw: a test window's area as text")
 
 BMDS_SHELL_COMMAND(
         win, runWin,
         "[start|stop|list|new [X Y W H] [TITLE]|close N|raise N|move N X Y|drag N X Y|"
-        "term [N]|type N TEXT|dump N|scroll N DY|textbench N|check|stats|dnd|shuffle N|bench [CELLS]|bench icons|"
+        "term [N]|type N TEXT|dump N|scroll N DY|check|stats|dnd|"
         "pointer DX DY [BUTTONS [WHEEL]]|decorate N [all|none|+NAME|-NAME...]|minimize N|maximize N|restore N|"
         "resize N W H|pointer on/off|key TEXT|title N [TEXT]|above N on/off|shade N on/off|hid press/release/repeat "
         "USAGE [MODS]]",
