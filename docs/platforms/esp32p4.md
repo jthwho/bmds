@@ -482,12 +482,29 @@ until silicon v3; then test again.
 - **A panic's report goes only to the console** unless something copies it: on ssh alone, a
   panic looks like a hang. BMDS writes it into the log's history, which survives the reset, and
   the next boot puts it in `system.log` (`devplan/logging.md` §9; `reboot panic` tests it).
+  `tools/bmds-panic system.log` turns it into a backtrace with that build's ELF.
 - **`esp_log_timestamp()` runs 0.58 s ahead of `esp_timer`** on this board: its base is the
   cycle count at the scheduler's start divided by today's clock rate, though the boot ran at other
   rates, and then it adds the tick count, under the kernel's lock. The systimer starts with the
   application: a line at `[0.574]` was at 4 ms of `esp_timer`. Converting the old log stamps
   with `esp_timer`'s clock made every time in the files 0.58 s late. Log stamps come from
   `Detail::monotonicUs()` now (`log.cpp`).
+- **Mapping PSRAM pages yourself** (`devplan/programs.md` §14.2, `imagewindow.cpp`):
+  - **Reserving the addresses:** `esp_mmu_map_reserve_block_with_caps()` refuses
+    `MMU_MEM_CAP_EXEC` together with `WRITE` or `8BIT` (`ESP_ERR_INVALID_ARG`). Asking for
+    `EXEC | 32BIT` gets addresses that are the same for data on the P4, so programs read and
+    write their pages there. IDF's PSRAM heap takes `0x48000000`-`0x4A000000`, and the block
+    comes after it, at `0x4A000000`.
+  - **Don't call `esp_mmu_vaddr_to_paddr()`** from a task whose stack is in PSRAM: it turns the
+    caches off to read the MMU's table and asserts in
+    `spi_flash_disable_interrupts_caches_and_other_cpu` (`esp_task_stack_is_sane_cache_disabled`).
+    It did so on the first `exec` after boot, three times running, and the board started its
+    recovery firmware. Read the entry instead, through the same index/content register pair the
+    writes use, under a spinlock: `mmu_ll_read_entry()` & `SOC_MMU_PSRAM_VALID_VAL_MASK` is the
+    physical page.
+  - **Writing entries with the caches on is safe** for addresses nobody uses yet. IDF's own
+    mappings stall the other core by an interrupt, which can't land inside a critical section,
+    and the flash's partitions use the other MMU (`SPI_MEM_C`, not `SPI_MEM_S`).
 - **PSRAM keeps its contents across a reset** (only a power cut loses them):
   - `EXT_RAM_NOINIT_ATTR` (`CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY`) places a variable
     at the start of PSRAM, `0x48000000`. Without that setting, the attribute falls back to

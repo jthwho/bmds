@@ -48,6 +48,7 @@
 #include <bmds/tasklist.h>
 #include <bmds/thread.h>
 #include <bmds/vfs.h>
+#include "imagewindow.h"
 #include "realtimethreads.h"
 #include "running.h"
 #include "structcopy.h"
@@ -150,8 +151,9 @@ namespace {
         // A program loaded, relocated and synced, not yet running; or a
         // built-in one (no memory).
         struct Image {
-                        uint8_t              *memory = nullptr;
+                        uint8_t              *memory = nullptr; // where it runs (a mapping's base)
                         size_t                bytes = 0;
+                        ImageWindow::Mapping  mapping; // shared pages (§14.2); else a plain copy at memory
                         uint32_t              entry = 0;
                         uint32_t              stackBytes = 0;
                         bool                  display = false;   // BMDS_PROGRAM_DISPLAY
@@ -213,6 +215,21 @@ namespace {
                 return image.memory != nullptr ? Error::Ok : Error::NoMem;
         }
 
+        // Frees a program's image: its mapping, or its plain copy.
+        void releaseImage(uint8_t *&memory, ImageWindow::Mapping &mapping) {
+                if (mapping.isMapped())
+                        ImageWindow::unmap(mapping);
+                else
+                        Memory::free(memory);
+                memory = nullptr;
+                return;
+        }
+
+        void releaseImage(Image &image) {
+                releaseImage(image.memory, image.mapping);
+                return;
+        }
+
         // A loaded image (@p err: how loading went) made ready to run, or freed.
         Error finishImage(Error err, const ProgramImage::Info &header, Image &image, LoadFailure &failure) {
                 if (err.isOk()) {
@@ -224,7 +241,7 @@ namespace {
                 }
                 if (err.isError()) {
                         failure.stage = "cannot load";
-                        Memory::free(image.memory);
+                        Memory::free(image.memory); // a plain copy (a mapping is never finished)
                         image.memory = nullptr;
                         return err;
                 }
@@ -234,10 +251,22 @@ namespace {
                 return Error::Ok;
         }
 
-        // Places the program of a cache entry in memory of its own.
+        // Places the program of a cache entry: mapped with its shared pages when it has them and
+        // the window has room (devplan/programs.md §14.2), else in memory of its own.
         Error placeFrom(ImageCache::Entry &entry, Image &image, LoadFailure &failure) {
                 const ProgramImage::Info &header = entry.info();
-                Error                     err = allocateImage(header, image);
+                if (entry.hasPages() && ImageWindow::isEnabled()) {
+                        if (ImageWindow::map(*imageCache, entry, image.mapping).isOk()) {
+                                image.memory = image.mapping.base;
+                                image.bytes = size_t(image.mapping.pages) * ProgramImage::SharePageBytes;
+                                image.entry = header.entry;
+                                image.stackBytes = header.stackSize != 0 ? header.stackSize : BMDS_DEFAULT_STACK_SIZE;
+                                image.display = (header.flags & BMDS_PROGRAM_DISPLAY) != 0;
+                                return Error::Ok;
+                        }
+                        ImageWindow::countFallback(); // no room: a plain copy
+                }
+                Error err = allocateImage(header, image);
                 if (err.isError()) return err;
                 ProgramImage::place(header, entry.bytes(), entry.patches(), image.memory,
                                     static_cast<uint32_t>(reinterpret_cast<uintptr_t>(image.memory)));
@@ -263,6 +292,13 @@ namespace {
                                 imageCache->release(entry);
                                 failure.stage = "cannot load";
                                 return err;
+                        }
+                        // Its shared pages are mapped as they are: in PSRAM before any is.
+                        for (uint32_t p = 0; entry->hasPages() && p < ProgramImage::pageCount(header.imageSize); ++p) {
+                                if (ProgramImage::isSharedPage(header, p))
+                                        (void)esp_cache_msync(entry->bytes() + size_t(p) * ProgramImage::SharePageBytes,
+                                                              ProgramImage::SharePageBytes,
+                                                              ESP_CACHE_MSYNC_FLAG_DIR_C2M);
                         }
                         err = placeFrom(*entry, image, failure);
                         // The entry is good either way; but without memory for the
@@ -492,6 +528,7 @@ namespace {
                 run->main.signals = &process->signals().mainThread();
                 run->image = image.memory;
                 run->imageBytes = image.bytes;
+                run->mapping = image.mapping;
                 run->builtin = image.builtin;
                 // Kernel code until it reaches the program's: a kill before then leaves it to end
                 // itself (a built-in program always gets its data: devplan/processes.md §3.8.1).
@@ -1267,7 +1304,7 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
                 argViews.clear();
                 for (const String &a : args) {
                         if (argViews.append(a.view()).isError()) {
-                                Memory::free(loaded.memory);
+                                releaseImage(loaded);
                                 return -BMDS_ENOMEM;
                         }
                 }
@@ -1276,7 +1313,7 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
                 err = target->prepareExec(Span<const StringView>(argViews.data(), argViews.size()),
                                           Span<const StringView>(env.data(), env.size()));
                 if (err.isError()) {
-                        Memory::free(loaded.memory);
+                        releaseImage(loaded);
                         return execErrno(err);
                 }
         }
@@ -1323,13 +1360,13 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
                         target->release();
                         recordEnd(targetPid, ProcessTable::exitStatus(127));
                         Process::destroy(target);
-                        Memory::free(loaded.memory);
+                        releaseImage(loaded);
                 }
                 return targetPid;
         }
         if (replacement == nullptr) {
                 // The old program can't go on: its memory is gone.
-                Memory::free(loaded.memory);
+                releaseImage(loaded);
                 finish(ProcessTable::exitStatus(127));
         }
         // Replaced: the process goes on in the new task.
@@ -1340,8 +1377,7 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
         }
         run->process = nullptr;
         current = nullptr;
-        Memory::free(run->image);
-        run->image = nullptr;
+        releaseImage(run->image, run->mapping);
         run->imageBytes = 0;
         queueStop(*this);
 }
@@ -1856,8 +1892,7 @@ void Running::end(int32_t status) {
                 Process::destroy(process);
                 process = nullptr;
         }
-        Memory::free(image);
-        image = nullptr;
+        releaseImage(image, mapping);
         imageBytes = 0;
         return;
 }
@@ -1947,6 +1982,39 @@ namespace {
 
         constinit StaticObject<Stats::Group> processCounters;
 
+        // Programs' shared pages (devplan/programs.md §14.2): names are an interface once shipped.
+        constexpr Stat::Desc ImageStats[] = {
+                {"mapped", Stat::Unit::Count, Stat::Kind::Level, 0, {}, "", "Program instances sharing pages now"},
+                {"shared",
+                 Stat::Unit::Bytes,
+                 Stat::Kind::Level,
+                 0,
+                 {},
+                 "",
+                 "Their pages mapped from the program's cache entry, not copied: the memory saved"},
+                {"window", Stat::Unit::Bytes, Stat::Kind::Level, 0, {}, "", "Addresses in use for them"},
+                {"maps", Stat::Unit::Count, Stat::Kind::Total, 0, {}, "", "Instances mapped since boot"},
+                {"copies",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {},
+                 "",
+                 "Programs with shared pages run as plain copies instead (no room in the window)"},
+        };
+
+        void readImages(void *, Span<int64_t> v) {
+                const ImageWindow::Usage u = ImageWindow::usage();
+                v[0] = u.instances;
+                v[1] = int64_t(u.shared) * ProgramImage::SharePageBytes;
+                v[2] = int64_t(u.used) * ProgramImage::SharePageBytes;
+                v[3] = u.mapped;
+                v[4] = u.fallbacks;
+                return;
+        }
+
+        constinit StaticObject<Stats::Group> imageCounters;
+
 } // namespace
 
 namespace {
@@ -2011,7 +2079,11 @@ Error Loader::init() {
         if (!processes.isCreated()) processes.create();
         if (!futexes.isCreated()) futexes.create();
         if (!imageCache.isCreated()) {
-                imageCache.create(size_t(CONFIG_BMDS_IMAGE_CACHE_KB) * 1024);
+                // Programs' instances share their pages through the window (§14.2): an entry of a
+                // program with shared pages then has its bytes page-aligned, to be mapped in place.
+                (void)ImageWindow::init(size_t(CONFIG_BMDS_IMAGE_WINDOW_MB) * 1024 * 1024);
+                imageCache.create(size_t(CONFIG_BMDS_IMAGE_CACHE_KB) * 1024,
+                                  ImageWindow::isEnabled() ? ProgramImage::SharePageBytes : 0);
                 Vfs::setChangeHook(fileChanged);
                 (void)Memory::addReclaimer(
                         &*imageCache); // before the fonts' (a later boot stage): programs reload cheaply
@@ -2041,6 +2113,11 @@ Error Loader::init() {
                                        nullptr);
                 processCounters->setName("proc");
                 (void)Stats::add(*processCounters);
+        }
+        if (err.isOk() && ImageWindow::isEnabled() && !imageCounters.isCreated()) {
+                imageCounters.create(ImageStats, sizeof(ImageStats) / sizeof(ImageStats[0]), readImages, nullptr);
+                imageCounters->setName("images");
+                (void)Stats::add(*imageCounters);
         }
         return err;
 }
@@ -2285,7 +2362,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
         Process *process = Process::create(*request.fds, request.console);
         if (process == nullptr) {
                 report(request, "out of memory");
-                Memory::free(image.memory);
+                releaseImage(image);
                 return makeError<int32_t>(Error::NoMem);
         }
         // What a job-control shell runs without job control can't be stopped (devplan/processes.md §3.7.1).
@@ -2327,7 +2404,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
         if (err.isError()) {
                 report(request, "%s", err == Error::NoMem ? "out of memory" : "argument list too long");
                 Process::destroy(process);
-                Memory::free(image.memory);
+                releaseImage(image);
                 return makeError<int32_t>(err);
         }
 
@@ -2336,7 +2413,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
         if (run == nullptr) {
                 report(request, "out of memory");
                 Process::destroy(process);
-                Memory::free(image.memory);
+                releaseImage(image);
                 return makeError<int32_t>(Error::NoMem);
         }
         run->data = request.data;
@@ -2370,7 +2447,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
                        added.error() == Error::Full ? "too many processes" : "not in that process group");
                 destroyRunning(run);
                 Process::destroy(process);
-                Memory::free(image.memory);
+                releaseImage(image);
                 return makeError<int32_t>(added.error() == Error::Full ? Error::Busy : added.error());
         }
         const int32_t pid = added.value();
@@ -2387,7 +2464,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
                 (void)processes->reap(parent, pid);
                 destroyRunning(run);
                 Process::destroy(process);
-                Memory::free(image.memory);
+                releaseImage(image);
                 return makeError<int32_t>(err);
         }
         if (request.core != nullptr) *request.core = static_cast<int8_t>(core);

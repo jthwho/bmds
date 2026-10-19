@@ -296,4 +296,11 @@ cold power-up, which must not produce a false "recovered" block.
   - Each `reboot` recovers the last second's lines (a small block). That is correct, only
     visible.
   - RISC-V prints no backtrace, only the stack memory. Decoding it needs that build's ELF; the
-    previous boot's banner gives the build.
+    previous boot's banner gives the build. **`tools/bmds-panic`** (2026-10-19) does it:
+    - It takes the `E panic:` runs from `system.log` (several files, oldest first, for a
+      rotation), `log show`, or stdin, and hands each to ESP-IDF's own decoder
+      (`esp_idf_panic_decoder`: gdb unwinding the stack memory, as `idf.py monitor` does).
+    - It prints the backtrace with functions, files and lines, and warns when the ELF isn't the
+      build the banner names.
+    - Checked on `reboot panic`: 11 frames, from `panic_abort` through `System::panic` and
+      `runReboot` to the shell's executor.

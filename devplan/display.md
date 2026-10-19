@@ -310,6 +310,17 @@ The user saw the desktop come up shifted (the panel near the bottom) on a boot t
   30 made underruns (60 µs to 2 ms) gave 30 resyncs, 0 stalls and 0 rebuilds; a switch of surface
   afterwards counted 0 underruns. The user ran `display underrun` many times while watching:
   the picture came back at the top every time, never shifted.
+- **Each problem now goes into the log** (2026-10-19), so a picture that came up shifted or
+  blanked can be matched to its cause afterwards, in `system.log`, after a reset too. The
+  supervisor writes a warning for:
+  - an underrun's or a stall's resync;
+  - a stuck stream's rebuild, or a failed one;
+  - a new picture given up for the old one.
+
+  It writes at most one line every 10 s, each with the boot's counts and how many went
+  unlogged meanwhile: `W Scanout: underrun: resynced (+1 unlogged; boot: 3 underruns, 0
+  stalls, 3 resyncs, 0 rebuilds, 0 failed)`. The supervisor's 3 KB stack still has 1.2 KB
+  free after logging.
 
 ## 6. Later steps (outline)
 

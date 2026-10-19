@@ -62,8 +62,21 @@ class ImageCache final : public Memory::Reclaimer {
                                         return reinterpret_cast<ProgramImage::Patch *>(this + 1);
                                 }
 
-                                /** @brief The file bytes (`info().fileSize`). */
-                                uint8_t *bytes() { return reinterpret_cast<uint8_t *>(patches() + _info.relocations); }
+                                /**
+                                 * @brief The file bytes (`info().fileSize`); with `hasPages()`, page-aligned:
+                                 *        page `p` of the program is `bytes() + p × SharePageBytes`.
+                                 */
+                                uint8_t *bytes() {
+                                        return _pages != nullptr
+                                                       ? _pages
+                                                       : reinterpret_cast<uint8_t *>(patches() + _info.relocations);
+                                }
+
+                                /**
+                                 * @brief True if the bytes are page-aligned, so the program's shared pages
+                                 *        can be mapped where they are (devplan/programs.md §14.2).
+                                 */
+                                bool hasPages() const { return _pages != nullptr; }
 
                         private:
                                 friend class ImageCache;
@@ -71,15 +84,21 @@ class ImageCache final : public Memory::Reclaimer {
                                 Entry             *_next = nullptr;
                                 Key                _key;
                                 ProgramImage::Info _info;
-                                size_t             _bytes = 0;      // the whole allocation
+                                size_t             _bytes = 0;       // the whole allocation (and the pages')
+                                uint8_t           *_pages = nullptr; // the bytes, page-aligned apart, if any
                                 uint32_t           _generation = 0; // the cache's when its file was looked at
                                 uint32_t           _pins = 0;
                                 bool               _listed = false; // in the cache (else freed when unpinned)
                 };
 
 
-                /** @brief A cache keeping up to @p budgetBytes (0: none kept). */
-                explicit ImageCache(size_t budgetBytes) : _budget(budgetBytes) {}
+                /**
+                 * @brief A cache keeping up to @p budgetBytes (0: none kept). With
+                 *        @p pageAlign, an entry for a program with shared pages has its bytes
+                 *        aligned to it (`Entry::hasPages()`).
+                 */
+                explicit ImageCache(size_t budgetBytes, size_t pageAlign = 0)
+                    : _budget(budgetBytes), _pageAlign(pageAlign) {}
 
                 ~ImageCache();
                 ImageCache(const ImageCache &) = delete;
@@ -119,6 +138,12 @@ class ImageCache final : public Memory::Reclaimer {
                 void release(Entry *entry);
 
                 /**
+                 * @brief Pins @p entry once more (an instance mapping its pages, for as long
+                 *        as it runs): give it back with `release()`.
+                 */
+                void pin(Entry *entry);
+
+                /**
                  * @brief The file @p id on @p device may change: its entries go, and
                  *        the generation moves on. `(0, 0)`: every file.
                  */
@@ -139,9 +164,11 @@ class ImageCache final : public Memory::Reclaimer {
                 void unlink(Entry *entry);
                 void drop(Entry *entry); // unlinks; frees it unless pinned
                 bool evictOne();         // the least recently used unpinned entry; false if none
+                static void destroy(Entry *entry); // frees it (and its pages)
 
                 mutable Mutex _lock;
                 const size_t  _budget;
+                const size_t  _pageAlign;
                 Entry        *_first = nullptr; // most recently used first
                 Entry        *_last = nullptr;
                 size_t        _held = 0; // bytes of the listed entries

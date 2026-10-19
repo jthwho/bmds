@@ -477,7 +477,11 @@ that isn't). Other threads' sleeps, and every other timeout, stay on the tick.
 
 **Affinity.** ESP-IDF's FreeRTOS fixes a task's core when it is created, so
 `sched_setaffinity` succeeds only with a mask that keeps both cores (`EINVAL` otherwise);
-`sched_getaffinity` reports both.
+`sched_getaffinity` reports both. *Superseded by §3.12a (2026-10-15):* a program's first thread
+is pinned at its start, so it reports that one core. Its own core or all the cores succeed; the
+other core is `EINVAL`. `sysconf(_SC_NPROCESSORS_*)` (and `nproc`) still say 2: musl counted the
+affinity and said 1 until 2026-10-19, which went unnoticed because the board's `progtest` was
+older than the pinning.
 
 **Costs.** Per program thread: 12 bytes more in its record. The timer: one GPTimer (its driver
 3.7 KB of flash, 156 bytes of IRAM), its interrupt, taken at a thread's first real-time policy;

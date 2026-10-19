@@ -64,6 +64,18 @@ namespace ProgramImage {
                         bool        hasValue = false;
         };
 
+        /** @brief The largest image accepted (bytes of memory). */
+        inline constexpr uint32_t MaxImageBytes = 16u * 1024u * 1024u;
+
+        /**
+         * @brief The MMU's page: the unit in which instances of a program share its
+         *        image (devplan/programs.md §14.2).
+         */
+        inline constexpr uint32_t SharePageBytes = 64u * 1024u;
+
+        /** @brief Words of `Info::patchedPages`: a bit for each page of the largest image. */
+        inline constexpr uint32_t PatchedPageWords = MaxImageBytes / SharePageBytes / 32u;
+
         /** @brief What `inspect()` learns about a program. */
         struct Info {
                         uint32_t entry = 0;       ///< Entry point: an offset into the image.
@@ -76,10 +88,27 @@ namespace ProgramImage {
                         uint32_t relocations = 0; ///< Patches `load()` applies.
                         uint32_t tlsOffset = 0;   ///< Its thread-local block, if `tlsSize` (informational).
                         uint32_t tlsSize = 0;     ///< Bytes of thread-local storage.
+                        /** Where the first writable section starts (`imageSize` if none). */
+                        uint32_t writableOffset = 0;
+                        /** A bit for each `SharePageBytes` page that a patch's word touches. */
+                        uint32_t patchedPages[PatchedPageWords] = {};
         };
 
-        /** @brief The largest image accepted (bytes of memory). */
-        inline constexpr uint32_t MaxImageBytes = 16u * 1024u * 1024u;
+        /** @brief The pages of an image of @p imageSize bytes (the last may be partial). */
+        constexpr uint32_t pageCount(uint32_t imageSize) {
+                return (imageSize + SharePageBytes - 1) / SharePageBytes;
+        }
+
+        /**
+         * @brief True if page @p page of @p info's image is the same at every load
+         *        address and never written: no patch touches it, and it ends at or
+         *        before both the first writable section and the file's bytes. Such a
+         *        page can be shared by every instance (devplan/programs.md §14.2).
+         */
+        bool isSharedPage(const Info &info, uint32_t page);
+
+        /** @brief How many of @p info's pages are shared (`isSharedPage()`). */
+        uint32_t sharedPageCount(const Info &info);
 
         /**
          * @brief Checks that @p fileSize bytes from @p source are a loadable program.
@@ -133,6 +162,17 @@ namespace ProgramImage {
          * @nonblocking
          */
         void place(const Info &info, const uint8_t *bytes, const Patch *patches, uint8_t *image, uint32_t base);
+
+        /**
+         * @brief As `place()`, into separate pages: @p pages has `pageCount(info.imageSize)`
+         *        entries, each `SharePageBytes` of memory for that page of the image, or
+         *        null for a shared page (`isSharedPage()`), which is left out. The pages
+         *        given end up as `place()`'s image would have them at @p base; a page's
+         *        bytes past the image are zeroed.
+         * @nonblocking
+         */
+        void placePages(const Info &info, const uint8_t *bytes, const Patch *patches, uint8_t *const *pages,
+                        uint32_t base);
 
         /** @brief Where a program file's icon is (`bmds_icon_note_t`, `devplan/gui.md` §4j). */
         struct IconRef {

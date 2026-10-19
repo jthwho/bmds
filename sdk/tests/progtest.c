@@ -2992,18 +2992,25 @@ static int sched_test(const char *self) {
         struct timespec slice;
         CHECK(sched_rr_get_interval(0, &slice) == 0 && slice.tv_sec == 0 && slice.tv_nsec == 1000000);
         CHECK(sched_yield() == 0);
-        /* Cores: both, fixed. */
-        cpu_set_t cpus;
-        CPU_ZERO(&cpus);
-        CHECK(sched_getaffinity(0, sizeof(cpus), &cpus) == 0 && CPU_COUNT(&cpus) == 2);
-        CHECK(sysconf(_SC_NPROCESSORS_ONLN) == 2);
-        CHECK(sched_setaffinity(0, sizeof(cpus), &cpus) == 0);
-        cpu_set_t one;
-        CPU_ZERO(&one);
-        CPU_SET(1, &one);
-        CHECK(sched_setaffinity(0, sizeof(one), &one) == -1 && errno == EINVAL);
+        /* Cores: the first thread is pinned to one at its start (processes.md §3.12a), and the
+         * system still has two. */
         const int cpu = sched_getcpu();
         CHECK(cpu == 0 || cpu == 1);
+        cpu_set_t cpus;
+        CPU_ZERO(&cpus);
+        CHECK(sched_getaffinity(0, sizeof(cpus), &cpus) == 0 && CPU_COUNT(&cpus) == 1 && CPU_ISSET(cpu, &cpus));
+        CHECK(sysconf(_SC_NPROCESSORS_ONLN) == 2 && sysconf(_SC_NPROCESSORS_CONF) == 2);
+        CHECK(sched_setaffinity(0, sizeof(cpus), &cpus) == 0); /* its own core: no change */
+        cpu_set_t both;
+        CPU_ZERO(&both);
+        CPU_SET(0, &both);
+        CPU_SET(1, &both);
+        CHECK(sched_setaffinity(0, sizeof(both), &both) == 0); /* all the cores: a no-op */
+        cpu_set_t other;
+        CPU_ZERO(&other);
+        CPU_SET(1 - cpu, &other);
+        CHECK(sched_setaffinity(0, sizeof(other), &other) == -1 && errno == EINVAL); /* pinned */
+        CHECK(sched_getcpu() == cpu);
         /* The errors. */
         sp.sched_priority = 0;
         CHECK(sched_setscheduler(0, SCHED_FIFO, &sp) == -1 && errno == EINVAL);
@@ -3031,7 +3038,7 @@ static int sched_test(const char *self) {
         CHECK(sched_getscheduler(0) == SCHED_FIFO);
         CHECK(sched_getparam(0, &sp) == 0 && sp.sched_priority == 50);
         bmds_sched_t s = sched_of(0);
-        CHECK(s.policy == BMDS_SCHED_FIFO && s.priority == 50 && s.cores == 3 && (s.core == 0 || s.core == 1));
+        CHECK(s.policy == BMDS_SCHED_FIFO && s.priority == 50 && s.core == cpu && s.cores == (1u << cpu));
         CHECK(s.kernel_priority > first.kernel_priority && s.kernel_priority < 19);
         printf("sched: OTHER at kernel priority %u, FIFO 50 at %u\n", (unsigned)first.kernel_priority,
                (unsigned)s.kernel_priority);

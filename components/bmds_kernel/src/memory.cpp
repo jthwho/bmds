@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdio>
 #include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
 #include <bmds/board.h>
 #include <bmds/memory.h>
 #include <bmds/mutex.h>
@@ -160,6 +161,29 @@ size_t Memory::reclaimerUsage(Span<Reclaimer::Usage> out) {
                 ++n;
         }
         return n;
+}
+
+namespace {
+
+        constinit std::atomic<uintptr_t> programWindowStart{0};
+        constinit std::atomic<size_t>    programWindowBytes{0};
+
+} // namespace
+
+void Memory::setProgramWindow(const void *start, size_t sizeBytes) {
+        programWindowBytes.store(sizeBytes, std::memory_order_relaxed);
+        programWindowStart.store(reinterpret_cast<uintptr_t>(start), std::memory_order_release);
+        return;
+}
+
+bool Memory::isExternal(const void *p, size_t sizeBytes) {
+        if (esp_ptr_external_ram(p) &&
+            (sizeBytes == 0 || esp_ptr_external_ram(static_cast<const uint8_t *>(p) + sizeBytes - 1)))
+                return true;
+        const uintptr_t start = programWindowStart.load(std::memory_order_acquire);
+        const uintptr_t at = reinterpret_cast<uintptr_t>(p);
+        return start != 0 && at >= start && at + sizeBytes >= at &&
+               at + sizeBytes <= start + programWindowBytes.load(std::memory_order_relaxed);
 }
 
 MemStats Memory::stats(MemSpace space) {

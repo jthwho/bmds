@@ -371,3 +371,17 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_setschedul
 +	/* BMDS: the thread's, as glibc's (devplan/processes.md §3.12). */
 +	return syscall(SYS_sched_setscheduler, pid, sched, param);
  }
+diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/conf/sysconf.c musl/src/conf/sysconf.c
+--- /home/jth/.cache/bmds-scratch/musl-pristine/src/conf/sysconf.c	2026-10-19 10:59:12.532843684 -0700
++++ musl/src/conf/sysconf.c	2026-10-19 10:59:12.586052857 -0700
+@@ -201,6 +201,10 @@
+ 		return DELAYTIMER_MAX;
+ 	case JT_NPROCESSORS_CONF & 255:
+ 	case JT_NPROCESSORS_ONLN & 255: ;
++		/* BMDS: the system's cores; a program's first thread is pinned to one of them. */
++		long __bmds_nprocessors(void);
++		long cores = __bmds_nprocessors();
++		if (cores > 0) return cores;
+ 		unsigned char set[128] = {1};
+ 		int i, cnt;
+ 		__syscall(SYS_sched_getaffinity, 0, sizeof set, set);

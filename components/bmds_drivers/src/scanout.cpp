@@ -32,6 +32,7 @@
 #include <hal/mipi_dsi_ll.h>
 #include <hal/mipi_dsi_periph.h>
 #include <soc/reg_base.h>
+#include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/placement.h>
 #include <bmds/scanout.h>
@@ -48,6 +49,8 @@ namespace {
         // further interrupt to act on.
         constexpr int64_t StuckUs = 50'000;
         constexpr int64_t ResyncGapUs = 50'000; // at most one resync for underruns this often
+        // A problem's log line at most this often (the counters say how many in between).
+        constexpr int64_t ReportGapUs = 10'000'000;
         // A surface switched to (show()) that stalls the stream this often in its first second is
         // given up for the one before.
         constexpr uint32_t FallbackStalls = 3;
@@ -811,6 +814,24 @@ void Scanout::supervise() {
         uint32_t last = 0;
         int64_t  progressUs = esp_timer_get_time();
         int64_t  resyncUs = 0;
+        // Each problem said in the log (at most every ReportGapUs, with the counts so far), so a
+        // shifted or blanked picture can be matched to it afterwards (devplan/display.md §5g).
+        int64_t  reportedUs = -ReportGapUs;
+        uint32_t unreported = 0;
+        auto     report = [&](const char *what) {
+                const int64_t now = esp_timer_get_time();
+                if (now - reportedUs < ReportGapUs) {
+                        ++unreported;
+                        return;
+                }
+                bmdsWarn(
+                        "Scanout: %s (+%u unlogged; boot: %u underruns, %u stalls, %u resyncs, %u rebuilds, %u failed)",
+                        what, unsigned(unreported), unsigned(_underruns.load(std::memory_order_relaxed)),
+                        unsigned(_stalls.load(std::memory_order_relaxed)), unsigned(_resyncs), unsigned(_rebuilds),
+                        unsigned(_failures));
+                reportedUs = now;
+                unreported = 0;
+        };
         while (!_stopping.load()) {
                 (void)_wake.acquire(CheckMs);
                 if (_stopping.load()) break;
@@ -833,6 +854,7 @@ void Scanout::supervise() {
                         const uint32_t stalls = _stalls.load(std::memory_order_relaxed) - _fallbackStalls;
                         if (stalls >= FallbackStalls) {
                                 fallBack();
+                                report("new picture stalled: the old one back");
                                 _stalled.store(false, std::memory_order_relaxed);
                                 _underran.store(false, std::memory_order_relaxed);
                                 resyncUs = esp_timer_get_time();
@@ -848,6 +870,7 @@ void Scanout::supervise() {
                         // is stopped at the frame's end (stopped mid-block it stuck, or came back
                         // with the picture offset: §5g).
                         resync(!stalled);
+                        report(stalled ? "stall: resynced" : "underrun: resynced");
                         // What the restart itself raised (the output off and on) is no news.
                         _underran.store(false, std::memory_order_relaxed);
                         resyncUs = esp_timer_get_time();
@@ -861,7 +884,8 @@ void Scanout::supervise() {
                         last = sent;
                         progressUs = now;
                 } else if (now - progressUs >= StuckUs) {
-                        (void)rebuild(true);
+                        const Error err = rebuild(true);
+                        report(err.isOk() ? "stuck: link rebuilt" : "stuck: rebuild failed");
                         last = 0;
                         progressUs = esp_timer_get_time();
                 }

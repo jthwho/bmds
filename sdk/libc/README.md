@@ -28,6 +28,10 @@ musl, <https://musl.libc.org/>, the C library BMDS programs link statically
     `sched_getscheduler.c`, `sched_setparam.c` and `sched_getparam.c` make
     their system calls (the thread's, pid 0 the caller's, as glibc does)
     instead of returning `ENOSYS`.
+  - `src/conf/sysconf.c`: `_SC_NPROCESSORS_CONF` and `_ONLN` are the system's
+    cores (`__bmds_nprocessors()` in `crt/linux.c`, from `bmds_system_info`),
+    not the calling thread's affinity: a program's first thread is pinned to
+    one core (devplan/processes.md §3.12a), so `nproc` read 1.
 - **Not built:** `src/process/vfork.c` (generic: `fork`),
   `src/thread/clone.c` (`ENOSYS`) and `src/thread/__unmapself.c`; the SDK's
   `crt/vfork.S` has `vfork` and `__clone` (`CLONE_VM|CLONE_VFORK` for

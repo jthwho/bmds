@@ -39,14 +39,24 @@ ImageCache::Entry *ImageCache::acquire(const Key &key) {
 
 ImageCache::Entry *ImageCache::create(const Key &key, const ProgramImage::Info &info, uint32_t generation) {
         // Allocated outside the lock: a failed allocation may reclaim().
-        const size_t bytes =
-                sizeof(Entry) + size_t(info.relocations) * sizeof(ProgramImage::Patch) + size_t(info.fileSize);
-        void *memory = Memory::alloc(MemSpace::Psram, bytes);
+        const bool   pages = _pageAlign != 0 && ProgramImage::sharedPageCount(info) > 0;
+        const size_t head = sizeof(Entry) + size_t(info.relocations) * sizeof(ProgramImage::Patch);
+        const size_t bytes = head + size_t(info.fileSize);
+        void        *memory = Memory::alloc(MemSpace::Psram, pages ? head : bytes);
         if (memory == nullptr) return nullptr;
+        uint8_t *aligned = nullptr;
+        if (pages) {
+                aligned = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::Psram, info.fileSize, _pageAlign));
+                if (aligned == nullptr) {
+                        Memory::free(memory);
+                        return nullptr;
+                }
+        }
         auto *entry = ::new (memory) Entry();
         entry->_key = key;
         entry->_info = info;
         entry->_bytes = bytes;
+        entry->_pages = aligned;
         entry->_generation = generation;
         entry->_pins = 1;
         return entry;
@@ -73,8 +83,21 @@ void ImageCache::release(Entry *entry) {
                 Mutex::Locker locker(_lock, WaitForever);
                 if (--entry->_pins != 0 || entry->_listed) return;
         }
+        destroy(entry);
+        return;
+}
+
+void ImageCache::pin(Entry *entry) {
+        Mutex::Locker locker(_lock, WaitForever);
+        ++entry->_pins;
+        return;
+}
+
+void ImageCache::destroy(Entry *entry) {
+        uint8_t *pages = entry->_pages;
         entry->~Entry();
         Memory::free(entry);
+        Memory::free(pages);
         return;
 }
 
@@ -154,8 +177,7 @@ void ImageCache::unlink(Entry *entry) {
 void ImageCache::drop(Entry *entry) {
         unlink(entry);
         if (entry->_pins != 0) return;
-        entry->~Entry();
-        Memory::free(entry);
+        destroy(entry);
         return;
 }
 

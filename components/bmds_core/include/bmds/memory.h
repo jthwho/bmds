@@ -121,6 +121,21 @@ class Memory {
                 /** @brief Returns current usage statistics for @p space. */
                 static MemStats stats(MemSpace space);
 
+                /**
+                 * @brief Records the addresses where programs' instances map their pages
+                 *        (devplan/programs.md §14.2): PSRAM, through the MMU, outside the heap's
+                 *        range. Set once, at boot.
+                 */
+                static void setProgramWindow(const void *start, size_t sizeBytes);
+
+                /**
+                 * @brief True if @p sizeBytes at @p p lie in PSRAM: the heap's, or a program's
+                 *        mapped pages (`setProgramWindow()`), which IDF's `esp_ptr_external_ram()`
+                 *        doesn't know. For deciding whether a DMA can reach a buffer.
+                 * @isrsafe
+                 */
+                static bool isExternal(const void *p, size_t sizeBytes);
+
                 /** @brief Reclaimers installed at once at most. */
                 static constexpr size_t MaxReclaimers = 4;
 

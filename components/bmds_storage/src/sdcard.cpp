@@ -330,7 +330,7 @@ Error SdCard::transfer(uint64_t sector, uint8_t *buf, size_t bytes, bool write) 
 
         esp_err_t espErr = ESP_OK;
         // Straight to DMA if the host can reach the buffer.
-        if ((esp_ptr_dma_capable(buf) || esp_ptr_external_ram(buf)) &&
+        if ((esp_ptr_dma_capable(buf) || Memory::isExternal(buf, bytes)) && // a program's mapped pages too
             card->host.check_buffer_alignment(card->host.slot, buf, bytes)) {
                 espErr = write ? sdmmc_write_sectors(card, buf, first, count)
                                : sdmmc_read_sectors(card, buf, first, count);

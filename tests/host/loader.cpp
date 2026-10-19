@@ -11,6 +11,7 @@
 
 #include <doctest.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -539,4 +540,134 @@ TEST_CASE("Program format: the compatibility corpus still loads") {
                 }
         }
         CHECK(programs >= 3);
+}
+
+namespace {
+
+        constexpr uint32_t Page = ProgramImage::SharePageBytes;
+
+        // place() of @p info at @p base, and placePages() with the shared pages left out: each
+        // private page is place()'s bytes there (zeros past the image), each shared page the
+        // entry's bytes as they are, which place()'s image holds at every base.
+        void checkPages(const ProgramImage::Info &info, const std::vector<uint8_t> &bytes,
+                        const std::vector<ProgramImage::Patch> &patches, uint32_t base) {
+                CAPTURE(base);
+                std::vector<uint8_t> image(info.imageSize, 0xAA);
+                ProgramImage::place(info, bytes.data(), patches.data(), image.data(), base);
+                const uint32_t                    count = ProgramImage::pageCount(info.imageSize);
+                std::vector<std::vector<uint8_t>> storage(count);
+                std::vector<uint8_t *>            pages(count, nullptr);
+                for (uint32_t p = 0; p < count; ++p) {
+                        if (ProgramImage::isSharedPage(info, p)) continue;
+                        storage[p].assign(Page, 0xAA);
+                        pages[p] = storage[p].data();
+                }
+                ProgramImage::placePages(info, bytes.data(), patches.data(), pages.data(), base);
+                for (uint32_t p = 0; p < count; ++p) {
+                        CAPTURE(p);
+                        const uint32_t start = p * Page;
+                        const uint32_t inImage = std::min(info.imageSize - start, Page);
+                        if (pages[p] == nullptr) {
+                                REQUIRE(start + Page <= bytes.size());
+                                CHECK(std::memcmp(image.data() + start, bytes.data() + start, Page) == 0);
+                                continue;
+                        }
+                        CHECK(std::memcmp(image.data() + start, pages[p], inImage) == 0);
+                        CHECK(std::all_of(pages[p] + inImage, pages[p] + Page, [](uint8_t v) { return v == 0; }));
+                }
+        }
+
+} // namespace
+
+TEST_CASE("Program format: shared pages") {
+        // Three pages and a bit: page 0 untouched, page 1 holds a lui straddling into page 2,
+        // page 3 starts the writable data; the file ends inside page 3.
+        ProgramImage::Info info;
+        info.fileSize = 3 * Page + 100;
+        info.imageSize = 3 * Page + 4000;
+        info.writableOffset = 3 * Page;
+        std::vector<uint8_t> bytes(info.fileSize);
+        for (size_t i = 0; i < bytes.size(); ++i) bytes[i] = uint8_t(i * 7 + 3);
+        const uint32_t straddle = 2 * Page - 2; // RVC: a 4-byte instruction 2-aligned
+        put32(bytes, straddle, 0x00000537);     // lui a0, 0
+        put32(bytes, 3 * Page + 8, 0x1234);     // a pointer in .data
+        std::vector<ProgramImage::Patch> patches = {straddle | ProgramImage::PatchUpper, 3 * Page + 8};
+        info.relocations = uint32_t(patches.size());
+        for (uint32_t at : {straddle, straddle + 3, 3 * Page + 8, 3 * Page + 11})
+                info.patchedPages[at / Page / 32] |= 1u << (at / Page % 32);
+
+        CHECK(ProgramImage::pageCount(info.imageSize) == 4);
+        CHECK(ProgramImage::isSharedPage(info, 0));
+        CHECK_FALSE(ProgramImage::isSharedPage(info, 1)); // the patch's first half
+        CHECK_FALSE(ProgramImage::isSharedPage(info, 2)); // its second half
+        CHECK_FALSE(ProgramImage::isSharedPage(info, 3)); // writable, and the file ends in it
+        CHECK_FALSE(ProgramImage::isSharedPage(info, 4)); // past the image
+        CHECK(ProgramImage::sharedPageCount(info) == 1);
+        for (uint32_t base : {0u, 0x4A000000u, 0x4A130000u}) checkPages(info, bytes, patches, base);
+
+        // The straddling lui got the base across the page boundary.
+        std::vector<uint8_t> image(info.imageSize);
+        ProgramImage::place(info, bytes.data(), patches.data(), image.data(), 0x4A130000u);
+        CHECK(get32(image.data() + straddle) == (0x4A130000u | 0x537u));
+
+        // Writable from page 1: only page 0 can be shared; nothing writable but the file ends
+        // exactly on a page: every whole page of it.
+        info.writableOffset = Page;
+        CHECK(ProgramImage::sharedPageCount(info) == 1);
+        info.writableOffset = info.imageSize;
+        info.fileSize = 3 * Page;
+        bytes.resize(info.fileSize);
+        patches = {straddle | ProgramImage::PatchUpper};
+        info.relocations = 1;
+        std::memset(info.patchedPages, 0, sizeof(info.patchedPages));
+        info.patchedPages[0] = (1u << 1) | (1u << 2);
+        CHECK(ProgramImage::isSharedPage(info, 0));
+        CHECK_FALSE(ProgramImage::isSharedPage(info, 3)); // the bss
+        checkPages(info, bytes, patches, 0x4A000000u);
+
+        // An image smaller than a page: nothing shared.
+        ProgramImage::Info small;
+        small.fileSize = 1000;
+        small.imageSize = 2000;
+        small.writableOffset = 2000;
+        CHECK(ProgramImage::sharedPageCount(small) == 0);
+}
+
+TEST_CASE("Program format: real programs' shared pages are the same at every base") {
+        std::vector<std::string> paths;
+        for (const auto &dir : std::filesystem::directory_iterator(BMDS_COMPAT_DIR))
+                if (dir.is_directory())
+                        for (const auto &entry : std::filesystem::directory_iterator(dir.path()))
+                                if (entry.path().extension() == ".elf") paths.push_back(entry.path().string());
+#ifdef BMDS_SDK_HELLO
+        paths.push_back(BMDS_SDK_HELLO);
+#endif
+        REQUIRE(paths.size() >= 3);
+        for (const std::string &path : paths) {
+                CAPTURE(path);
+                std::vector<uint8_t> file;
+                FILE                *f = std::fopen(path.c_str(), "rb");
+                REQUIRE(f != nullptr);
+                uint8_t buf[4096];
+                size_t  n;
+                while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) file.insert(file.end(), buf, buf + n);
+                std::fclose(f);
+                const Checked c = check(file);
+                REQUIRE(c.err == Error::Ok);
+                CHECK(c.info.writableOffset > 0);
+                CHECK(c.info.writableOffset <= c.info.imageSize);
+                std::vector<uint8_t>             bytes(c.info.fileSize);
+                std::vector<ProgramImage::Patch> patches(c.info.relocations);
+                ProgramImage::MemorySource       source(bmds::ByteSpan(file.data(), file.size()));
+                ProgramImage::Problem            problem;
+                REQUIRE(ProgramImage::read(source, uint32_t(file.size()), c.info, bytes.data(), patches.data(),
+                                           problem) == Error::Ok);
+                // No patch lands in a shared page.
+                for (const ProgramImage::Patch patch : patches) {
+                        const uint32_t at = patch & ~ProgramImage::PatchUpper;
+                        CHECK_FALSE(ProgramImage::isSharedPage(c.info, at / Page));
+                        CHECK_FALSE(ProgramImage::isSharedPage(c.info, (at + 3) / Page));
+                }
+                for (uint32_t base : {0x4A000000u, 0x4A130000u}) checkPages(c.info, bytes, patches, base);
+        }
 }

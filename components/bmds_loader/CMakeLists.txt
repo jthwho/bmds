@@ -26,6 +26,7 @@ if(COMMAND idf_component_register)
                                     src/audiocalls.cpp
                                     src/cryptocalls.cpp
                                     src/imagecalls.cpp
+                                    src/imagewindow.cpp
                                     src/loader.cpp
                                     src/midicalls.cpp
                                     src/netcalls.cpp

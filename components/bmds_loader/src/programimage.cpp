@@ -6,6 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  */
 
+#include <algorithm>
 #include <cstring>
 #include <bmds/memory.h>
 #include <bmds/program.h>
@@ -57,7 +58,7 @@ namespace {
         constexpr uint16_t EmRiscv = 243;
         constexpr uint32_t PtLoad = 1, PtDynamic = 2, PtInterp = 3, PtNote = 4, PtTls = 7;
         constexpr uint32_t ShtSymtab = 2, ShtRela = 4, ShtRel = 9;
-        constexpr uint32_t ShfAlloc = 0x2;
+        constexpr uint32_t ShfWrite = 0x1, ShfAlloc = 0x2;
         constexpr uint16_t ShnUndef = 0, ShnAbs = 0xfff1;
         constexpr uint32_t EfFloatAbiMask = 0x6, EfFloatAbiSingle = 0x2, EfRve = 0x8;
 
@@ -283,13 +284,15 @@ namespace {
                         Relocator &operator=(const Relocator &) = delete;
 
                         // @p image null: check and count only. @p record: the patches
-                        // are written there, not applied (@p base is then 0).
+                        // are written there, not applied (@p base is then 0). @p classify:
+                        // its writableOffset and patchedPages filled in (inspect()).
                         Error run(uint8_t *image, uint32_t base, uint32_t &patches,
-                                  ProgramImage::Patch *record = nullptr) {
+                                  ProgramImage::Patch *record = nullptr, ProgramImage::Info *classify = nullptr) {
                                 patches = 0;
                                 _image = image;
                                 _base = base;
                                 _record = record;
+                                _classify = classify;
                                 if (_eh.shentsize != sizeof(Shdr) || _eh.shnum == 0 || _eh.shnum > MaxShdrs ||
                                     !within(_eh.shoff, uint64_t(_eh.shnum) * sizeof(Shdr), _fileSize))
                                         return fail(_problem, Error::NotSupported,
@@ -304,10 +307,18 @@ namespace {
                                         if (err.isError()) return err;
                                 }
                                 bool any = false;
+                                if (_classify != nullptr) {
+                                        _classify->writableOffset = _info.imageSize;
+                                        std::memset(_classify->patchedPages, 0, sizeof(_classify->patchedPages));
+                                }
                                 for (uint32_t i = 0; i < _eh.shnum; ++i) {
                                         Shdr  sh;
                                         Error err = section(i, sh);
                                         if (err.isError()) return err;
+                                        if (_classify != nullptr && (sh.flags & ShfAlloc) != 0 &&
+                                            (sh.flags & ShfWrite) != 0 && sh.size != 0 &&
+                                            sh.addr < _classify->writableOffset)
+                                                _classify->writableOffset = sh.addr;
                                         if (sh.type != ShtRela && sh.type != ShtRel) continue;
                                         Shdr target;
                                         if (sh.info >= _eh.shnum)
@@ -459,6 +470,13 @@ namespace {
                                         _record[patches] =
                                                 r.offset | (action == Action::Upper ? ProgramImage::PatchUpper : 0);
                                 }
+                                if (_classify != nullptr) {
+                                        // Both pages of a word that straddles two (RVC: 2-aligned).
+                                        for (const uint32_t at : {r.offset, r.offset + 3}) {
+                                                const uint32_t page = at / ProgramImage::SharePageBytes;
+                                                _classify->patchedPages[page / 32] |= 1u << (page % 32);
+                                        }
+                                }
                                 ++patches;
                                 if (_image == nullptr || _record != nullptr) return Error::Ok;
                                 word = patched(word, _base, action == Action::Upper);
@@ -478,6 +496,7 @@ namespace {
                         uint8_t                  *_image = nullptr;
                         uint32_t                  _base = 0;
                         ProgramImage::Patch      *_record = nullptr;
+                        ProgramImage::Info       *_classify = nullptr;
         };
 
         // Rereads the headers of a program inspected as @p expected (the file
@@ -507,7 +526,23 @@ Error ProgramImage::inspect(Source &source, uint32_t fileSize, Info &info, Probl
         Error err = readHeaders(source, fileSize, eh, info, problem);
         if (err.isError()) return err;
         Relocator relocator(source, fileSize, eh, info, problem);
-        return relocator.run(nullptr, 0, info.relocations);
+        uint32_t  patches = 0;
+        err = relocator.run(nullptr, 0, patches, nullptr, &info);
+        info.relocations = patches;
+        return err;
+}
+
+bool ProgramImage::isSharedPage(const Info &info, uint32_t page) {
+        if (page >= pageCount(info.imageSize)) return false;
+        const uint64_t end = uint64_t(page + 1) * SharePageBytes;
+        if (end > info.writableOffset || end > info.fileSize) return false;
+        return (info.patchedPages[page / 32] & (1u << (page % 32))) == 0;
+}
+
+uint32_t ProgramImage::sharedPageCount(const Info &info) {
+        uint32_t n = 0;
+        for (uint32_t p = 0; p < pageCount(info.imageSize); ++p) n += isSharedPage(info, p) ? 1 : 0;
+        return n;
 }
 
 Error ProgramImage::load(Source &source, uint32_t fileSize, const Info &expected, uint8_t *image, uint32_t base,
@@ -559,6 +594,33 @@ void ProgramImage::place(const Info &info, const uint8_t *bytes, const Patch *pa
                 std::memcpy(&word, image + at, 4);
                 word = patched(word, base, (patches[i] & PatchUpper) != 0);
                 std::memcpy(image + at, &word, 4);
+        }
+        return;
+}
+
+void ProgramImage::placePages(const Info &info, const uint8_t *bytes, const Patch *patches, uint8_t *const *pages,
+                              uint32_t base) {
+        const uint32_t count = pageCount(info.imageSize);
+        for (uint32_t p = 0; p < count; ++p) {
+                uint8_t *page = pages[p];
+                if (page == nullptr) continue;
+                const uint32_t start = p * SharePageBytes;
+                const uint32_t fromFile = info.fileSize > start ? std::min(info.fileSize - start, SharePageBytes) : 0;
+                std::memcpy(page, bytes + start, fromFile);
+                std::memset(page + fromFile, 0, SharePageBytes - fromFile); // the bss, and past the image
+        }
+        // A word may straddle two pages: its bytes are read and written one by one there.
+        auto at = [&](uint32_t offset) -> uint8_t & {
+                return pages[offset / SharePageBytes][offset % SharePageBytes];
+        };
+        for (uint32_t i = 0; i < info.relocations; ++i) {
+                const uint32_t offset = patches[i] & ~PatchUpper;
+                if (pages[offset / SharePageBytes] == nullptr || pages[(offset + 3) / SharePageBytes] == nullptr)
+                        continue; // shared: no patch there (isSharedPage())
+                uint32_t word = 0;
+                for (uint32_t k = 0; k < 4; ++k) word |= uint32_t(at(offset + k)) << (8 * k);
+                word = patched(word, base, (patches[i] & PatchUpper) != 0);
+                for (uint32_t k = 0; k < 4; ++k) at(offset + k) = uint8_t(word >> (8 * k));
         }
         return;
 }

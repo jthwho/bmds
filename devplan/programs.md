@@ -483,6 +483,137 @@ What (a) builds of the above, and the details the outline left open.
 - **Pressure:** a program's 25.4 MB allocation, failing, emptied the cache and still failed: the 0.66 MB given back lay apart from the largest free block, with BusyBox's running image between them (largest block 25.69 MB with the cache, 26.74 MB without it and with no program running). The same request succeeded with the cache empty. Giving memory back doesn't defragment the heap; images in 64 KB pages of the window (b) need no contiguous block.
 - **Size:** firmware +3,520 bytes with `mem`'s line and `-h`, `.bss` +136.
 
+### 14.2 Phase (b): shared pages through the window (design, 2026-10-19)
+
+Phase (b) as §14 outlined it, with the details settled against the code as it is now.
+
+**Measured first:**
+- `programs.launch` takes 10.5 ms (`benchprog`, a 254 KB file). The profiler puts about a
+  quarter of its busy time in `ProgramImage::place()`'s copy, and 5% more in the write-back
+  after it.
+- By §14's rule (no patch, below the first writable section), the images that run several at
+  once share:
+  - BusyBox (as `dist` builds it now): 6 of 9 pages, 384 KB of each further instance;
+  - Dropbear: 4 of 6 pages, 256 KB, with one instance per ssh connection;
+  - `progtest`: 2 of 18 pages, since its patches are spread across it.
+
+**Page classification, in `inspect()`.**
+- The relocation walk already sees every patch and every section header, so it records:
+  - `Info::writableOffset`, the lowest `SHF_WRITE` allocated section;
+  - `Info::patchedPages`, a bit for each 64 KB page a patch's four bytes touch (an
+    instruction may straddle a page with RVC).
+- `ProgramImage::isSharedPage(info, p)`: page `p` is shared when it isn't patched and ends at
+  or before both `writableOffset` and `fileSize`.
+- `inspect()` classifies, so the cache knows when it allocates an entry whether the entry's
+  bytes need to be page-aligned.
+
+**The entry's bytes are the shared pages.** An entry of a program with shared pages has its
+bytes in a separate block aligned to 64 KB. Page `p` of the program is then `bytes + p·64 KB`,
+a physical PSRAM page (the heap's PSRAM is mapped linearly). Nothing is copied for a shared
+page and no memory is spent on one: the entry already holds those bytes. They are written back
+once after `read()`, and never written again. An entry is pinned for as long as an instance maps
+its pages; a dropped entry is freed by its last instance's release.
+
+**An instance.**
+- A range of the window, one page per 64 KB of the image (first fit in a bitmap).
+- One 64 KB-aligned `Psram` block for each private page, placed through its heap address by
+  `ProgramImage::placePages()`. That is `place()` over a table of page pointers (null: shared,
+  skipped), and a host test checks it gives `place()`'s image byte for byte.
+- The private pages are written back and invalidated through their heap addresses, then every
+  page is mapped. The MMU entries are written under a spinlock with IDF's `mmu_ll` (the other
+  core keeps running: changing entries nobody uses is safe, §2's spike). Then the range is
+  invalidated.
+- The program runs at the range's address: `Running::image` and the profiler's module base
+  are the range.
+
+**Ending:** the range is invalidated (its dirty lines dropped: the instance's data dies with
+it), its entries are unmapped and the private pages freed, and the entry is unpinned.
+
+**Plain copies remain** (phase (a)'s path, unchanged) for:
+- a program with no shared pages;
+- a window that is turned off or full;
+- private pages that can't be had;
+- an entry that couldn't be created.
+
+Each falls back silently, and `mem` counts the instances that took each path.
+
+**The window:**
+- reserved once at the loader's start with `esp_mmu_map_reserve_block_with_caps()` (private
+  IDF API; IDF's PSRAM driver uses the same pair);
+- `CONFIG_BMDS_IMAGE_WINDOW_MB`, default 16 (256 pages); 0 turns phase (b) off;
+- its ranges kept in a 32-byte bitmap under the loader's lock.
+
+**DMA and pointer checks.** Window addresses aren't in IDF's PSRAM range
+(`esp_ptr_external_ram()` is false). Every check that matters has a correct fallback:
+- the SD card bounces;
+- the surface, crypto and Ethernet paths copy or use the CPU.
+
+The SD driver goes straight to DMA for window addresses too (the spike: SDMMC into an alias
+works), through `Memory::isExternal()`, which knows the window. The others stay on their
+fallbacks until measured.
+
+**Not changed:**
+- the file format, the ABI and what a program sees;
+- the cache's keys, staleness and budget. Its accounting counts the aligned block's real size.
+
+**Testing:**
+- **Host:** the classification (pages patched, straddling patches, a writable section's page,
+  an image smaller than a page, a page ending exactly at `fileSize`); `placePages()` against
+  `place()` at several bases with shared pages left out; the cache's aligned entries.
+- **Board:**
+  - BusyBox and Dropbear instances side by side, each with its own data;
+  - `progtest` suites (plain copies);
+  - free memory per further instance;
+  - `programs.launch`;
+  - the profiler's names in a mapped instance;
+  - a full window falling back;
+  - card reads into a mapped program's `.bss`;
+  - free memory and the window back to their figures after rounds.
+
+**Phase (b) as built (2026-10-19).** As designed above, with these details:
+- **Two fixes on the board:**
+  - **Reserving the addresses:** IDF's reservation refuses an executable block that is also
+    writable or 8-bit; `EXEC | 32BIT` gives addresses that work for data too on the P4.
+  - **Finding a heap page's physical page:** `esp_mmu_vaddr_to_paddr()` turns the caches off,
+    which asserts on a program's PSRAM stack. On the first `exec` of each boot it panicked three
+    times running, and the board started its recovery firmware. The physical page is now read
+    from the MMU's table directly (`docs/platforms/esp32p4.md`).
+- **`stats`' `images` group:**
+  - `mapped`: instances sharing pages now;
+  - `shared`: the bytes of pages they map from cache entries instead of copying;
+  - `window`: addresses in use;
+  - `maps` and `copies` (fallbacks), since boot.
+- **`Memory::isExternal()`** knows the window. The SD driver uses it, so a read into a mapped
+  program's static buffer goes straight to DMA.
+- **Measured** (the card's BusyBox, 9 pages, 6 shared; with `CONFIG_BMDS_IMAGE_WINDOW_MB` 16 and
+  then 0, otherwise the same build):
+
+  | | plain copies | shared pages |
+  |---|---:|---:|
+  | 10 × `busybox true` from hush | 0.21-0.22 s | **0.13-0.14 s** |
+  | PSRAM per further BusyBox instance (5 asleep) | 653 KB | **264 KB** |
+  | `programs.launch` (`benchprog`: 3 pages, 1 shared) | 11.4 ms (noisy) | 10.3 ms |
+
+  Dropbear (4 of 7 pages shared) runs mapped from boot: the listener and each connection.
+- **One block for an instance's private pages:** they were a 64 KB-aligned block each at first.
+  The heap left a gap just under 64 KB before each, which no other page could use.
+  - 11 instances of `progtest` (16 private pages each) cut the largest free block from 23.6 to
+    1.1 MB with 12.5 MB still free. The 12th then failed both ways: no pages to map, and no
+    block for a plain copy.
+  - Now all of an instance's private pages are one aligned block (mapped page by page, so they
+    needn't follow the image's order), with one gap per instance.
+- **A full window:** 15 `progtest` instances and 2 of Dropbear. 13 `progtest` instances were
+  mapped and the 2 that didn't fit ran as plain copies (`images.copies`). Afterwards free PSRAM
+  and its largest block were back to their figures.
+- **Also checked:**
+  - `busybox md5sum` of the 3 MB SoundFont (its buffer is in a mapped page, read by DMA) gave
+    the same sum as on the PC;
+  - the profiler names a mapped BusyBox's functions (`md5_process_block64`).
+- **Checked:** the `progtest` suites (`threads`, `spawn`, `poll`, `timers`, `exec`, `procs`,
+  `rusage`, `stats`, `system`, `sched`, `signals`) on mapped instances; 192 mappings during them,
+  and afterwards free PSRAM was down only by the new cache entry, with the instance count back
+  to its figure.
+
 ## 15. Step 9: signals (design, 2026-10-04)
 
 **Goal:** signals between processes, as Linux has them for one user on one terminal: `kill`, Ctrl-C as `SIGINT` to the job, `SIGPIPE`, `SIGCHLD`, `SIGWINCH`, handlers, masks, `sigsuspend`. Yardstick: BusyBox `kill`, `timeout` and `watch` work, `yes | head` ends `yes` by `SIGPIPE`, `hush` traps and Ctrl-C at its prompt behave as on Linux. It replaces step 4's rule (a Ctrl-C makes blocking calls fail with `EINTR` until the program exits, which then reports 130) and 8b's (an interrupted job ends with its first process).

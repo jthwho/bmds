@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+# @file      bmds-panic
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Decodes the panics in a system log (devplan/logging.md §9): each run of `E panic:` lines (the
+# register dump and the stack memory a panic wrote into the log's history, kept over the reset)
+# becomes a backtrace with functions, files and lines, by ESP-IDF's own panic decoder (gdb
+# unwinding the stack memory, as `idf.py monitor` does).
+#
+#   scp root@bmds0:/sd0/p0/logs/system.log . && tools/bmds-panic system.log
+#   ssh root@bmds0 'log show' | tools/bmds-panic
+#   tools/bmds-panic [--elf ELF] [--all] [LOG...]
+#
+# Several logs are read as one, oldest first (system.log.1 system.log: a rotation may have put the
+# boot's start in the older file). The ELF is build/bmds.elf unless given; it must be the build
+# that panicked: the boot banner before each panic names that build (`BMDS 0.1.0 (build 0.1.0+1e6d95ac, ...`), and a different
+# ELF is warned about (its addresses would name the wrong functions). Only the last panic is
+# decoded unless --all. Run in ESP-IDF's environment (export.sh): it needs IDF's Python
+# (esp_idf_panic_decoder) and riscv32-esp-elf-gdb.
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PANIC = re.compile(r"\bE panic: ?(.*)$")
+BANNER = re.compile(r"\bI BMDS \S+ \(build ([^,]+),")
+# esp_app_desc_t: magic, secure_version, reserv1[2], then version[32].
+APP_DESC_VERSION = slice(16, 48)
+
+
+def panics(lines):
+        """Each run of panic lines, with the build named by the last banner before it."""
+        found, block, build = [], [], None
+        for line in lines:
+                m = PANIC.search(line)
+                if m:
+                        block.append(m.group(1))
+                        continue
+                if block:
+                        found.append((build, block))
+                        block = []
+                b = BANNER.search(line)
+                if b:
+                        build = b.group(1)
+        if block:
+                found.append((build, block))
+        return found
+
+
+def elf_version(elf):
+        """The ELF's application version (its app description), or None."""
+        objcopy = shutil.which("riscv32-esp-elf-objcopy")
+        if objcopy is None:
+                return None
+        with tempfile.TemporaryDirectory() as tmp:
+                out = os.path.join(tmp, "appdesc.bin")
+                r = subprocess.run([objcopy, "-O", "binary", "--only-section=.flash.appdesc", elf, out],
+                                   capture_output=True)
+                if r.returncode != 0 or not os.path.exists(out):
+                        return None
+                with open(out, "rb") as f:
+                        raw = f.read()[APP_DESC_VERSION]
+        return raw.split(b"\0", 1)[0].decode(errors="replace") or None
+
+
+def main():
+        ap = argparse.ArgumentParser(description="Decode the panics in a BMDS system log.")
+        ap.add_argument("logs", nargs="*", help="system.log (oldest first), or `log show`'s output (default: stdin)")
+        ap.add_argument("--elf", default=os.path.join(ROOT, "build", "bmds.elf"), help="the build that panicked")
+        ap.add_argument("--all", action="store_true", help="every panic, not only the last")
+        args = ap.parse_args()
+
+        try:
+                from esp_idf_panic_decoder.panic_output_decoder import PanicOutputDecoder
+        except ImportError:
+                sys.exit("bmds-panic: esp_idf_panic_decoder not found (run ESP-IDF's export.sh)")
+        if shutil.which("riscv32-esp-elf-gdb") is None:
+                sys.exit("bmds-panic: riscv32-esp-elf-gdb not found (run ESP-IDF's export.sh)")
+        if not os.path.exists(args.elf):
+                sys.exit(f"bmds-panic: {args.elf}: no such ELF (--elf)")
+
+        lines = []
+        for path in args.logs:
+                with open(path, errors="replace") as f:
+                        lines += f.read().splitlines()
+        if not args.logs:
+                lines = sys.stdin.read().splitlines()
+        found = panics(lines)
+        if not found:
+                sys.exit("bmds-panic: no panic in the log (`E panic:` lines)")
+        if not args.all:
+                found = found[-1:]
+
+        version = elf_version(args.elf)
+        decoder = PanicOutputDecoder("riscv32-esp-elf-", args.elf, "esp32p4")
+        for build, block in found:
+                print(f"=== {block[0]}")
+                print(f"    build {build or '(no banner before it)'}; ELF {version or '(unknown)'}")
+                if build and version and build != version:
+                        print(f"    warning: {os.path.relpath(args.elf)} is another build: the names below may be wrong")
+                text = "\n".join(block) + "\n"
+                try:
+                        out = decoder.process_panic_output(text.encode())
+                except subprocess.CalledProcessError as e:
+                        out = e.output
+                        print("    (the decoder failed)")
+                # gdb's backtrace lines: "#0  0x4ff092f0 in panic_abort (details=...) at file:line".
+                frames = [l for l in out.decode(errors="replace").splitlines() if re.match(r"#\d+\s", l)]
+                for f in frames or out.decode(errors="replace").splitlines():
+                        print(f"    {f}")
+        return 0
+
+
+if __name__ == "__main__":
+        sys.exit(main())

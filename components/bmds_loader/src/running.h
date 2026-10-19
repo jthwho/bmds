@@ -27,6 +27,7 @@
 #include <bmds/signals.h>
 #include <bmds/task.h>
 #include <bmds/taskowner.h>
+#include "imagewindow.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -203,6 +204,7 @@ struct Running final : ProcessOwner, ProcessControl {
                 int32_t              pid = 0;
                 uint8_t             *image = nullptr;
                 size_t               imageBytes = 0;    // its size (the profiler's modules)
+                ImageWindow::Mapping mapping;           // its shared pages, if mapped (§14.2)
                 const ProgramEntry  *builtin = nullptr; // a program built in (/bin/NAME): no image
                 void                *data = nullptr;    // the builtin's (Context::data)
                 uintptr_t            entry = 0;         // the program's _start

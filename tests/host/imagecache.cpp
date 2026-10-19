@@ -225,3 +225,33 @@ TEST_CASE("Image cache: memory running short empties it") {
         }
         CHECK(HostMemory::liveAllocations() == live);
 }
+
+TEST_CASE("Image cache: a program with shared pages has its bytes page-aligned") {
+        constexpr uint32_t Page = ProgramImage::SharePageBytes;
+        ImageCache         cache(4 * 1024 * 1024, Page);
+        ProgramImage::Info shared = info(3 * Page);
+        shared.writableOffset = 2 * Page; // pages 0 and 1 shared
+        REQUIRE(ProgramImage::sharedPageCount(shared) == 2);
+        ImageCache::Entry *e = cache.create(key(1, 3 * Page), shared, cache.generation());
+        REQUIRE(e != nullptr);
+        CHECK(e->hasPages());
+        CHECK(reinterpret_cast<uintptr_t>(e->bytes()) % Page == 0);
+        std::memset(e->bytes(), 0x22, shared.fileSize);
+        cache.pin(e);         // an instance mapping its pages
+        CHECK(cache.keep(e)); // kept, still pinned by the instance
+        CHECK(cache.clear() == 0);
+        cache.changed(0, 0); // dropped while pinned: freed by the instance's release
+        CHECK_FALSE(has(cache, key(1, 3 * Page)));
+        cache.release(e);
+
+        // No shared pages (writable from 0), or no alignment asked for: the bytes inline.
+        ImageCache::Entry *plain = cache.create(key(2), info(1000), cache.generation());
+        REQUIRE(plain != nullptr);
+        CHECK_FALSE(plain->hasPages());
+        cache.release(plain);
+        ImageCache         unaligned(4 * 1024 * 1024);
+        ImageCache::Entry *u = unaligned.create(key(3, 3 * Page), shared, unaligned.generation());
+        REQUIRE(u != nullptr);
+        CHECK_FALSE(u->hasPages());
+        unaligned.release(u);
+}

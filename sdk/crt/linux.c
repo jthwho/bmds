@@ -1727,6 +1727,15 @@ static long do_sched_getaffinity(long tid, unsigned long size, void *mask) {
         return sizeof(unsigned long);
 }
 
+/* musl's sysconf(_SC_NPROCESSORS_*): the system's cores, not the caller's affinity, which musl
+ * counts: a program's first thread is pinned to one core at its start (processes.md §3.12a), and
+ * nproc read 1. 0 from an older kernel: musl's count. */
+long __bmds_nprocessors(void) {
+        if (!bmds_sys_has(BMDS_SYS_SYSTEM_INFO)) return 0;
+        bmds_system_info_t info = {.size = sizeof(info)};
+        return bmds_system_info(&info) == 0 ? (long)info.cores : 0;
+}
+
 /* A mask that keeps a thread's cores changes nothing. Fewer: the calling thread may keep to
  * one core (BMDS_SCHED_PIN), until its first floating point pins it where it runs; other threads
  * can't be moved. */
