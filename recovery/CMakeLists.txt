@@ -19,3 +19,4 @@ idf_build_set_property(MINIMAL_BUILD ON)
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/version.cmake)
 
 project(bmds_recovery)
+bmds_version_every_build()

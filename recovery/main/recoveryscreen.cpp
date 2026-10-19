@@ -360,7 +360,7 @@ Error RecoveryScreen::init() {
         auto [mode, merr] = VideoModes::timing(Width, Height, 60);
         Error err = derr.isError() ? derr : merr;
         if (err.isOk()) err = display->claim("recovery");
-        if (err.isOk()) err = display->start(mode, Surface::Buffering::Single);
+        if (err.isOk()) err = display->start(mode, Surface::Buffering::Single, 0); // the default lane rate
         if (err.isError()) {
                 bmdsWarn("Recovery: no screen (%s): the serial console only", err.desc());
                 return Error::Ok;

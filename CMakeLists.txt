@@ -13,6 +13,7 @@ idf_build_set_property(MINIMAL_BUILD ON)
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/version.cmake)
 
 project(bmds)
+bmds_version_every_build()
 
 # Guard against linking code BMDS must never contain (see cmake/check_map.cmake).
 add_custom_command(TARGET ${CMAKE_PROJECT_NAME}.elf POST_BUILD

@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+# @file      bmds-link
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Links a BMDS program with the bytes the loader patches gathered at the image's end
+# (devplan/programs.md §14.3), so that more of its 64 KB pages are the same at every address and
+# shared between its instances:
+#
+#   1. the link as given, with a map;
+#   2. the output's kept relocations (--emit-relocs) give the patches the loader applies
+#      (R_RISCV_32, and R_RISCV_HI20 against a symbol that isn't absolute); the map names the
+#      input section each lands in. Those in .text and .rodata (libgcc's medlow helpers, pointer
+#      and jump tables) are renamed .bmds.patched.* in copies of their objects (archive members
+#      extracted), and the link runs again with the copies: bmds.ld puts them in .patched, next
+#      to .data and .bss
+#      (ld's --section-ordering-file can't do it: it orders sections within the output section
+#      they land in, never moves them to another);
+#   3. if that region then spans more 64 KB pages than its size needs, once more with it started
+#      on a page (__bmds_patched_align): up to 64 KB of zeros in the file, a page saved in every
+#      instance.
+#
+#   bmds-link GCC ARGS...     (the link command, as bmds-cc and bmds_add_program() run it)
+#
+# BMDS_LINK_VERBOSE=1 prints what was moved. Python's standard library only.
+
+import bisect
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+
+PAGE = 0x10000
+SHN_ABS = 0xFFF1
+SHT_SYMTAB, SHT_RELA, SHT_NOBITS = 2, 4, 8
+SHF_ALLOC = 2
+R_RISCV_32, R_RISCV_HI20 = 1, 26
+MOVED_FROM = (".text", ".rodata")  # output sections whose patched input sections move
+
+
+def sections(data):
+    """The ELF32 file's section headers, as dicts with their names."""
+    if data[:4] != b"\x7fELF" or data[4] != 1 or data[5] != 1:
+        raise ValueError("not a little-endian ELF32 file")
+    shoff, = struct.unpack_from("<I", data, 32)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", data, 46)
+    out = []
+    for i in range(shnum):
+        f = struct.unpack_from("<IIIIIIIIII", data, shoff + i * shentsize)
+        out.append(dict(zip(("name", "type", "flags", "addr", "offset", "size", "link", "info", "align",
+                             "entsize"), f)))
+    names = out[shstrndx]
+    for s in out:
+        end = data.index(b"\0", names["offset"] + s["name"])
+        s["name"] = data[names["offset"] + s["name"]:end].decode()
+    return out
+
+
+def patches(data, secs):
+    """The addresses the loader patches: R_RISCV_32 and R_RISCV_HI20 against symbols that aren't
+    absolute, in allocated sections."""
+    out = []
+    for rela in secs:
+        if rela["type"] != SHT_RELA or not secs[rela["info"]]["flags"] & SHF_ALLOC:
+            continue
+        symtab = secs[rela["link"]]
+        if symtab["type"] != SHT_SYMTAB:
+            continue
+        for k in range(rela["size"] // 12):
+            offset, info, _ = struct.unpack_from("<IIi", data, rela["offset"] + 12 * k)
+            if info & 0xFF not in (R_RISCV_32, R_RISCV_HI20):
+                continue
+            shndx, = struct.unpack_from("<H", data, symtab["offset"] + 16 * (info >> 8) + 14)
+            if shndx != SHN_ABS:
+                out.append(offset)
+    return out
+
+
+# A map's input section: " .name 0xADDR 0xSIZE file", or the name alone with the rest on the
+# next line (a long name). A symbol's line has an address and a name only.
+INPUT = re.compile(r"^ (\.\S+)(?:\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+(.+))?$")
+REST = re.compile(r"^\s+0x([0-9a-f]+)\s+0x([0-9a-f]+)\s+(.+)$")
+OUTPUT = re.compile(r"^(\.\S+)")
+
+
+def input_sections(map_text):
+    """(address, size, output section, input section, file) for each input section in the map."""
+    out, output, pending = [], None, None
+    in_layout = False
+    for line in map_text.splitlines():
+        if line.startswith("Linker script and memory map"):
+            in_layout = True
+            continue
+        if not in_layout:
+            continue
+        m = OUTPUT.match(line)
+        if m:
+            output, pending = m.group(1), None
+            continue
+        if pending is not None:
+            r = REST.match(line)
+            if r:
+                out.append((int(r.group(1), 16), int(r.group(2), 16), output, pending, r.group(3).strip()))
+            pending = None
+            continue
+        m = INPUT.match(line)
+        if m:
+            if m.group(2) is None:
+                pending = m.group(1)
+            else:
+                out.append((int(m.group(2), 16), int(m.group(3), 16), output, m.group(1), m.group(4).strip()))
+    return out
+
+
+def split_file(name):
+    """The map's file name as (file, archive member or None)."""
+    m = re.match(r"^(.*)\(([^()]+)\)$", name)
+    return (m.group(1), m.group(2)) if m else (name, None)
+
+
+def patched_sections(elf_path, map_path):
+    """The input sections of .text and .rodata that hold a patch, as ((file, member), section)."""
+    with open(elf_path, "rb") as f:
+        data = f.read()
+    with open(map_path, errors="replace") as f:
+        inputs = sorted(i for i in input_sections(f.read()) if i[1] > 0 and i[2] in MOVED_FROM)
+    starts = [i[0] for i in inputs]
+    found = []
+    for offset in patches(data, sections(data)):
+        k = bisect.bisect_right(starts, offset) - 1
+        if k >= 0 and offset < inputs[k][0] + inputs[k][1]:
+            key = (split_file(inputs[k][4]), inputs[k][3])
+            if key not in found:
+                found.append(key)
+    return found
+
+
+def private_region(elf_path):
+    """Where the private part starts (.patched, or the first allocated section after .rodata
+    with bytes) and where the image ends."""
+    with open(elf_path, "rb") as f:
+        data = f.read()
+    alloc = sorted((s for s in sections(data) if s["flags"] & SHF_ALLOC and s["size"] > 0), key=lambda s: s["addr"])
+    end = max(s["addr"] + s["size"] for s in alloc)
+    names = [s["name"] for s in alloc]
+    start = end
+    if ".rodata" in names:
+        after = names.index(".rodata") + 1
+        if after < len(alloc):
+            start = alloc[after]["addr"]
+    return start, end
+
+
+def output_of(args):
+    """The link's output: -o FILE or -oFILE, else None (GCC's a.out)."""
+    output = None
+    for k, a in enumerate(args):
+        if a == "-o" and k + 1 < len(args):
+            output = args[k + 1]
+        elif a.startswith("-o") and len(a) > 2:
+            output = a[2:]
+    return output
+
+
+SOURCES = (".c", ".cc", ".cp", ".cxx", ".cpp", ".c++", ".C", ".S", ".s", ".sx")
+TAKES_VALUE = ("-o", "-u", "-T", "-L", "-l", "-x", "-Xlinker", "-include", "-I", "-D", "-U", "-MF", "-MT", "-MQ")
+
+
+def sources_of(args):
+    """The source files compiled by the command (compiled and linked in one go)."""
+    out, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in TAKES_VALUE:
+            skip = True
+        elif not a.startswith("-") and a.endswith(SOURCES) and os.path.isfile(a):
+            out.append(a)
+    return out
+
+
+def binutil(gcc, name):
+    """The binutils program @p name beside @p gcc (riscv32-esp-elf-gcc: riscv32-esp-elf-NAME)."""
+    base = os.path.basename(gcc)
+    prefix = base[:-3] if base.endswith("gcc") else ""
+    path = os.path.join(os.path.dirname(gcc), prefix + name)
+    return path if os.path.exists(path) else (shutil.which(prefix + name) or prefix + name)
+
+
+def renamed(sections):
+    return [x for s in sections for x in ("--rename-section", "%s=.bmds.patched%s" % (s, s))]
+
+
+def relink_command(command, moved, workdir):
+    """@p command with copies of the objects that hold @p moved, their sections renamed
+    .bmds.patched.*: an object named on the command line replaced by its copy; an archive's
+    member's copy added as an object ahead of the archives (the member is then not pulled from
+    the archive: the copy defines what it defines)."""
+    objcopy, ar = binutil(command[0], "objcopy"), binutil(command[0], "ar")
+    groups = {}
+    for (path, member), section in moved:
+        groups.setdefault(path, {}).setdefault(member, []).append(section)
+    args = list(command[1:])
+    real = [os.path.realpath(a) if not a.startswith("-") else None for a in args]
+    added = []
+    for n, (path, members) in enumerate(groups.items()):
+        copydir = os.path.join(workdir, str(n))
+        os.makedirs(copydir)
+        if list(members) == [None]:
+            where = [k for k, r in enumerate(real) if r is not None and r == os.path.realpath(path)]
+            if not where:
+                continue  # not named on the command line (a response file?): left where it is
+            copy = os.path.join(copydir, os.path.basename(path))
+            subprocess.run([objcopy] + renamed(members[None]) + [path, copy], check=True)
+            for k in where:
+                args[k] = copy
+            continue
+        subprocess.run([ar, "x", os.path.abspath(path)] + list(members), cwd=copydir, check=True)
+        for member, secs in members.items():
+            copy = os.path.join(copydir, member)
+            subprocess.run([objcopy] + renamed(secs) + [copy], check=True)
+            added.append(copy)
+    return [command[0]] + added + args
+
+
+def link(command, extra):
+    return subprocess.run(command + extra).returncode
+
+
+def main():
+    command = sys.argv[1:]
+    if not command:
+        sys.exit("bmds-link: usage: bmds-link GCC ARGS... [-o OUTPUT] ...")
+    output = output_of(command[1:])
+    sources = sources_of(command[1:])
+    if output is None:
+        # a.out (configure's tests): kept objects would be SOURCE.o here, perhaps over a file
+        # of the build's own. Linked once, as given.
+        return link(command, [])
+    verbose = os.environ.get("BMDS_LINK_VERBOSE") == "1"
+    map_path, work_dir = output + ".bmds-map", os.path.abspath(output + ".bmds-link")
+    # Sources compiled in the same command: their objects kept by the first pass (GCC names them
+    # OUTPUT-SOURCE.o) and linked by the later ones; what that leaves is removed after.
+    temps = []
+    if sources:
+        for src in sources:
+            stem = output + "-" + os.path.splitext(os.path.basename(src))[0]
+            temps += [p for p in (stem + ".i", stem + ".ii", stem + ".s", stem + ".o") if not os.path.exists(p)]
+    first = ["-save-temps=obj"] if sources else []
+    try:
+        rc = link(command, first + ["-Wl,-Map=" + map_path])
+        if rc != 0 or not os.path.exists(output) or not os.path.exists(map_path):
+            return rc  # a failed link, or no link (gcc -v, -print-file-name=...)
+        try:
+            moved = patched_sections(output, map_path)
+        except (ValueError, struct.error, IndexError):
+            return 0  # not an ELF32 program (a configure test's odd output): as linked
+        if not moved:
+            return 0
+        if sources:
+            objects = {src: output + "-" + os.path.splitext(os.path.basename(src))[0] + ".o" for src in sources}
+            command = [command[0]] + [objects.get(a, a) for a in command[1:]]
+        shutil.rmtree(work_dir, ignore_errors=True)  # left by a link that was killed
+        os.makedirs(work_dir)
+        command = relink_command(command, moved, work_dir)
+        rc = link(command, [])
+        if rc != 0:
+            return rc
+        start, end = private_region(output)
+        used = (end + PAGE - 1) // PAGE - start // PAGE
+        needed = (end - start + PAGE - 1) // PAGE
+        if used > needed:
+            rc = link(command, ["-Wl,--defsym=__bmds_patched_align=%d" % PAGE])
+            if rc != 0:
+                return rc
+            start, end = private_region(output)
+        if verbose:
+            print("bmds-link: %s: %d input sections moved; private from 0x%x to 0x%x (%d of %d pages)" %
+                  (output, len(moved), start, end, (end + PAGE - 1) // PAGE - start // PAGE,
+                   (end + PAGE - 1) // PAGE), file=sys.stderr)
+            for (path, member), section in moved:
+                print("  %s%s: %s" % (path, "(%s)" % member if member else "", section), file=sys.stderr)
+        return 0
+    finally:
+        for path in [map_path] + temps:
+            if os.path.exists(path):
+                os.remove(path)
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

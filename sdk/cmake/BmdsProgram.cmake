@@ -20,6 +20,9 @@ get_filename_component(BMDS_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
 include(${CMAKE_CURRENT_LIST_DIR}/BmdsLibc.cmake)
 
+# bmds-link (sdk/tools) runs every program's link.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
 # What every program compiles against: musl's headers (and GCC's own, for
 # the intrinsics), never the toolchain's newlib; the SDK's bmds/*.h.
 if(NOT TARGET bmds_crt)
@@ -128,6 +131,9 @@ function(bmds_add_program name)
         if(ARG_DISPLAY)
                 target_link_options(${name} PRIVATE -Wl,--defsym=__bmds_program_flags=1) # BMDS_PROGRAM_DISPLAY
         endif()
+        # Linked through bmds-link: the bytes the loader patches gathered at the image's end, so more
+        # of its pages are shared between instances (devplan/programs.md §14.3).
+        set_property(TARGET ${name} PROPERTY RULE_LAUNCH_LINK "${Python3_EXECUTABLE} ${BMDS_SDK_DIR}/tools/bmds-link")
         set_target_properties(${name} PROPERTIES OUTPUT_NAME "${name}.debug" SUFFIX ".elf"
                                                  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
                                                  LINK_DEPENDS ${BMDS_SDK_DIR}/ld/bmds.ld)

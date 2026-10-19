@@ -603,6 +603,15 @@ until silicon v3; then test again.
   pyserial loop (opening the USB serial port resets the chip, so start reading before the
   failure).
 
+- **`ld --section-ordering-file` doesn't move sections between output sections** (binutils
+  2.45, esp-15.2.0): its rules only order input sections inside the output section the main
+  script already assigns them to. To gather chosen input sections elsewhere, rename them in
+  copies of their objects (`objcopy --rename-section`) and link the copies
+  (`sdk/tools/bmds-link`, `devplan/programs.md` §14.3).
+- **The toolchain's libgcc is medlow:** its 64-bit division helpers and `__clzsi2`/`__ffssi2`
+  reach `__clz_tab`, and `__divdf3`/`__divtf3` their jump tables, with `lui` (`R_RISCV_HI20`),
+  though BMDS programs build `-mcmodel=medany`. Each is a patch the loader applies.
+
 ## 8. Measuring
 
 - **Cycles:** `csrr rd, mcycle` around a section (360 MHz on this silicon). Remove the

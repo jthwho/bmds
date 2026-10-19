@@ -214,8 +214,15 @@ could tell newer from older. Now:
 
 - **One source:** `bmds/version.h`'s `BMDS_VERSION_MAJOR/MINOR/PATCH`. `cmake/version.cmake`
   (included before `project()`) makes `PROJECT_VER` that and the commit: `0.1.0+72cba49a`, with
-  `-dirty` for uncommitted changes (as of configure time, as IDF's was). At most 31 characters
-  (the app description's field; configure fails past it): each part under 10000 keeps it so.
+  `-dirty` for uncommitted changes. At most 31 characters (the app description's field; the
+  build fails past it): each part under 10000 keeps it so.
+- **Current at every build** (2026-10-19): IDF compiles `PROJECT_VER` into the app description as
+  it was at configure time, so a commit since then left the old one (a package of new code said
+  `a1ad6d82` two commits later, and `update` called it "the same"). After `project()`,
+  `bmds_version_every_build()` (`cmake/version.cmake`) adds a target that runs before every build
+  and writes `bmds_version_text.h` in the build directory, only when the text changed; it is
+  force-included into `esp_app_desc.c` and redefines `PROJECT_VER`. An unchanged build compiles
+  nothing; a changed version recompiles that file and relinks. Both firmwares do it.
 - **In the header** (136 bytes now; format still 1, nothing has shipped): u16 major, minor, patch
   and u16 0 after `madeAt`, at 128. `UpdatePackage::Version` orders them (`<=>`). The text stays
   as the label. `mkupdate` takes the number from `bmds/version.h` and refuses a firmware image

@@ -671,3 +671,36 @@ TEST_CASE("Program format: real programs' shared pages are the same at every bas
                 for (uint32_t base : {0x4A000000u, 0x4A130000u}) checkPages(c.info, bytes, patches, base);
         }
 }
+
+#ifdef BMDS_SDK_EXAMPLES
+TEST_CASE("Program format: bmds-link gathers what the loader patches at the image's end") {
+        // devplan/programs.md §14.3: the SDK's programs link through bmds-link, so their private
+        // pages (patched, or holding data) come after all their shared ones.
+        size_t checked = 0, sharedPages = 0;
+        for (const auto &entry : std::filesystem::directory_iterator(BMDS_SDK_EXAMPLES)) {
+                const std::string path = entry.path().string();
+                if (entry.path().extension() != ".elf" || path.ends_with(".debug.elf")) continue;
+                CAPTURE(path);
+                std::vector<uint8_t> file;
+                FILE                *f = std::fopen(path.c_str(), "rb");
+                REQUIRE(f != nullptr);
+                uint8_t buf[4096];
+                size_t  n;
+                while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) file.insert(file.end(), buf, buf + n);
+                std::fclose(f);
+                const Checked c = check(file);
+                REQUIRE(c.err == Error::Ok);
+                bool privateSeen = false;
+                for (uint32_t p = 0; p < ProgramImage::pageCount(c.info.imageSize); ++p) {
+                        CAPTURE(p);
+                        const bool shared = ProgramImage::isSharedPage(c.info, p);
+                        CHECK_FALSE((shared && privateSeen));
+                        privateSeen = privateSeen || !shared;
+                        sharedPages += shared ? 1 : 0;
+                }
+                ++checked;
+        }
+        CHECK(checked >= 5);
+        CHECK(sharedPages >= 4); // progtest's four, at least
+}
+#endif

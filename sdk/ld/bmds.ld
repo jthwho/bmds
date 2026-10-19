@@ -53,6 +53,19 @@ SECTIONS
                 *(.rodata .rodata.* .gnu.linkonce.r.* .srodata .srodata.*)
         } :image
 
+        /*
+         * What the loader patches, in .text and .rodata (libgcc's medlow helpers, pointer and
+         * jump tables), moved here by bmds-link (devplan/programs.md §14.3): with the pointer
+         * arrays, .data and .bss after it, the pages before it are the same at every address and
+         * shared between a program's instances. __bmds_patched_align starts it on a 64 KB page
+         * when that saves one.
+         */
+        PROVIDE(__bmds_patched_align = 4);
+        . = ALIGN(__bmds_patched_align);
+        .patched : {
+                *(.bmds.patched.*)
+        } :image
+
         .preinit_array : {
                 PROVIDE_HIDDEN(__preinit_array_start = .);
                 KEEP(*(.preinit_array))

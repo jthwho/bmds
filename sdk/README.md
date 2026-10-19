@@ -21,9 +21,10 @@ the headers in `include/bmds/` are the ABI and never change incompatibly
 | `crt/start.c` | `_start`: the argument and auxiliary vector musl's startup wants, the thread-local template. |
 | `crt/linux.c` | The Linux system calls musl makes, carried out on the BMDS table (`__bmds_syscall`). |
 | `crt/oss.c` | OSS's `SNDCTL_DSP_*` and `SOUND_MIXER_*` ioctls on the audio calls and the `audio/*` settings. |
-| `ld/bmds.ld` | The program layout: one image linked at 0, the note, thread-local storage. |
+| `ld/bmds.ld` | The program layout: one image linked at 0, the note, thread-local storage; `.patched`, where `bmds-link` gathers what the loader patches, next to the data. |
 | `cmake/bmds-toolchain.cmake` | A CMake toolchain file for Espressif's `riscv32-esp-elf-gcc`. |
 | `tools/bmds-icon-notes` | `bmds-icon-notes -o icons.S NAME a-16.png a-32.png`: the same icon notes as `ICONS`, as an assembler file to build with `bmds-cc`, for builds without CMake (`dist/blocks`, `dist/doom`, `dist/luckyduck`). |
+| `tools/bmds-link` | Runs every program's link (`bmds_add_program()` and `bmds-cc` use it): links once, finds the input sections the loader patches (pointer and jump tables, libgcc's few absolute references), and links again with them moved next to the data, so the rest of the image is shared between a program's instances ([`devplan/programs.md`](../devplan/programs.md) §14.3). Needs Python 3. |
 | `cmake/BmdsProgram.cmake` | `bmds_add_program(name SOURCES ... [STACK_SIZE bytes] [ICONS png...] [DISPLAY])` (ICONS: the program's own icons, 16x16 and 32x32 PNGs, built in as `BMDS_NOTE_ICON` notes: `bmds/program.h`; DISPLAY: it draws to the screen continuously, so the kernel starts it away from the display's core, `BMDS_PROGRAM_DISPLAY`); generates `bmds-cc`. `bmds_add_app(name PROGRAM target DESKTOP app.desktop [FILES ...] [DIRECTORIES ...])`: an application folder, `name.app` in the build directory (its `Exec` checked to name the program), copied into a card's `apps/` to install ([`devplan/apps.md`](../devplan/apps.md)). |
 | `cmake/BmdsLibc.cmake` | Builds musl's `libc.a` and assembles its headers in the build tree. |
 | `cmake/bmds-cc.in` | The compiler wrapper for other build systems (`CC=<build>/bmds-cc make`). |

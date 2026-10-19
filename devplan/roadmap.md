@@ -77,7 +77,7 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
   - [x] 4: stopping and continuing: Ctrl-Z, `fg`, `bg`, `SIGTTIN`, `WUNTRACED`.
   - [x] 5: program threads: pthreads through musl (slots 53-57: thread start/exit/kill/clear, futex), signals per thread.
   - [x] 6: real-time threads (§3.12): `SCHED_FIFO`/`SCHED_RR` per thread (slot 113, `sched`), a band of kernel priorities under the drivers, Linux's 95 % budget, precise sleeps for them on a GPTimer; `sched_yield`, `sched_getaffinity`, `sched_getcpu`.
-- [x] Shared program images and an image cache (`programs.md` §14): `exec` from memory (phase (a), 2026-10-06); code pages shared between instances through the MMU (phase (b), 2026-10-19: BusyBox 653 → 264 KB a further instance, ten `busybox true` 0.22 → 0.13 s). Later: the SDK changes that make more pages shareable (phase (c)).
+- [x] Shared program images and an image cache (`programs.md` §14): `exec` from memory (phase (a), 2026-10-06); code pages shared between instances through the MMU (phase (b), 2026-10-19: BusyBox 653 → 264 KB a further instance, ten `busybox true` 0.22 → 0.13 s). The link gathers what the loader patches at the image's end (phase (c), 2026-10-19: BusyBox 6 → 8 of 9 pages shared, ~287 → ~156 KB a further instance, a launch 11-12 → 8.5 ms).
   - [x] MMU spike (aliases, caches, DMA) and design.
   - [x] (a) The image cache with plain copies (`programs.md` §14.1): `exec` from memory, without the card.
   - [ ] (b) Shared pages through the MMU window.

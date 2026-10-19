@@ -413,7 +413,7 @@ A program without shared pages keeps its whole file part as "private" bytes.
 
 **DMA.** IDF's `esp_ptr_external_ram()` is false for window addresses (it checks the heap's range). BMDS's SD driver tests it before DMA straight into a buffer; it gets a BMDS check that knows the window (`Memory`), so program buffers in static data still go straight to DMA. The SDMMC driver itself already syncs window addresses correctly (spike).
 
-**SDK changes that make more pages shared** (later, measured one by one; old programs keep working, as plain copies or with fewer shared pages):
+**SDK changes that make more pages shared** (later, measured one by one; old programs keep working, as plain copies or with fewer shared pages; done another way in §14.3, by the link):
 - **libgcc's `lui`s:** all 12 `R_RISCV_HI20` targets in BusyBox's code are libgcc's (`__clz_tab` from the division and `clz` helpers, medlow). Building those few helpers `medany` (or replacing them) frees page 5: 384 KB shared, 192 KB private.
 - **Pointers in `.rodata`** (293 `R_RISCV_32` targets in BusyBox: tables of pointers) mark their pages private. Building with `-fPIE`-style data placement puts relocated constants in `.data.rel.ro`, which the link script could put with `.data` (whether the stock toolchain does this without a GOT is to be measured).
 - **Writable data on its own page:** a link script that starts `.data` on a 64 KB boundary in the image (address space only: the gap isn't loaded) leaves one private page for BusyBox's 7 KB of data and bss. With all three: 512 KB shared, 64 KB per instance.
@@ -613,6 +613,90 @@ fallbacks until measured.
   `rusage`, `stats`, `system`, `sched`, `signals`) on mapped instances; 192 mappings during them,
   and afterwards free PSRAM was down only by the new cache entry, with the instance count back
   to its figure.
+
+### 14.3 Phase (c): the patched bytes gathered at the image's end (design, 2026-10-19)
+
+§14 planned three SDK changes, measured one by one. Measured first on the distribution as built
+now, with a script over each ELF's kept relocations:
+- **BusyBox** (9 pages): pages 0-5 shared. Page 6 is private for 11 `lui`s (`R_RISCV_HI20`), all
+  in libgcc (`__clz_tab` from `__divdi3`, `__moddi3`, `__udivdi3`, `__umoddi3`, `__clzsi2`,
+  `__ffssi2`; a jump table each in `__divdf3` and `__divtf3`). Page 7 is private for 307 pointers
+  in `.rodata`, page 8 for more of them and the writable data.
+- **Dropbear** (6 pages: 4 shared) and `benchprog` (3 pages: 1 shared): the same pattern.
+- **What the patches are in** (BusyBox): 16 pointer tables (1.3 KB), ~300 jump-table entries,
+  the 8 libgcc functions (7.9 KB). With `.data` (7 KB) and `.bss` (5 KB), the bytes that must be
+  private come to ~20 KB, spread over 108 KB.
+
+**The finding that changes the plan:** programs already build `-mcmodel=medany`, so their own
+code has no `lui`; libgcc's come from the toolchain's prebuilt archive, which we don't build.
+And GCC puts pointer tables in `.rodata` without `-fPIC` (whose `.data.rel.ro` would come with a
+GOT the loader doesn't take). So instead of changing how things are compiled, the link moves
+whatever holds a patch.
+
+**The link, in two passes** (`sdk/tools/bmds-link`, used by `bmds_add_program()` and `bmds-cc`):
+1. Link as now, with a map (`-Wl,-Map`).
+2. Read the output's kept relocations: the patches the loader applies (`R_RISCV_32`, and
+   `R_RISCV_HI20` against a symbol that isn't absolute) in `.text` and `.rodata`. The map names
+   the input section (file, archive member, section) each lands in.
+3. Link again with those input sections in `.patched`, a new output section between `.rodata`
+   and the pointer arrays (`.init_array` and the like), so all of it lies next to `.data` and
+   `.bss` (how: see "as built").
+4. If that region then straddles a 64 KB boundary it needn't (more pages than its size needs),
+   link a third time with `.patched` started on the boundary: up to 64 KB of zeros in the file,
+   to save a page in every instance.
+
+The set of patched input sections doesn't depend on where things are, so the passes agree. It
+works for any program and library, ours or a package's, with no source changes; a program built
+without it still loads, with fewer shared pages.
+
+**Expected:** BusyBox 8 of 9 pages shared, 64 KB per further instance (now 192 KB); Dropbear
+5 of 6. To measure: the pages per program, PSRAM per further instance, `programs.launch` and the
+BusyBox loop (the copy at start-up shrinks with the private pages), link time.
+
+**Checks:** host tests of the tool's map and relocation reading on a small fixture program; the
+distribution rebuilt, installed and its smoke test; `progtest`'s suites; the profiler still names
+functions (the ELF's symbols are unchanged); `bmds-elfcheck` passes.
+
+**As built (2026-10-19).**
+- **How sections move:** `ld --section-ordering-file` was the plan, but it only orders input
+  sections within the output section a rule of the main script already puts them in; it never
+  moves one to another (tried on a three-function program). So the second pass links copies:
+  each object that holds a patched section is copied with `objcopy --rename-section` to
+  `.bmds.patched.*`, which `bmds.ld` gathers into `.patched`. An archive's members are extracted
+  once (`ar x`), renamed and passed as objects ahead of the archives; the archive's own member
+  then isn't pulled, since the copy defines the same symbols. Rewriting the archive instead
+  (`ar r` for each member of a 3 MB `libc.a`) made a link take 2.9 s.
+- **Commands that compile and link at once** (`bmds-cc -o prog prog.c`, as `dist/benchprog`
+  does): the first pass keeps GCC's objects (`-save-temps=obj`, `OUTPUT-SOURCE.o`), the later
+  passes link them, and the files that weren't there before are removed. With no `-o` (configure's
+  tests: `a.out`), the kept objects would be `SOURCE.o` in the build's directory, perhaps over a
+  file of its own, so such a link runs once, as given.
+- **The page boundary:** `__bmds_patched_align` (`PROVIDE`d as 4) starts `.patched` on 64 KB when
+  the private part would otherwise span more pages than its size needs; benchprog took it once
+  in testing, BusyBox and Dropbear didn't need it.
+- **Link time:** benchprog 0.14 s linked once, 0.49 s through `bmds-link`.
+- **Measured** (before: the distribution as of phase (b)):
+
+  | Program | pages | shared before | shared after |
+  |---|---:|---:|---:|
+  | BusyBox | 9 | 6 | **8** |
+  | Dropbear (card and ROM; 6 pages in the older build) | 7 | 4 | **6** |
+  | `progtest` (much bss) | 18 | 2 | **4** |
+  | `benchprog` (59 KB of bss) | 3 | 1 | 1 |
+  | the SDK examples, `netlat`, `sftp-server`, `coremark` | 2-3 | | all but one |
+
+  | BusyBox on the board | old | new |
+  |---|---:|---:|
+  | 40 × `busybox true` from hush, each | 10.75-11.75 ms | **8.25-8.75 ms** |
+  | PSRAM for five more sleeping instances and their shell | 1,724 KB | **938 KB** |
+  | the same, each | ~287 KB | **~156 KB** |
+
+  `programs.launch` 8.5-8.9 ms (benchprog's pages didn't change).
+- **Checked:** host tests (the SDK examples' private pages all come after their shared ones);
+  on the board the `progtest` suites with the new build, a BusyBox smoke test (sed, awk with
+  floating point through the moved `__divdf3`, xargs, gzip round trip, find -exec, md5sum), the
+  new Dropbear's `dropbearkey` (ed25519 and RSA), the profiler naming functions in a mapped
+  BusyBox, `__divdf3` among them.
 
 ## 15. Step 9: signals (design, 2026-10-04)
 
