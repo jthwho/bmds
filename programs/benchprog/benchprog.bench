@@ -45,6 +45,7 @@ Help=Presents at the games' sizes: frames shown a second, the call's time, the s
 Param.case=;Only the cases whose names hold this
 Param.ms=1000;Milliseconds a run presents
 Param.runs=3;Runs of each case
+Param.pace=1;1: two buffers, the program a frame ahead at most (as a game); 0: three, flat out
 
 [Bench game.draw]
 Exec=benchprog draw

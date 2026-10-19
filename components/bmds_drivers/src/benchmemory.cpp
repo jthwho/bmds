@@ -7,9 +7,11 @@
  *
  * Memory's benchmarks (devplan/bench.md §3): PSRAM through the CPU with the caches written back
  * and invalidated (were `memtest`'s rates), through the AXI GDMA, and plain copies and fills (were
- * `display stress`: the traffic that may disturb the scan, which the meanwhile counters show).
+ * `display stress`: the traffic that may disturb the scan, which the meanwhile counters show); and
+ * what the cache's own operations cost (§19: each runs with interrupts masked).
  */
 
+#include <cstdio>
 #include <cstring>
 #include <sdkconfig.h>
 #include <esp_async_memcpy.h>
@@ -217,8 +219,56 @@ namespace {
                 return Error::Ok;
         }
 
+        // The cache's operations on @p bytes of @p space, as the drivers call them (esp_cache_msync()
+        // in 64 KB pieces): a write-back of lines the CPU just wrote (dirty) and of the same lines
+        // again (clean), and an invalidate; µs each. Each piece runs with interrupts masked.
+        Error cacheOps(BenchContext &ctx, const char *name, MemSpace space, size_t bytes) {
+                Block block(space, bytes);
+                if (block.p == nullptr) return Error::NoMem;
+                auto sync = [&](int flags) {
+                        for (size_t off = 0; off < bytes; off += Chunk)
+                                (void)esp_cache_msync(block.p + off, bytes - off < Chunk ? bytes - off : Chunk, flags);
+                };
+                char metric[48];
+                std::snprintf(metric, sizeof(metric), "%s_writeback_dirty_us", name);
+                Error err = ctx.measure(metric, "us", BenchBetter::Lower, [&](double &out) {
+                        std::memset(block.p, 0x5a, bytes);
+                        Stopwatch watch;
+                        sync(ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                        out = double(watch.cycles()) / CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+                        return Error(Error::Ok);
+                });
+                if (err.isError()) return err;
+                std::snprintf(metric, sizeof(metric), "%s_writeback_clean_us", name);
+                err = ctx.measure(metric, "us", BenchBetter::Lower, [&](double &out) {
+                        sync(ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                        Stopwatch watch;
+                        sync(ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                        out = double(watch.cycles()) / CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+                        return Error(Error::Ok);
+                });
+                if (err.isError()) return err;
+                std::snprintf(metric, sizeof(metric), "%s_invalidate_us", name);
+                return ctx.measure(metric, "us", BenchBetter::Lower, [&](double &out) {
+                        sync(ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                        Stopwatch watch;
+                        sync(ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                        out = double(watch.cycles()) / CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+                        return Error(Error::Ok);
+                });
+        }
+
+        Error runCache(BenchContext &ctx) {
+                if (Error err = cacheOps(ctx, "psram_4k", MemSpace::Psram, 4 * 1024); err.isError()) return err;
+                if (Error err = cacheOps(ctx, "psram_64k", MemSpace::Psram, 64 * 1024); err.isError()) return err;
+                if (Error err = cacheOps(ctx, "psram_576k", MemSpace::Psram, 576 * 1024); err.isError()) return err;
+                return cacheOps(ctx, "internal_64k", MemSpace::InternalDma, 64 * 1024);
+        }
+
 } // namespace
 
+BMDS_BENCH(memoryCache, "memory.cache", runCache, BenchQuick,
+           "The cache's write-back (of dirty and clean lines) and invalidate, by size: us each")
 BMDS_BENCH_WITH(memoryPsramCpu, "memory.psram.cpu", runPsramCpu, BenchQuick, PsramParams,
                 "PSRAM through the CPU, the caches written back and invalidated: writing, then reading")
 BMDS_BENCH_WITH(memoryPsramDma, "memory.psram.dma", runPsramDma, BenchQuick, PsramParams,

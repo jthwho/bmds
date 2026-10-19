@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <cstdint>
 #include <bmds/config.h>
 #include <bmds/deadline.h>
 #include <bmds/detail/platform.h>
@@ -16,10 +18,17 @@
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief A FreeRTOS mutex (priority inheritance, not recursive).
+ * @brief A mutex with priority inheritance, not recursive.
  *
- * The control block is embedded in the object (`xSemaphoreCreateMutexStatic`),
- * so constructing a `Mutex` never touches the heap. The header is
+ * Uncontended, a lock and an unlock are a compare-and-swap each on the
+ * holder's task handle (devplan/bench.md §21). A waiter raises the holder to
+ * its own priority (FreeRTOS's inheritance) and sleeps on a FreeRTOS
+ * semaphore; the holder is put back when it unlocks the last contended mutex
+ * that raised it. Unlike a FreeRTOS mutex, a waiter that times out leaves the
+ * holder raised until then (FreeRTOS lowers it to the next waiter's priority
+ * at once). As with FreeRTOS's, a task woken by an unlock competes with one
+ * arriving, and unlocking a mutex nobody holds is ignored (and logged). The wait's control block is embedded in the object, so
+ * constructing a `Mutex` never touches the heap. The header is
  * FreeRTOS-free (opaque storage) so portable kernel code using it builds in
  * the host tests, where a `std::timed_mutex` stands in. Construction is a
  * runtime call: a kernel-global mutex lives in a `StaticObject` or inside an
@@ -93,7 +102,15 @@ class Mutex {
                 void unlock();
 
         private:
+                Error lockSlow(uintptr_t self, const Deadline &deadline);
+                void  unlockSlow(uintptr_t self, void *caller);
+
                 alignas(Detail::SyncStorageAlign) unsigned char _storage[Detail::SyncStorageBytes];
+                // The target's (the host's keeps its own state in _storage):
+                std::atomic<uintptr_t> _word{0};          // the holder's task handle, bit 0: contended
+                void                  *_raised = nullptr; // the holder a waiter raised (under _spin)
+                int32_t                _waiting = 0;      // tasks waiting (under _spin)
+                alignas(4) unsigned char _spin[8];        // a portMUX_TYPE: the slow paths'
 };
 
 BMDS_NAMESPACE_END

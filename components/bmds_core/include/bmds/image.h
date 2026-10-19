@@ -159,6 +159,24 @@ namespace Pixels {
          */
         void expandIndexed(const uint8_t *in, size_t count, const uint32_t *palette, uint8_t *out, unsigned times);
 
+        /** @brief Words in a `makeTripleTable()` table: eight a palette entry. */
+        inline constexpr size_t TripleTableWords = 256 * 8;
+
+        /**
+         * @brief Fills @p table (`TripleTableWords`) from @p palette (0xRRGGBB; the top byte
+         *        ignored) for `expandTriple()`: each entry's color shifted the ways three copies
+         *        of it fall across words. Again whenever the palette changes.
+         */
+        void makeTripleTable(const uint32_t *palette, uint32_t *table);
+
+        /**
+         * @brief As `expandIndexed()` at 3 times, from a `makeTripleTable()` table: 12 loads, 3
+         *        ORs and 9 stores for four pixels (devplan/bench.md §19). Any alignment of @p out
+         *        (whole words when it is aligned).
+         * @hotpath
+         */
+        void expandTriple(const uint8_t *in, size_t count, const uint32_t *table, uint8_t *out);
+
         /**
          * @brief Writes @p count pixels of a row scaled across by @p to / @p from (any ratio,
          *        the nearest pixel: some repeated once more than others, as the scan repeats

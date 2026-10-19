@@ -28,14 +28,16 @@ menu "BMDS storage"
 
     config BMDS_SD_BOUNCE_BYTES
         int "SD bounce buffer size (bytes, PSRAM)"
-        default 4096
+        default 65536
         range 512 65536
         help
             DMA-capable buffer that requests in buffers the SD host can't
             reach by DMA (unaligned, or not DMA-capable) are copied through,
             so the driver never allocates per request. A multiple of 512.
-            Larger is faster for such requests; aligned PSRAM buffers don't
-            use it.
+            Larger is faster for such requests (one card command a buffer):
+            reading a file through the VFS 4.9 MB/s at 4 KB, 9.4 at 32 KB,
+            10.1 at 64 KB (devplan/bench.md §19). Aligned PSRAM buffers
+            don't use it.
 
     config BMDS_ZONEINFO_PATH
         string "Time zone database"

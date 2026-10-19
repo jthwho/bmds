@@ -392,6 +392,8 @@ class ProgramSurface final : public Stream {
                 Icon           _largeIcon;
                 bool           _paletteChanged = false; // since the last present (under _lock)
                 uint8_t       *_strip = nullptr;        // full screen's rows, internal DMA RAM (while full screen)
+                uint32_t         *_triple = nullptr;  // expandTriple()'s table: L8 full screen at 3 times (presenter's)
+                std::atomic<bool> _tripleStale{true}; // the palette changed since it was made
                 size_t         _stripBytes = 0;
 
                 Mutex     _lock; // the buffers' states, the window's size

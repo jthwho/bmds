@@ -195,8 +195,16 @@ Plan: [`input.md`](input.md).
   found to depend on its core (44 fps on core 1, 53-58 on core 0). Display programs off the
   display's core done (§17, the user's decision): `BMDS_PROGRAM_DISPLAY` in the program note
   starts a game on core 0 (Doom 57.3-57.8 fps), and the results record each program's core.
-  Next: a mutex with a lock-free fast path, the full-screen L8 conversion, keyed blits; then
-  Quake.
+  Tuning round 3 done (§18-20, the user's list): the switch 16.5 → 11.6 µs same core and
+  11.6 → 8.6 across (the cross-core interrupt ours, the run-time clock in cycles, a cheap
+  `xPortInIsrContext()`), a semaphore pair 1.84 → 0.26 µs (an atomic count, FreeRTOS only to
+  wait; `kernel.sync` checks it), the L2 cache's 128-byte line (Doom 55 → 65 fps, PSRAM +40-70 %),
+  a full-screen L8 frame's system cost 11.4 → 5.6 ms (most of it the benchmark spinning, now
+  paced; `expandTriple()`), the card through the VFS 4.9 → 10.1 MB/s (a 64 KB bounce buffer),
+  keyed blits 3.7-5.5× in L8 and BGR24. The mutex's fast path done (§21, the user's go-ahead): a
+  pair 2.8 → 0.38 µs with priority inheritance kept (a per-task count of the mutexes that raised
+  it; checked in `kernel.sync`), `getppid()` 5.4 → 3.0 µs; pipes' ring 16 KB (253 MB/s). Next:
+  the hardware stack guard's cost (the user's call); then Quake.
 - [x] Settings, the control panel (`controlpanel.md`, planned 2026-10-16, the user's request):
   the one place to change every sysconf setting graphically, laid out like the Mac's System
   Settings (groups with icons on the left, the group's page on the right). Changes apply and

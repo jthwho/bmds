@@ -381,4 +381,74 @@ void Pixels::expandIndexed(const uint8_t *in, size_t count, const uint32_t *pale
         return;
 }
 
+// The table's words for color c (B, G, R in its low bytes, the top byte 0), in the order
+// expandTriple() loads them. Four pixels times three are 36 bytes, nine words; each word is one
+// of these or two of them ORed: c c c over 12 bytes is A B C, and the words where two pixels
+// meet take one's tail and the other's head.
+namespace {
+        enum TripleWord {
+                TA,
+                TB,
+                TC,
+                TD,
+                TE,
+                TF,
+                TG,
+                TPlain
+        };
+}
+
+void Pixels::makeTripleTable(const uint32_t *palette, uint32_t *table) {
+        for (size_t i = 0; i < 256; ++i, table += 8) {
+                const uint32_t c = palette[i] & 0xffffffu;
+                table[TA] = c | c << 24;      // b g r b
+                table[TB] = c >> 8 | c << 16; // g r b g
+                table[TC] = c >> 16 | c << 8; // r b g r
+                table[TD] = c << 8;           // 0 b g r: a pixel starting a word's second byte
+                table[TE] = c >> 8;           // g r 0 0: one ending at a word's second byte
+                table[TF] = c << 16;          // 0 0 b g: one starting at its third
+                table[TG] = c << 24;          // 0 0 0 b: one starting at its last
+                table[TPlain] = c;            // b g r 0
+        }
+        return;
+}
+
+void Pixels::expandTriple(const uint8_t *in, size_t count, const uint32_t *table, uint8_t *out) {
+        size_t done = 0;
+        if ((reinterpret_cast<uintptr_t>(out) & 3) == 0) {
+                auto        *o = reinterpret_cast<uint32_t *>(out);
+                const size_t groups = count / 4;
+                // Entry i at table + i * 8: the byte's index shifted into place and masked.
+                const auto *t = reinterpret_cast<const uint8_t *>(table);
+                for (size_t g = 0; g < groups; ++g, in += 4, o += 9) {
+                        uint32_t v;
+                        std::memcpy(&v, in, 4);
+                        const auto *e0 = reinterpret_cast<const uint32_t *>(t + (v << 5 & 0x1fe0u));
+                        const auto *e1 = reinterpret_cast<const uint32_t *>(t + (v >> 3 & 0x1fe0u));
+                        const auto *e2 = reinterpret_cast<const uint32_t *>(t + (v >> 11 & 0x1fe0u));
+                        const auto *e3 = reinterpret_cast<const uint32_t *>(t + (v >> 19 & 0x1fe0u));
+                        o[0] = e0[TA];
+                        o[1] = e0[TB];
+                        o[2] = (e0[TC] & 0xffu) | e1[TD];
+                        o[3] = e1[TA];
+                        o[4] = e1[TE] | e2[TF];
+                        o[5] = e2[TC];
+                        o[6] = e2[TPlain] | e3[TG];
+                        o[7] = e3[TB];
+                        o[8] = e3[TC];
+                }
+                done = groups * 4;
+        }
+        out += done * 9;
+        for (size_t i = done; i < count; ++i) {
+                const uint32_t c = table[size_t(in[i - done]) * 8 + TPlain];
+                for (unsigned k = 0; k < 3; ++k, out += 3) {
+                        out[0] = uint8_t(c);
+                        out[1] = uint8_t(c >> 8);
+                        out[2] = uint8_t(c >> 16);
+                }
+        }
+        return;
+}
+
 BMDS_NAMESPACE_END

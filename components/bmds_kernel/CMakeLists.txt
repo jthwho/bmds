@@ -31,6 +31,7 @@ if(COMMAND idf_component_register)
                                     src/boot.cpp
                                     src/clockinit.cpp
                                     src/critical.cpp
+                                    src/crosscore.cpp
                                     src/esperr_check.cpp
                                     src/log.cpp
                                     src/logstream.cpp
@@ -55,7 +56,15 @@ if(COMMAND idf_component_register)
         target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_timer_get_time")
         # FreeRTOS's critical sections are critical.cpp's: one interrupt mask, not three (§16).
         target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=xPortEnterCriticalTimeout"
-                                                         "-Wl,--wrap=vPortExitCriticalMultiCore")
+                                                         "-Wl,--wrap=vPortExitCriticalMultiCore"
+                                                         "-Wl,--wrap=xPortInIsrContext")
+        # IDF's cross-core interrupt is crosscore.cpp's: its reasons atomic, not behind a spinlock (§18).
+        target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_crosscore_int_init"
+                                                         "-Wl,--wrap=esp_crosscore_int_send_yield"
+                                                         "-Wl,--wrap=esp_crosscore_int_send_freq_switch"
+                                                         "-Wl,--wrap=esp_crosscore_int_send_gdb_call"
+                                                         "-Wl,--wrap=esp_crosscore_int_send_print_backtrace"
+                                                         "-Wl,--wrap=esp_crosscore_int_send_twdt_abort")
         bmds_update_keys(${COMPONENT_LIB} updatekeys.inc "${CONFIG_BMDS_UPDATE_KEYS_RELEASE}")
 else()
         find_package(Threads REQUIRED)

@@ -29,7 +29,7 @@ namespace {
                         size_t offset; // from the block's start to the allocation
         };
         constexpr size_t SmallHeader = 16; // keeps max_align_t's alignment
-        constexpr size_t DmaHeader = 64;   // keeps a cache line's
+        constexpr size_t DmaHeader = Memory::DmaAlign; // keeps a cache line's
         static_assert(sizeof(Header) <= SmallHeader, "the header fits before the allocation");
 
         // Large allocations (a font's samples) are DMA-capable and cache-line aligned, so a card
@@ -40,7 +40,7 @@ namespace {
         // Where a large allocation should sit within its cache line: a font's sample chunk starts
         // anywhere in its file, and FatFs reads the first partial sector through its window, then
         // whole sectors into the destination past it. Those are read by DMA only if that address
-        // is aligned, which is when the destination matches the file position (mod 64). The
+        // is aligned, which is when the destination matches the file position (mod the line). The
         // reader sets it as it goes (setLargeAllocationPhase()); loads don't overlap (SoundFonts'
         // lock).
         constinit std::atomic<size_t> largePhase{0};
@@ -72,7 +72,8 @@ extern "C" {
 void *bmdsSynthMalloc(size_t bytes) {
         const bool   dma = bytes >= bmds::DmaFrom;
         const size_t offset =
-                dma ? bmds::DmaHeader + bmds::largePhase.load(std::memory_order_relaxed) % 64 : bmds::SmallHeader;
+                dma ? bmds::DmaHeader + bmds::largePhase.load(std::memory_order_relaxed) % bmds::Memory::DmaAlign
+                    : bmds::SmallHeader;
         auto *block = bytes > bmds::MaxAllocBytes
                               ? nullptr
                               : static_cast<uint8_t *>(bmds::Memory::alloc(
@@ -139,7 +140,7 @@ namespace {
 } // namespace
 
 void SoundFont::setLargeAllocationPhase(size_t position) {
-        largePhase.store(position % 64, std::memory_order_relaxed);
+        largePhase.store(position % Memory::DmaAlign, std::memory_order_relaxed);
         return;
 }
 

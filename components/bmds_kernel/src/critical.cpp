@@ -26,9 +26,11 @@
 #include <spinlock.h>
 
 extern "C" {
-// port.c's (not in its header): each core's nesting, and the threshold its outermost entry saved.
+// port.c's (not in its header): each core's nesting, the threshold its outermost entry saved, and
+// how deep in interrupts it is.
 extern volatile UBaseType_t port_uxCriticalNesting[portNUM_PROCESSORS];
 extern volatile UBaseType_t port_uxOldInterruptState[portNUM_PROCESSORS];
+extern volatile UBaseType_t port_uxInterruptNesting[portNUM_PROCESSORS];
 }
 
 namespace {
@@ -115,4 +117,15 @@ extern "C" IRAM_ATTR void __wrap_vPortExitCriticalMultiCore(portMUX_TYPE *mux) {
                 if (nesting == 1) unmask(port_uxOldInterruptState[core]);
         }
         return;
+}
+
+// Whether the caller is an interrupt handler (portCHECK_IF_IN_ISR(), which every safe critical
+// section asks on entering and leaving, the switch's among them). The port's masks interrupts by
+// the threshold to read its core's count atomically (~64 cycles); MIE off does it in ~17: no
+// interrupt, so no switch to the other core between reading the core and the count (§18).
+extern "C" IRAM_ATTR BaseType_t __wrap_xPortInIsrContext(void) {
+        const uint32_t   status = RV_CLEAR_CSR(mstatus, MSTATUS_MIE);
+        const BaseType_t nesting = BaseType_t(port_uxInterruptNesting[rv_utils_get_core_id()]);
+        RV_SET_CSR(mstatus, status & MSTATUS_MIE);
+        return nesting;
 }

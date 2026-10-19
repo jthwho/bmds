@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <cstdint>
 #include <bmds/config.h>
 #include <bmds/deadline.h>
 #include <bmds/detail/platform.h>
@@ -16,10 +18,15 @@
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief A FreeRTOS counting semaphore.
+ * @brief A counting semaphore: its count an atomic word, a FreeRTOS semaphore
+ *        only for waiting.
  *
  * With `maxCount` 1 it is a binary "event happened" flag, the usual way an
- * ISR wakes a waiting task. The control block is embedded in the object, so
+ * ISR wakes a waiting task. A take with a count there, and a give nobody
+ * waits for, are one atomic operation; FreeRTOS is called only to wait and to
+ * wake a waiter (devplan/bench.md §20). Waiters wake in FreeRTOS's order
+ * (priority, then arrival), and a count given while some wait goes to them,
+ * not to a newcomer. The control block is embedded in the object, so
  * constructing one never touches the heap. The header is FreeRTOS-free
  * (opaque storage) so portable kernel code builds in the host tests.
  *
@@ -80,6 +87,9 @@ class Semaphore {
 
         private:
                 alignas(Detail::SyncStorageAlign) unsigned char _storage[Detail::SyncStorageBytes];
+                // The target's: the count, or minus the tasks waiting (the host's keeps its own).
+                std::atomic<int32_t> _count{0};
+                int32_t              _max = 0;
 };
 
 BMDS_NAMESPACE_END

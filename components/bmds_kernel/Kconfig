@@ -34,12 +34,15 @@ menu "BMDS kernel"
 
     config BMDS_PIPE_BYTES
         int "Pipe buffer size (bytes, PSRAM)"
-        default 4096
+        default 16384
         range 256 65536
         help
             Ring size of each pipe between pipeline stages. Must be a power
             of two. Allocated from PSRAM when the pipeline starts and freed
-            when it ends.
+            when it ends. At 4096 (a usual write's size) writer and reader
+            went in lockstep, two hand-offs a write: kernel.pipe 130-185 MB/s
+            by their timing; 16384 gives 262, 65536 216 (the ring past the
+            cache) (devplan/bench.md §21).
 
     config BMDS_TIMEZONE
         string "Kernel time zone (POSIX TZ string or zone name)"

@@ -15,10 +15,12 @@
 #include <cstdio>
 #include <cstring>
 #include <esp_cache.h>
+#include <hal/cache_ll.h>
 #include <bmds/bench.h>
 #include <bmds/blitchain.h>
 #include <bmds/display.h>
 #include <bmds/memory.h>
+#include <bmds/image.h>
 #include <bmds/ppa.h>
 #include <bmds/stopwatch.h>
 #include <bmds/surface.h>
@@ -602,6 +604,94 @@ namespace {
 
 } // namespace
 
+namespace {
+
+        // A full-screen L8 frame's conversion as the presenter does it (ProgramSurface::convert(),
+        // devplan/bench.md §19): Doom's 320x200 expanded 3 times across through the palette into
+        // BGR24 rows of a 30 KB strip in internal RAM, half of it at a time, each half written back
+        // from the cache for the 2D-DMA; ms a frame. Without the write-back, with it, and the
+        // picture in internal RAM instead of PSRAM.
+        Error runExpand(BenchContext &ctx) {
+                constexpr uint16_t Width = 320, Height = 200, Times = 3;
+                constexpr size_t   StripBytes = 1280 * 3 * 8, Half = StripBytes / 2;
+                constexpr size_t   RowBytes = size_t(Width) * Times * 3;
+                constexpr uint16_t PerHalf = uint16_t(Half / RowBytes);
+                auto *palette = static_cast<uint32_t *>(Memory::alloc(MemSpace::Internal, 256 * sizeof(uint32_t)));
+                auto *strip = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, StripBytes, 64));
+                Error err = palette != nullptr && strip != nullptr ? Error(Error::Ok) : Error(Error::NoMem);
+                for (uint32_t i = 0; err.isOk() && i < 256; ++i) palette[i] = i * 0x010203u;
+                auto *table = static_cast<uint32_t *>(
+                        Memory::alloc(MemSpace::Internal, Pixels::TripleTableWords * sizeof(uint32_t)));
+                if (table == nullptr) err = Error::NoMem;
+                if (err.isOk()) Pixels::makeTripleTable(palette, table);
+                for (const MemSpace space : {MemSpace::Psram, MemSpace::Internal}) {
+                        if (err.isError()) break;
+                        auto *pic = static_cast<uint8_t *>(Memory::allocAligned(space, size_t(Width) * Height, 64));
+                        if (pic == nullptr) {
+                                err = Error::NoMem;
+                                break;
+                        }
+                        for (size_t i = 0; i < size_t(Width) * Height; ++i) pic[i] = uint8_t(i * 7);
+                        // Into the strip through the cache (then written back, as the presenter
+                        // does), or past it (internal RAM's uncached alias: nothing to write back).
+                        enum Way {
+                                Expand,
+                                WrittenBack,
+                                Uncached,
+                                Table // expandTriple(), written back
+                        };
+                        for (const Way way : {Expand, WrittenBack, Uncached, Table}) {
+                                const bool writeBack = way == WrittenBack || way == Table;
+                                uint8_t   *into =
+                                        way == Uncached
+                                                  ? reinterpret_cast<uint8_t *>(CACHE_LL_L2MEM_NON_CACHE_ADDR(strip))
+                                                  : strip;
+                                char metric[40];
+                                std::snprintf(metric, sizeof(metric), "%s_%s_ms",
+                                              space == MemSpace::Psram ? "psram" : "internal",
+                                              way == Expand        ? "expand"
+                                              : way == WrittenBack ? "written_back"
+                                              : way == Table       ? "table"
+                                                                   : "uncached");
+                                err = ctx.measure(metric, "ms", BenchBetter::Lower, [&](double &out) {
+                                        Stopwatch watch;
+                                        int       k = 0;
+                                        for (uint16_t y = 0; y < Height; y = uint16_t(y + PerHalf), k ^= 1) {
+                                                const uint16_t rows =
+                                                        uint16_t(Height - y < PerHalf ? Height - y : PerHalf);
+                                                uint8_t *half = into + size_t(k) * Half;
+                                                for (uint16_t r = 0; r < rows; ++r) {
+                                                        const uint8_t *row = pic + size_t(y + r) * Width;
+                                                        if (way == Table)
+                                                                Pixels::expandTriple(row, Width, table,
+                                                                                     half + size_t(r) * RowBytes);
+                                                        else
+                                                                Pixels::expandIndexed(row, Width, palette,
+                                                                                      half + size_t(r) * RowBytes,
+                                                                                      Times);
+                                                }
+                                                if (writeBack)
+                                                        (void)esp_cache_msync(half, size_t(rows) * RowBytes,
+                                                                              ESP_CACHE_MSYNC_FLAG_DIR_C2M |
+                                                                                      ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+                                        }
+                                        out = double(watch.cycles()) / CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ / 1000.0;
+                                        return Error(Error::Ok);
+                                });
+                                if (err.isError()) break;
+                        }
+                        Memory::free(pic);
+                }
+                Memory::free(strip);
+                Memory::free(table);
+                Memory::free(palette);
+                return err;
+        }
+
+} // namespace
+
+BMDS_BENCH(displayExpand, "display.expand", runExpand, BenchQuick,
+           "A full-screen L8 frame converted as the presenter does: 320x200 to BGR24 at 3x (ms a frame)")
 BMDS_BENCH_WITH(displayPpaScale, "display.ppa.scale", runPpaScale, BenchQuick, PpaParams,
                 "The PPA's scaler and CLUT at the games' sizes, into a scratch picture (us a job)")
 BMDS_BENCH_WITH(displayPpaSoak, "display.ppa.soak", runPpaSoak, 0, SoakParams,

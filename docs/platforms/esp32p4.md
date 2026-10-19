@@ -139,11 +139,24 @@ until silicon v3; then test again.
   (`devplan/speech.md` §12, 2026-10-12).
 - **A software prefetch doesn't help:** a scalar load 192 bytes ahead in the blend's loop changed
   nothing (2026-10-10).
-- **The L2 cache's 128-byte line** (half the misses for streaming) couldn't be chosen with the
-  128 KB L2 on this ESP-IDF: `reconfigure` put `CONFIG_CACHE_L2_CACHE_LINE_64B` back each time,
-  with or without the size line. The likely cause: the choice and the line size's value share the
-  name `CACHE_L2_CACHE_LINE_SIZE` in `esp_system/port/soc/esp32p4/Kconfig.cache`. Not tried
-  further. BMDS's DMA allocations are already aligned to 128 bytes (`memory.cpp`).
+- **Use the L2 cache's 128-byte line** (`CONFIG_CACHE_L2_CACHE_LINE_128B`, in
+  `sdkconfig.defaults` since 2026-10-18; the same 128 KB). Streaming through the PSRAM fetches
+  half as many lines: Doom's timedemo 55 → 65 fps, PSRAM copies +69 %, the card through the VFS
+  +64 %, drawing +20-39 %, only a random dependent load 6 % slower (`devplan/bench.md` §19).
+  An earlier try had `reconfigure` put the 64-byte line back; with the line in
+  `sdkconfig.defaults`, a fresh configuration keeps 128 (checked). **Anything aligned "to a cache line"
+  must use 128**: `Memory::DmaAlign`. Two places had 64 and broke when the line grew: the
+  hardware JPEG decoder refused the buffers (ESP-IDF checks the cache's real line), and the
+  SoundFont loader's DMA-friendly placement silently fell back to the bounce buffer.
+- **The two cores share one L1 data cache** (their instruction caches are their own): what one
+  core writes, the other reads coherently through the cache. A write-back is for a DMA, never for
+  the other core.
+- **A write-back costs what it writes:** 64 KB of dirty lines in PSRAM ~250 µs, clean ~5 µs, an
+  invalidate ~7 µs (`memory.cache`). Each runs with interrupts masked for its whole length
+  (ESP-IDF holds a critical section around it), so a big dirty one is an interrupt latency.
+- **Internal RAM's uncached alias** (`CACHE_LL_L2MEM_NON_CACHE_ADDR`) is no way to skip a
+  write-back: writing a full-screen strip through it took twice as long (5.7 ms against 2.8 with
+  the write-back, `display.expand`).
 
 ## 4. The accelerators (`devplan/images.md`)
 
@@ -394,6 +407,24 @@ until silicon v3; then test again.
   task's stack pointer in its TCB when the interrupt didn't nest, and the frame there starts with
   `mepc`, then `ra` (`riscv/rvruntime-frames.h`). A tick hook reads them (`sysmon.md` §9);
   `xPortInterruptedFromISRContext()` is the nesting depth (above 1: the tick interrupted a handler).
+- **On SMP, `xTaskGetTickCountFromISR()` takes the kernel's lock** (it is not a plain read):
+  called at every switch it cost what a systimer read does. `xPortInIsrContext()` masks
+  interrupts by the threshold (~64 cycles) to read one word; BMDS's is MIE off (~17). Both are
+  called far more than their names suggest: every safe critical section asks the latter twice
+  (`devplan/bench.md` §18).
+- **FreeRTOS's mutex lets a give through when nobody holds it** (`configCHECK_MUTEX_GIVEN_BY_OWNER`
+  accepts a holder of NULL): an extra unlock passes silently. BMDS's own mutex ignores and logs it
+  (`devplan/bench.md` §21).
+- **A board that panics under a test looks like a hang from the host:** the ssh session just
+  drops. Check `uptime` and the log's `Reset:` line first; the panic's message is on the USB
+  console (pyserial's defaults open it without a reset). Hours went into a "hang" that was a
+  reboot (`devplan/bench.md` §21).
+- **Every yield is ESP-IDF's cross-core interrupt**, to the yielding core itself or the other,
+  and its handler and sender each took a spinlock for the reason word: two critical sections a
+  switch. `crosscore.cpp` replaces the module (an atomic reason word) by `--wrap`.
+- **The cycle counter stops while its core waits for an interrupt** (WFI, which only the idle task
+  does): fine for counting a task's run time between idle stretches, with the timer read again
+  when the idle task is switched out (`cputime.cpp`).
 - **The EMAC's sent interrupt on every frame** woke the driver's task 72 µs a frame; asking for it
   only now and then (a descriptor's IC bit) and reclaiming in the sender removed most of that.
 - **A task's core is fixed at its creation:** ESP-IDF's FreeRTOS has no `vTaskCoreAffinitySet()`

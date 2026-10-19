@@ -220,6 +220,7 @@ ProgramSurface::~ProgramSurface() {
         }
         Memory::free(_palette);
         Memory::free(_strip);
+        Memory::free(_triple);
         Memory::free(const_cast<uint32_t *>(_icon.pixels)); // the window is closed: nothing shows them
         Memory::free(const_cast<uint32_t *>(_largeIcon.pixels));
 }
@@ -401,7 +402,10 @@ Error ProgramSurface::setPalette(size_t first, Span<const uint32_t> rgb) {
         if (first > 256 || rgb.size() > 256 - first) return Error::Invalid;
         Mutex::Locker locker(_lock, WaitForever);
         for (size_t i = 0; i < rgb.size(); ++i) _palette[first + i] = rgb[i] & 0xffffffu;
-        if (rgb.size() > 0) _paletteChanged = true;
+        if (rgb.size() > 0) {
+                _paletteChanged = true;
+                _tripleStale.store(true, std::memory_order_release);
+        }
         return Error::Ok;
 }
 
@@ -998,9 +1002,18 @@ Error ProgramSurface::enterFullScreen(const VideoTiming &mode, bool own) {
         // 2D-DMA copies the other. Only while full screen: a window draws in the window manager's.
         _stripBytes = size_t(ScreenWidth) * Surface::BytesPerPixel * StripRows;
         _strip = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, _stripBytes, 64));
+        // L8 three times across (Doom's, Quake's): expandTriple()'s table, 8 KB, a quarter faster
+        // than looking the palette up (devplan/bench.md §19); without one if internal RAM is short.
+        if (_strip != nullptr && _config.format == Format::L8 && _layout.scaleX == 3) {
+                _triple = static_cast<uint32_t *>(
+                        Memory::alloc(MemSpace::Internal, Pixels::TripleTableWords * sizeof(uint32_t)));
+                _tripleStale.store(true, std::memory_order_release);
+        }
         void *memory = _strip != nullptr ? Memory::alloc(MemSpace::Psram, sizeof(Surface)) : nullptr;
         if (memory == nullptr) {
                 Memory::free(_strip);
+                Memory::free(_triple);
+                _triple = nullptr;
                 _strip = nullptr;
                 return Error::NoMem;
         }
@@ -1041,6 +1054,8 @@ Error ProgramSurface::enterFullScreen(const VideoTiming &mode, bool own) {
                 Memory::free(_fs);
                 _fs = nullptr;
                 Memory::free(_strip);
+                Memory::free(_triple);
+                _triple = nullptr;
                 _strip = nullptr;
                 return err;
         }
@@ -1068,6 +1083,8 @@ void ProgramSurface::leaveFullScreen() {
         _arrowAt.store(-1, std::memory_order_release);
         Memory::free(_strip); // the last copy from it waited for above
         _strip = nullptr;
+        Memory::free(_triple);
+        _triple = nullptr;
         pushPresented();
         if (_wm != nullptr && _window != 0) (void)_wm->update(_window);
         return;
@@ -1122,6 +1139,10 @@ void ProgramSurface::convert() {
                 const uint8_t *buf = _buffers[index];
                 int            k = 0;
                 Error          err;
+                if (_triple != nullptr && _tripleStale.exchange(false, std::memory_order_acq_rel)) {
+                        Mutex::Locker locker(_lock, WaitForever); // the palette as one
+                        Pixels::makeTripleTable(_palette, _triple);
+                }
                 for (size_t i = 0; i < changed.count && err.isOk(); ++i) {
                         const Rect    &r = changed.rects[i];
                         const size_t   rowBytes = size_t(on[i].width) * (wide ? 2 : Surface::BytesPerPixel);
@@ -1137,6 +1158,8 @@ void ProgramSurface::convert() {
                                         if (l.scaleX == 0)
                                                 Pixels::stretch(src, unsigned(bpp), _palette, uint32_t(on[i].x - l.x),
                                                                 on[i].width, _config.width, l.width, dst);
+                                        else if (_triple != nullptr)
+                                                Pixels::expandTriple(src + r.x, r.width, _triple, dst);
                                         else
                                                 expandRow(src + r.x * bpp, r.width, dst, l.scaleX);
                                 }

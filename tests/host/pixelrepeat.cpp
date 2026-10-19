@@ -76,6 +76,22 @@ TEST_CASE("Pixels::expandIndexed's word paths match a byte at a time") {
         }
 }
 
+TEST_CASE("Pixels::expandTriple matches expandIndexed at 3 times") {
+        std::vector<uint32_t> palette(256), table(Pixels::TripleTableWords);
+        for (uint32_t i = 0; i < 256; ++i) palette[i] = 0xff000000u | (i * 0x9e3779b1u >> 8); // the top byte ignored
+        Pixels::makeTripleTable(palette.data(), table.data());
+        uint8_t in[23];
+        for (size_t i = 0; i < sizeof(in); ++i) in[i] = uint8_t(i * 37 + 11);
+        for (size_t count = 0; count <= sizeof(in); ++count) {
+                for (size_t shift = 0; shift < 4; ++shift) { // the output's alignment
+                        std::vector<uint8_t> want(shift + 9 * count + 1, 0x5a), got(want);
+                        Pixels::expandIndexed(in, count, palette.data(), want.data() + shift, 3);
+                        Pixels::expandTriple(in, count, table.data(), got.data() + shift);
+                        CHECK(got == want);
+                }
+        }
+}
+
 TEST_CASE("Pixels::stretch scales a row across by any ratio, the nearest pixel") {
         uint16_t in[64];
         for (uint16_t i = 0; i < 64; ++i) in[i] = uint16_t(0x100 + i);

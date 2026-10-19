@@ -14,6 +14,7 @@
 #include <bmds/error.h>
 #include <bmds/image.h>
 #include <bmds/jpegheader.h>
+#include <bmds/memory.h>
 #include <bmds/mutex.h>
 #include <bmds/result.h>
 #include <bmds/span.h>
@@ -52,7 +53,7 @@ class JpegCodec {
                 static constexpr size_t MaxCodecs = 1;
 
                 /** @brief The alignment of a zero-copy buffer's address and size (a cache line). */
-                static constexpr size_t Align = 64;
+                static constexpr size_t Align = Memory::DmaAlign;
 
                 /** @brief A sink for encoded bytes (as `Png::write()`'s). */
                 using Sink = Error (*)(void *arg, ByteSpan data);

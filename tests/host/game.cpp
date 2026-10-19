@@ -171,6 +171,52 @@ TEST_CASE("Game canvas: blits, a source rectangle, the key, clipping") {
         CHECK(q.damage().empty());
 }
 
+TEST_CASE("Game canvas: keyed blits draw exactly what a pixel at a time would, each format") {
+        uint32_t seed = 7;
+        auto     next = [&seed] {
+                seed = seed * 1103515245u + 12345u;
+                return seed >> 16;
+        };
+        for (uint32_t format : {uint32_t(BMDS_PIXEL_L8), uint32_t(BMDS_PIXEL_RGB565), uint32_t(BMDS_PIXEL_BGR24)}) {
+                const uint32_t bpp = format == BMDS_PIXEL_L8 ? 1 : format == BMDS_PIXEL_RGB565 ? 2 : 3;
+                const uint32_t key = format == BMDS_PIXEL_L8 ? 0x5a : format == BMDS_PIXEL_RGB565 ? 0xf81f : 0xff00ff;
+                for (uint32_t density : {0u, 1u, 2u, 4u}) { // a pixel the key one in density (0: none)
+                        for (int32_t w = 1; w <= 13; ++w) {
+                                // The sprite: noise, some pixels the key, and a run of keys and one of others.
+                                std::vector<uint8_t> sheet(size_t(w) * 3 * bpp);
+                                for (size_t i = 0; i < sheet.size(); ++i) sheet[i] = uint8_t(next());
+                                for (int32_t i = 0; i < w * 3; ++i)
+                                        if (density != 0 && (next() % density == 0 || (i >= 4 && i < 8)))
+                                                for (uint32_t b = 0; b < bpp; ++b)
+                                                        sheet[size_t(i) * bpp + b] = uint8_t(key >> (8 * b));
+                                bmds_game_image_t image = {sheet.data(), uint32_t(w) * bpp,     w,  3,
+                                                           format,       BMDS_GAME_IMAGE_KEYED, key};
+                                for (int32_t x : {0, 1, 3}) {
+                                        Picture p(20, 4, format);
+                                        for (size_t i = 0; i < p.pixels.size(); ++i) p.pixels[i] = uint8_t(i * 13 + 1);
+                                        const std::vector<uint8_t> before = p.pixels;
+                                        bmds_canvas_blit(&p.canvas, x, 1, &image, nullptr);
+                                        bool same = true;
+                                        for (int32_t y = 0; y < 4; ++y)
+                                                for (int32_t c = 0; c < 20; ++c) {
+                                                        const size_t   at = (size_t(y) * 20 + c) * bpp;
+                                                        const bool     in = y >= 1 && c >= x && c < x + w;
+                                                        const uint8_t *src =
+                                                                in ? &sheet[(size_t(y - 1) * w + (c - x)) * bpp]
+                                                                   : nullptr;
+                                                        uint32_t v = 0;
+                                                        for (uint32_t b = 0; b < bpp && src != nullptr; ++b)
+                                                                v |= uint32_t(src[b]) << (8 * b);
+                                                        const uint8_t *want = in && v != key ? src : &before[at];
+                                                        same = same && std::memcmp(&p.pixels[at], want, bpp) == 0;
+                                                }
+                                        CHECK(same);
+                                }
+                        }
+                }
+        }
+}
+
 TEST_CASE("Game canvas: scaled blits, mirrored, keyed, clipped") {
         // A 2x2 sprite: 1 2 / 3 0, 0 the key.
         const uint8_t     sheet[] = {1, 2, 3, 0};

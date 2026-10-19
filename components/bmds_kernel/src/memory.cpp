@@ -81,8 +81,7 @@ namespace {
                 return freed != 0;
         }
 
-        // The largest cache line (L2, in front of the PSRAM).
-        constexpr size_t CacheLine = 128;
+        constexpr size_t CacheLine = Memory::DmaAlign;
 
         // A DMA buffer's size: whole cache lines, and one more. The heap keeps
         // the next block's link in the last word of a block (TLSF's

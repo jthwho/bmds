@@ -86,6 +86,49 @@ static int is_pixel(const uint8_t *p, uint32_t format, uint32_t pixel) {
         return (uint32_t)(p[0] | p[1] << 8 | p[2] << 16) == (pixel & 0xffffffu);
 }
 
+/* @p w pixels from @p from to @p to, but those that are @p key: as bytes per pixel @p bpp (1, 2, 3).
+   Word at a time for each format (a call per pixel was a quarter of RGB565's rate, bench.md §19). */
+static void copy_keyed_row(uint8_t *to, const uint8_t *from, int32_t w, uint32_t bpp, uint32_t key) {
+        int32_t i = 0;
+        if (bpp == 1) {
+                /* Four at a time: none the key (no zero byte in the XOR) stored whole, all the key
+                   skipped, else byte by byte. */
+                const uint32_t k = (key & 0xffu) * 0x01010101u;
+                for (; i + 4 <= w; i += 4) {
+                        uint32_t v;
+                        memcpy(&v, from + i, 4);
+                        const uint32_t x = v ^ k;
+                        if (((x - 0x01010101u) & ~x & 0x80808080u) == 0) {
+                                memcpy(to + i, &v, 4);
+                        } else if (x != 0) {
+                                for (int32_t j = 0; j < 4; ++j)
+                                        if (from[i + j] != (uint8_t)key) to[i + j] = from[i + j];
+                        }
+                }
+                for (; i < w; ++i)
+                        if (from[i] != (uint8_t)key) to[i] = from[i];
+                return;
+        }
+        if (bpp == 2) {
+                const uint16_t *f = (const uint16_t *)(const void *)from;
+                uint16_t       *t = (uint16_t *)(void *)to;
+                for (; i < w; ++i) {
+                        const uint16_t v = f[i];
+                        if (v != (uint16_t)key) t[i] = v;
+                }
+                return;
+        }
+        const uint8_t k0 = (uint8_t)key, k1 = (uint8_t)(key >> 8), k2 = (uint8_t)(key >> 16);
+        for (; i < w; ++i, from += 3, to += 3) {
+                const uint8_t b = from[0], g = from[1], r = from[2];
+                if (b != k0 || g != k1 || r != k2) {
+                        to[0] = b;
+                        to[1] = g;
+                        to[2] = r;
+                }
+        }
+}
+
 static int64_t area_of(edges_t e) {
         return is_empty(e) ? 0 : (int64_t)(e.x1 - e.x0) * (e.y1 - e.y0);
 }
@@ -267,22 +310,10 @@ void bmds_canvas_blit(bmds_canvas_t *canvas, int32_t x, int32_t y, const bmds_ga
         for (int32_t row = 0; row < d.y1 - d.y0; ++row) {
                 const uint8_t *from = image->pixels + (size_t)(s.y0 + row) * image->stride + (size_t)s.x0 * bpp;
                 uint8_t       *to = at(canvas, d.x0, d.y0 + row);
-                if ((image->flags & BMDS_GAME_IMAGE_KEYED) == 0) {
+                if ((image->flags & BMDS_GAME_IMAGE_KEYED) == 0)
                         memcpy(to, from, (size_t)w * bpp);
-                        continue;
-                }
-                if (bpp == 2) { /* RGB565: a word at a time, no call per pixel */
-                        const uint16_t *f = (const uint16_t *)(const void *)from;
-                        uint16_t       *t = (uint16_t *)(void *)to;
-                        const uint16_t  key = (uint16_t)image->key;
-                        for (int32_t i = 0; i < w; ++i) {
-                                const uint16_t v = f[i];
-                                if (v != key) t[i] = v;
-                        }
-                        continue;
-                }
-                for (int32_t i = 0; i < w; ++i, from += bpp, to += bpp)
-                        if (!is_pixel(from, canvas->format, image->key)) memcpy(to, from, bpp);
+                else
+                        copy_keyed_row(to, from, w, bpp, image->key);
         }
         damage_edges(canvas, d);
 }

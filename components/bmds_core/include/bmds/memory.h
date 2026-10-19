@@ -47,6 +47,14 @@ struct MemStats {
 class Memory {
         public:
                 /**
+                 * @brief The largest cache line of any configuration (the P4's L2, in
+                 *        front of the PSRAM: 64 or 128 bytes): a DMA buffer aligned to it
+                 *        in address and size is aligned for every cache (devplan/bench.md
+                 *        §19).
+                 */
+                static constexpr size_t DmaAlign = 128;
+
+                /**
                  * @brief Memory held for later that can be given back when an
                  *        allocation fails (the loader's image cache).
                  *

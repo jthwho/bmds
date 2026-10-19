@@ -40,8 +40,9 @@ CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 CONFIG_FREERTOS_RUN_TIME_COUNTER_TYPE_U64=y
 CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y
 # Thread-local pointer 1 holds a running program's state (bmds_loader), 2 the
-# interrupt the task's blocking calls wake on (Interrupt::current()).
-CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=3
+# interrupt the task's blocking calls wake on (Interrupt::current()), 3 how many
+# contended Mutexes have raised the task's priority (mutex.cpp).
+CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=4
 
 # --- SD card ----------------------------------------------------------------
 # Memory cards only: SDIO (IO cards) support is code BMDS has no use for.
@@ -66,3 +67,8 @@ CONFIG_GDMA_CTRL_FUNC_IN_IRAM=n
 # Update packages: the acceptance mode (keys/README.md). Dev accepts the in-repository dev key as
 # well as the release keys; a release image sets CONFIG_BMDS_UPDATE_KEYS_RELEASE=y.
 CONFIG_BMDS_UPDATE_KEYS_DEV=y
+
+# The L2 cache (in front of the PSRAM) with 128-byte lines, not 64: streaming through the PSRAM
+# fetches half as many lines. Doom's timedemo 55 -> 65 fps, PSRAM copies +69%, the card through
+# the VFS +64%, drawing +20-39%; a random dependent load 6% slower (devplan/bench.md §19).
+CONFIG_CACHE_L2_CACHE_LINE_128B=y

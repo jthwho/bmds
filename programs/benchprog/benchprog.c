@@ -373,7 +373,8 @@ static int run_images(void) {
         memset(&r, 0, sizeof(r));
         r.pixels = malloc(ImageW * ImageH * 3);
         r.file = malloc(ImageW * ImageH * 3 + 65536);
-        r.out = malloc(ImageW * ImageH * 3);
+        /* Aligned as image_info's `align` asks for a no-copy decode (128: the L2 cache's line). */
+        r.out = aligned_alloc(128, ImageW * ImageH * 3);
         if (r.pixels == NULL || r.file == NULL || r.out == NULL) return fail("malloc");
         for (int y = 0; y < ImageH; ++y) /* smooth with some noise: a photograph's kind of picture */
                 for (int x = 0; x < ImageW; ++x) {
@@ -546,6 +547,7 @@ static int surface_sample(void *arg, double *out) {
 static int run_surface(void) {
         static const struct surface_case cases[] = {
                 {"doom_l8_320x200_full", 320, 200, BMDS_PIXEL_L8, BMDS_SURFACE_FULL_SCREEN, 4, 3, 0},
+                {"doom_l8_fast_full", 320, 200, BMDS_PIXEL_L8, BMDS_SURFACE_FULL_SCREEN | BMDS_SURFACE_FAST, 4, 3, 0},
                 {"quake_l8_320x240_full", 320, 240, BMDS_PIXEL_L8, BMDS_SURFACE_FULL_SCREEN, 0, 0, 0},
                 {"l8_320x200_window", 320, 200, BMDS_PIXEL_L8, 0, 4, 3, 0},
                 {"blocks_565_640x360_full", 640, 360, BMDS_PIXEL_RGB565, BMDS_SURFACE_FULL_SCREEN, 0, 0, 0},
@@ -554,6 +556,10 @@ static int run_surface(void) {
         };
         const char *only = bmds_bench_param(&bench, "case", "");
         const long  seconds_ms = bmds_bench_param_long(&bench, "ms", 1000);
+        /* Paced (2 buffers): acquire() waits while the presenter still reads the older one, so
+           the program keeps at most a frame ahead, as a game. Flat out (3): it presents as fast as
+           buffers come, and the presents the presenter drops cost the system too (§19). */
+        const uint32_t buffers = bmds_bench_param_long(&bench, "pace", 1) != 0 ? 2 : 3;
         if (!bmds_sys_has(BMDS_SYS_SURFACE_OPEN)) return BMDS_BENCH_SKIPPED;
         for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); ++k) {
                 const struct surface_case *c = &cases[k];
@@ -562,12 +568,16 @@ static int run_surface(void) {
                                              .width = c->width,
                                              .height = c->height,
                                              .format = c->format,
-                                             .buffers = 3,
+                                             .buffers = buffers,
                                              .flags = c->flags,
                                              .aspect_x = c->aspect_x,
                                              .aspect_y = c->aspect_y,
                                              .title = "benchprog"};
                 const int             fd = bmds_surface_open(&cfg);
+                if (fd == -BMDS_ENOMEM && (c->flags & BMDS_SURFACE_FAST) != 0) {
+                        printf("%s: skipped, no internal RAM for its buffers\n", c->name);
+                        continue;
+                }
                 if (fd < 0) {
                         printf("%s: %s\n", c->name, strerror(-fd));
                         return fd == -BMDS_ENODEV ? BMDS_BENCH_SKIPPED : 1;
@@ -578,7 +588,7 @@ static int run_surface(void) {
                 r.width = info.picture_width;
                 r.height = info.picture_height;
                 r.bpp = c->format == BMDS_PIXEL_L8 ? 1 : c->format == BMDS_PIXEL_RGB565 ? 2 : 3;
-                for (uint32_t b = 0; b < 3; ++b) {
+                for (uint32_t b = 0; b < buffers; ++b) {
                         bmds_surface_buffer_t buf = {.size = sizeof(buf), .index = b};
                         if (bmds_surface_buffer(fd, &buf) != 0) return fail("buffer");
                         r.pixels[b] = buf.pixels;

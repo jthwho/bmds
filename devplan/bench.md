@@ -742,3 +742,218 @@ a program's core in the benchmarks.
   full-screen Doom size at 60 fps (49 on core 1). Blocks: the game's thread on core 0, its
   audio on core 1. `kernel.syscall` (unflagged) still on core 1. Host tests cover the flag's
   parsing (an unknown bit is still refused).
+
+## 18. Tuning round 3: the task switch (2026-10-18)
+
+The user's list after §17, in order: the task switch, the full-screen L8 conversion, the card
+through the VFS, a mutex with a fast path, keyed blits.
+
+**Where a switch's time goes.** A temporary probe stamped the cycle counter at each stage of
+`kernel.switch`'s same-core round trip (a give that wakes a higher-priority task, its pong, the
+take that blocks), by `--wrap` of `vPortYield()`, `_global_interrupt_handler()`,
+`vTaskSwitchContext()` and the run-time clock. Of ~6,800 cycles a round trip (two switches, two
+gives, two takes), each switch was:
+
+| Stage | Cycles |
+|---|---:|
+| `vPortYield()` to the interrupt's C handler (the send, the latency, the registers saved, `rtos_int_enter`) | 520 |
+| the cross-core interrupt's handler | 320 |
+| back to the switch | 130 |
+| `vTaskSwitchContext()`: the kernel's lock / the run-time clock / choosing the task | 240 / 270 / 350 |
+| the registers restored, out of the interrupt, into the waking take's tail | ~550 |
+
+The semaphores' own code (FreeRTOS's queues: a give up to its yield ~740, a take up to its block
+~800) is the rest: item 4's subject.
+
+**Changed:**
+
+- **The cross-core interrupt is ours** (`crosscore.cpp`). Every yield is this interrupt, to its
+  own core or the other. IDF keeps each core's reasons behind a spinlock, taken by the sender and
+  again by the handler: two critical sections a switch. Here they are an atomic word (`amoor` to
+  send, `amoswap` to take); `esp_crosscore_int_init()` and the senders are wrapped, so IDF's
+  handler is never installed. The interrupt and its register are IDF's (`vPortYield()` spins on
+  the register until the switch). 838 → 585 cycles for the send and the handler.
+- **The run-time clock counts cycles** (`cputime.cpp`). FreeRTOS reads it at every switch; the
+  systimer read was ~240 cycles. The cycle counter stops while its core waits for an interrupt,
+  which only the idle task does, so the timer is read when the idle task is switched out and the
+  time is counted in cycles between: each read moves the whole µs into the base and keeps the
+  remainder, so nothing drifts (the CPU's clock and the timer's share the crystal). A tick hook
+  moves a base more than a second old on, before the 32-bit counter can wrap. A first try that
+  bounded the base by `xTaskGetTickCountFromISR()` saved nothing: on SMP that takes the kernel's
+  lock. 270 → ~140 cycles (the probe's own stamps included). Checked: every task's time on both
+  cores over 10 s, the idle tasks' included, adds up to 20.02 s.
+- **`xPortInIsrContext()` is ours** (`critical.cpp`). Every safe critical section asks it on
+  entering and leaving, the switch's lock among them; the port masks interrupts by the threshold
+  (~64 cycles) to read its core's count atomically. MIE off does it in ~17: no interrupt, so no
+  move to the other core between reading the core and the count.
+
+**Measured** (`kernel.switch`, round trips, without the probe):
+
+| | before (§16) | after |
+|---|---:|---:|
+| same core | 16.5 µs | **13.2 µs** |
+| across cores | 11.6 µs | **8.3 µs** |
+
+`kernel.locks` (no switch) is unchanged, as expected: 2.85 µs a mutex pair, 1.85 a semaphore pair.
+
+**Not changed:**
+
+- **The hardware stack guard** (`CONFIG_ESP_SYSTEM_HW_STACK_GUARD`) reprograms the debug
+  assist's bounds at every interrupt's entry and exit. Its cost wasn't measured: turning a
+  safety feature off is the user's decision.
+- **Interrupt masking by MIE instead of the threshold** would cost ~17 cycles where the
+  threshold costs ~45, but it would also mask the interrupts above the threshold, the interrupt
+  watchdog's among them (which found §16's bug). Kept.
+- **Choosing the task** (~350 cycles) is FreeRTOS's SMP scan of the ready lists: not ours to
+  change without patching FreeRTOS.
+
+## 19. Tuning round 3, continued: the display's conversion, the L2 cache, the card, keyed blits (2026-10-18)
+
+**`surface.present` was measuring itself.** Its program presented as fast as buffers came back:
+~6,800 presents a second, of which the presenter showed 60, each present writing the program's
+whole buffer back from the cache. That traffic slowed the presenter on the other core, and the
+"system's CPU a frame" figure (11.4 ms for a Doom-sized frame) was half the benchmark's own
+doing. It now runs **paced** by default (`pace=1`): two buffers, so `acquire()` waits while the
+presenter reads the older one and the program stays a frame ahead at most, as a game does
+(6.7 ms). `pace=0` keeps the old flat-out runs. (`BMDS_EVENT_PRESENTED` was no use for pacing:
+it says the presentation's geometry changed, not that a frame was shown.) A
+`doom_l8_fast_full` case (the buffers in internal RAM) skips itself while internal RAM can't
+hold them, which is usual with the desktop up.
+
+**Where a full-screen L8 frame's time goes** (`prof`, paced): two thirds in expanding Doom's
+320×200 three times across through the palette into BGR24 rows, the rest in the strip's cache
+write-back, IDF's 2D-DMA channel connects (~0.35 ms) and waits. The expansion took 2.6 ms
+alone (`display.expand`, new) but ~4.3 ms in place: the scan and the 2D-DMA keep the PSRAM busy
+while it reads the program's buffer.
+
+**Changed:**
+
+- **`Pixels::expandTriple()`**: three times across from a table of eight pre-shifted words per
+  palette entry (`makeTripleTable()`, 8 KB): each of the nine words four pixels make is one
+  table word or two ORed, so 12 loads, 3 ORs and 9 stores where the palette lookup took ~55
+  instructions. 2.86 → 2.15 ms a frame (`display.expand`, write-back included); host-tested
+  against `expandIndexed()` byte for byte. `ProgramSurface` allocates the table only while an
+  L8 surface is full screen at 3× (Doom's and Quake's sizes), rebuilds it in the presenter when
+  the palette changes, and does without when internal RAM is short.
+- **The L2 cache's line is 128 bytes, not 64** (`CONFIG_CACHE_L2_CACHE_LINE_128B`, in
+  `sdkconfig.defaults`; same 128 KB). Streaming through the PSRAM fetches half as many lines.
+  Measured on one firmware, the whole quick suite both ways:
+
+  | | 64-byte lines | 128-byte lines |
+  |---|---:|---:|
+  | Doom's timedemo | 55.1 fps | **65.5 fps** |
+  | `memory.traffic` PSRAM copy / set | 31.8 / 44.8 MB/s | **53.8 / 63.7** |
+  | `fs.sequential` (`/tmp`) read / write | 62.8 / 31.1 MB/s | **103 / 44.9** |
+  | `game.draw` fills, blits | | **+20 to +39 %** |
+  | `simd.swap24`, `simd.blend` (PSRAM) | | **-34 to -38 %** time |
+  | a Doom-sized full-screen frame, the system's | 6.1 ms | **5.6 ms** |
+  | Blocks' RGB565 full screen, the system's | 16.4 ms | **12.4 ms** |
+  | `memory.latency` past the cache (random) | 797 ns | 842 ns (+6 %) |
+
+  Only random dependent loads got slower, as expected. Two things assumed 64 and broke or slowed:
+  `JpegCodec::Align` (the hardware decoder refused 64-aligned buffers: `images.codecs` failed)
+  and the SoundFont loader's phase trick (large sample blocks placed at the file position mod
+  the line, so FatFs's whole-sector reads go straight to DMA). Both now use the new
+  `Memory::DmaAlign` (128, the largest line any configuration has); everything else already
+  aligned DMA buffers to 128. A program's no-copy decode buffer needs 128 now, which is what
+  `bmds_image_info_t::align` says; `benchprog images` asked for 64 by luck and now asks for it.
+- **The card's bounce buffer is 64 KB, not 4 KB** (`CONFIG_BMDS_SD_BOUNCE_BYTES`). A read into a
+  buffer the SD host can't DMA to (not cache-line aligned, which `malloc`'s and Doom's zone's
+  usually aren't) went through it a card command per 4 KB. Reading a file through the VFS:
+  4.9 MB/s at 4 KB, 9.4 at 32 KB, **10.1 at 64 KB** (raw aligned reads: 14.4). 60 KB more PSRAM.
+- **Keyed blits** in `libbmdsgame` (`copy_keyed_row()`): L8 four pixels a word (a word with no
+  key byte stored whole, one all key skipped, by the usual zero-byte test on the XOR), BGR24
+  three bytes inline, where each pixel cost a call. Host-tested against a pixel at a time in all
+  three formats. `game.draw`: L8 keyed 5.6 → **30.7** Mpx/s, BGR24 keyed 4.1 → **15.2**
+  (RGB565's 24.6 unchanged).
+
+**Tried and not kept:** writing the strip through internal RAM's uncached alias
+(`CACHE_LL_L2MEM_NON_CACHE_ADDR`), to skip its write-back: twice as slow (5.7 ms a frame).
+The cache's manual preload (`Cache_Start_L1_DCache_Preload`) for the program's rows: the ROM
+says not for applications, and the D-cache is shared by both cores; not tried.
+
+**New benchmarks:** `memory.cache` (a write-back of dirty and clean lines and an invalidate, by
+size: 64 KB dirty in PSRAM ~250 µs, clean ~5 µs; each runs with interrupts masked),
+`display.expand`, `surface.present`'s `pace` and `doom_l8_fast_full`.
+
+## 20. Semaphores with a fast path; the mutex's design (2026-10-18)
+
+**`Semaphore` counts in an atomic word** (`semaphore.cpp`). The count is `_count`: above 0 the
+counts there, at or below 0 minus the tasks waiting. A take that finds a count is one
+compare-and-swap; one that takes the count to 0 or below waits on the FreeRTOS semaphore, which
+now only passes wakes. A give that finds it below 0 gives that wake, else only increments it
+(up to the maximum). A waiter that times out takes its place back unless a give already counted
+it (the count no longer below 0): that give's wake is then its, and it takes it. Waiters still
+wake in FreeRTOS's order, and a count given while some wait goes to them, not to a newcomer.
+
+| | before | after |
+|---|---:|---:|
+| `kernel.locks` semaphore give + take | 1,840 ns | **261 ns** |
+| `kernel.switch` same core / across | 13.2 / 8.3 µs | **11.6 / 8.6 µs** |
+
+**`kernel.sync`** (new) checks it under contention: six workers on both cores, at the shell's
+priority and below, take a semaphore with 1-2 ms timeouts and lock a mutex around a counter;
+it fails if more ever hold the semaphore than it has counts, if an increment is lost, or if the
+counts aren't all back. Two phases: 3 counts held briefly (216,000 operations a second, ~20
+timeouts), and 1 count held long (9,600 a second, ~32,000 timeouts in 11 s, the timeout path's
+races). A first version ran its workers above the shell, which then never ran again to stop
+them: a fault of the benchmark, found because it hung. `progtest` threads, spawn, poll, signals,
+timers and exec pass on it.
+
+**The mutex** was left for the user's decision (its priority inheritance); done in §21.
+
+## 21. The mutex with a fast path (2026-10-19, the user's go-ahead)
+
+**The design** (`mutex.cpp`): `_word` is the holder's task handle, bit 0 "contended". Lock is a
+compare-and-swap from 0 to the caller's handle, unlock from it back to 0; the caller's handle
+comes from `pxCurrentTCBs` read with MIE off (`xTaskGetCurrentTaskHandle()` masks by the
+threshold). Either fails only when bit 0 is set or the mutex is held, and then takes the mutex's
+spinlock:
+
+- **A waiter** sets bit 0 (so the holder's unlock fails its compare-and-swap), counts itself,
+  raises the holder with `xTaskPriorityInherit()` (which needs only the handle), and sleeps on a
+  FreeRTOS semaphore that only passes wakes. Woken, it tries again: a task arriving meanwhile may
+  have taken it, as with FreeRTOS's mutex.
+- **An unlock with bit 0** frees it (bit 0 kept while tasks wait), wakes one, and lowers itself.
+- **Lowering:** FreeRTOS lowers a raised task in `xTaskPriorityDisinherit()` when its count of
+  mutexes held reaches 0, a count kept in a critical section at every take, which the fast path
+  doesn't pay. So thread-local pointer 3 (`CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS` 4)
+  counts the mutexes whose waiters raised the task, one count a mutex; its unlock of the last
+  counts FreeRTOS's up and down (`pvTaskIncrementMutexHeldCount()`, then disinherit), which lowers
+  it then, or later if it also holds a FreeRTOS mutex. Raising, counting and lowering all happen
+  under one global spinlock, so a task raised for a second mutex is never lowered for the first in
+  between. This closes the gap §20 named: a task holding two contended mutexes stays raised until
+  it unlocks the last.
+- **Two differences from FreeRTOS's mutex**, both documented in `mutex.h`: a waiter that times
+  out leaves the holder raised until it unlocks (FreeRTOS lowers it to the next waiter at once:
+  `kernel.sync`'s check shows the old mutex doing that), and an unlock of a mutex nobody holds is
+  ignored and logged once with the caller (FreeRTOS's owner check lets it through silently).
+
+**Checked:** `kernel.sync` now first checks inheritance by the priorities it sees (one waiter at
+6 raises a holder at 2; a second at 8 on another mutex raises it to 8; it stays at 8 when it
+unlocks the first and goes back to 2 at the second; a waiter that gives up leaves it raised until
+the unlock), then the contention phases. `progtest` threads, spawn, poll, signals, timers and
+exec pass; the quick suite, `surface.present` and Doom run.
+
+**The bug found on the way:** the slow path took a free mutex by a store, with its spinlock held,
+but the fast path doesn't take that spinlock: with bit 0 clear, another core's compare-and-swap
+could take the mutex between the load and the store, and the store made two holders. The second
+holder's unlock then found someone else's handle (`configASSERT`, a panic). It showed as the ssh
+session dropping a few seconds into `kernel.sync` (the board panicked and rebooted), then as a
+boot loop (the same race in the `home` thread at boot) until the update counter's recovery mode
+took over; found from the console (`assert failed: Mutex::unlockSlow`) and the warning's caller.
+Both slow-path takes are compare-and-swaps now. Hours went first into theories that fitted part of
+it (starvation, a lost wake): a reboot looks like a hang from the outside, and the uptime said so.
+
+**The pipe:** `kernel.pipe` fell from ~185 to ~130 MB/s with the fast mutex, though no mutex in it
+was contended (under 2,000 waits in 4,096 writes). Its ring was 4 KB, one write's worth: writer
+and reader went in lockstep, two hand-offs a write, and whether a hand-off moved a whole write or
+a piece depended on how the two threads' timing fell. The ring is 16 KB now
+(`CONFIG_BMDS_PIPE_BYTES`): **253-262 MB/s** (64 KB: 216, the ring past the cache).
+
+| | before (§20) | after |
+|---|---:|---:|
+| `kernel.locks` mutex lock + unlock | 2,800 ns | **380 ns** |
+| `kernel.syscall` `getppid()` (the process table's mutex) | 5.44 µs | **3.02 µs** |
+| `kernel.sync` 3 counts, held briefly | 216,000 /s | **648,000 /s** |
+| `kernel.pipe` | 195 MB/s | **253 MB/s** (16 KB ring) |
