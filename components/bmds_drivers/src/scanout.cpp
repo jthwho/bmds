@@ -842,8 +842,12 @@ void Scanout::supervise() {
                         }
                         if (esp_timer_get_time() - _fallbackUs >= FallbackProbationUs) _fallback = nullptr;
                 }
-                if (_stalled.exchange(false, std::memory_order_acquire) || underran) {
-                        resync();
+                const bool stalled = _stalled.exchange(false, std::memory_order_acquire);
+                if (stalled || underran) {
+                        // A stalled DMA has stopped already; after an underrun it still runs, and
+                        // is stopped at the frame's end (stopped mid-block it stuck, or came back
+                        // with the picture offset: §5g).
+                        resync(!stalled);
                         // What the restart itself raised (the output off and on) is no news.
                         _underran.store(false, std::memory_order_relaxed);
                         resyncUs = esp_timer_get_time();
@@ -930,9 +934,25 @@ bool Scanout::haltAtFrameEnd() {
         return _halted.load(std::memory_order_acquire);
 }
 
+Error Scanout::starve(unsigned int us) {
+        if (!_running || _hw == nullptr) return Error::InvalidState;
+        dw_gdma_ll_channel_suspend(&DW_GDMA, _hw->channel, true);
+        esp_rom_delay_us(us);
+        dw_gdma_ll_channel_suspend(&DW_GDMA, _hw->channel, false);
+        return Error::Ok;
+}
+
 // The stream restarted from the frame's first block (stalled, or the bridge ran dry); the link
-// rebuilt if the DMA won't stop.
-void Scanout::resync() {
+// rebuilt if the DMA won't stop. @p atFrameEnd: the DMA (still running) halted at the frame's
+// end first, as for a switch of surface (if it doesn't, it is stopped where it is).
+void Scanout::resync(bool atFrameEnd) {
+        if (atFrameEnd) {
+                // Out of step since the underrun, the bridge is still owed part of its frame when
+                // the DMA halts at the end of its own, and runs dry again: no news (stopStream()
+                // clears it and unmasks the interrupt).
+                mipi_dsi_brg_ll_enable_interrupt(_hw->hal.bridge, MIPI_DSI_BRG_LL_EVENT_UNDERRUN, false);
+                (void)haltAtFrameEnd();
+        }
         if (!stopStream()) {
                 (void)rebuild(true);
                 return;

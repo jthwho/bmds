@@ -288,6 +288,29 @@ rebuild remaining for a new mode (`display/fullscreen-modes`) or a DMA that won'
   wait for the frame's end), 119-120 frames in each 2 s after, 0 underruns, stalls, resyncs or
   rebuilds. `display stats` counts them: "N pictures switched to (M with the link up)".
 
+## 5g. The resync after an underrun (2026-10-19)
+
+The user saw the desktop come up shifted (the panel near the bottom) on a boot that counted
+1 underrun and 1 resync: the resync hadn't put the picture back at the top.
+
+- **The resync stopped the DMA wherever it was:** mid-block after an underrun, since the DMA
+  still runs then. §5f found that a stop mid-block leaves the DMA's handshake with the bridge
+  stuck. Here, an underrun made on purpose resynced and then stuck, and the watchdog rebuilt the
+  link (the monitor blanked). The boot's resync came back without sticking, but with the
+  picture offset.
+- **Now as a switch of surface does it** (§5f): `haltAtFrameEnd()` first, so the DMA stops by
+  itself after the frame's last block, then `stopStream()` and `startStream()` at the top. A
+  stall's resync (the DMA stopped already) is unchanged.
+- **The underrun interrupt masked meanwhile:** out of step since the underrun, the bridge is
+  still owed part of its frame when the DMA halts and runs dry once more. That counted 2 underruns
+  for each one; `stopStream()` clears it and unmasks.
+- **`display underrun [US]`** makes one: it suspends the scan's DMA (at a burst's end) for US µs
+  (300 by default), and the bridge runs dry.
+- **Measured:** before, one made underrun led to a resync, a stuck stream and a rebuild. After,
+  30 made underruns (60 µs to 2 ms) gave 30 resyncs, 0 stalls and 0 rebuilds; a switch of surface
+  afterwards counted 0 underruns. The user ran `display underrun` many times while watching:
+  the picture came back at the top every time, never shifted.
+
 ## 6. Later steps (outline)
 
 Superseded for text by `windows.md` (2026-10-05): a desktop with windows, the terminal a program in one.

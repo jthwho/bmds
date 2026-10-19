@@ -563,6 +563,26 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // `display underrun [US]`: the bridge starved on purpose (300 µs by default), to test that
+        // the resync puts the picture back at the top.
+        int runUnderrun(CommandContext &ctx, const Args &args) {
+                Display *d = running(ctx);
+                if (d == nullptr) return Shell::ExitFailure;
+                unsigned int us = 300;
+                if (args.size() == 3) {
+                        char         *end = nullptr;
+                        unsigned long v = std::strtoul(args[2], &end, 10);
+                        if (end == args[2] || *end != '\0' || v == 0 || v > 20000) return ctx.usage();
+                        us = unsigned(v);
+                }
+                const Error err = d->scanout().starve(us);
+                if (err.isError()) {
+                        ctx.eprintf("display: underrun: %s\n", err.desc());
+                        return Shell::ExitFailure;
+                }
+                return Shell::ExitSuccess;
+        }
+
         int runDisplay(CommandContext &ctx) {
                 const Args args = ctx.args();
                 if (args.size() == 1) return showStatus(ctx);
@@ -582,6 +602,7 @@ namespace {
                 if (std::strcmp(what, "fill") == 0) return runFill(ctx, args);
                 if (std::strcmp(what, "ppa") == 0) return detail::runDisplayPpa(ctx);
                 if (std::strcmp(what, "rows") == 0) return detail::runDisplayRows(ctx);
+                if (args.size() <= 3 && std::strcmp(what, "underrun") == 0) return runUnderrun(ctx, args);
                 return ctx.usage();
         }
 
@@ -630,12 +651,13 @@ BMDS_SHELL_COMMAND(
         "WxH@HZ [lanes=N seconds=N settle=N dds=N min=MHZ vsync=N "
         "hsync=N hback=N]|fill X Y W H RRGGBB|"
         "ppa|rows N "
-        "[stripes] [irq K]]",
+        "[stripes] [irq K]|underrun [US]]",
         "Show the HDMI bridge and the monitor; 'edid' decodes the monitor's EDID ('raw': its bytes), "
         "'scan' lists the bus, 'start' shows surface 0 (sysconf's display/mode and display/buffering), "
         "'test' and 'fill' draw on it, 'try' shows a test picture in another mode for a while, "
         "'ppa' checks the PPA (its speed: 'bench run display'); 'link' sets the DSI link's options, 'dsi' shows the "
         "DSI host's and "
-        "bridge's registers by field and sets them, 'chip' the HDMI bridge chip's (test aids)")
+        "bridge's registers by field and sets them, 'chip' the HDMI bridge chip's, 'underrun' starves the bridge "
+        "for US microseconds (300) to test the resync (test aids)")
 
 BMDS_NAMESPACE_END

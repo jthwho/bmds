@@ -198,6 +198,16 @@ class Scanout {
                 /** @brief Returns the counters. */
                 Stats stats() const;
 
+                /**
+                 * @brief Holds the DMA (suspended at a burst's end) for @p us microseconds, so the
+                 *        bridge runs dry: an underrun on purpose, to test the resync
+                 *        (`display underrun`).
+                 * @return `Ok`, or `InvalidState` if not sending.
+                 * @par Thread Safety
+                 * Not with `start()` or `stop()`; the supervisor may rebuild the link meanwhile.
+                 */
+                Error starve(unsigned int us);
+
         private:
                 struct Hardware; // the IDF handles
                 struct ItemList; // the DMA's descriptors
@@ -230,7 +240,7 @@ class Scanout {
                 bool        haltAtFrameEnd(); // the DMA stopped by itself at the frame's end (false: it didn't)
                 bool        stopStream();     // the DPI output and the DMA stopped (false: the DMA won't)
                 void        startStream();    // and started again at the frame's top
-                void        resync();
+                void        resync(bool atFrameEnd);
                 Error       rebuild(bool recovery); // the link anew (@p recovery: a stuck one's, counted)
                 void        fallBack();
                 void        stopHardware();
