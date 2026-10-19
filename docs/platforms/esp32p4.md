@@ -154,6 +154,15 @@ until silicon v3; then test again.
 - **A write-back costs what it writes:** 64 KB of dirty lines in PSRAM ~250 µs, clean ~5 µs, an
   invalidate ~7 µs (`memory.cache`). Each runs with interrupts masked for its whole length
   (ESP-IDF holds a critical section around it), so a big dirty one is an interrupt latency.
+- **The kernel runs cold after a program's start:** the firmware runs from flash (DIO, 80 MHz)
+  through the 128 KB L2, and a launch's 128 KB copy of private pages and the program's run push it
+  out. In `exec()` a `Vfs::stat()` took 1,183 µs, then 360 µs each repeated straight after; every
+  step of a launch pays the same way (`devplan/programs.md` §19). QIO flash would halve a miss's
+  cost (not tried: it needs the bootloader flashed).
+- **The AXI-GDMA is no faster way to copy PSRAM to PSRAM in 64 KB pieces:** copying a launch's
+  two private pages with `esp_async_memcpy()` (32 KB transfers, a zero page as the bss's source)
+  took ~8 ms against the CPU's 2.1 ms. The steps after it ran ~0.6 ms faster with the caches left
+  alone, which doesn't pay for it (2026-10-19, `devplan/programs.md` §19).
 - **Internal RAM's uncached alias** (`CACHE_LL_L2MEM_NON_CACHE_ADDR`) is no way to skip a
   write-back: writing a full-screen strip through it took twice as long (5.7 ms against 2.8 with
   the write-back, `display.expand`).
@@ -517,6 +526,12 @@ until silicon v3; then test again.
     reset (`log.cpp` wraps `esp_restart_noos`).
 - **Read the driver before trusting it with a DMA:** what it syncs, when, and what it reports at
   a buffer's end (the JPEG encoder above, the USB-Serial/JTAG FIFO in `docs/HARDWARE.md`).
+- **`esp_random()` costs ~56 µs a word, and more:** it waits 14 × the CPU's MHz APB cycles
+  since the last word (the P4's tested sampling rate), and asks the clock tree for the CPU and APB
+  frequencies on every call, which reads the PLL's settings over the analog I2C bus in critical
+  sections (`regi2c_ctrl_read_reg_mask` in profiles). 32 bytes took ~0.9 ms. For a word now and
+  then, read `WDEV_RND_REG` directly (`Detail::randomWord()`); the pool takes 32 paced bytes at
+  most once a second (`devplan/random.md` §3).
 - **`esp_timer_get_time()` divides in software:** it reads the systimer, then converts its 16 MHz
   ticks to µs with the ROM's `systimer_ticks_to_us()`, a 64-bit division with no hardware help.
   BMDS wraps it (`__wrap_esp_timer_get_time` in `platform.cpp`) with a shift by 4: 794 → 672 ns.

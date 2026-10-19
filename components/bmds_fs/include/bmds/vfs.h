@@ -613,6 +613,20 @@ namespace Vfs {
          */
         Result<String> realPath(StringView path, const Context &context);
 
+        /** @brief What `resolve()` finds. */
+        struct Resolved {
+                        String              path;              ///< As `realPath()` gives it.
+                        FileInfo            info;              ///< As `stat()` gives it.
+                        const ProgramEntry *program = nullptr; ///< As `builtinProgram()` gives it.
+        };
+
+        /**
+         * @brief Looks @p path up once for what running it needs: `realPath()`, `stat()` and
+         *        `builtinProgram()` together (`devplan/programs.md` §19).
+         * @return What it names, or `NotExist`, `TooManyLinks`, ...
+         */
+        Result<Resolved> resolve(StringView path, const Context &context);
+
         /** @brief Opens a directory for listing. */
         Result<Directory> openDirectory(StringView path, const Context &context);
 

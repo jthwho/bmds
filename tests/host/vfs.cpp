@@ -436,6 +436,15 @@ TEST_CASE("Vfs: /bin lists the programs built in, read-only") {
         CHECK(Vfs::symlink("/bin/sh", "/ram0/p0/mysh", Root).isOk());
         CHECK(Vfs::builtinProgram("/ram0/p0/mysh", Root) == &TestPrograms[1]);
         CHECK(Vfs::builtinProgram("/ram0/p0", Root) == nullptr);
+        // resolve(): the same, with the path followed to it.
+        {
+                auto [found, err] = Vfs::resolve("/ram0/p0/mysh", Root);
+                REQUIRE(err.isOk());
+                CHECK(found.program == &TestPrograms[1]);
+                CHECK(found.path == "/bin/sh");
+        }
+        CHECK(Vfs::resolve("/ram0/p0", Root).value().program == nullptr);
+        CHECK(Vfs::resolve("/bin/ls", Root).error() == Error::NotExist);
         bmds::BuiltinPrograms::detail::setForHost(bmds::Span<const bmds::ProgramEntry>());
         CHECK(list("/bin").empty());
 }
@@ -970,6 +979,34 @@ TEST_CASE("Vfs: symbolic links") {
                 CHECK(Vfs::remove("/ram0/p0/e", Root).isOk());
                 CHECK(Vfs::stat("/ram0/p0/data/notes.txt", Root).isOk());
                 CHECK(Vfs::stat("/ram0/p0/e", Root).error() == Error::NotExist);
+
+                // resolve(): realPath(), stat() and the built-in program in one lookup.
+                {
+                        put("/ram0/p0/bin/sed", "SED");
+                        auto [found, err] = Vfs::resolve("awk", Vfs::Context{"/ram0/p0/bin", nullptr});
+                        REQUIRE(err.isOk());
+                        CHECK(found.path == "/ram0/p0/bin/busybox");
+                        CHECK(found.program == nullptr);
+                        const FileInfo st = Vfs::stat("/ram0/p0/bin/awk", Root).value();
+                        CHECK(found.info.id == st.id);
+                        CHECK(found.info.device == st.device);
+                        CHECK(found.info.size == st.size);
+                        CHECK(Vfs::resolve("/ram0/p0/bin/nope", Root).error() == Error::NotExist);
+                        CHECK(Vfs::resolve("/ram0/p0/loop1", Root).error() == Error::TooManyLinks);
+                }
+                // A link's target is kept between lookups (devplan/programs.md §19), and not past
+                // a change: a link replaced at once by one of the same size is read again.
+                put("/ram0/p0/bin/toolbox", "TB");
+                CHECK(Vfs::realPath("/ram0/p0/bin/awk", Root).value() == "/ram0/p0/bin/busybox");
+                CHECK(Vfs::remove("/ram0/p0/bin/awk", Root).isOk());
+                CHECK(Vfs::symlink("toolbox", "/ram0/p0/bin/awk", Root).isOk());
+                CHECK(Vfs::realPath("/ram0/p0/bin/awk", Root).value() == "/ram0/p0/bin/toolbox");
+                CHECK(get("/ram0/p0/bin/awk") == "TB");
+                CHECK(Vfs::symlink("busybox", "/ram0/p0/bin/gawk", Root).isOk());
+                CHECK(Vfs::rename("/ram0/p0/bin/gawk", "/ram0/p0/bin/awk", Vfs::RenameMode::Replace, Root).isOk());
+                CHECK(Vfs::realPath("/ram0/p0/bin/awk", Root).value() == "/ram0/p0/bin/busybox");
+                CHECK(Vfs::remove("/ram0/p0/bin/toolbox", Root).isOk());
+                CHECK(Vfs::remove("/ram0/p0/bin/sed", Root).isOk());
 
                 // The cookie alone doesn't make a link: only a System file is one.
                 put("/ram0/p0/plain", "!<symlink>\xff\xfex\0\0\0");

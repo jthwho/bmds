@@ -894,3 +894,88 @@ by then, as on Linux; `progtest signals` passed five runs in a row after.
 - On the board every non-interactive `progtest` suite, the RAM disk and card `posix`, the
   `tree` Ctrl-C, and the v1 corpus pass; the distribution rebuilt and installed with the new
   `linux.c`.
+
+## 19. Start-up time (design, 2026-10-19)
+
+How long a program takes to start and end, and what makes it slow. `programs.launch`
+(`benchprog` starting itself, `noop`, and waiting) takes 9.8 ms with §14.2's shared pages.
+
+**Measured first** (marks in the kernel's exec path, µs from `exec()`'s entry, the mean of 40
+launches; removed afterwards):
+
+| Step | µs |
+|---|---:|
+| Arguments and environment copied | 20 |
+| `appVariablesFor()`: `Vfs::realPath()` (one lookup in `/sd0/p0/bin`) | 1,120 |
+| `resolveExec()`: `Vfs::builtinProgram()` and `statProgram()` (two more lookups) | 560 |
+| `ImageWindow::map()`: two private pages copied and zeroed (`placePages()`) | 2,070 |
+| … written back, mapped, invalidated | 530 |
+| `prepareExec()` | 270 |
+| `createRunning()` (the command line, `Vfs::normalize()`) | 560 |
+| `startRunning()`: the task's name, priority, `Task::start()` | 800-1,200 |
+| The program's start-up until `getrandom` (`__bmds_linux_start`) | 300 |
+| `Random::fill()` for the start-up's random bytes | 930 |
+| Its `main()` and `exit()`; the parent's `waitpid()` returning | 650 |
+
+**Why** (each checked on the board):
+- **Cold caches.** In `exec()`, a `Vfs::stat()` of `benchprog` took 1,183 µs, then 360 µs each
+  when repeated straight after. The firmware runs from flash (DIO at 80 MHz) through a 128 KB
+  L2 cache, and each launch's 128 KB copy and the program's run push the kernel out of it. Every
+  step above pays for its misses; the lookups pay most, since FatFs walks the whole directory
+  (139 entries, 125 of them links).
+- **Three lookups of the same path,** each following links. A link is a small file that is
+  read whole, and file data skips the sector cache: one card read (~0.9 ms) per link per
+  lookup. `/sd0/p0/bin/true` (a link to BusyBox) starts in 16 ms, `busybox true` in 12 ms.
+- **The hardware random generator** waits ~56 µs between words (IDF's pacing, `esp_random()`)
+  and reads the clocks' configuration over the analog I2C bus for each one. Every read of the
+  pool mixed in 32 fresh bytes: 8 words, ~0.9 ms, on every program's start (`random.md` §3).
+- **Copying the private pages** costs ~16 µs a KB, and evicts the kernel from the cache as above.
+
+**Plan,** each measured on its own:
+1. **The pool takes one hardware word a read** (with the cycle counter), and a full 32 bytes at
+   most once a second. The pool's key is what makes its output unpredictable; the hardware's
+   bytes per read only keep fresh noise flowing in, and one word a read still does that.
+2. **One lookup per `exec()`:** `Vfs::resolve()` follows a path's links once and returns the
+   final path, its `FileInfo` and identity, and its built-in program if it names one.
+   `appVariablesFor()`, the built-in check and the cache's key all use that result.
+3. **Link targets cached in the VFS:** 32 entries keyed by volume and path, each checked
+   against the link file's size, modification time and attributes from the lookup that found
+   it. The whole cache is dropped on any change the VFS reports (`Fs::changedLocked()`: a write
+   handle closed, a remove, a rename, an unmount).
+4. **Then measure again**, and look at the copy (DMA instead of the CPU, so the caches keep the
+   kernel) and the remaining steps.
+
+Phase (c) of §14 (more shared pages) is next after this: it shrinks the copy itself.
+
+**As built (2026-10-19).** Steps 1 to 3 as planned, with one change to step 1: the read's word
+is the generator's register read directly (`Detail::randomWord()`), since one `esp_random()` call
+still took ~450 µs (its clock queries). Step 4's DMA copy was tried and dropped: ~8 ms for the two
+pages by the AXI-GDMA against the CPU's 2.1 ms (`docs/platforms/esp32p4.md` §3).
+- **Measured** (the same board and card, before and after):
+
+  | | before | after |
+  |---|---:|---:|
+  | `programs.launch` (3 runs of 80) | 9.8 ms | 8.9-9.4 ms |
+  | `/sd0/p0/bin/true` (a link to BusyBox) from hush, each of 40 | 16 ms | 12-12.75 ms |
+  | `busybox true` from hush, each of 40 | 12 ms | 11.5-12 ms |
+  | `/dev/urandom`, 1 MB in 4 KB reads | 0.40 s | 0.27 s |
+
+  In the timeline, the random bytes went from 930 to ~400 µs (what is left is BLAKE2s and ChaCha20
+  running cold), the lookups from 1,680 to ~1,170 µs, and a link's card reads are gone.
+- **What is left is mostly cold caches** (§19's first point) and the copy, which phase (c) shrinks.
+- **Checked:** host tests (`Vfs::resolve()`, a link's target re-read after a remove and after a
+  rename over it); on the board the `progtest` suites, `#!` and `.sh` scripts, `BMDS_APP_DIR` and
+  `BMDS_APP_ID` for a program in a `.app` folder started from the native shell and from BusyBox.
+  `progtest sched` failed 2 of 9 runs on its sleep-lateness check (line 3053), which compares
+  timings and doesn't touch this work.
+- **Size:** firmware +1,348 bytes; the link cache is ~7 KB of PSRAM, from the first link read.
+
+**Elsewhere** (found here, not part of this work):
+- **The SDK's `stat()` reads a file's first bytes** to give an extensionless file execute bits
+  (`runnable()` in `sdk/crt/linux.c`): a card read for each such file, so `ls -l` of
+  `/sd0/p0/bin` reads every BusyBox link.
+- **ESP-IDF's SD host sets the bus up again for every command:** clock, width, sampling mode,
+  delays, and the pins' IOMUX (`sd_host_slot_sdmmc_do_transaction()`).
+- **QIO flash:** the W25Q128JV's -IQ parts are sold with Quad Enable set (to be checked
+  against the datasheet). QIO would halve the cost of each cache miss to flash, if the board
+  wires IO2 and IO3. It needs the bootloader flashed.

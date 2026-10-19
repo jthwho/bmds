@@ -182,27 +182,32 @@ namespace {
                 return Vfs::Context{cwd.isEmpty() ? StringView("/") : cwd, nullptr};
         }
 
-        // A program file, as an exec finds it: its cache key (links followed)
-        // and its size; and the cache's generation from before it was looked at.
+        // A program as an exec finds it, looked up once (devplan/programs.md §19): its path with
+        // links followed; a program built into the firmware, or a file's cache key and size, and
+        // the cache's generation from before it was looked at.
         struct ProgramFile {
-                        ImageCache::Key key;
-                        uint32_t        size = 0;
-                        uint32_t        generation = 0;
+                        String              path;
+                        const ProgramEntry *builtin = nullptr; // /bin/NAME (devplan/programs.md §17)
+                        ImageCache::Key     key;
+                        uint32_t            size = 0;
+                        uint32_t            generation = 0;
         };
 
-        // Looks at the file at @p path (relative to @p cwd) to run it.
-        Error statProgram(StringView path, StringView cwd, ProgramFile &file) {
+        // Looks up the program at @p path (relative to @p cwd) to run it.
+        Error lookUpProgram(StringView path, StringView cwd, ProgramFile &file) {
                 file.generation = imageCache->generation();
-                const Result<FileInfo> info = Vfs::stat(path, contextFor(cwd));
-                Error                  err = info.error();
-                if (err.isOk() && info.value().isDirectory()) err = Error::IsDir;
-                if (err.isOk() && info.value().size > UINT32_MAX) err = Error::NotSupported;
+                auto [found, err] = Vfs::resolve(path, contextFor(cwd));
                 if (err.isError()) return err;
-                file.key.device = info.value().device;
-                file.key.id = info.value().id;
-                file.key.size = info.value().size;
-                file.key.modified = info.value().modified.ns;
-                file.size = static_cast<uint32_t>(info.value().size);
+                file.path = std::move(found.path);
+                file.builtin = found.program;
+                if (file.builtin != nullptr) return Error::Ok;
+                if (found.info.isDirectory()) return Error::IsDir;
+                if (found.info.size > UINT32_MAX) return Error::NotSupported;
+                file.key.device = found.info.device;
+                file.key.id = found.info.id;
+                file.key.size = found.info.size;
+                file.key.modified = found.info.modified.ns;
+                file.size = static_cast<uint32_t>(found.info.size);
                 return Error::Ok;
         }
 
@@ -335,14 +340,12 @@ namespace {
                 return e.startsWith(AppDirVariable) || e.startsWith(AppIdVariable);
         }
 
-        // "BMDS_APP_DIR=FOLDER" into @p dir and "BMDS_APP_ID=ID" into @p id if program @p path
-        // (relative to @p cwd, links followed: /apps's too) is in a NAME.app folder; else both
-        // are left empty. The id is the installed application's (Apps), else the folder's name
-        // without .app (a folder outside apps/path), if that is a valid one.
-        Error appVariablesFor(StringView path, StringView cwd, String &dir, String &id) {
-                auto [real, err] = Vfs::realPath(path, contextFor(cwd));
-                if (err.isError()) return Error::Ok; // not a file: nothing to say
-                const StringView r = real.view();
+        // "BMDS_APP_DIR=FOLDER" into @p dir and "BMDS_APP_ID=ID" into @p id if @p program
+        // (links followed: /apps's too) is in a NAME.app folder; else both are left empty. The id
+        // is the installed application's (Apps), else the folder's name without .app (a folder
+        // outside apps/path), if that is a valid one.
+        Error appVariablesFor(const ProgramFile &program, String &dir, String &id) {
+                const StringView r = program.path.view();
                 const size_t     slash = r.lastIndexOf('/');
                 if (slash == StringView::NPos || slash == 0) return Error::Ok;
                 const StringView folder = r.left(slash);
@@ -361,18 +364,16 @@ namespace {
                 return e;
         }
 
-        // Loads the program at @p path (relative to @p cwd).
-        // A program file, or a program built into the firmware (/bin/NAME: devplan/programs.md §17).
-        Error loadImage(StringView path, StringView cwd, Image &image, LoadFailure &failure) {
-                if (const ProgramEntry *builtin = Vfs::builtinProgram(path, contextFor(cwd)); builtin != nullptr) {
-                        image.builtin = builtin;
-                        image.stackBytes = static_cast<uint32_t>(builtin->program.stackBytes);
+        // Loads @p program: a file, or a program built into the firmware.
+        Error loadImage(const ProgramFile &program, Image &image, LoadFailure &failure) {
+                if (program.builtin != nullptr) {
+                        image.builtin = program.builtin;
+                        image.stackBytes = static_cast<uint32_t>(program.builtin->program.stackBytes);
                         return Error::Ok;
                 }
-                ProgramFile program;
-                Error       err = statProgram(path, cwd, program);
-                if (err.isError() || loadCached(program, image, failure, err)) return err;
-                auto [file, oerr] = Vfs::open(path, Vfs::Read, contextFor(cwd));
+                Error err;
+                if (loadCached(program, image, failure, err)) return err;
+                auto [file, oerr] = Vfs::open(program.path, Vfs::Read, contextFor("/"));
                 return oerr.isError() ? oerr : loadFrom(*file, program, image, failure);
         }
 
@@ -394,21 +395,23 @@ namespace {
         // program built into the firmware (`/bin/NAME`) or in a file; a `#!`
         // script's interpreter as named (a file or a built-in: `#!/bin/sh`,
         // `#!/bin/env name`; a path that doesn't exist fails), in front of the
-        // script in @p args; the shell for a `.sh` file.
-        Error resolveExec(StringView path, StringView cwd, Span<const StringView> env, List<String> &args, Image &image,
-                          LoadFailure &failure, int depth) {
+        // script in @p args; the shell for a `.sh` file. @p program is @p path looked up
+        // already, or null.
+        Error resolveExec(const ProgramFile *program, StringView path, StringView cwd, Span<const StringView> env,
+                          List<String> &args, Image &image, LoadFailure &failure, int depth) {
                 if (depth > MaxInterpreterDepth) return Error::TooManyLinks;
-                // A program built into the firmware: `/bin/NAME`, or a link to one (devplan/programs.md §17).
-                if (const ProgramEntry *builtin = Vfs::builtinProgram(path, contextFor(cwd)); builtin != nullptr) {
-                        image.builtin = builtin;
-                        image.stackBytes = static_cast<uint32_t>(builtin->program.stackBytes);
-                        return Error::Ok;
+                ProgramFile looked;
+                if (program == nullptr) {
+                        const Error err = lookUpProgram(path, cwd, looked);
+                        if (err.isError()) return err;
+                        program = &looked;
                 }
+                // A program built into the firmware: `/bin/NAME`, or a link to one (devplan/programs.md §17).
+                if (program->builtin != nullptr) return loadImage(*program, image, failure);
                 // A program cached: it was an ELF file (scripts aren't cached).
-                ProgramFile program;
-                Error       err = statProgram(path, cwd, program);
-                if (err.isError() || loadCached(program, image, failure, err)) return err;
-                auto [file, oerr] = Vfs::open(path, Vfs::Read, contextFor(cwd));
+                Error err;
+                if (loadCached(*program, image, failure, err)) return err;
+                auto [file, oerr] = Vfs::open(program->path, Vfs::Read, contextFor("/"));
                 if (oerr.isError()) return oerr;
                 char   head[Shebang::HeadBytes];
                 size_t got = 0;
@@ -423,11 +426,11 @@ namespace {
                 const StringView headView(head, got);
                 if (headView.startsWith(StringView("\x7f"
                                                    "ELF")))
-                        return loadFrom(*file, program, image, failure);
+                        return loadFrom(*file, *program, image, failure);
                 file = FileHandle::Ptr();
                 if (Shebang::isScript(headView)) {
                         Shebang line;
-                        if (!Shebang::parse(headView, program.size <= got, line) || line.interpreter.isEmpty())
+                        if (!Shebang::parse(headView, program->size <= got, line) || line.interpreter.isEmpty())
                                 return Error::NotSupported;
                         // Copies: the views point into head, and path may be an element of args.
                         auto [script, cerr] = String::fromView(path);
@@ -438,14 +441,14 @@ namespace {
                                             : withFront(args, {interp.view(), arg.view(), script.view()});
                         if (err.isError()) return err;
                         // The interpreter as named: a file or a built-in (/bin/sh, /bin/env); nothing guessed.
-                        return resolveExec(interp.view(), cwd, env, args, image, failure, depth + 1);
+                        return resolveExec(nullptr, interp.view(), cwd, env, args, image, failure, depth + 1);
                 }
                 if (path.endsWith(StringView(".sh"))) {
                         auto [script, cerr] = String::fromView(path);
                         if (cerr.isError()) return Error::NoMem;
                         err = withFront(args, {StringView("sh"), script.view()});
                         if (err.isError()) return err;
-                        return resolveExec(StringView("/bin/sh"), cwd, env, args, image, failure, depth + 1);
+                        return resolveExec(nullptr, StringView("/bin/sh"), cwd, env, args, image, failure, depth + 1);
                 }
                 return Error::NotSupported;
         }
@@ -1289,17 +1292,21 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
                         auto [copy, cerr] = String::fromView(p);
                         if (cerr.isError() || args.append(std::move(copy)).isError()) return -BMDS_ENOMEM;
                 }
+                // Looked up once (devplan/programs.md §19).
+                ProgramFile program;
+                err = lookUpProgram(p, current->cwd(), program);
+                if (err.isError()) return execErrno(err);
                 // BMDS_APP_DIR and BMDS_APP_ID are the new program's own (devplan/apps.md §3).
                 String appDir;
                 String appId;
-                if (appVariablesFor(p, current->cwd(), appDir, appId).isError()) return -BMDS_ENOMEM;
+                if (appVariablesFor(program, appDir, appId).isError()) return -BMDS_ENOMEM;
                 for (size_t i = env.size(); i > 0; --i)
                         if (isAppVariable(env[i - 1])) env.removeAt(i - 1);
                 if (!appDir.isEmpty() && env.append(appDir.view()).isError()) return -BMDS_ENOMEM;
                 if (!appId.isEmpty() && env.append(appId.view()).isError()) return -BMDS_ENOMEM;
                 LoadFailure failure;
-                err = resolveExec(p, current->cwd(), Span<const StringView>(env.data(), env.size()), args, loaded,
-                                  failure, 0);
+                err = resolveExec(&program, p, current->cwd(), Span<const StringView>(env.data(), env.size()), args,
+                                  loaded, failure, 0);
                 if (err.isError()) return execErrno(err);
                 argViews.clear();
                 for (const String &a : args) {
@@ -2334,12 +2341,14 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
         LoadFailure      failure;
         // Called by a process (a shell, a built-in program's thread): its child.
         parent = callerPid();
-        Error err = Error::Ok;
+        Error       err = Error::Ok;
+        ProgramFile program; // looked up once (devplan/programs.md §19)
         if (request.builtin != nullptr) {
                 image.builtin = request.builtin;
                 image.stackBytes = static_cast<uint32_t>(request.builtin->program.stackBytes);
         } else {
-                err = loadImage(request.path, cwd, image, failure);
+                err = lookUpProgram(request.path, cwd, program);
+                if (err.isOk()) err = loadImage(program, image, failure);
         }
         if (err.isError()) {
                 const ProgramImage::Problem &problem = failure.problem;
@@ -2376,7 +2385,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
         String           appId;
         err = process->setCwd(cwd);
         if (err.isOk()) err = environment.reserve(request.environment.size() + 3);
-        if (err.isOk() && request.builtin == nullptr) err = appVariablesFor(request.path, cwd, appDir, appId);
+        if (err.isOk() && request.builtin == nullptr) err = appVariablesFor(program, appDir, appId);
         bool hasTz = false;
         for (StringView e : request.environment) {
                 hasTz = hasTz || e.startsWith("TZ=");

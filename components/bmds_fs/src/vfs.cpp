@@ -674,6 +674,66 @@ namespace {
                 return err;
         }
 
+        // Link targets read lately (devplan/programs.md §19): a link is a small file read whole, and
+        // file data skips the sector cache, so each lookup through one read the card (~0.9 ms).
+        // An entry holds while its file's size, time and attributes are as when it was read; the
+        // VFS drops them all on any change it reports (Fs::changedLocked()).
+        struct LinkEntry {
+                        const Volume *volume = nullptr;
+                        uint64_t      size = 0;
+                        int64_t       modified = 0;
+                        uint8_t       attributes = 0;
+                        uint8_t       pathBytes = 0;
+                        uint8_t       targetBytes = 0;
+                        char          path[96];
+                        char          target[96];
+        };
+        constexpr size_t     LinkEntries = 32;
+        constinit LinkEntry *linkCache = nullptr; // PSRAM, from the first link read; under the lock
+        constinit size_t     linkNext = 0;        // the next one replaced, round the ring
+
+        void dropLinksLocked() {
+                if (linkCache != nullptr)
+                        for (size_t i = 0; i < LinkEntries; ++i) linkCache[i].volume = nullptr;
+                return;
+        }
+
+        // The target of link file @p path on @p volume, @p entry being what a lookup found there:
+        // from the cache, else read and kept. Lock held.
+        Error readLinkCachedLocked(Volume &volume, StringView path, const FileInfo &entry, String &target) {
+                const auto matches = [&](const LinkEntry &e) {
+                        return e.volume == &volume && e.size == entry.size && e.modified == entry.modified.ns &&
+                               e.attributes == entry.attributes && StringView(e.path, e.pathBytes) == path;
+                };
+                if (linkCache != nullptr) {
+                        for (size_t i = 0; i < LinkEntries; ++i) {
+                                if (!matches(linkCache[i])) continue;
+                                target.clear();
+                                return target.append(StringView(linkCache[i].target, linkCache[i].targetBytes));
+                        }
+                }
+                const Error err = readLinkLocked(volume, path, target);
+                if (err.isError() || path.size() > sizeof(LinkEntry::path) || target.size() > sizeof(LinkEntry::target))
+                        return err;
+                if (linkCache == nullptr) {
+                        linkCache = static_cast<LinkEntry *>(
+                                Memory::alloc(MemSpace::Psram, sizeof(LinkEntry) * LinkEntries));
+                        if (linkCache == nullptr) return err;
+                        for (size_t i = 0; i < LinkEntries; ++i) ::new (&linkCache[i]) LinkEntry();
+                }
+                LinkEntry &e = linkCache[linkNext];
+                linkNext = (linkNext + 1) % LinkEntries;
+                e.volume = &volume;
+                e.size = entry.size;
+                e.modified = entry.modified.ns;
+                e.attributes = entry.attributes;
+                e.pathBytes = static_cast<uint8_t>(path.size());
+                e.targetBytes = static_cast<uint8_t>(target.size());
+                std::memcpy(e.path, path.data(), path.size());
+                std::memcpy(e.target, target.view().data(), target.size());
+                return err;
+        }
+
         // Writes a new link file at @p path on @p volume. Lock held.
         Error writeLinkLocked(Volume &volume, StringView path, StringView target, bool &noPath) {
                 noPath = false;
@@ -727,7 +787,7 @@ namespace {
                         if (!entry.isDirectory()) {
                                 String target;
                                 if (linkCandidate(entry.attributes, entry.type, entry.size) &&
-                                    readLinkLocked(*node.volume, rest.left(end), target).isOk()) {
+                                    readLinkCachedLocked(*node.volume, rest.left(end), entry, target).isOk()) {
                                         String           next;
                                         const StringView link = storage.view().left(mountLength + end);
                                         if (linkDestination(link, target, rest.mid(end), next).isOk()) {
@@ -758,7 +818,7 @@ namespace {
                                 if (node.kind != Kind::Mounted || !linkCandidate(fi.attributes, fi.type, fi.size))
                                         return info;
                                 String target;
-                                if (readLinkLocked(*node.volume, node.rest, target).isError()) return info;
+                                if (readLinkCachedLocked(*node.volume, node.rest, fi, target).isError()) return info;
                                 if (!followLast) {
                                         fi.type = FileType::Link;
                                         fi.size = target.size();
@@ -1076,6 +1136,7 @@ Result<FileInfo> Directory::next() {
 // --- Vfs: paths and mounts --------------------------------------------------
 
 void Fs::changedLocked(uint32_t device, uint64_t id) {
+        dropLinksLocked();
         Zones::changedLocked(device, id);
         if (changeHook != nullptr) changeHook(device, id);
         return;
@@ -1855,6 +1916,20 @@ Result<String> Vfs::realPath(StringView path, const Context &context) {
         const Result<FileInfo> info = statFollowLocked(storage, true, node);
         if (info.error().isError()) return makeError<String>(info.error());
         return makeResult(std::move(storage));
+}
+
+Result<Vfs::Resolved> Vfs::resolve(StringView path, const Context &context) {
+        Mutex::Locker lock(Fs::lock(), WaitForever);
+        Resolved      out;
+        const Error   nerr = normalizeLocked(path, context.cwd, out.path, true);
+        if (nerr.isError()) return makeError<Resolved>(nerr);
+        Node             node;
+        Result<FileInfo> info = statFollowLocked(out.path, true, node);
+        if (info.error().isError()) return makeError<Resolved>(info.error());
+        out.info = std::move(info).value();
+        setIdentity(out.info, node, out.path.view(), context);
+        if (node.kind == Kind::BinProgram) out.program = node.program;
+        return makeResult(std::move(out));
 }
 
 Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {

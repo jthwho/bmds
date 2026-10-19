@@ -142,6 +142,12 @@ void Detail::fillBootEntropy(void *data, size_t size) {
         return;
 }
 
+uint32_t Detail::randomWord() {
+        uint32_t word = 0;
+        fillRandom(&word, sizeof(word));
+        return word;
+}
+
 void Detail::fillRandom(void *data, size_t size) {
         std::random_device device;
         auto              *p = static_cast<unsigned char *>(data);

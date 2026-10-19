@@ -99,6 +99,14 @@ namespace Detail {
         void fillRandom(void *data, size_t size);
 
         /**
+         * @brief Returns one word of the hardware generator at once: its register
+         *        read, without `fillRandom()`'s pacing between words (each word
+         *        of that takes ~56 µs, and its clock queries more:
+         *        `devplan/programs.md` §19). For a word now and then. @isrsafe
+         */
+        uint32_t randomWord();
+
+        /**
          * @brief Fills @p size bytes with true random bytes at boot: the
          *        target turns the hardware's main noise source (the SAR ADC)
          *        on for the moment. Boot only, before the ADC has another use.

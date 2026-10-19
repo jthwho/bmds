@@ -15,6 +15,7 @@
 #include <esp_private/systimer.h>
 #include <esp_timer.h>
 #include <hal/systimer_ll.h>
+#include <soc/wdev_reg.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <bmds/detail/platform.h>
@@ -153,6 +154,10 @@ void Detail::setLibcTime(int64_t wallNs) {
 void Detail::fillRandom(void *data, size_t size) {
         esp_fill_random(data, size);
         return;
+}
+
+uint32_t Detail::randomWord() {
+        return REG_READ(WDEV_RND_REG);
 }
 
 void Detail::fillBootEntropy(void *data, size_t size) {
