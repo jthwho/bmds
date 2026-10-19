@@ -63,7 +63,7 @@ namespace LogFiles {
                                 FileHandle::Ptr file;
                                 uint64_t        size = 0;       // the open file's
                                 uint64_t        position = 0;   // the log's, written up to here
-                                bool            booted = false; // the boot's marker written
+                                bool            booted = false; // `--- boot ---` written
                                 bool            failed = false; // a write failed: wait for a mount or a setting
                 };
 
@@ -164,15 +164,13 @@ namespace LogFiles {
                         return n > 0 && size_t(n) <= StampBytes ? size_t(n) : 0;
                 }
 
-                // The lines in @p len bytes of `in`, converted into `out` and written (as `out` fills).
-                Error writeLines(State &s, size_t len, uint64_t lostBytes) {
-                        const bool    wall = Clock::isSet();
-                        const int64_t offset = Clock::now().ns - Clock::monotonicNs();
-                        size_t        used = 0;
-                        if (!s.booted) {
-                                s.booted = true;
-                                used += size_t(std::snprintf(s.out, OutBytes, "--- boot ---\n"));
-                        }
+                // The lines in @p len bytes of `in`, converted into `out` and written (as `out` fills):
+                // their stamps made times by @p offset (wall minus uptime; 0: left as uptimes), after
+                // `--- boot ---` if @p boot.
+                Error writeLines(State &s, size_t len, uint64_t lostBytes, int64_t offset, bool boot) {
+                        const bool wall = offset != 0;
+                        size_t     used = 0;
+                        if (boot) used += size_t(std::snprintf(s.out, OutBytes, "--- boot ---\n"));
                         if (lostBytes > 0)
                                 used += size_t(std::snprintf(s.out + used, OutBytes - used,
                                                              "--- %" PRIu64 " bytes of the log lost ---\n", lostBytes));
@@ -202,6 +200,11 @@ namespace LogFiles {
                         return writeOut(s, used);
                 }
 
+                // Wall-clock time minus uptime, or 0 while the clock isn't set.
+                int64_t clockOffset() {
+                        return Clock::isSet() ? Clock::now().ns - Clock::monotonicNs() : 0;
+                }
+
                 // A warning or an error among the lines: written at once.
                 bool hasUrgent(StringView text) {
                         while (!text.isEmpty()) {
@@ -225,6 +228,8 @@ namespace LogFiles {
                                 if (s.changed.exchange(false)) {
                                         loadSettings(s);
                                         s.failed = false;
+                                        // No files: nothing for a reset to recover.
+                                        Log::setSaved(s.dir.isEmpty() ? Log::NoFiles : s.position, clockOffset());
                                 }
                                 // After a failure only a mount or a setting wakes the thread: an error
                                 // that logs a line must not make it try again at once.
@@ -239,8 +244,14 @@ namespace LogFiles {
                                         s.failed = false;
                                         continue;
                                 }
+                                // The previous boot's recovered lines (before bootPosition) apart from
+                                // this boot's: their stamps are of that boot's clock.
+                                const uint64_t boot = Log::bootPosition();
+                                const size_t   want = s.position < boot && boot - s.position < InBytes
+                                                              ? size_t(boot - s.position)
+                                                              : InBytes;
                                 uint64_t      next = s.position, lost = 0;
-                                const size_t  len = Log::read(next, Span<char>(s.in, InBytes), lost);
+                                const size_t   len = Log::read(next, Span<char>(s.in, want), lost);
                                 const int64_t nowMs = Clock::monotonicNs() / 1'000'000;
                                 if (pendingSinceMs < 0) pendingSinceMs = nowMs;
                                 const bool now = hasUrgent(StringView(s.in, len)) || next < Log::position() ||
@@ -250,14 +261,20 @@ namespace LogFiles {
                                         continue;
                                 }
                                 // Open only to write: FatFs refuses readers of a file open for writing.
-                                const Error err = openFile(s);
-                                const bool  ok = err.isOk() && writeLines(s, len, lost).isOk();
+                                const bool    recovered = next <= boot && len > 0;
+                                const int64_t wallOffset = clockOffset();
+                                const int64_t offset = recovered ? Log::recoveredWallMinusUptimeNs() : wallOffset;
+                                const bool    bootMark = !s.booted && next - len >= boot;
+                                const Error   err = openFile(s);
+                                const bool    ok = err.isOk() && writeLines(s, len, lost, offset, bootMark).isOk();
                                 s.file.reset();
                                 if (!ok) {
                                         s.failed = true;
                                         continue;
                                 }
+                                if (bootMark) s.booted = true;
                                 s.position = next;
+                                Log::setSaved(next, wallOffset); // a reset now recovers only what follows
                                 pendingSinceMs = -1;
                                 if (s.size >= s.maxBytes) rotate(s);
                         }

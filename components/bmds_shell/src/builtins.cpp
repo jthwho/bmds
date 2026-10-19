@@ -529,7 +529,14 @@ namespace {
         int runReboot(CommandContext &ctx) {
                 const Args args = ctx.args();
                 const bool recovery = args.size() == 2 && StringView(args[1]) == "recovery";
-                if (args.size() != 1 && !recovery) return ctx.usage();
+                const bool panic = args.size() == 2 && StringView(args[1]) == "panic";
+                if (args.size() != 1 && !recovery && !panic) return ctx.usage();
+                if (panic) {
+                        // A test of the crash log (devplan/logging.md §9): one crash, counted as one.
+                        (void)Vfs::sync();
+                        (void)ctx.shell().console().flush(RebootFlushMs);
+                        System::panic("reboot panic: a panic asked for");
+                }
                 // Recovery's plain reboot goes back to the main firmware, if it checks good.
                 const bool toMain = !recovery && System::running() == System::Firmware::Recovery;
                 if (recovery || toMain) {
@@ -568,9 +575,10 @@ BMDS_SHELL_COMMAND(log, runLog, "[show]",
 BMDS_SHELL_COMMAND(mem, runMem, "[-h | mark | new]",
                    "Show memory usage per memory space, and what caches hold (bytes; -h: 16.55M, 432.43k); "
                    "'mark' records the heap blocks in use, 'new' lists those in use now that weren't then")
-BMDS_SHELL_COMMAND(reboot, runReboot, "[recovery]",
+BMDS_SHELL_COMMAND(reboot, runReboot, "[recovery | panic]",
                    "Restart the system; 'recovery': into the recovery firmware (updates, repairs). In recovery, "
-                   "restart into the main firmware if it checks good")
+                   "restart into the main firmware if it checks good. 'panic': restart by a panic, to test the "
+                   "crash log")
 BMDS_SHELL_COMMAND(sleep, runSleep, "<seconds>", "Wait for a number of seconds (fractions allowed, e.g. 0.5)")
 BMDS_SHELL_COMMAND(uptime, runUptime, "", "Show time since boot")
 BMDS_SHELL_COMMAND(version, runVersion, "", "Show BMDS, build, board and chip versions, and the serial number")

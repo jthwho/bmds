@@ -29,8 +29,10 @@ menu "BMDS kernel"
         range 0 1048576
         help
             Size of the ring that keeps recent log text for 'log show' and for the log files
-            (devplan/logging.md: the lines from before the card mounts).
-            Allocated from PSRAM at boot. 0 disables the history.
+            (devplan/logging.md: the lines from before the card mounts). A static object in
+            PSRAM's .noinit: it survives a reset, with a panic's report, and the next boot
+            recovers the lines not yet in the files (devplan/logging.md section 9).
+            0 disables the history.
 
     config BMDS_PIPE_BYTES
         int "Pipe buffer size (bytes, PSRAM)"

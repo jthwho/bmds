@@ -222,8 +222,10 @@ Plan: [`input.md`](input.md).
   services; kept in the history, on the console, and in rotated files in `log/dir`
   (`/sd0/p0/logs`), the boot's lines from before the card included. Steps 1-4 done 2026-10-11:
   `LogText` (host-tested, fuzzed), `Log::writeText`/`read`/`waiters`, `/dev/log`, musl's
-  `syslog()` through `linux.c`, Dropbear with syslog, `LogFiles` with rotation, `logger`. Next: a
-  log tab in the System Monitor.
+  `syslog()` through `linux.c`, Dropbear with syslog, `LogFiles` with rotation, `logger`. Crash
+  logs done 2026-10-19 (§9): the history survives a reset with a panic's report written into it,
+  and the next boot puts the unsaved lines in the files; `reboot panic` tests it. Next: a log tab
+  in the System Monitor.
 
 ## Phase 6 — Graphics
 

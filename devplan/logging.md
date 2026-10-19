@@ -193,3 +193,107 @@ Dropbear's lines, `logger`, the files across a reboot, and a card pulled and put
   - The milliseconds of the files' times came from the uptime and the seconds from the wall
     clock, so times went backwards across a second; both come from the wall clock now.
   - `logd` used 2.9 KB of stack after rotations on exFAT; its stack went from 4 to 5 KB.
+
+## 9. Crash logs: a panic's text and the last lines, on the card after the reset
+
+**Problem:** The files hold only what `logd` wrote, and only after a second's batching. A panic,
+a watchdog or a reboot loses:
+- the last second of lines;
+- every line from a boot that never had a card;
+- the panic's own text (the register dump, the backtrace, the failed assertion). IDF prints that
+  only on the USB console, so a board on ssh alone just drops off the network (the mutex race in
+  bench.md §21 cost a session that way).
+
+**Design:**
+- **The history survives a reset.** The 64 KB ring is a static object in PSRAM's `.noinit`
+  section (`EXT_RAM_NOINIT_ATTR`, `CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY`), not a heap
+  block. Next to it is a header: a magic word, the capacity, `head` (every byte written) and
+  `saved`. `saved` is how far `logd` has written to the files (`Log::setSaved()`), with the
+  wall-clock offset of that boot for the times.
+  - PSRAM keeps its contents across a reset; only a power cut loses them.
+  - The header is valid only when the magic and capacity match and `saved <= head`. Random
+    power-on contents pass with odds of about 2^-64. The header has no checksum, so a line is
+    never slowed by keeping one.
+  - 256 bytes stand unused in front of it: IDF's PSRAM timing tuning writes a test pattern at
+    physical 0x80..0xff at every boot. The section may start at physical 0.
+- **A panic writes into it.** A wrap of `panic_print_char` (all of IDF's panic output goes
+  through it) also writes each character into the ring.
+  - Each line becomes `[  sec.mmm] E panic: text`, a log line like any other. The uptime comes
+    from the timer register, with no lock.
+  - It writes without the log's lock: the other core is stalled, and the holder may be the
+    task that panicked.
+- **The caches are written back before the reset.** The ring is in write-back caches (L1, then
+  the L2 in front of PSRAM), and a reset drops whatever is still dirty in them; IDF's restart
+  writes back only the L1. Two places write the whole object back:
+  - a wrap of `esp_restart_noos`, through which a panic, a watchdog's abort and `reboot` all
+    reset;
+  - the panic wrap, at each line's end, in case the handler hangs until the hardware watchdog.
+- **The next boot puts the unsaved lines back in front.** `Log::init()` finds a valid header
+  with `head > saved`. It copies the lines from `saved` to `head` (the last 64 KB at most, with
+  a count of the bytes lost before them) out. It then starts the ring again with:
+  - `--- recovered: the previous boot's unsaved lines (reset: panic) ---`;
+  - those lines;
+  - `--- end of the recovered lines ---`;
+  - then this boot's lines, from `Log::bootPosition()`.
+
+  `log show` shows the crash after the reset too. `logd` writes everything from position 0 as
+  before, so the recovered lines reach `system.log` once the card mounts. Their uptime stamps
+  become the previous boot's times when that boot had set its clock; otherwise they stay uptimes.
+  `logd` writes `--- boot ---` where this boot's lines begin, not at its first write.
+- **Without a card**, a crash loop keeps carrying the last lines forward, until they have been
+  written or the 64 KB ring overwrites them.
+- **What it can't catch:**
+  - a hardware watchdog's reset (or a power cut), apart from what was written back;
+  - a panic in `Log::init()` itself, or before it, which goes into the ring as it is;
+  - text another firmware (the recovery firmware) wrote over that PSRAM.
+
+**Cost:** the 64 KB that were a heap block are now static (no change in PSRAM use), plus 256
+bytes. Logging a line costs nothing new: `setSaved()` is called once per batch `logd` writes.
+On boot, one copy of at most 64 KB.
+
+**Testing:** on the board, a panic forced deliberately; its text then appears in `log show` and
+in `system.log` after the reset. Also: a reboot within a second of a line, which must not lose
+it; a boot without the card and then a reboot with it, whose lines must reach the files; and a
+cold power-up, which must not produce a false "recovered" block.
+
+### 9a. As built (2026-10-19)
+
+- **Built as designed:** the history in `.ext_ram_noinit` (at `0x48000000`, 256 bytes guarded
+  in front), the recovered lines put back in front at boot, `Log::setSaved()` from `logd`,
+  `Log::bootPosition()` and the previous boot's clock offset for their times.
+  - **The panic capture, and why it changed from the design:** `--wrap` reaches only the calls
+    from other object files, so wrapping `panic_print_char` caught nothing (IDF inlines it into
+    `panic.c`). The register dump and the stack memory come from other files through
+    `panic_print_str`, `_dec` and `_hex`, which are wrapped. The headline (`Guru Meditation
+    Error: Core N panic'ed (reason)`) and an abort's message (`abort: assert failed: ...`) come
+    from `panic.c` itself, so a wrap of `esp_panic_handler` writes those from its
+    `panic_info_t` and `g_panic_abort_details`.
+  - **Write-backs:** the L1 and L2 caches are written back at each panic line's end, and in a
+    wrap of `esp_restart_noos`.
+  - **No files kept:** with `log/dir` empty, `logd` sets `Log::NoFiles`, so nothing is
+    recovered.
+- **`reboot panic`** panics on purpose (`System::panic()`, an `esp_system_abort()`), for testing.
+  `System::resetReason()` (moved from the boot code) names the reset in the recovered marker.
+- **Found on the way:** the log's stamps ran 0.58 s ahead of `esp_timer`, so every time in the
+  files had been 0.58 s late, and the panic lines (stamped from the timer) came before the line
+  logged just ahead of them. `esp_log_timestamp()`'s base is a cycle count taken across the
+  boot's clock changes. The stamps now come from the systimer (`Detail::monotonicUs()`), the
+  clock of `uptime` and `Clock::monotonicNs()`. That also takes the kernel's lock out of every
+  line: `xTaskGetTickCount()` took it. Stamps now count from the application's start
+  (`[0.004] Reset`), not from the chip's reset.
+- **On the board, all written to the files after the reset:**
+  - an info line logged just before `reboot`, which is the case that used to be lost;
+  - a forced panic: the abort line, the register dump and 32 lines of stack memory, as
+    `E panic:` lines after the last line logged and 2 ms later than it;
+  - lines logged while `log/dir` couldn't be written, with the previous boot's wall-clock times.
+  The first boot after the flash, with no valid header, showed no false recovered block.
+- **Not tested:** a real cold power-up, since the board's power can't be cut remotely; the
+  header check covers it, as on the first boot after the flash. A hardware watchdog's reset
+  (only what was written back survives) was not tested either.
+- **Limits:**
+  - The recovered lines keep uptime stamps when the previous boot had no clock at its last
+    `setSaved()`.
+  - Each `reboot` recovers the last second's lines (a small block). That is correct, only
+    visible.
+  - RISC-V prints no backtrace, only the stack memory. Decoding it needs that build's ELF; the
+    previous boot's banner gives the build.

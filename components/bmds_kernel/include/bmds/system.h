@@ -56,6 +56,15 @@ class System {
                 /** @brief Restarts the chip. Flush consoles first. */
                 [[noreturn]] static void restart();
 
+                /**
+                 * @brief Panics with @p message: the panic's report on the console and in the
+                 *        log (devplan/logging.md §9), then a reset counted as a crash. For tests.
+                 */
+                [[noreturn]] static void panic(const char *message);
+
+                /** @brief Why the chip last reset: "power-on", "panic", "software (reboot)"... */
+                static const char *resetReason();
+
                 /** @brief A firmware in the flash (devplan/update.md §4). */
                 enum class Firmware : uint8_t {
                         Main,     ///< The main firmware, in `ota_0`.

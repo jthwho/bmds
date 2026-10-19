@@ -8,8 +8,6 @@
 
 #include <cstdint>
 #include <esp_log.h>
-#include <esp_log_timestamp.h>
-#include <esp_system.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -74,36 +72,13 @@ namespace {
         };
         constexpr size_t StageCount = sizeof(Stages) / sizeof(Stages[0]);
 
-        // Why the chip last reset, as the boot log says it: a panic or watchdog is told apart
-        // from a flash's or a reboot's.
-        const char *resetReasonName(esp_reset_reason_t reason) {
-                switch (reason) {
-                        case ESP_RST_POWERON: return "power-on";
-                        case ESP_RST_EXT: return "external pin";
-                        case ESP_RST_SW: return "software (reboot)";
-                        case ESP_RST_PANIC: return "panic";
-                        case ESP_RST_INT_WDT: return "interrupt watchdog";
-                        case ESP_RST_TASK_WDT: return "task watchdog";
-                        case ESP_RST_WDT: return "watchdog";
-                        case ESP_RST_DEEPSLEEP: return "deep sleep";
-                        case ESP_RST_BROWNOUT: return "brownout";
-                        case ESP_RST_SDIO: return "SDIO";
-                        case ESP_RST_USB: return "USB (the serial port's control lines)";
-                        case ESP_RST_JTAG: return "JTAG";
-                        case ESP_RST_EFUSE: return "eFuse error";
-                        case ESP_RST_PWR_GLITCH: return "power glitch";
-                        case ESP_RST_CPU_LOCKUP: return "CPU lockup";
-                        default: return "unknown";
-                }
-        }
-
         void printBanner() {
                 const SystemInfo info = System::info();
                 bmdsInfo("BMDS %s (build %s, ESP-IDF %s)", info.bmdsVersion, info.buildVersion, info.idfVersion);
                 bmdsInfo("Board: %s", info.boardName);
                 bmdsInfo("Chip: ESP32-P4 rev v%u.%u, %u cores @ %u MHz", info.chipRevMajor, info.chipRevMinor,
                          info.cores, info.cpuMhz);
-                bmdsInfo("Reset: %s", resetReasonName(esp_reset_reason()));
+                bmdsInfo("Reset: %s", System::resetReason());
                 // Detail::monotonicUs() reads esp_timer's counter itself, converted by a shift: say so
                 // if IDF's own reading ever disagrees (another tick rate, another counter).
                 const int64_t ours = Detail::monotonicUs(), idf = esp_timer_impl_get_time(); // IDF's own
@@ -154,8 +129,8 @@ void Boot::run(Span<const Stage> systemStages) {
                 const Stage &stage = i < StageCount ? Stages[i] : systemStages[i - StageCount];
                 bmdsInfo("Stage %-10s %8lu us", stage.name, static_cast<unsigned long>(stageUs[i]));
         }
-        bmdsInfo("BMDS init %lu us; %lu ms since reset; %u stage(s) failed",
-                 static_cast<unsigned long>(endUs - startUs), static_cast<unsigned long>(esp_log_timestamp()),
+        bmdsInfo("BMDS init %lu us; %lu ms since the firmware started; %u stage(s) failed",
+                 static_cast<unsigned long>(endUs - startUs), static_cast<unsigned long>(endUs / 1000),
                  static_cast<unsigned>(failed));
         printMemoryReport();
         bmdsInfo("Debug modules registered: %u", static_cast<unsigned>(Log::debugModules().size()));

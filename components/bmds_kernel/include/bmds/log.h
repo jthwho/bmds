@@ -19,7 +19,9 @@
  * Never log from an ISR or on a hot path's success path.
  *
  * Every line is kept in a history ring (`CONFIG_BMDS_LOG_HISTORY_BYTES`, in
- * PSRAM) and handed to the sink, normally the serial console. ESP-IDF's own
+ * PSRAM) and handed to the sink, normally the serial console. The ring survives
+ * a reset, a panic's report is written into it, and the next boot puts the
+ * lines not yet in the files back in front of its own (devplan/logging.md §9). ESP-IDF's own
  * `ESP_LOG*` output is redirected through the same path. It is the one log of
  * the whole system (devplan/logging.md): programs reach it through `syslog()`
  * and `/dev/log`, built-in programs and services through `writeText()`, and
@@ -87,12 +89,12 @@ class Log {
                 using Sink = void (*)(const char *text, size_t lengthBytes);
 
                 /**
-                 * @brief Creates the log lock and history, and redirects ESP-IDF logging.
+                 * @brief Creates the log lock, takes over the history (recovering the
+                 *        previous boot's unsaved lines), and redirects ESP-IDF logging.
                  *
                  * Called first by `Boot::run()`. Before this, lines go straight to
                  * stdout without locking (only the boot task is running).
-                 * @return `Error::Ok`, or `Error::NoMem` if the history could not
-                 *         be allocated (logging still works, without history).
+                 * @return `Error::Ok`.
                  */
                 static Error init();
 
@@ -172,6 +174,33 @@ class Log {
                  * @return The bytes copied (0: nothing new, or no history).
                  */
                 static size_t read(uint64_t &position, Span<char> dst, uint64_t &lostBytes);
+
+                /** @brief `setSaved()`'s position when no files are kept: nothing to recover. */
+                static constexpr uint64_t NoFiles = UINT64_MAX;
+
+                /**
+                 * @brief Returns where this boot's lines begin. Before it, from 0, the
+                 *        previous boot's lines that weren't in the files at its reset, between
+                 *        `--- recovered ... ---` and `--- end of the recovered lines ---` lines
+                 *        (devplan/logging.md §9).
+                 */
+                static uint64_t bootPosition();
+
+                /**
+                 * @brief Returns the previous boot's wall-clock time minus its uptime, for the
+                 *        recovered lines' stamps, or 0 if it had no clock (or nothing was
+                 *        recovered).
+                 */
+                static int64_t recoveredWallMinusUptimeNs();
+
+                /**
+                 * @brief Records that the files hold the log up to @p position, with this
+                 *        boot's wall-clock time minus its uptime (0 if the clock isn't set):
+                 *        after a reset, the next boot recovers the lines after it. `NoFiles`
+                 *        when no files are kept.
+                 * @blocking Bounded, as `write()`.
+                 */
+                static void setSaved(uint64_t position, int64_t wallMinusUptimeNs);
 
                 /** @brief Released after each line is added, for `read()`'s callers. */
                 static WaitList &waiters();

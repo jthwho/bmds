@@ -20,6 +20,9 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_SPEED_200M=y
 # The boot-time PSRAM memory test costs ~1.3 s of every boot.
 CONFIG_SPIRAM_MEMTEST=n
+# The log's history survives a reset in PSRAM's .noinit, with a panic's report (devplan/logging.md
+# §9).
+CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY=y
 
 # --- Console: USB-Serial/JTAG on the USB-C connector ----------------------
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

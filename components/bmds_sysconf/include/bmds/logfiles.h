@@ -22,7 +22,10 @@ BMDS_NAMESPACE_BEGIN
  * batched a second (a warning or an error at once), each line's uptime stamp
  * made the local time, rotated at `log/file-bytes` into `system.log.1` and up,
  * `log/files` kept. While the directory can't be written (no card), the lines
- * wait in the log's history and the thread waits for a mount.
+ * wait in the log's history and the thread waits for a mount. The previous
+ * boot's lines that weren't written before its reset (a panic's report among
+ * them) come first, with that boot's times (§9); `--- boot ---` marks where this
+ * boot's begin. Each write tells `Log::setSaved()` how far the files go.
  */
 namespace LogFiles {
 

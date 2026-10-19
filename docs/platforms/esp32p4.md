@@ -473,6 +473,31 @@ until silicon v3; then test again.
 
 - **Wrapping a driver function** is legitimate and cheap: `target_link_libraries(lib INTERFACE
   "-Wl,--wrap=fn")`, then `__wrap_fn` calls `__real_fn` and adjusts (`jpegcodec.cpp`).
+- **`--wrap` reaches only calls from other object files:** a call within the file that defines
+  the function never goes through the symbol, so it can't be redirected. IDF's `panic_print_char`
+  has no global symbol left in the ELF at all. `panic.c` prints the panic's headline and an
+  abort's message through its own `panic_print_str`, so wrapping the print functions missed
+  exactly those lines; `esp_panic_handler` is wrapped to write them (`log.cpp`,
+  `devplan/logging.md` §9). Check with `objdump -d` that the call sites go to `__wrap_`.
+- **A panic's report goes only to the console** unless something copies it: on ssh alone, a
+  panic looks like a hang. BMDS writes it into the log's history, which survives the reset, and
+  the next boot puts it in `system.log` (`devplan/logging.md` §9; `reboot panic` tests it).
+- **`esp_log_timestamp()` runs 0.58 s ahead of `esp_timer`** on this board: its base is the
+  cycle count at the scheduler's start divided by today's clock rate, though the boot ran at other
+  rates, and then it adds the tick count, under the kernel's lock. The systimer starts with the
+  application: a line at `[0.574]` was at 4 ms of `esp_timer`. Converting the old log stamps
+  with `esp_timer`'s clock made every time in the files 0.58 s late. Log stamps come from
+  `Detail::monotonicUs()` now (`log.cpp`).
+- **PSRAM keeps its contents across a reset** (only a power cut loses them):
+  - `EXT_RAM_NOINIT_ATTR` (`CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY`) places a variable
+    at the start of PSRAM, `0x48000000`. Without that setting, the attribute falls back to
+    internal `.noinit`.
+  - **But:** the timing tuning for 200 MHz writes a 128-byte test pattern at physical
+    `0x80..0xff` at every boot (`MSPI_TIMING_PSRAM_TEST_DATA_ADDR`). Keep 256 bytes unused at
+    the front.
+  - **And:** a reset drops what the caches hold dirty, and IDF's `esp_restart_noos()` writes back
+    only the L1. Write back the L1 and then the L2 yourself (`Cache_WriteBack_Addr`) before a
+    reset (`log.cpp` wraps `esp_restart_noos`).
 - **Read the driver before trusting it with a DMA:** what it syncs, when, and what it reports at
   a buffer's end (the JPEG encoder above, the USB-Serial/JTAG FIFO in `docs/HARDWARE.md`).
 - **`esp_timer_get_time()` divides in software:** it reads the systimer, then converts its 16 MHz

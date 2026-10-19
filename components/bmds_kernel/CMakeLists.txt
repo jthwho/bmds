@@ -65,6 +65,14 @@ if(COMMAND idf_component_register)
                                                          "-Wl,--wrap=esp_crosscore_int_send_gdb_call"
                                                          "-Wl,--wrap=esp_crosscore_int_send_print_backtrace"
                                                          "-Wl,--wrap=esp_crosscore_int_send_twdt_abort")
+        # A panic's report goes into the log's history too, and the history is written back from the
+        # caches before any reset (log.cpp, devplan/logging.md §9).
+        target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=panic_print_char"
+                                                         "-Wl,--wrap=panic_print_str"
+                                                         "-Wl,--wrap=panic_print_dec"
+                                                         "-Wl,--wrap=panic_print_hex"
+                                                         "-Wl,--wrap=esp_panic_handler"
+                                                         "-Wl,--wrap=esp_restart_noos")
         bmds_update_keys(${COMPONENT_LIB} updatekeys.inc "${CONFIG_BMDS_UPDATE_KEYS_RELEASE}")
 else()
         find_package(Threads REQUIRED)

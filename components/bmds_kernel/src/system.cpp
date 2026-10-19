@@ -62,6 +62,32 @@ void System::restart() {
         esp_restart();
 }
 
+void System::panic(const char *message) {
+        esp_system_abort(message);
+}
+
+// As the boot log says it: a panic or watchdog is told apart from a flash's or a reboot's.
+const char *System::resetReason() {
+        switch (esp_reset_reason()) {
+                case ESP_RST_POWERON: return "power-on";
+                case ESP_RST_EXT: return "external pin";
+                case ESP_RST_SW: return "software (reboot)";
+                case ESP_RST_PANIC: return "panic";
+                case ESP_RST_INT_WDT: return "interrupt watchdog";
+                case ESP_RST_TASK_WDT: return "task watchdog";
+                case ESP_RST_WDT: return "watchdog";
+                case ESP_RST_DEEPSLEEP: return "deep sleep";
+                case ESP_RST_BROWNOUT: return "brownout";
+                case ESP_RST_SDIO: return "SDIO";
+                case ESP_RST_USB: return "USB (the serial port's control lines)";
+                case ESP_RST_JTAG: return "JTAG";
+                case ESP_RST_EFUSE: return "eFuse error";
+                case ESP_RST_PWR_GLITCH: return "power glitch";
+                case ESP_RST_CPU_LOCKUP: return "CPU lockup";
+                default: return "unknown";
+        }
+}
+
 System::Firmware System::running() {
         const esp_partition_t *p = esp_ota_get_running_partition();
         return p != nullptr && p->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_1 ? Firmware::Recovery : Firmware::Main;
