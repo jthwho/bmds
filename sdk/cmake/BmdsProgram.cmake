@@ -1,4 +1,4 @@
-# BmdsProgram.cmake: bmds_add_program(name SOURCES ... [STACK_SIZE bytes] [ICONS png...])
+# BmdsProgram.cmake: bmds_add_program(name SOURCES ... [STACK_SIZE bytes] [ICONS png...] [DISPLAY])
 #
 # Copyright Jason Howard. All rights reserved.
 # SPDX-License-Identifier: MIT
@@ -12,6 +12,9 @@
 # ICONS: PNG images (16x16 and 32x32 are the sizes shown) built into the
 # program as BMDS_NOTE_ICON notes (bmds/program.h), so that launchers and
 # title bars show it with no icon file. The project needs the ASM language.
+#
+# DISPLAY: it draws to the screen continuously (a game, a demo): BMDS_PROGRAM_DISPLAY, and the
+# kernel starts it on the core the display's own work isn't on.
 
 get_filename_component(BMDS_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
@@ -94,7 +97,7 @@ function(bmds_icon_notes out name)
 endfunction()
 
 function(bmds_add_program name)
-        cmake_parse_arguments(ARG "" "STACK_SIZE" "SOURCES;ICONS" ${ARGN})
+        cmake_parse_arguments(ARG "DISPLAY" "STACK_SIZE" "SOURCES;ICONS" ${ARGN})
         set(icons)
         if(ARG_ICONS)
                 set(icons ${CMAKE_CURRENT_BINARY_DIR}/${name}-icons.S)
@@ -121,6 +124,9 @@ function(bmds_add_program name)
                 -Wl,--no-warn-rwx-segments)
         if(ARG_STACK_SIZE)
                 target_link_options(${name} PRIVATE -Wl,--defsym=__bmds_stack_size=${ARG_STACK_SIZE})
+        endif()
+        if(ARG_DISPLAY)
+                target_link_options(${name} PRIVATE -Wl,--defsym=__bmds_program_flags=1) # BMDS_PROGRAM_DISPLAY
         endif()
         set_target_properties(${name} PROPERTIES OUTPUT_NAME "${name}.debug" SUFFIX ".elf"
                                                  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}

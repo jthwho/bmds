@@ -24,7 +24,7 @@ the headers in `include/bmds/` are the ABI and never change incompatibly
 | `ld/bmds.ld` | The program layout: one image linked at 0, the note, thread-local storage. |
 | `cmake/bmds-toolchain.cmake` | A CMake toolchain file for Espressif's `riscv32-esp-elf-gcc`. |
 | `tools/bmds-icon-notes` | `bmds-icon-notes -o icons.S NAME a-16.png a-32.png`: the same icon notes as `ICONS`, as an assembler file to build with `bmds-cc`, for builds without CMake (`dist/blocks`, `dist/doom`, `dist/luckyduck`). |
-| `cmake/BmdsProgram.cmake` | `bmds_add_program(name SOURCES ... [STACK_SIZE bytes] [ICONS png...])` (ICONS: the program's own icons, 16x16 and 32x32 PNGs, built in as `BMDS_NOTE_ICON` notes: `bmds/program.h`); generates `bmds-cc`. `bmds_add_app(name PROGRAM target DESKTOP app.desktop [FILES ...] [DIRECTORIES ...])`: an application folder, `name.app` in the build directory (its `Exec` checked to name the program), copied into a card's `apps/` to install ([`devplan/apps.md`](../devplan/apps.md)). |
+| `cmake/BmdsProgram.cmake` | `bmds_add_program(name SOURCES ... [STACK_SIZE bytes] [ICONS png...] [DISPLAY])` (ICONS: the program's own icons, 16x16 and 32x32 PNGs, built in as `BMDS_NOTE_ICON` notes: `bmds/program.h`; DISPLAY: it draws to the screen continuously, so the kernel starts it away from the display's core, `BMDS_PROGRAM_DISPLAY`); generates `bmds-cc`. `bmds_add_app(name PROGRAM target DESKTOP app.desktop [FILES ...] [DIRECTORIES ...])`: an application folder, `name.app` in the build directory (its `Exec` checked to name the program), copied into a card's `apps/` to install ([`devplan/apps.md`](../devplan/apps.md)). |
 | `cmake/BmdsLibc.cmake` | Builds musl's `libc.a` and assembles its headers in the build tree. |
 | `cmake/bmds-cc.in` | The compiler wrapper for other build systems (`CC=<build>/bmds-cc make`). |
 | `examples/` | `hello`; `cat` (files or stdin, with the raw calls); `ls [-al]` (portable POSIX only); `tone` (a sine on `/dev/dsp`, through OSS or the native audio calls); `player FILE` (a WAV, MP3, Ogg Vorbis, FLAC or MIDI file on `/dev/dsp`, decoded by the firmware: `bmds_audio_decode`; MIDI files play through the synth on `synth/font`); `keytone [-p FRAMES] [-x] [-r RATE] [-m PORT]` (the keyboard as a piano octave, through a real-time audio client: `bmds_audio_cycle`; with `-m`, a MIDI port's notes too); `midimon [PORT]`, `midimon -c NAME` (MIDI events as they arrive, with their times: `bmds_midi_config`; `-c` makes a port that passes them on); `speak [-o FILE.wav] TEXT...` (text spoken aloud with `bmds_say`, or its samples read from a speech fd, `bmds_audio_speak`, and saved); `surfdemo` (a surface in a window or full screen); `appinfo` (installed as `apps/NAME.app`: its folder, id and data folder); `bounce [-i PICTURE] [-a SOUND] [-m MUSIC]` (libbmdsgame's frame loop: squares, or a picture, drawn where they move; a sound as they meet a wall, music). |
@@ -78,7 +78,8 @@ riscv32-esp-elf-objcopy --strip-unneeded busybox_unstripped busybox
 ```
 
 `BMDS_STACK=bytes` in the environment sets the stack the linked program
-asks for. `-lm`, `-lpthread`, `-lrt`... find empty archives: musl keeps all
+asks for; `BMDS_DISPLAY=1` flags it as drawing to the screen continuously
+(`BMDS_PROGRAM_DISPLAY`). `-lm`, `-lpthread`, `-lrt`... find empty archives: musl keeps all
 of it in `libc.a`. BusyBox 1.37 with `CONFIG_NOMMU` builds this way
 unmodified (about 90 applets; `hush` starts programs and runs pipelines
 with `vfork`).

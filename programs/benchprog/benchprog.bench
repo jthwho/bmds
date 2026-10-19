@@ -39,7 +39,7 @@ Tags=quick
 Help=A 1280x720 picture encoded as PNG and JPEG and decoded (the JPEG codec, and in software)
 
 [Bench surface.present]
-Exec=benchprog surface
+Exec=benchprog-display surface
 Tags=screen
 Help=Presents at the games' sizes: frames shown a second, the call's time, the system's CPU a frame
 Param.case=;Only the cases whose names hold this

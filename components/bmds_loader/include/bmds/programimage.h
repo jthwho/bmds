@@ -72,6 +72,7 @@ namespace ProgramImage {
                         uint32_t imageSize = 0;   ///< Bytes of memory it needs (with bss).
                         uint32_t abiVersion = 0;  ///< The ABI version it was built against.
                         uint32_t stackSize = 0;   ///< Stack it asks for (0: the default).
+                        uint32_t flags = 0;       ///< Its `BMDS_PROGRAM_*` flags.
                         uint32_t relocations = 0; ///< Patches `load()` applies.
                         uint32_t tlsOffset = 0;   ///< Its thread-local block, if `tlsSize` (informational).
                         uint32_t tlsSize = 0;     ///< Bytes of thread-local storage.

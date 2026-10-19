@@ -5,12 +5,13 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The kernel's own benchmarks (devplan/bench.md §6, §14): a task switch there and back, on one
- * core and across them.
+ * The kernel's own benchmarks (devplan/bench.md §6, §14-16): a task switch there and back, on one
+ * core and across them; locks, critical sections and the clock.
  */
 
 #include <atomic>
 #include <new>
+#include <freertos/FreeRTOS.h>
 #include <bmds/bench.h>
 #include <bmds/detail/platform.h>
 #include <bmds/memory.h>
@@ -108,6 +109,21 @@ namespace {
                         Memory::free(mem);
                         if (err.isError()) return err;
                 }
+                // FreeRTOS's critical section, which each of the above enters (a mutex's pair four
+                // times, a semaphore's twice): critical.cpp's (devplan/bench.md §16).
+                static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+                if (Error err = ctx.measure("critical_section_ns", "ns", BenchBetter::Lower,
+                                            [&](double &out) {
+                                                    Stopwatch watch;
+                                                    for (int i = 0; i < Pairs; ++i) {
+                                                            portENTER_CRITICAL(&mux);
+                                                            portEXIT_CRITICAL(&mux);
+                                                    }
+                                                    out = double(watch.elapsedUs()) * 1000.0 / Pairs;
+                                                    return Error(Error::Ok);
+                                            });
+                    err.isError())
+                        return err;
                 void *mem = Memory::alloc(MemSpace::Internal, sizeof(Semaphore));
                 if (mem == nullptr) return Error::NoMem;
                 auto       *semaphore = ::new (mem) Semaphore(1, 0);
@@ -152,7 +168,8 @@ namespace {
 BMDS_BENCH(kernelClock, "kernel.clock", runClock, BenchQuick,
            "The monotonic clock read: the firmware's, and esp_timer's own through the ROM (ns a read)")
 BMDS_BENCH(kernelLocks, "kernel.locks", runLocks, BenchQuick,
-           "A kernel Mutex locked and unlocked, a Semaphore given and taken, uncontended (ns a pair)")
+           "A kernel Mutex locked and unlocked, a Semaphore given and taken, a FreeRTOS critical section, uncontended "
+           "(ns a pair)")
 BMDS_BENCH(kernelSwitch, "kernel.switch", runSwitch, BenchQuick,
            "A task woken and waited for, there and back by semaphores: on this core and the other (us)")
 

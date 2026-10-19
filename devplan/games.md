@@ -1055,6 +1055,9 @@ rules pure C and host-tested, the program on `libbmdsgame`, the art and sounds w
   mixer on core 0 with the kernel's audio, about 45% and 64%, the same in four runs out of four,
   0 late periods, 59-61 frames a second.
 - **Seen on the way:** Solitaire couldn't start while Doom ran (`Out of memory`). Fixed: §24.
+- **Since (2026-10-18, `bench.md` §16-17):** the game's thread sharing core 1 with the conversion
+  turned out to cost Doom's timedemo a quarter (44 fps against 53-58). The games now set
+  `BMDS_PROGRAM_DISPLAY` and start on core 0; their mixer and music go to core 1.
 
 ## 24. Two games at once, and what scaled windows cost (2026-10-15)
 

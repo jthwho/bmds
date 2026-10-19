@@ -157,7 +157,8 @@ probe any bench can ask for (`probe=stall`). This replaces `display ppa`'s "scan
     the chip's revision, the CPU and PSRAM clocks, the display's mode, uptime, free memory by
     space, the mounted filesystems, every sysconf setting not at its default, the running
     processes and tasks with their CPU time.
-  - `benches`: one entry a bench run: its name, the parameters used, the status, `results` (a
+  - `benches`: one entry a bench run: its name, the parameters used, the status, a program's
+    `core` (its first thread's: §17), `results` (a
     metric each: `name`, `unit`, `better`, `median`, `min`, `max`, `runs`, `noisy`), and
     `counters` (every counter that changed: its name and change; the cores' idle, internal RAM's
     lowest free).
@@ -647,3 +648,97 @@ system's clock costs underneath it. New benchmarks to see them:
 
 **ABI:** none changed. The CRT's `ts_write` is inside the program, and `bmds_k_clock_get` keeps its
 meaning.
+
+## 16. Tuning round 2: locks, through FreeRTOS's critical sections (2026-10-18)
+
+**Where a lock's time goes.** A temporary benchmark timed each part of a lock in cycles. An
+uncontended mutex lock and unlock was 1,459 cycles (4.1 µs). It enters four FreeRTOS critical
+sections: the queue's lock on each side, plus `pvTaskIncrementMutexHeldCount()` and
+`xTaskPriorityDisinherit()` for priority inheritance. A semaphore give and take enters two. Each
+section cost **283 cycles**:
+
+- ESP-IDF's port masks interrupts, then calls `spinlock_acquire()`, which masks them again and
+  restores them around its own compare-and-set. `esp_cpu_compare_and_set()` is also a call into
+  flash. Leaving undoes both masks again.
+- On this silicon (P4 v1.3, `ESP32P4_SELECTS_REV_LESS_V3`) a mask isn't a CSR swap. It is MIE
+  off, a memory-mapped read and write of the CLIC threshold, a read back, then MIE on: 63 cycles
+  a mask and restore as IDF's functions. The parts alone: the threshold read 10 cycles, a write and
+  read back 14, MIE off and on 17, an `lr`/`sc` compare-and-set 21.
+
+**What was changed:** `critical.cpp` (`bmds_kernel`) replaces `xPortEnterCriticalTimeout()` and
+`vPortExitCriticalMultiCore()` (`-Wl,--wrap`):
+
+- One mask, an inline `lr.w.aq`/`sc.w`, the nesting count, and on the way out a release store and
+  one unmask. All of it is in IRAM.
+- The state is IDF's own (`port_uxCriticalNesting`, `port_uxOldInterruptState`, the spinlock's
+  owner and count). A section entered by unwrapped code in `port.c` can be left by ours and the
+  other way round, and `spinlock_acquire()` used directly on the same lock still works.
+- **MIE must stay off around the threshold write.** A first version left it on, reasoning that an
+  interrupt saves and restores the threshold. That holds only without hardware nesting, and the P4
+  nests in hardware (`SOC_INT_HW_NESTED_SUPPORTED`): `vectors.S` never touches the threshold. An
+  interrupt taken after the write but before it counted switched to another task, which then ran
+  masked with no section open. The interrupt watchdog reset the board within minutes of
+  benchmarking.
+- IRAM shrank 452 bytes: the linker drops IDF's two functions, which were bigger.
+
+**On the board:**
+
+| | before | after |
+|---|---|---|
+| a critical section (enter and leave) | 283 cycles, 776 ns | 178 cycles, **470 ns** |
+| `Mutex` lock and unlock | 4.14 µs | **2.78 µs** |
+| `Semaphore` give and take | 2.45 µs | **1.81 µs** |
+| `kernel.switch` same core / across | 20.4 / 14.6 µs | **16.2 / 11.6 µs** |
+| `getppid()` (the process table's mutex) | 7.4 µs | 5.5-5.8 µs |
+| `kernel.pipe` | 162 MB/s | 187 MB/s |
+
+**Checked:** every quick benchmark (25), progtest's `threads`, `spawn`, `poll`, `timers`, `time`
+and `signals`, Doom's timedemo and `surface.present` ran with no failure or reset.
+
+**What's left in a lock:** of a mutex pair's ~1,000 cycles, about 700 are its four sections, near
+their floor now. The rest is FreeRTOS's queue code. The next step would be a mutex of our own, with
+a compare-and-set fast path that enters no section when the lock is free, keeping priority
+inheritance on the slow path. That is a design of its own, not started.
+
+**Doom's timedemo depends on the core it lands on, not on these changes.** While tuning, Doom
+measured 41-44 fps against the 57.6 baseline. A bisect seemed to blame `monotonicUs()` moving to
+IRAM, but repeated runs showed the bisect was noise:
+
+- Doom is display-paced: it spends most of its time blocked in presents. On **core 1**, with the
+  display's conversion, it got 44 fps three times in three runs. Forced to **core 0** on the same
+  firmware, it got 53-58 fps.
+- The loader pins a program's first task to core 1 unless core 1 was more than 15 points busier
+  over the last second (`processes.md` §3.12a). Cheaper locks and clock reads made core 1 less
+  busy, so Doom started landing there.
+- `surface.present` (benchprog) shows the same split: 49 against 60 fps.
+- A few minutes after a boot Doom also runs a little slower (54 against 57.6).
+- Program benchmarks' results therefore depended on where the loader put them. Settled in §17:
+  a program that draws flags itself and always starts on core 0, and the results record the core.
+
+## 17. Display programs off the display's core, and the core in the results (2026-10-18)
+
+The user's decision after §16: keep programs that draw to the screen off core 1, and account for
+a program's core in the benchmarks.
+
+- **Why core 1 is wrong for them:** a surface's presenter (the L8 or RGB565 conversion, `surface`,
+  priority 4) and the scanout run on core 1. A game whose thread shares that core waits for its
+  own conversion; on core 0 the two run in parallel. Doom: 44 fps against 53-58 (§16).
+- **Telling the loader:** it can't know at a program's start, and a thread can't move once the
+  loader has pinned it. So the program says so: `BMDS_PROGRAM_DISPLAY` (bit 0 of the program
+  note's `flags`, which were all refused before), from `bmds_add_program(... DISPLAY)`,
+  `BMDS_DISPLAY=1` for bmds-cc, or `display = true` in a dist package (the linker script's
+  `__bmds_program_flags`). Doom, Blocks, Lucky Duck, `surfdemo` and `bounce` set it.
+- **The loader** (`coreForProgram()`, `processes.md` §3.12a) starts a flagged program on core 0
+  always (the one `DisplayCore` isn't), whatever the load; any other as before. libbmdsgame's
+  mixer and music threads then go to core 1, as they pin themselves to the game's other core.
+- **Benchmarks:** `ProgramLauncher::Request::core` reports the core a program's first thread
+  got. `bench` prints `on core N` for a program's benchmark and writes `"core"` in its record
+  (appended to the format). `tools/bmds-bench run` marks a result whose program ran on another
+  core than the run it is compared with `OTHER CORE (core 0, was 1)` instead of judging it
+  better or worse; `compare` adds the same, `history` and `table` show the core.
+- **`surface.present`** runs `benchprog-display`: the same program built with the flag, so it
+  measures where a game runs. `benchprog`'s other benchmarks keep the ordinary choice.
+- **Measured:** Doom's timedemo on core 0, 57.8 and 57.3 fps (two runs); `surface.present`'s
+  full-screen Doom size at 60 fps (49 on core 1). Blocks: the game's thread on core 0, its
+  audio on core 1. `kernel.syscall` (unflagged) still on core 1. Host tests cover the flag's
+  parsing (an unknown bit is still refused).

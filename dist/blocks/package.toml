@@ -6,3 +6,5 @@ description = "Blocks: falling blocks (the guideline's rules), with sound and Ko
 license = "MIT"
 source_tree = "programs/blocks"
 license_files = ["../../LICENSE"]
+# It draws every frame: started away from the display's core (BMDS_PROGRAM_DISPLAY).
+display = true

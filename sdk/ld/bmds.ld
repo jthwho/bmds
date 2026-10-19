@@ -11,13 +11,15 @@
  * -Wl,--emit-relocs,--no-relax -T bmds.ld (as BmdsProgram.cmake does).
  *
  * Set the stack a program needs with -Wl,--defsym=__bmds_stack_size=N
- * (bytes; 0, the default, means BMDS_DEFAULT_STACK_SIZE).
+ * (bytes; 0, the default, means BMDS_DEFAULT_STACK_SIZE), and its flags
+ * (BMDS_PROGRAM_*) with -Wl,--defsym=__bmds_program_flags=N.
  */
 
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 
 PROVIDE(__bmds_stack_size = 0);
+PROVIDE(__bmds_program_flags = 0);
 
 PHDRS
 {
@@ -44,7 +46,7 @@ SECTIONS
                 LONG(16)                /* size */
                 LONG(1)                 /* abi_version: BMDS_ABI_VERSION */
                 LONG(__bmds_stack_size) /* stack_size */
-                LONG(0)                 /* flags */
+                LONG(__bmds_program_flags) /* flags: BMDS_PROGRAM_* */
         } :image :note
 
         .rodata : {

@@ -142,7 +142,7 @@ Error ProgramSurface::start(const Config &requested) {
         tc.name = "surface";
         tc.stackBytes = 4096;
         tc.priority = 4; // above programs, below the window manager
-        tc.core = 1;     // the window manager's is 0
+        tc.core = 1;     // the display's core (the loader's DisplayCore); the window manager's is 0
         Error err = _task.start(tc, taskEntry, this);
         if (err.isError()) return err;
         _taskStarted = true;

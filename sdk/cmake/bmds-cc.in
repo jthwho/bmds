@@ -5,7 +5,9 @@
 #
 # Links like bmds_add_program, into an ELF with everything (strip it for the
 # card: riscv32-esp-elf-objcopy --strip-unneeded in out). BMDS_STACK=bytes
-# sets the program's stack (default: the kernel's). libbmds.a comes first as
+# sets the program's stack (default: the kernel's); BMDS_DISPLAY=1 marks it as
+# drawing to the screen continuously (BMDS_PROGRAM_DISPLAY: the kernel starts it
+# away from the display's core). libbmds.a comes first as
 # well, so that _start, and with it main, is wanted before the program's own
 # archives are searched (BusyBox keeps main in one).
 
@@ -25,4 +27,5 @@ if [ $link = r ]; then exec "$GCC" $ARCH -nostdlib "$@"; fi
 exec "$GCC" $ARCH $INC -static -nostdlib -L@BMDS_LIBC_LIB@ -u _start -T @BMDS_SDK_DIR@/ld/bmds.ld \
         -Wl,--emit-relocs -Wl,--no-relax -Wl,--gc-sections -Wl,-z,max-page-size=512 -Wl,-z,common-page-size=512 \
         -Wl,--no-warn-rwx-segments -Wl,--defsym=__bmds_stack_size=${BMDS_STACK:-0} \
+        -Wl,--defsym=__bmds_program_flags=${BMDS_DISPLAY:-0} \
         -lbmds "$@" -Wl,--start-group -lbmdsgame -lbmdsbench -lbmds -lc @BMDS_LIBGCC@ -Wl,--end-group

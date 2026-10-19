@@ -230,9 +230,10 @@ namespace {
                                                         if (note.stack_size > BMDS_MAX_STACK_SIZE)
                                                                 return fail(problem, Error::NotSupported,
                                                                             "asks for too much stack", note.stack_size);
-                                                        if (note.flags != 0)
+                                                        if ((note.flags & ~BMDS_PROGRAM_DISPLAY) != 0)
                                                                 return fail(problem, Error::NotSupported,
                                                                             "unknown program flags", note.flags);
+                                                        info.flags = note.flags;
                                                         haveNote = true;
                                                 }
                                                 at = static_cast<uint32_t>(next);

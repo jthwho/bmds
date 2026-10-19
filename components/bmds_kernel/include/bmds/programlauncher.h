@@ -103,6 +103,12 @@ class ProgramLauncher {
                                  *        shell: a command substitution's programs).
                                  */
                                 bool ignoreStops = false;
+                                /**
+                                 * @brief Where the core its first thread keeps to is stored
+                                 *        once it starts (`bench` records it: a program's speed
+                                 *        can depend on it); null: nothing.
+                                 */
+                                int8_t *core = nullptr;
                 };
 
                 /**

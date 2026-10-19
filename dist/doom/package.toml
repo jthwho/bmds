@@ -11,3 +11,5 @@ source_dir = "doomgeneric-e257a09527062bfb986b6e5e0780839b6cbd5b71"
 license_files = ["LICENSE"]
 # Bytes of stack the program asks for (the renderer's BSP walk recurses).
 stack = 65536
+# It draws every frame: started away from the display's core (BMDS_PROGRAM_DISPLAY).
+display = true

@@ -353,6 +353,18 @@ until silicon v3; then test again.
   with the network task on one core and the sender on the other, the time inside FreeRTOS's queue
   operations (interrupts masked, spinning on the kernel's lock) was 40% of BusyBox `nc`'s samples.
   Fewer wakes and fewer lock handoffs per byte paid more than faster code.
+- **What a critical section costs, and why:** on this silicon (v1.3, `ESP32P4_SELECTS_REV_LESS_V3`)
+  masking interrupts isn't a CSR swap. The CLIC threshold is a memory-mapped register: MIE off,
+  read it, write it, read it back, MIE on, 63 cycles a mask and restore through IDF's functions.
+  IDF's `portENTER_CRITICAL` masks, then `spinlock_acquire()` masks and restores again around a
+  compare-and-set that is a call into flash. Leaving repeats it. That totals 283 cycles a
+  section. A mutex pair enters four, a semaphore pair two. BMDS's own section (`critical.cpp`, one
+  mask, an inline `lr`/`sc`) takes 178 (`devplan/bench.md` §16).
+- **The P4 nests interrupts in hardware, so nothing saves the threshold for a task:** with
+  `SOC_INT_HW_NESTED_SUPPORTED`, `vectors.S` leaves the threshold alone. Raising it must be done
+  with MIE off until the read back. An interrupt taken after the write, before it counts, can
+  switch tasks, and the next task then runs masked with no critical section open. That ends in an
+  interrupt-watchdog reset ("Reset: interrupt watchdog"), within minutes under load.
 - **A contended mutex gives no bound on a high-priority waiter's wait:** a released FreeRTOS
   mutex goes to whoever takes it next, and a task already running on the other core usually
   wins. Under a UDP flood, with the network task and `eth0` each taking the EMAC driver's transmit
@@ -369,6 +381,12 @@ until silicon v3; then test again.
   of these. Acquire loads and an early return when nothing is pending took `getpid()` from 4.2 to
   2.5 µs (`devplan/bench.md` §15). Keep the default only where a store must be ordered before a
   later load (one explicit `std::atomic_thread_fence`).
+- **A program's core decides display-paced results:** Doom's timedemo got 44 fps on core 1 (where
+  the display's conversion runs) and 53-58 on core 0, with the same firmware; the loader's choice
+  flipped with small changes in each core's load. A program that draws now says so
+  (`BMDS_PROGRAM_DISPLAY`) and always starts on core 0, and `bench` records each program's core
+  (`devplan/bench.md` §16-17). An unflagged program's result can still move with its core: look
+  at the `core` in the results before blaming a change, and run it more than once.
 - **Seeing it:** the profiler samples at the tick, which can't interrupt a critical section, so
   time inside one is charged to `vPortExitCriticalMultiCore` with the caller (`xQueueGenericSend`:
   a give or unlock; `xQueueSemaphoreTake`: a take or lock) as its return address.

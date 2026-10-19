@@ -78,12 +78,19 @@ extern "C" {
 /** @brief Largest stack a program may ask for. */
 #define BMDS_MAX_STACK_SIZE (1024u * 1024u)
 
+/**
+ * @brief A program flag (appended 2026-10-18): it draws to the screen continuously (a game, a
+ *        demo), so the kernel starts it on the core the display's own work isn't on.
+ *        `bmds_add_program(... DISPLAY)`, or `BMDS_DISPLAY=1` for bmds-cc, sets it.
+ */
+#define BMDS_PROGRAM_DISPLAY 0x1u
+
 /** @brief What a program says about itself (the note's descriptor). */
 typedef struct bmds_program_note {
                 uint32_t size;        /**< sizeof(bmds_program_note_t) as built. */
                 uint32_t abi_version; /**< The `BMDS_ABI_VERSION` it was built against. */
                 uint32_t stack_size;  /**< Bytes of stack it needs; 0 for `BMDS_DEFAULT_STACK_SIZE`. */
-                uint32_t flags;       /**< None defined yet: must be 0 (unknown bits are refused). */
+                uint32_t flags;       /**< `BMDS_PROGRAM_*` (unknown bits are refused). */
 } bmds_program_note_t;
 
 /**

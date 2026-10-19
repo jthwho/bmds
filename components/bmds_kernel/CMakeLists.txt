@@ -30,6 +30,7 @@ if(COMMAND idf_component_register)
                                     src/assert.cpp
                                     src/boot.cpp
                                     src/clockinit.cpp
+                                    src/critical.cpp
                                     src/esperr_check.cpp
                                     src/log.cpp
                                     src/logstream.cpp
@@ -52,6 +53,9 @@ if(COMMAND idf_component_register)
         # esp_timer_get_time() is Detail::monotonicUs() (platform.cpp): the same counter without the
         # ROM's 64-bit division (devplan/bench.md §15).
         target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_timer_get_time")
+        # FreeRTOS's critical sections are critical.cpp's: one interrupt mask, not three (§16).
+        target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=xPortEnterCriticalTimeout"
+                                                         "-Wl,--wrap=vPortExitCriticalMultiCore")
         bmds_update_keys(${COMPONENT_LIB} updatekeys.inc "${CONFIG_BMDS_UPDATE_KEYS_RELEASE}")
 else()
         find_package(Threads REQUIRED)

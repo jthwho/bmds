@@ -189,8 +189,14 @@ Plan: [`input.md`](input.md).
   PSRAM past the cache ~800 ns a load, a same-core task switch 21 µs. Tuning round 1 done (§15):
   system calls (`getpid` 4.2 → 2.5 µs, `clock_gettime` 5.9 → 1.8 µs: the signal checks' fast
   path, no `KernelCall` for a clock, a reciprocal in the CRT, `esp_timer_get_time()` without the
-  ROM's division), `kernel.locks`, `kernel.clock`, `cpu.coremark` (2.95 CoreMark/MHz). Next: the
-  task switch and lock costs, the full-screen L8 conversion, keyed blits; then Quake.
+  ROM's division), `kernel.locks`, `kernel.clock`, `cpu.coremark` (2.95 CoreMark/MHz). Tuning
+  round 2 done (§16): FreeRTOS's critical sections our own (283 → 178 cycles), a mutex pair
+  4.1 → 2.8 µs, a semaphore pair 2.5 → 1.8 µs, a same-core switch 20.4 → 16.2 µs; Doom's timedemo
+  found to depend on its core (44 fps on core 1, 53-58 on core 0). Display programs off the
+  display's core done (§17, the user's decision): `BMDS_PROGRAM_DISPLAY` in the program note
+  starts a game on core 0 (Doom 57.3-57.8 fps), and the results record each program's core.
+  Next: a mutex with a lock-free fast path, the full-screen L8 conversion, keyed blits; then
+  Quake.
 - [x] Settings, the control panel (`controlpanel.md`, planned 2026-10-16, the user's request):
   the one place to change every sysconf setting graphically, laid out like the Mac's System
   Settings (groups with icons on the left, the group's page on the right). Changes apply and

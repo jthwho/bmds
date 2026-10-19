@@ -238,7 +238,7 @@ TEST_CASE("Program format: what is not a BMDS program") {
         b.noteStack = BMDS_MAX_STACK_SIZE + 1;
         refused(b, Error::NotSupported, "too much stack");
         b = Builder();
-        b.noteFlags = 1;
+        b.noteFlags = 2;
         refused(b, Error::NotSupported, "unknown program flags");
         b = Builder();
         b.interp = true;
@@ -276,6 +276,14 @@ TEST_CASE("Program format: what is not a BMDS program") {
         refused(b, Error::NotSupported, "PC-relative reference to an absolute symbol");
 }
 
+TEST_CASE("Program format: the display flag") {
+        Builder b;
+        b.noteFlags = BMDS_PROGRAM_DISPLAY;
+        const Checked c = check(b.build());
+        REQUIRE(c.err == Error::Ok);
+        CHECK(c.info.flags == BMDS_PROGRAM_DISPLAY);
+}
+
 TEST_CASE("Program format: relocation") {
         Builder b;
         b.words[0] = 0x12345537; // lui a0, 0x12345     (HI20 to .text)
@@ -291,6 +299,7 @@ TEST_CASE("Program format: relocation") {
         CHECK(c.info.imageSize == 96);
         CHECK(c.info.fileSize == 64);
         CHECK(c.info.abiVersion == 1);
+        CHECK(c.info.flags == 0);
 
         Error                      err;
         const std::vector<uint8_t> image = loadAt(b.build(), 0x48003000, err);

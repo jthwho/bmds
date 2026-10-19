@@ -723,6 +723,7 @@ _Static_assert(offsetof(bmds_program_note_t, size) == 0, "ABI: note.size");
 _Static_assert(offsetof(bmds_program_note_t, abi_version) == 4, "ABI: note.abi_version");
 _Static_assert(offsetof(bmds_program_note_t, stack_size) == 8, "ABI: note.stack_size");
 _Static_assert(offsetof(bmds_program_note_t, flags) == 12, "ABI: note.flags");
+_Static_assert(BMDS_PROGRAM_DISPLAY == 0x1u, "ABI: program flag DISPLAY");
 _Static_assert(BMDS_NOTE_ICON == 2 && BMDS_ICON_FORMAT_PNG == 1, "ABI: icon note type and format");
 _Static_assert(sizeof(bmds_icon_note_t) == 16, "ABI: bmds_icon_note_t size");
 _Static_assert(offsetof(bmds_icon_note_t, size) == 0, "ABI: icon.size");

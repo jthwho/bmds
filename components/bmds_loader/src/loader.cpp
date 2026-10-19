@@ -154,6 +154,7 @@ namespace {
                         size_t                bytes = 0;
                         uint32_t              entry = 0;
                         uint32_t              stackBytes = 0;
+                        bool                  display = false;   // BMDS_PROGRAM_DISPLAY
                         const ProgramEntry   *builtin = nullptr; // a program built in: no image
         };
 
@@ -229,6 +230,7 @@ namespace {
                 }
                 image.entry = header.entry;
                 image.stackBytes = header.stackSize != 0 ? header.stackSize : BMDS_DEFAULT_STACK_SIZE;
+                image.display = (header.flags & BMDS_PROGRAM_DISPLAY) != 0;
                 return Error::Ok;
         }
 
@@ -531,14 +533,21 @@ namespace {
                                : MemSpace::Psram;
         }
 
-        // The core a program's first task keeps to (devplan/processes.md §3.12a): the one less busy
-        // over the last window of a second or more ending at a program's start (the idle tasks' run
-        // time; shorter gaps keep the last estimate: every shell command is a program), ties (within 15 points)
-        // to core 1, where the display's work is (core 0 has the window manager, audio and the
-        // network). Its other threads may choose (BMDS_SCHED_PIN); the game library puts its audio
-        // on the other core. A task is pinned by its first floating point anyway: this chooses
-        // where, instead of wherever it happens to run then.
-        int coreForProgram() {
+        // The core the display's own work runs on: the surfaces' presenters and the scanout
+        // (ProgramSurface, Scanout).
+        constexpr int DisplayCore = 1;
+
+        // The core a program's first task keeps to (devplan/processes.md §3.12a): one that draws
+        // to the screen continuously (@p display, BMDS_PROGRAM_DISPLAY) always the one the
+        // display's work isn't on (its frames converted there in parallel: Doom 53-58 frames a
+        // second against 44 sharing, devplan/bench.md §17). Any other, the one less busy over the
+        // last window of a second or more ending at a program's start (the idle tasks' run time;
+        // shorter gaps keep the last estimate: every shell command is a program), ties (within 15
+        // points) to core 1 (core 0 has the window manager, audio and the network). Its other
+        // threads may choose (BMDS_SCHED_PIN); the game library puts its audio on the other core.
+        // A task is pinned by its first floating point anyway: this chooses where, instead of
+        // wherever it happens to run then.
+        int coreForProgram(bool display) {
                 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
                 static uint64_t     lastUs = 0, lastIdle[portNUM_PROCESSORS] = {};
                 static uint32_t     busyPercent[portNUM_PROCESSORS] = {};
@@ -560,12 +569,13 @@ namespace {
                 }
                 if (busyPercent[1] > busyPercent[0] + 15) core = 0;
                 portEXIT_CRITICAL(&lock);
-                return core;
+                return display ? 1 - DisplayCore : core;
         }
 
-        // Starts @p run's first task, named after @p path's last component; @p exec: it goes on
-        // from the calling thread (an exec in place), whose scheduling it keeps.
-        Error startRunning(Running &run, StringView path, size_t stackBytes, bool exec) {
+        // Starts @p run's first task, named after @p path's last component, on the core for
+        // @p display (coreForProgram()), stored in @p core; @p exec: it goes on from the calling
+        // thread (an exec in place), whose scheduling it keeps.
+        Error startRunning(Running &run, StringView path, size_t stackBytes, bool display, bool exec, int &core) {
                 Task::Config config;
                 const size_t slash = path.lastIndexOf('/');
                 char         name[configMAX_TASK_NAME_LEN];
@@ -581,7 +591,7 @@ namespace {
                                               : Running::ofCurrentTask() != nullptr ? uxTaskPriorityGet(nullptr)
                                                                                     : CONFIG_BMDS_SHELL_PRIORITY;
                 config.priority = RealTimeThreads::inherit(run.main, starter, normal, exec);
-                config.core = coreForProgram();
+                config.core = core = coreForProgram(display);
                 const Error err = run.main.task.start(config, run.builtin != nullptr ? builtinMain : programMain, &run);
                 if (err.isOk())
                         bmdsDebug("Loader: %s (pid %d) at %p, stack %u in %s", name, static_cast<int>(run.pid),
@@ -1288,7 +1298,8 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
         }
         if (replacement != nullptr) {
                 processes->setRuntime(targetPid, replacement);
-                err = startRunning(*replacement, p, loaded.stackBytes, depth == 0);
+                int core = -1;
+                err = startRunning(*replacement, p, loaded.stackBytes, loaded.display, depth == 0, core);
                 if (err.isError()) {
                         processes->setRuntime(targetPid, nullptr);
                         destroyRunning(replacement);
@@ -2366,7 +2377,8 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
         run->pid = run->main.currentPid = run->main.tid = pid;
         // The program may change the terminal's modes: the shell gets its own back.
         savedMode = request.console != nullptr ? request.console->mode() : Console::TermMode();
-        err = startRunning(*run, request.path, image.stackBytes, false);
+        int core = -1;
+        err = startRunning(*run, request.path, image.stackBytes, image.display, false, core);
         if (err.isError()) {
                 report(request, "cannot start: %s", errorText(err));
                 processes->setRuntime(pid, nullptr);
@@ -2378,6 +2390,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
                 Memory::free(image.memory);
                 return makeError<int32_t>(err);
         }
+        if (request.core != nullptr) *request.core = static_cast<int8_t>(core);
         return makeResult(pid);
 }
 

@@ -6,3 +6,5 @@ description = "Lucky Duck: a casino of card and dice games (Solitaire, Blackjack
 license = "MIT"
 source_tree = "programs/luckyduck"
 license_files = ["../../LICENSE"]
+# It draws every frame: started away from the display's core (BMDS_PROGRAM_DISPLAY).
+display = true

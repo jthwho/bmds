@@ -22,7 +22,8 @@ Make `dist/<name>/` with:
   `license` (SPDX), `source` (the release tarball's URL, or a zip's), `sha256`,
   `license_files` (paths in the source to install under `share/licenses/<name>`),
   optionally `stack` (bytes the program's stack must have; default the
-  kernel's) and `source_dir` (the tarball's top directory, if it isn't
+  kernel's), `display` (true: its programs draw to the screen continuously, so
+  the kernel starts them away from the display's core: `BMDS_PROGRAM_DISPLAY`) and `source_dir` (the tarball's top directory, if it isn't
   `<name>-<version>`). A package of data kept in this repository has
   `source_tree` (its directory, from the repository's root) instead of
   `source` and `sha256`, may have `version_file` (a file there holding the
@@ -33,7 +34,7 @@ Make `dist/<name>/` with:
   directory), `DESTDIR`, `PKGDIR` (this directory), `CC` (the SDK's `bmds-cc`,
   static musl), `AR`, `STRIP`, `OBJCOPY`, `HOSTCC`, `BMDS_MAKE` (use it for the main
   build: it paces parallel jobs; it isn't called `MAKE`, which would replace
-  make's own in recursive builds), `JOBS`, `BMDS_STACK`, `VERSION`, `ROOT`
+  make's own in recursive builds), `JOBS`, `BMDS_STACK`, `BMDS_DISPLAY`, `VERSION`, `ROOT`
   (the repository; for its `tools/`). Without the SDK there is no `CC`, `AR`,
   `STRIP` or `OBJCOPY`.
 - **`patches/*.patch`** (optional): applied in name order with `patch -p1`.

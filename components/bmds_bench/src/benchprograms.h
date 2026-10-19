@@ -34,12 +34,14 @@ namespace BenchPrograms {
         struct Ending {
                         bool exited = false; ///< By exit(), with `status`; else by a signal.
                         int  status = 0;     ///< The exit status, or the signal.
+                        int  core = -1;      ///< The core its first thread kept to (-1: not known).
         };
 
         /**
          * @brief Runs @p words (the program, found on `$PATH` if it has no `/`, and its
          *        arguments), its standard output on a pipe: @p line gets each line as it comes
          *        (its newline dropped). Ctrl-C sends the program SIGINT and keeps reading.
+         *        @p ending's `core` is set once it starts, whatever its end.
          * @return `Ok` with @p ending; `NotSupported` (no process to start it from, as on the
          *         serial console's shell), `NotExist` (no such program), or the start's error.
          */

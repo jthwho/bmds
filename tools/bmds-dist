@@ -185,7 +185,8 @@ def build_package(recipe, cc):
     env.update({
         "SRC": src, "BUILD": build, "DESTDIR": stage, "PKGDIR": recipe["dir"], "ROOT": ROOT,
         "HOSTCC": os.environ.get("HOSTCC", "gcc"), "BMDS_MAKE": make_tool(), "JOBS": str(os.cpu_count() or 2),
-        "BMDS_STACK": str(recipe.get("stack", 0)), "VERSION": recipe["version"],
+        "BMDS_STACK": str(recipe.get("stack", 0)), "BMDS_DISPLAY": "1" if recipe.get("display") else "0",
+        "VERSION": recipe["version"],
     })
     if uses_sdk(recipe):
         env.update({"CC": cc, "AR": find_tool("ar"), "STRIP": find_tool("strip"), "OBJCOPY": find_tool("objcopy")})

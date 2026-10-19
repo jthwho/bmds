@@ -506,6 +506,10 @@ The user approved (2026-10-15) a way to choose:
   yet, which is safe because none of its state is in a core's registers then. Pinned already:
   only its own core succeeds. All the cores: a no-op. musl's `sched_setaffinity` and
   `pthread_setaffinity_np` on the calling thread use it.
+- **Display programs (2026-10-18, the user's decision):** a program whose note has
+  `BMDS_PROGRAM_DISPLAY` (bit 0 of `flags`, appended) always starts on core 0, away from the
+  display's presenters and scanout on core 1, whatever the load: a game sharing core 1 waits on
+  its own frames' conversion (Doom 44 fps there, 53-58 on core 0; `bench.md` §16-17).
 - **libbmdsgame** puts its mixer and music threads on the core its game's thread isn't on, each
   pinning itself first thing in an entry that uses no floats (a body using floats can save float
   registers in its prologue, which would pin it first).
@@ -533,6 +537,8 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
   precise for a real-time thread (it was always rounded up to the tick).
 - Which core (§3.12a, 2026-10-15): `BMDS_SCHED_PIN`, op 3 of slot 113, appended;
   `sched_setaffinity` on the calling thread keeps it to one core (it was always `EINVAL`).
+- Display programs (§3.12a, 2026-10-18): `BMDS_PROGRAM_DISPLAY`, bit 0 of the program note's
+  `flags` (all bits were refused before; others still are).
 
 ## 5. Costs
 

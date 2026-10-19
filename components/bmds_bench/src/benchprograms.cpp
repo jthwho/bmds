@@ -134,7 +134,10 @@ Error BenchPrograms::run(CommandContext &ctx, Span<const StringView> words, void
         request.interrupt = &ctx.shell().interrupt();
         request.waited = true;   // our child, waited for below; a group of its own, not the terminal's
         request.group = nullptr; // foreground: Ctrl-C is the shell's, which tells the program
+        int8_t core = -1;
+        request.core = &core;
         auto [pid, serr] = launcher->start(request);
+        ending.core = core;
         fds.closeAll(); // the program has its own: the pipe ends when it does
         if (serr.isError()) return serr;
         char   buf[256];

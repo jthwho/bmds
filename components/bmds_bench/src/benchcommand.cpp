@@ -594,6 +594,7 @@ namespace {
                         Error run(const Entry &bench, JsonWriter *json) {
                                 _bench = &bench;
                                 _metricCount = 0;
+                                _core = -1;
                                 _notes.clear();
                                 _ctx.printf("%s\n", bench.name());
                                 const bool stall = param("probe") == "stall";
@@ -700,6 +701,10 @@ namespace {
                                 BenchPrograms::Ending ending;
                                 Error err = BenchPrograms::run(_ctx, Span<const StringView>(words, n), programLine, &r,
                                                                ending);
+                                // Its core: a program drawing to the screen is faster on the
+                                // one the display's work isn't on (devplan/bench.md §17).
+                                _core = ending.core;
+                                if (_core >= 0 && !_quiet) _ctx.printf("  on core %d\n", _core);
                                 if (err.isOk()) {
                                         if (ending.exited && ending.status == BenchProgramSkipped) {
                                                 err = Error::NotSupported;
@@ -761,6 +766,7 @@ namespace {
                                 json.beginObject();
                                 json.member("name", _bench->name());
                                 if (_bench->program != nullptr) json.member("exec", _bench->program->exec);
+                                if (_core >= 0) json.member("core", _core); // its program's first thread's
                                 json.key("params");
                                 json.beginObject();
                                 for (size_t i = 0; i < _bench->paramCount(); ++i) {
@@ -873,6 +879,7 @@ namespace {
                         double         *_samples = nullptr;
                         Metric         *_metrics = nullptr;
                         size_t          _metricCount = 0;
+                        int             _core = -1; // a program's: where its first thread ran
                         String          _notes{MemSpace::Psram};
                         Counters        _counters;
                         Tasks           _tasks;
