@@ -536,6 +536,9 @@ busy); `display.fill`: skipped (Resource is busy); `display.present`: skipped (R
   on the bench's core and on the other.
 - **`fs.sequential`** (`bmds_storage`): a file written in 64 KB chunks and synced, then read
   back, through the VFS (`dir=` /tmp, `mb=` 4).
+- **`fs.lookup`** (`bmds_storage`, 2026-10-19): `Vfs::stat()` of a file, a link and a missing name
+  in a directory of many entries (`dir=` /sd0/p0/bin, `file=` busybox, `link=` ls, `missing=`,
+  `stats=` 200), µs a lookup (`storage.md` §3).
 
 **On the board** (the desktop running):
 

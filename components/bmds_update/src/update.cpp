@@ -367,12 +367,22 @@ namespace {
                 return err;
         }
 
-        void writeResultOf(StringView path, const char *version, const char *message) {
+        // A result's "when: " line, now: none while the clock isn't set. Recovery's never is: the main
+        // firmware's clock record is in RTC memory where each image's linker put it, so recovery
+        // can't read it, and an unset clock counts from 1955. The main firmware then adds the line
+        // when it takes the result (takeUnseen()), seconds later.
+        Error appendWhen(String &text) {
+                if (!Clock::isSet()) return Error::Ok;
                 const DateTime t = DateTime::fromSeconds(Clock::now().seconds());
-                String         text;
-                (void)text.appendf("status: %s\npackage: %.*s\nversion: %s\nwhen: %04ld-%02u-%02u %02u:%02u:%02u UTC\n",
-                                   message == nullptr ? "applied" : "failed", int(path.size()), path.data(), version,
-                                   static_cast<long>(t.year), t.month, t.day, t.hour, t.minute, t.second);
+                return text.appendf("when: %04ld-%02u-%02u %02u:%02u:%02u UTC\n", static_cast<long>(t.year), t.month,
+                                    t.day, t.hour, t.minute, t.second);
+        }
+
+        void writeResultOf(StringView path, const char *version, const char *message) {
+                String text;
+                (void)text.appendf("status: %s\npackage: %.*s\nversion: %s\n",
+                                   message == nullptr ? "applied" : "failed", int(path.size()), path.data(), version);
+                (void)appendWhen(text);
                 if (message != nullptr) (void)text.appendf("message: %s\n", message);
                 if (writeFile(Update::ResultPath, text.view()).isError() || writeFile(UnseenPath, "").isError()) {
                         bmdsErr("Update: can't write the result");
@@ -814,6 +824,11 @@ Error Update::init() {
                         rest = nl == StringView::NPos ? StringView() : rest.mid(nl + 1);
                 }
                 if (err.isOk()) notifyResult(status == "applied", version, message);
+                // Left by recovery without the time (appendWhen()): this firmware's clock says it.
+                const bool timed =
+                        result.view().startsWith("when: ") || result.view().indexOf("\nwhen: ") != StringView::NPos;
+                if (err.isOk() && !timed && Clock::isSet() && appendWhen(result).isOk())
+                        (void)writeFile(ResultPath, result.view());
                 (void)Vfs::remove(UnseenPath, context);
         }
         return Error::Ok;

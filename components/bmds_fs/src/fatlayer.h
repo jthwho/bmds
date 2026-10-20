@@ -74,6 +74,13 @@ class FatVolume final : public Volume {
                 /** @brief Writes "N:" (the volume's FatFs root) into @p path. */
                 void root(char (&path)[3]) const;
 
+                /**
+                 * @brief Tells the lookup cache that the volume changed: an entry made, removed,
+                 *        renamed, touched, or a file written, synced, truncated or closed after
+                 *        writing (what f_stat() would read differently). Lock held.
+                 */
+                void changed() { ++_generation; }
+
                 /** @brief Formats @p device (a partition table first if @p partitionTable). */
                 static Error format(BlockDevice &device, FsFormat format, bool partitionTable);
 
@@ -97,10 +104,21 @@ class FatVolume final : public Volume {
                 void                    closeDirectory(Cursor *cursor) override;
 
         private:
+                // A path's f_stat() result, kept until the volume changes (devplan/storage.md §3).
+                struct Lookup;
+
                 // The FatFs path of @p path on this volume: "N:/dir/file".
                 Error fatPath(StringView path, String &out) const;
 
+                // The cached result for @p path, or null.
+                const Lookup *findLookup(StringView path) const;
+
+                // Keeps f_stat()'s @p result for @p path (@p entry if FR_OK), made at @p generation.
+                void keepLookup(StringView path, FRESULT result, const FILINFO &entry, uint32_t generation);
+
                 FATFS       *_fs = nullptr;
+                Lookup      *_lookups = nullptr; // Psram, from the first mount (kept, as _fs)
+                uint32_t     _generation = 1;    // changed() moves it on; an entry from another is stale
                 BlockDevice *_device = nullptr;
                 bool         _inUse = false;
                 bool         _mounted = false;
@@ -148,6 +166,9 @@ namespace Fat {
 
         /** @brief Fills @p info from a FatFs directory entry. */
         Error toFileInfo(const FILINFO &entry, FileInfo &info);
+
+        /** @brief Fills @p info from a directory entry's fields (a cached one). */
+        Error toFileInfo(StringView name, BYTE attributes, FSIZE_t size, WORD fdate, WORD ftime, FileInfo &info);
 
         /**
          * @brief Opens the file at @p path (a FatFs path on @p volume) as a

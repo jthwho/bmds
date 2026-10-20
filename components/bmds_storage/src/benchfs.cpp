@@ -7,7 +7,7 @@
  *
  * The filesystems' benchmarks (devplan/bench.md §3; were `fsbench`): small files written,
  * rewritten and removed through the VFS, with the time the whole system stood still meanwhile
- * (devplan/storage.md §13c, §13d).
+ * (devplan/storage.md §13c, §13d); a file read and written in big chunks; paths looked up.
  */
 
 #include <cstdio>
@@ -197,10 +197,45 @@ namespace {
                 return err;
         }
 
+        constexpr BenchParam LookupParams[] = {
+                {"dir", "/sd0/p0/bin", "A directory with many entries (BusyBox's links)"},
+                {"file", "busybox", "A file in it"},
+                {"link", "ls", "A link in it"},
+                {"missing", "no-such-name", "A name not in it"},
+                {"stats", "200", "Lookups a run"},
+        };
+
+        // A path's lookups, each through the VFS as stat() makes them (devplan/storage.md §4).
+        Error runLookup(BenchContext &ctx) {
+                uint64_t stats = 0;
+                if (ctx.paramUnsigned("stats", stats).isError() || stats == 0 || stats > 100000)
+                        return Error(Error::Invalid);
+                static constexpr const char *Names[] = {"file", "link", "missing"};
+                static constexpr const char *Metrics[] = {"file_us", "link_us", "missing_us"};
+                for (size_t k = 0; k < 3; ++k) {
+                        char             path[Vfs::MaxMountPath + 128];
+                        const StringView dir = ctx.param("dir"), name = ctx.param(Names[k]);
+                        std::snprintf(path, sizeof(path), "%.*s/%.*s", int(dir.size()), dir.data(), int(name.size()),
+                                      name.data());
+                        const bool exists = k != 2;
+                        if (Vfs::stat(path, Vfs::Context()).isOk() != exists) return Error(Error::NotExist);
+                        const Error err = ctx.measure(Metrics[k], "us", BenchBetter::Lower, [&](double &out) {
+                                Stopwatch watch;
+                                for (uint64_t i = 0; i < stats; ++i) (void)Vfs::stat(path, Vfs::Context());
+                                out = double(watch.elapsedUs()) / double(stats);
+                                return Error(Error::Ok);
+                        });
+                        if (err.isError()) return err;
+                }
+                return Error::Ok;
+        }
+
 } // namespace
 
 BMDS_BENCH_WITH(fsSequential, "fs.sequential", runSequential, BenchQuick | BenchWrites, SequentialParams,
                 "A file written in 64 KB chunks and synced, then read back, through the VFS (MB/s)")
+BMDS_BENCH_WITH(fsLookup, "fs.lookup", runLookup, BenchQuick, LookupParams,
+                "Paths looked up through the VFS in a directory of many entries: a file, a link, a missing name (us)")
 BMDS_BENCH_WITH(fsSmallFiles, "fs.smallfiles", runSmallFiles, BenchWrites, SmallFilesParams,
                 "Small files made, rewritten and removed through the VFS (ms a file), and the system's pause")
 

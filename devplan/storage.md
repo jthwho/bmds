@@ -73,7 +73,7 @@ class BlockDevice {
 
 Configuration (`components/bmds_fs/src/fatfs/ffconf.h`, every option with its reason): long file names (255, working buffer from `Psram` per call), UTF-8 API (`FF_LFN_UNICODE 2`, `FF_LFN_BUF 765` so any name fits), code page 437 for short names, **exFAT on** (64-bit LBA, GPT), `FF_FS_LOCK 16` (at most 16 files and directories open; no file open twice for writing, no deleting an open file, and a file open for writing can't be opened again even to read: `Busy`, found by the log files, `logging.md` §8), `f_mkfs`, `f_utime`, trim, fast seek off. `FF_FS_TINY 0`: each open file has its own sector buffer (`Psram`), so files don't thrash one shared window. **`FF_FS_REENTRANT 0`, unlike the first design:** FatFs's locking doesn't cover `f_mount()` and `f_mkfs()`, and a card can be unmounted while another task is in FatFs, so the BMDS FAT layer makes every FatFs call under one lock of its own (all volumes; FatFs serialized each volume anyway). FatFs compiles warning-free under the BMDS warning set and runs clean under ASan, UBSan and TSan in the host tests.
 
-**The metadata cache** (Phase 3; `src/sectorcache.h`): FatFs keeps one sector of directory and FAT (its window), so a lookup in a large directory read the directory from the card again every time: BusyBox's `bin` (119 entries, 23 sectors on exFAT) cost about 20 ms a lookup, and `ls -l` of it 2.4 s. The port now keeps a copy of every sector FatFs reads into a volume's window (directories, the FAT, exFAT's bitmap, the boot sector; file data never goes there with `FF_FS_TINY 0`): 64 sectors shared by the volumes, least recently used out, 33 KB of `Psram` allocated by `Vfs::init()`. Write-through: every write still goes to the device and updates the copies it covers (whatever buffer it comes from: `dir_clear()` and file data can land on sectors that held directories), a failed write or a trim drops them, and a mount, an unmount or a format drops the drive's. Writes that bypass FatFs (a raw write to a mounted partition's `/dev` node) aren't seen, as FatFs's window doesn't see them either. Read-ahead and write-back stay out (§12): FatFs moves file data in whole-sector runs straight to the caller.
+**The metadata cache** (Phase 3; `src/sectorcache.h`): FatFs keeps one sector of directory and FAT (its window), so a lookup in a large directory read the directory from the card again every time: BusyBox's `bin` (119 entries, 23 sectors on exFAT) cost about 20 ms a lookup, and `ls -l` of it 2.4 s. The port now keeps a copy of every sector FatFs reads into a volume's window (directories, the FAT, exFAT's bitmap, the boot sector; file data never goes there with `FF_FS_TINY 0`; since 2026-10-19 a file's partial sectors are kept too, below): 64 sectors shared by the volumes, least recently used out, 33 KB of `Psram` allocated by `Vfs::init()`. Write-through: every write still goes to the device and updates the copies it covers (whatever buffer it comes from: `dir_clear()` and file data can land on sectors that held directories), a failed write or a trim drops them, and a mount, an unmount or a format drops the drive's. Writes that bypass FatFs (a raw write to a mounted partition's `/dev` node) aren't seen, as FatFs's window doesn't see them either. Read-ahead and write-back stay out (§12): FatFs moves file data in whole-sector runs straight to the caller.
 
 **Faster lookups (design, 2026-10-08; the user asked for "as much efficiency" as can be had).**
 Measured on the exFAT card:
@@ -239,6 +239,33 @@ entry blocks.
 **Time stamps** come from the kernel's system clock ([`time.md`](time.md)): `get_fattime()` converts `Clock::now()` to local time in the kernel time zone (FAT stores local time; exFAT also records the UTC offset). An unset clock still counts forward from 2026-01-01, so new files never carry 1980.
 
 **Why not IDF VFS + newlib (`fopen`, `open`)?** It brings a second, global fd table, newlib `FILE` buffers in internal RAM, errno and blocking calls with no timeouts or interrupts, beside the `FdTable`/`FileHandle`/`Stream` model the shell and the Phase 3 ABI already use. Programs will get file syscalls from BMDS (Phase 3); a newlib in a program can sit on those.
+
+**Lookups and small reads kept (2026-10-19; `programs.md` §19 found them).**
+- **Where a small read's time goes:** a single-sector read (`storage.sd.read`'s `direct_512`) takes
+  ~445 µs. Timed apart in the driver: CMD17 ~430 µs, the CMD13 ESP-IDF sends after every read
+  ~24 µs, and ESP-IDF's per-command bus setup is part of those. The 512 bytes themselves take
+  ~26 µs at 40 MHz: the rest is the card's own access time. Reading with CMD17 alone (as Linux
+  does) gained under 1% (the card spends the CMD13's time getting ready anyway), so ESP-IDF's
+  read stayed. A small read can only be made cheaper by not doing it.
+- **A file's partial sectors through the sector cache:** FatFs reads a file's head, tail and
+  small files a sector at a time into the file's own buffer (`FF_FS_TINY 0`); those reads now
+  go through the cache like the window's, read ahead (4 KB in one command). Whole-sector runs
+  still go straight to the caller's buffer, uncached. Coherence is the cache's as it was: every
+  write updates the copies it covers. What this removes: the SDK's `stat()` reads a file's
+  first bytes for its execute bits (`runnable()` in `sdk/crt/linux.c`), one card read a file a
+  time; BusyBox's `[ -e /sd0/p0/bin/busybox ]` went from ~1.6 ms (a card read each) to ~0.35 ms.
+  Link files, configuration files and icons read again are served the same way.
+- **Lookups kept in `FatVolume`:** f_stat()'s results for 64 paths (direct-mapped by the path's
+  hash; misses too, `FR_NO_FILE` and `FR_NO_PATH`), 11 KB of `Psram` allocated at the volume's
+  first mount and kept with it, as its `FATFS` is. An entry holds while the volume's generation
+  hasn't moved: everything that would make f_stat() read differently goes through `FatVolume` or
+  `FatFile`, which call `changed()` (an entry made, removed, renamed or touched, a link written, a
+  file opened to write, written, synced, truncated or closed after writing, a mount, an unmount).
+  Errors aren't kept. `fs.lookup` (the bench) in `/sd0/p0/bin`: a file 83 → 36 µs, a link (two
+  lookups) 232 → 72, a missing name 238 → 19, warm; `programs.launch` 6.56 → 5.95 ms.
+- **Tests:** host, a FAT and an exFAT volume: missing then made, written through a handle still
+  open (the size after a flush, then after a truncate), cut by an open, touched, renamed,
+  removed, a directory made and removed, a link written where a miss was kept.
 
 ## 4. The VFS (`bmds_fs`, portable)
 

@@ -216,6 +216,11 @@ could tell newer from older. Now:
   (included before `project()`) makes `PROJECT_VER` that and the commit: `0.1.0+72cba49a`, with
   `-dirty` for uncommitted changes. At most 31 characters (the app description's field; the
   build fails past it): each part under 10000 keeps it so.
+- **The result's time** (2026-10-19): recovery wrote "when: 1955-11-05": its clock is never set,
+  since the main firmware's clock record is in RTC memory where each image's linker put it, and
+  an unset clock counts from 1955 (`ClockModel::UnsetEpoch`). Recovery now leaves the line out
+  while its clock is unset, and the main firmware adds it from its own clock when it takes the
+  result, seconds later (checked: an update through recovery reads `when: 2026-10-20 01:02:16 UTC`).
 - **Current at every build** (2026-10-19): IDF compiles `PROJECT_VER` into the app description as
   it was at configure time, so a commit since then left the old one (a package of new code said
   `a1ad6d82` two commits later, and `update` called it "the same"). After `project()`,

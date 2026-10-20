@@ -40,6 +40,7 @@ namespace {
 
                         Result<size_t> write(ByteSpan data, unsigned int) override {
                                 Mutex::Locker lock(Fs::lock(), WaitForever);
+                                _volume.changed();
                                 Error         err;
                                 if (_append) {
                                         _hole = 0;
@@ -60,6 +61,7 @@ namespace {
 
                         Error flush(unsigned int) override {
                                 Mutex::Locker lock(Fs::lock(), WaitForever);
+                                _volume.changed();
                                 return Fat::toError(f_sync(&_fil), _volume);
                         }
 
@@ -80,6 +82,7 @@ namespace {
                         Error truncate(uint64_t size) override {
                                 Mutex::Locker lock(Fs::lock(), WaitForever);
                                 if ((_fil.flag & FA_WRITE) == 0) return Error::BadDescriptor;
+                                _volume.changed();
                                 const FSIZE_t here = position();
                                 Error         err;
                                 if (size < f_size(&_fil)) {
@@ -98,6 +101,7 @@ namespace {
                                         Mutex::Locker lock(Fs::lock(), WaitForever);
                                         // A stale file (its card went) just fails here.
                                         const bool written = (_fil.flag & FA_WRITE) != 0;
+                                        if (written) _volume.changed();
                                         (void)f_close(&_fil);
                                         if (written) Fs::writtenLocked(_identity);
                                 }
@@ -160,7 +164,8 @@ Result<FileHandle::Ptr> Fat::openFile(FatVolume &volume, const char *path, uint8
                                       FRESULT *raw, String *link) {
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(FatFile));
         if (mem == nullptr) return makeError<FileHandle::Ptr>(Error::NoMem);
-        auto   *file = ::new (mem) FatFile(volume, (flags & Vfs::Append) != 0, identity);
+        auto *file = ::new (mem) FatFile(volume, (flags & Vfs::Append) != 0, identity);
+        if ((flags & (Vfs::Write | Vfs::Create | Vfs::Truncate)) != 0) volume.changed(); // made, or cut
         FRESULT result = f_open(&file->fil(), path, fatMode(flags));
         // Truncate without Create: FatFs has no mode for it.
         if (result == FR_OK && (flags & Vfs::Truncate) && !(flags & Vfs::Create)) {

@@ -227,12 +227,16 @@ DWORD Fat::toFatTime(Timestamp time) {
 }
 
 Error Fat::toFileInfo(const FILINFO &entry, FileInfo &info) {
-        const Error err = info.name.assign(StringView(entry.fname));
+        return toFileInfo(StringView(entry.fname), entry.fattrib, entry.fsize, entry.fdate, entry.ftime, info);
+}
+
+Error Fat::toFileInfo(StringView name, BYTE attributes, FSIZE_t size, WORD fdate, WORD ftime, FileInfo &info) {
+        const Error err = info.name.assign(name);
         if (err.isError()) return err;
-        info.type = (entry.fattrib & AM_DIR) != 0 ? FileType::Directory : FileType::File;
-        info.size = info.type == FileType::File ? static_cast<uint64_t>(entry.fsize) : 0;
-        info.modified = toTimestamp(entry.fdate, entry.ftime);
-        info.attributes = entry.fattrib & (AM_RDO | AM_HID | AM_SYS | AM_ARC);
+        info.type = (attributes & AM_DIR) != 0 ? FileType::Directory : FileType::File;
+        info.size = info.type == FileType::File ? static_cast<uint64_t>(size) : 0;
+        info.modified = toTimestamp(fdate, ftime);
+        info.attributes = attributes & (AM_RDO | AM_HID | AM_SYS | AM_ARC);
         return Error();
 }
 
@@ -256,11 +260,11 @@ extern "C" DSTATUS disk_initialize(BYTE pdrv) {
 extern "C" DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count) {
         BlockDevice *device = deviceOf(pdrv);
         if (device == nullptr) return RES_PARERR;
-        // What FatFs reads into its window is metadata (FF_FS_TINY is off:
-        // file data goes through each file's own buffer or straight to the
-        // caller's). It is cached, read ahead on a miss, unless the device is
-        // memory itself (devplan/storage.md §3).
-        if (count == 1 && FatVolume::at(pdrv).isWindow(buff) && !device->isMemory()) {
+        // A single sector is cached, read ahead on a miss, unless the device is memory itself
+        // (devplan/storage.md §3): what FatFs reads into its window (metadata), and a file's
+        // partial sectors through its own buffer (FF_FS_TINY is off): small files, a file's head
+        // and tail. Whole-sector runs of file data go straight to the caller's buffer, uncached.
+        if (count == 1 && !device->isMemory()) {
                 if (sectorCache.read(pdrv, sector, buff)) return RES_OK;
                 return toDiskResult(sectorCache.fill(pdrv, *device, sector, buff));
         }

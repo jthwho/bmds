@@ -531,6 +531,9 @@ until silicon v3; then test again.
     reset (`log.cpp` wraps `esp_restart_noos`).
 - **Read the driver before trusting it with a DMA:** what it syncs, when, and what it reports at
   a buffer's end (the JPEG encoder above, the USB-Serial/JTAG FIFO in `docs/HARDWARE.md`).
+- **A single-sector card read is the card's time, not the host's:** ~445 µs a sector, of which
+  the CMD17 is ~430 µs and the CMD13 ESP-IDF sends after it ~24 µs; the bus moves 512 bytes in
+  ~26 µs at 40 MHz. Dropping the CMD13 gained under 1%. Only fewer reads help (`devplan/storage.md` §3).
 - **`esp_random()` costs ~56 µs a word, and more:** it waits 14 × the CPU's MHz APB cycles
   since the last word (the P4's tested sampling rate), and asks the clock tree for the CPU and APB
   frequencies on every call, which reads the PLL's settings over the analog I2C bus in critical

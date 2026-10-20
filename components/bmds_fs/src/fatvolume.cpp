@@ -105,6 +105,39 @@ void FatVolume::release() {
         return;
 }
 
+// ---- The lookup cache (devplan/storage.md §3)
+//
+// FatFs walks a directory's entries for every lookup: 80 µs for a file in /sd0/p0/bin (139
+// entries, 125 of them BusyBox's links), 235 for a name that isn't there, warm; several times that
+// with the caches cold, as after a program's start. f_stat()'s results are kept, the missing ones
+// too, until the volume changes: everything that would make f_stat() read differently goes
+// through FatVolume or FatFile, and calls changed().
+
+struct FatVolume::Lookup {
+                uint32_t generation = 0; // 0: empty
+                uint64_t size = 0;
+                uint16_t fdate = 0;
+                uint16_t ftime = 0;
+                uint8_t  attributes = 0;
+                uint8_t  result = FR_OK; // FR_OK, FR_NO_FILE or FR_NO_PATH
+                uint8_t  pathBytes = 0;
+                uint8_t  nameBytes = 0;
+                char     path[94];
+                char     name[64];
+};
+
+namespace {
+
+        constexpr size_t LookupSlots = 64; // direct-mapped by the path's hash
+
+        size_t lookupSlot(StringView path) {
+                uint32_t h = 2166136261u;
+                for (char c : path) h = (h ^ static_cast<uint8_t>(c)) * 16777619u;
+                return h % LookupSlots;
+        }
+
+} // namespace
+
 Error FatVolume::mount(BlockDevice &device) {
         if (_mounted) return Error::InvalidState;
         if (!device.isPresent()) return Error::NoMedia;
@@ -114,6 +147,13 @@ Error FatVolume::mount(BlockDevice &device) {
         Fat::cache().discard(drive());
         char path[3];
         root(path);
+        changed();
+        if (_lookups == nullptr) {
+                // Kept with the volume, as its FATFS is (11 KB; none: lookups aren't kept).
+                _lookups = static_cast<Lookup *>(Memory::alloc(MemSpace::Psram, sizeof(Lookup) * LookupSlots));
+                if (_lookups != nullptr)
+                        for (size_t i = 0; i < LookupSlots; ++i) ::new (&_lookups[i]) Lookup();
+        }
         const FRESULT result = f_mount(_fs, path, 1);
         if (result != FR_OK) {
                 const Error err = Fat::toError(result, *this);
@@ -135,6 +175,7 @@ void FatVolume::unmount() {
         // is checked against: they all fail from now on.
         (void)f_mount(nullptr, path, 0);
         Fat::cache().discard(drive());
+        changed();
         _mounted = false;
         _device = nullptr;
         return;
@@ -211,14 +252,48 @@ Error FatVolume::fatPath(StringView path, String &out) const {
         return err;
 }
 
+const FatVolume::Lookup *FatVolume::findLookup(StringView path) const {
+        if (_lookups == nullptr) return nullptr;
+        const Lookup &l = _lookups[lookupSlot(path)];
+        if (l.generation != _generation || StringView(l.path, l.pathBytes) != path) return nullptr;
+        return &l;
+}
+
+void FatVolume::keepLookup(StringView path, FRESULT result, const FILINFO &entry, uint32_t generation) {
+        if (path.size() > sizeof(Lookup::path) || generation != _generation) return;
+        if (result != FR_OK && result != FR_NO_FILE && result != FR_NO_PATH) return; // errors aren't kept
+        const size_t nameBytes = result == FR_OK ? std::strlen(entry.fname) : 0;
+        if (nameBytes > sizeof(Lookup::name) || _lookups == nullptr) return;
+        Lookup &l = _lookups[lookupSlot(path)];
+        l.generation = generation;
+        l.result = static_cast<uint8_t>(result);
+        l.size = result == FR_OK ? entry.fsize : 0;
+        l.fdate = result == FR_OK ? entry.fdate : 0;
+        l.ftime = result == FR_OK ? entry.ftime : 0;
+        l.attributes = result == FR_OK ? entry.fattrib : 0;
+        l.pathBytes = static_cast<uint8_t>(path.size());
+        l.nameBytes = static_cast<uint8_t>(nameBytes);
+        std::memcpy(l.path, path.data(), path.size());
+        std::memcpy(l.name, entry.fname, nameBytes);
+        return;
+}
+
 Error FatVolume::stat(StringView path, FileInfo &info, bool &noPath) {
         noPath = false;
+        if (const Lookup *l = findLookup(path); l != nullptr) {
+                noPath = l->result == FR_NO_PATH;
+                if (l->result != FR_OK) return Fat::toError(static_cast<FRESULT>(l->result), *this);
+                return Fat::toFileInfo(StringView(l->name, l->nameBytes), l->attributes, l->size, l->fdate, l->ftime,
+                                       info);
+        }
         String fat;
         Error  err = fatPath(path, fat);
         if (err.isError()) return err;
         auto *entry = static_cast<FILINFO *>(Memory::alloc(MemSpace::Psram, sizeof(FILINFO)));
         if (entry == nullptr) return Error::NoMem;
-        const FRESULT result = f_stat(fat.cStr(), entry);
+        const uint32_t generation = _generation;
+        const FRESULT  result = f_stat(fat.cStr(), entry);
+        keepLookup(path, result, *entry, generation);
         noPath = result == FR_NO_PATH;
         err = Fat::toError(result, *this);
         if (err.isOk()) err = Fat::toFileInfo(*entry, info);
@@ -268,6 +343,7 @@ Error FatVolume::mkdir(StringView path, bool &noPath) {
         String fat;
         Error  err = fatPath(path, fat);
         if (err.isError()) return err;
+        changed();
         const FRESULT result = f_mkdir(fat.cStr());
         noPath = result == FR_NO_PATH;
         return Fat::toError(result, *this);
@@ -276,6 +352,7 @@ Error FatVolume::mkdir(StringView path, bool &noPath) {
 Error FatVolume::rmdir(StringView path) {
         String fat;
         Error  err = fatPath(path, fat);
+        changed();
         if (err.isOk()) err = Fat::toError(f_unlink(fat.cStr()), *this);
         // FatFs denies removing a directory that isn't empty.
         return err == Error::PermissionDenied ? Error(Error::NotEmpty) : err;
@@ -284,6 +361,7 @@ Error FatVolume::rmdir(StringView path) {
 Error FatVolume::remove(StringView path) {
         String fat;
         Error  err = fatPath(path, fat);
+        changed();
         if (err.isOk()) err = Fat::toError(f_unlink(fat.cStr()), *this);
         return err;
 }
@@ -294,6 +372,7 @@ Error FatVolume::rename(StringView from, StringView to, Vfs::RenameMode mode, bo
         Error  err = fatPath(from, fromFat);
         if (err.isOk()) err = fatPath(to, toFat);
         if (err.isError()) return err;
+        changed();
         FRESULT result = f_rename(fromFat.cStr(), toFat.cStr());
         noPath = result == FR_NO_PATH;
         if (result != FR_EXIST || mode == Vfs::RenameMode::NoReplace) return Fat::toError(result, *this);
@@ -349,6 +428,7 @@ Error FatVolume::setModified(StringView path, Timestamp time) {
         const DWORD packed = Fat::toFatTime(time);
         entry->fdate = static_cast<WORD>(packed >> 16);
         entry->ftime = static_cast<WORD>(packed & 0xffff);
+        changed();
         err = Fat::toError(f_utime(fat.cStr(), entry), *this);
         Memory::free(entry);
         return err;
@@ -362,6 +442,7 @@ Error FatVolume::writeLink(StringView path, ByteSpan contents, bool &noPath) {
         auto *file = static_cast<FIL *>(Memory::alloc(MemSpace::Psram, sizeof(FIL)));
         if (file == nullptr) return Error::NoMem;
         std::memset(file, 0, sizeof(FIL));
+        changed();
         FRESULT result = f_open(file, fat.cStr(), FA_WRITE | FA_CREATE_NEW);
         if (result == FR_OK) {
                 UINT put = 0;

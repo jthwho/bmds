@@ -3029,9 +3029,11 @@ static int sched_test(const char *self) {
         CHECK(bmds_sched(BMDS_SCHED_YIELD, 0, &bad) == -BMDS_EINVAL);
         CHECK(bmds_sched(BMDS_SCHED_GET, 0, NULL) == -BMDS_EFAULT);
         CHECK(sched_getscheduler(0) == SCHED_OTHER); /* nothing changed */
-        /* The tick's sleeps, for comparison. */
+        /* The tick's sleeps, for comparison: 1.3 ms apart, so their deadlines walk round the 1 ms tick.
+           1 ms apart they all fell at one phase of it, and a run that began just before a tick saw
+           every sleep end under 100 us late (2 failures in 9 runs). */
         int64_t tick_median, tick_max;
-        sleep_lateness(200, 1000, &tick_median, &tick_max);
+        sleep_lateness(200, 1300, &tick_median, &tick_max);
         /* Real time: FIFO 50, read back by both calls; the kernel priority in the band. */
         sp.sched_priority = 50;
         CHECK(sched_setscheduler(0, SCHED_FIFO, &sp) == 0);

@@ -899,6 +899,58 @@ TEST_CASE("Vfs: directory watches") {
         CHECK(root.take() == Change::Contents);
 }
 
+TEST_CASE("Vfs: FAT lookups kept between changes, and not past one") {
+        // devplan/storage.md §3: FatVolume keeps f_stat()'s results until the volume changes.
+        for (FsFormat format : {FsFormat::Fat32, FsFormat::ExFat}) {
+                CAPTURE(static_cast<int>(format));
+                fresh(format);
+                const size_t base = liveObjects();
+                const char  *path = "/ram0/p0/kept.txt";
+                // Missing, kept as missing; then made: seen at once.
+                CHECK(Vfs::stat(path, Root).error() == Error::NotExist);
+                CHECK(Vfs::stat(path, Root).error() == Error::NotExist);
+                put(path, "abc");
+                CHECK(Vfs::stat(path, Root).value().size == 3);
+                CHECK(Vfs::stat(path, Root).value().size == 3);
+                // Written through a handle still open: the size after a flush, as FatFs gives it.
+                {
+                        FileHandle::Ptr h = open(path, Vfs::Write | Vfs::Append);
+                        CHECK(h->write(bmds::StringView("defgh"), WaitForever).isOk());
+                        CHECK(h->stream().flush(WaitForever).isOk());
+                        CHECK(Vfs::stat(path, Root).value().size == 8);
+                        CHECK(h->stream().truncate(2).isOk());
+                        CHECK(h->stream().flush(WaitForever).isOk());
+                        CHECK(Vfs::stat(path, Root).value().size == 2);
+                }
+                CHECK(Vfs::stat(path, Root).value().size == 2);
+                // Truncated by an open, touched, renamed, removed.
+                put(path, "");
+                CHECK(Vfs::stat(path, Root).value().size == 0);
+                CHECK(Vfs::setModified(path, bmds::Timestamp::fromSeconds(1700000000), Root).isOk());
+                CHECK(Vfs::stat(path, Root).value().modified.seconds() == 1700000000);
+                CHECK(Vfs::rename(path, "/ram0/p0/moved.txt", Vfs::RenameMode::NoReplace, Root).isOk());
+                CHECK(Vfs::stat(path, Root).error() == Error::NotExist);
+                CHECK(Vfs::stat("/ram0/p0/moved.txt", Root).isOk());
+                CHECK(Vfs::remove("/ram0/p0/moved.txt", Root).isOk());
+                CHECK(Vfs::stat("/ram0/p0/moved.txt", Root).error() == Error::NotExist);
+                // A directory made and removed; a path through a missing one.
+                CHECK(Vfs::stat("/ram0/p0/d/x", Root).error() == Error::NotExist);
+                CHECK(Vfs::mkdir("/ram0/p0/d", Root).isOk());
+                CHECK(Vfs::stat("/ram0/p0/d", Root).value().isDirectory());
+                put("/ram0/p0/d/x", "x");
+                CHECK(Vfs::stat("/ram0/p0/d/x", Root).value().size == 1);
+                CHECK(Vfs::remove("/ram0/p0/d/x", Root).isOk());
+                CHECK(Vfs::rmdir("/ram0/p0/d", Root).isOk());
+                CHECK(Vfs::stat("/ram0/p0/d", Root).error() == Error::NotExist);
+                // A link written where a missing name was kept.
+                CHECK(Vfs::stat("/ram0/p0/l", Root).error() == Error::NotExist);
+                put("/ram0/p0/target", "t");
+                CHECK(Vfs::symlink("target", "/ram0/p0/l", Root).isOk());
+                CHECK(Vfs::stat("/ram0/p0/l", Root).value().size == 1);
+                CHECK(liveObjects() == base);
+        }
+}
+
 TEST_CASE("Vfs: symbolic links") {
         for (FsFormat format : {FsFormat::Fat32, FsFormat::ExFat}) {
                 CAPTURE(static_cast<int>(format));
