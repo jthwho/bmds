@@ -16,6 +16,7 @@
 #include <bmds/filehandle.h>
 #include <bmds/midiparser.h>
 #include <bmds/midiqueue.h>
+#include <bmds/spinlock.h>
 #include <bmds/midirouter.h>
 #include <bmds/mutex.h>
 #include <bmds/result.h>
@@ -41,7 +42,12 @@ BMDS_NAMESPACE_BEGIN
  * status), and bytes written parsed (running status taken). Configured
  * `Events`, `read()` and `write()` move `bmds_midi_event_t` records of the
  * size the program gave. Reads wait for an event; writes never wait (a full
- * destination drops and counts). A port that goes away ends reads
+ * destination drops and counts). A record written with a time is scheduled
+ * (`devplan/audio.md` §25): held in the fd's queue (`ScheduledEvents`, made
+ * in PSRAM at the first) until the MIDI clock's thread (`midiclock`, woken
+ * by the wake timer, not the tick) sends it at its time, carrying that time.
+ * The notes an fd turns on and hasn't turned off get a note-off when it
+ * closes, so a program that ends (or crashes) mid-note leaves none sounding. A port that goes away ends reads
  * (`EndOfFile`) and breaks writes (`BrokenPipe`).
  *
  * @par Thread Safety
@@ -61,6 +67,12 @@ class MidiFile final : public Stream, private MidiSink {
 
                 /** @brief A reader's ring, in events. */
                 static constexpr size_t RingEvents = 256;
+
+                /** @brief Events an fd holds scheduled and unsent (`BMDS_MIDI_SCHEDULED_MAX`). */
+                static constexpr size_t ScheduledEvents = 512;
+
+                /** @brief How far ahead an event may be scheduled (`BMDS_MIDI_AHEAD_MAX_NS`). */
+                static constexpr int64_t MaxAheadNs = 60'000'000'000;
 
                 /** @brief `bmds_midi_config_t`, in the kernel's types. */
                 struct Config {
@@ -108,6 +120,9 @@ class MidiFile final : public Stream, private MidiSink {
                 /** @brief Throws away what waits to be read. */
                 void dropInput();
 
+                /** @brief Throws away what it scheduled and hasn't sent (`BMDS_MIDI_CANCEL`). */
+                void cancelScheduled();
+
                 Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override;
                 Result<size_t> write(ByteSpan data, unsigned int timeoutMs) override;
                 using Stream::write;
@@ -130,6 +145,13 @@ class MidiFile final : public Stream, private MidiSink {
                 Result<size_t> readEvents(WritableByteSpan buf);
                 Result<size_t> readBytes(WritableByteSpan buf);
                 Error          put(uint8_t byte);
+                Error          emit(MidiEvent &event);
+                void           noteHeld(const MidiEvent &event);
+                void           releaseHeld();
+                Error          schedule(const MidiEvent &record);
+                void           sendScheduled(const MidiEvent &event);
+                bool           hasRoomToSchedule() const;
+                static void    clockMain(void *arg);
                 bool           hasPort() const { return _port != MidiRouter::NoPort; }
 
                 std::atomic<uint8_t>  _port; // NoPort: /dev/midinew, not created yet
@@ -151,6 +173,11 @@ class MidiFile final : public Stream, private MidiSink {
                 uint8_t               _pendingSize = 0;
                 uint64_t              _eventsRead = 0;
                 std::atomic<uint32_t> _dropped{0};
+                MidiQueue             _scheduled;                  // the clock's lock, both ends
+                MidiEvent            *_scheduledStorage = nullptr; // PSRAM, from the first scheduled write
+                int64_t               _lastScheduledNs = 0;        // the latest queued
+                SpinLock              _heldLock;
+                uint8_t               _held[16][16] = {}; // the notes it holds on: a bit a note, by channel
 };
 
 BMDS_NAMESPACE_END

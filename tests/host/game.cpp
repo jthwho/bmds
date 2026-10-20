@@ -658,3 +658,94 @@ TEST_CASE("Game canvas: scaled RGB565 blits draw exactly what a pixel at a time 
                 REQUIRE(fast.pixels == slow.pixels);
         }
 }
+
+// ---- MIDI files walked in time order (sdk/game/smf.c, devplan/audio.md §25)
+
+namespace {
+
+        using SmfBytes = std::vector<uint8_t>;
+
+        void smfChunk(SmfBytes &out, const char *id, const SmfBytes &body) {
+                out.insert(out.end(), id, id + 4);
+                for (int s = 24; s >= 0; s -= 8) out.push_back(uint8_t(body.size() >> s));
+                out.insert(out.end(), body.begin(), body.end());
+        }
+
+        SmfBytes smfFile(uint16_t format, uint16_t division, const std::vector<SmfBytes> &tracks) {
+                SmfBytes out;
+                smfChunk(out, "MThd",
+                         {0, uint8_t(format), 0, uint8_t(tracks.size()), uint8_t(division >> 8), uint8_t(division)});
+                for (const SmfBytes &t : tracks) smfChunk(out, "MTrk", t);
+                return out;
+        }
+
+        struct SmfSeen {
+                        int64_t  ns;
+                        SmfBytes bytes;
+        };
+
+        std::vector<SmfSeen> smfWalk(const SmfBytes &file, int *last = nullptr) {
+                bmds_game_smf_t       smf;
+                bmds_game_smf_event_t e;
+                std::vector<SmfSeen>  seen;
+                REQUIRE(bmds_game_smf_open(&smf, file.data(), file.size()) == 0);
+                int r;
+                while ((r = bmds_game_smf_next(&smf, &e)) == 1) {
+                        if (e.kind == BMDS_GAME_SMF_MESSAGE)
+                                seen.push_back({e.ns, SmfBytes(e.data, e.data + e.length)});
+                        else
+                                seen.push_back({e.ns, SmfBytes(e.bytes, e.bytes + e.count)});
+                }
+                if (last != nullptr) *last = r;
+                return seen;
+        }
+
+} // namespace
+
+TEST_CASE("game: a MIDI file's events in time order") {
+        // 96 ticks a quarter at 120 a minute: a tick is 5208333 ns. Track 1: a note with running
+        // status, the tempo halved (60 a minute) at tick 96; track 2: a program change at 48 and a
+        // SysEx at 144.
+        const SmfBytes t1 = {0x00, 0x90, 0x3c, 0x64, 0x60, 0x3c, 0x00,                   // on, off at 96
+                             0x00, 0xff, 0x51, 0x03, 0x0f, 0x42, 0x40,                   // tempo 1 s
+                             0x60, 0x90, 0x40, 0x50, 0x00, 0xff, 0x2f, 0x00};            // at 192, end
+        const SmfBytes t2 = {0x30, 0xc1, 0x05, 0x60, 0xf0, 0x04, 0x7e, 0x7f, 0x09, 0xf7, // 48, 144
+                             0x00, 0xff, 0x2f, 0x00};
+        int            last = 0;
+        auto           seen = smfWalk(smfFile(1, 96, {t1, t2}), &last);
+        CHECK(last == 0);
+        REQUIRE(seen.size() == 5);
+        CHECK((seen[0].ns == 0 && seen[0].bytes == SmfBytes{0x90, 0x3c, 0x64}));
+        CHECK((seen[1].ns == 250000000 && seen[1].bytes == SmfBytes{0xc1, 0x05}));
+        CHECK((seen[2].ns == 500000000 && seen[2].bytes == SmfBytes{0x90, 0x3c, 0x00})); // running status
+        CHECK((seen[3].ns == 1000000000 && seen[3].bytes == SmfBytes{0xf0, 0x7e, 0x7f, 0x09, 0xf7}));
+        CHECK((seen[4].ns == 1500000000 && seen[4].bytes == SmfBytes{0x90, 0x40, 0x50}));
+
+        // Rewound: the same again.
+        bmds_game_smf_t       smf;
+        bmds_game_smf_event_t e;
+        const SmfBytes        file = smfFile(1, 96, {t1, t2});
+        REQUIRE(bmds_game_smf_open(&smf, file.data(), file.size()) == 0);
+        while (bmds_game_smf_next(&smf, &e) == 1) {}
+        bmds_game_smf_rewind(&smf);
+        REQUIRE(bmds_game_smf_next(&smf, &e) == 1);
+        CHECK((e.ns == 0 && e.data[1] == 0x3c));
+
+        // SMPTE: 25 frames of 40 ticks, a millisecond a tick.
+        seen = smfWalk(smfFile(0, 0xe728, {{0x00, 0xc0, 0x01, 0x83, 0x60, 0xc0, 0x02}}));
+        REQUIRE(seen.size() == 2);
+        CHECK(seen[1].ns == 480000000);
+
+        // Cut short: what came before, then an error; a bad header refused.
+        SmfBytes cut = smfFile(0, 96, {{0x00, 0x90, 0x3c, 0x64, 0x10, 0x90, 0x3c}});
+        seen = smfWalk(cut, &last);
+        CHECK(seen.size() == 1);
+        CHECK(last == -BMDS_EINVAL);
+        CHECK(bmds_game_smf_open(&smf, cut.data(), 10) == -BMDS_EINVAL);
+        SmfBytes format2 = smfFile(2, 96, {{0x00, 0xc0, 0x01}});
+        CHECK(bmds_game_smf_open(&smf, format2.data(), format2.size()) == -BMDS_EINVAL);
+        // Data with no status first.
+        seen = smfWalk(smfFile(0, 96, {{0x00, 0x3c, 0x64}}), &last);
+        CHECK(seen.empty());
+        CHECK(last == -BMDS_EINVAL);
+}

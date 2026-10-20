@@ -260,10 +260,11 @@ Plan: [`input.md`](input.md).
     on its serial port; tried with the user's PC). Network MIDI done (step 3: `midi net`,
     `midi/net/*`, sessions as `net` ports, `_apple-midi._udp`, `tools/bmds-applemidi`; fuzzed);
     the user's Mac and Windows to try, then the latency (step 4).
-  - [ ] 6c. The `system` MIDI port (`/dev/midi`), the `wavetable` synth always there, and a
+  - [x] 6c. The `system` MIDI port (`/dev/midi`), the `wavetable` synth always there, and a
     default route between them (§25). Steps 1-2 done (`system` is midi0 and `/dev/midi`,
-    `wavetable` midi1, `system>wavetable` by default, the font warm at boot); Doom's music
-    through `system` waits for the user's choice of sequencer timing.
+    `wavetable` midi1, `system>wavetable` by default, the font warm at boot). Step 3 done:
+    scheduled MIDI output (`time_ns`, `BMDS_MIDI_CANCEL`, `midiclock`), held notes let go at a
+    close, libbmdsgame's `BMDS_GAME_MUSIC_MIDI_OUT`, Doom's `doom/music` (`midi` by default).
   - [ ] 6b. The patchbay (§24, outlined): a graph fd for programs, an audio graph (client to
     client in a period, devices' playback and capture), and `patchbay`, MIDI and audio wires.
   - [ ] 8. Media player (`mediaplayer.md`, planned; the user's choices 2026-10-09): `mplayer`, a

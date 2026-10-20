@@ -622,7 +622,9 @@ typedef struct bmds_midi_config_t {
  *        and `play_ns`, never with a rate.
  */
 typedef struct bmds_midi_event_t {
-                int64_t time_ns; /**< Read: `BMDS_CLOCK_MONOTONIC` when it arrived. Written: 0 (now; others reserved). */
+                int64_t time_ns; /**< Read: `BMDS_CLOCK_MONOTONIC` when it arrived. Written: 0 (now), or when to send it
+                                    (scheduled output: up to `BMDS_MIDI_AHEAD_MAX_NS` ahead, not before the fd's last
+                                    scheduled; a time passed sends it now). */
                 uint8_t port;    /**< Read: the port whose source produced it (0xff: a write to this port's file). */
                 uint8_t length;  /**< The bytes in `data`, 1 to 5. */
                 uint8_t flags;   /**< 0. */
@@ -665,6 +667,16 @@ typedef struct bmds_midi_status_t {
 #define BMDS_MIDI_CONNECT 1u    /**< Connects this fd's port's source to port `value`'s destination. */
 #define BMDS_MIDI_DISCONNECT 2u /**< Ends that connection. */
 #define BMDS_MIDI_FLUSH 3u      /**< Throws away what waits to be read. */
+#define BMDS_MIDI_CANCEL 4u     /**< Throws away what this fd scheduled and isn't sent yet (appended 2026-10-20). */
+
+/**
+ * @brief Scheduled output (appended 2026-10-20, `devplan/audio.md` §25): an event written with a
+ *        `time_ns` is sent at that time, carrying it as its time, so a synth places it on its
+ *        sample. An fd holds this many unsent (past them, `write()` takes what fits, else fails
+ *        with `EAGAIN`; `poll()` says writable while one record fits), at most this far ahead.
+ */
+#define BMDS_MIDI_SCHEDULED_MAX 512u
+#define BMDS_MIDI_AHEAD_MAX_NS 60000000000ll
 
 /**
  * @brief A General MIDI synth (`audio_synth`, appended 2026-10-08, `devplan/audio.md` §22): MIDI

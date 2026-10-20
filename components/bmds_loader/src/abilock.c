@@ -457,6 +457,8 @@ _Static_assert(BMDS_MIDI_NET == 3 && BMDS_MIDI_USB_DEVICE == 4, "ABI: midi kinds
 _Static_assert(BMDS_MIDI_SYSTEM == 5, "ABI: midi kinds (appended)");
 _Static_assert(BMDS_MIDI_GONE == 0x1, "ABI: midi status flags");
 _Static_assert(BMDS_MIDI_CONNECT == 1 && BMDS_MIDI_DISCONNECT == 2 && BMDS_MIDI_FLUSH == 3, "ABI: midi ops");
+_Static_assert(BMDS_MIDI_CANCEL == 4, "ABI: midi ops (appended)");
+_Static_assert(BMDS_MIDI_SCHEDULED_MAX == 512 && BMDS_MIDI_AHEAD_MAX_NS == 60000000000ll, "ABI: midi scheduling");
 _Static_assert(offsetof(bmds_midi_config_t, size) == 0, "ABI: midi_config.size");
 _Static_assert(offsetof(bmds_midi_config_t, flags) == 4, "ABI: midi_config.flags");
 _Static_assert(offsetof(bmds_midi_config_t, event_size) == 8, "ABI: midi_config.event_size");

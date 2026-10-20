@@ -146,4 +146,72 @@ void bmds_game_resample(const int16_t *in, uint32_t frames, uint32_t channels, u
 /** @brief The frames @p frames at @p from Hz become at @p to Hz. */
 uint32_t bmds_game_resampled(uint32_t frames, uint32_t from, uint32_t to);
 
+/* ---- MIDI files, sent through /dev/midi (game music with BMDS_GAME_MUSIC_MIDI_OUT, smf.c, midiout.c) */
+
+/** @brief Tracks a Standard MIDI File may have, read at once. */
+#define BMDS_GAME_SMF_TRACKS 64
+
+/** @brief What `bmds_game_smf_next()` gives. */
+#define BMDS_GAME_SMF_MESSAGE 1 /* a channel message, `data` and `length` (1 to 3) */
+#define BMDS_GAME_SMF_SYSEX 2   /* `bytes` and `count`: a SysEx's (F0 and its data, its F7 included) */
+
+typedef struct bmds_game_smf_track_t {
+                const uint8_t *pos;
+                const uint8_t *end;
+                uint64_t       tick;   /* its next event's, absolute */
+                uint8_t        status; /* running status */
+                uint8_t        done;
+} bmds_game_smf_track_t;
+
+/** @brief A Standard MIDI File (format 0 or 1) walked in time order, its tempo map applied. */
+typedef struct bmds_game_smf_t {
+                const uint8_t        *data;
+                size_t                size;
+                uint32_t              count;    /* tracks */
+                uint32_t              division; /* ticks a quarter note, or SMPTE's ticks a second */
+                int                   smpte;    /* division is ticks a second (no tempo) */
+                uint32_t              tempo;    /* microseconds a quarter note */
+                uint64_t              tick;     /* the tempo map's place: this tick ... */
+                int64_t               ns;       /* ... is this far in */
+                bmds_game_smf_track_t tracks[BMDS_GAME_SMF_TRACKS];
+} bmds_game_smf_t;
+
+typedef struct bmds_game_smf_event_t {
+                int64_t        ns;   /* from the song's start */
+                int            kind; /* BMDS_GAME_SMF_... */
+                uint8_t        data[3];
+                uint8_t        length;
+                const uint8_t *bytes; /* a SysEx's bytes (in sysex[]) */
+                uint32_t       count;
+                uint8_t        sysex[64]; /* F0 and its data (F7 escapes: the bytes alone); longer ones skipped */
+} bmds_game_smf_event_t;
+
+/** @brief Reads @p size bytes of a MIDI file's header and tracks. @return 0, or -BMDS_EINVAL. */
+int bmds_game_smf_open(bmds_game_smf_t *smf, const void *data, size_t size);
+
+/** @brief Back to the start. */
+void bmds_game_smf_rewind(bmds_game_smf_t *smf);
+
+/**
+ * @brief The next event in time (tempo changes applied, other meta events skipped).
+ * @return 1 (an event), 0 (the end), or -BMDS_EINVAL (the file ends mid-event: its end).
+ */
+int bmds_game_smf_next(bmds_game_smf_t *smf, bmds_game_smf_event_t *event);
+
+/** @brief Returns true if @p path names a Standard MIDI File (`MThd`). */
+int bmds_game_is_midi_file(const char *path);
+
+/**
+ * @brief Plays the MIDI file at @p path through /dev/midi (scheduled output), on a thread of
+ *        its own, looping with @p loop, at @p gain (0 to 32768: its channel volumes scaled).
+ * @return The player, or NULL with *@p err set (the open's, -BMDS_EINVAL, -BMDS_ENOMEM).
+ */
+struct bmds_game_midi_out *bmds_game_midi_out_start(const char *path, int loop, int32_t gain, int *err);
+
+/** @brief Its volume, 0 to 32768 (sent at once as each channel's volume). */
+void bmds_game_midi_out_gain(struct bmds_game_midi_out *out, int32_t gain);
+
+/** @brief Stops: what is scheduled cancelled, every note off; freed. */
+void bmds_game_midi_out_stop(struct bmds_game_midi_out *out);
+
 #endif /* BMDS_GAME_INTERNAL_H */

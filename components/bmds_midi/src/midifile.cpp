@@ -9,15 +9,20 @@
  * (devplan/audio.md §21).
  */
 
+#include <climits>
 #include <cstring>
 #include <new>
 #include <bmds/clock.h>
 #include <bmds/deadline.h>
 #include <bmds/interrupt.h>
+#include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/midi.h>
 #include <bmds/midifile.h>
+#include <bmds/staticobject.h>
+#include <bmds/thread.h>
 #include <bmds/vfs.h>
+#include <bmds/waketimer.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -45,6 +50,21 @@ namespace {
         };
         static_assert(sizeof(Files) / sizeof(Files[0]) == MidiRouter::MaxPorts + 2, "a file for every port");
 
+        // The MIDI clock (scheduled output, devplan/audio.md §25): the fds with a queue, and the
+        // thread that sends their events at their times. Its lock covers the queues, both ends.
+        constexpr size_t MaxScheduling = 16;                   // fds with a queue at once
+        constexpr size_t RecordRoom = 2 * MidiEvent::MaxBytes; // a record's events at most
+
+        struct MidiClock {
+                        Mutex     lock;
+                        MidiFile *files[MaxScheduling] = {};
+                        Interrupt wake; // a new event: the thread looks again
+                        Thread    thread;
+                        bool      started = false; // (lock)
+        };
+
+        constinit StaticObject<MidiClock> midiClock;
+
         // Under the VFS's lock: the router only, never the settings.
         bool portExists(void *arg) {
                 const auto *fa = static_cast<const FileArg *>(arg);
@@ -56,6 +76,7 @@ namespace {
 // ---- Opening
 
 Error MidiFile::addFiles() {
+        midiClock.create();
         for (const FileArg &a : Files) {
                 Vfs::DeviceFile file;
                 file.name = a.name;
@@ -118,6 +139,16 @@ MidiFile::MidiFile(uint8_t port, Span<MidiEvent> ring) : _port(port) {
 }
 
 void MidiFile::handleClosed(uint8_t) {
+        if (_scheduledStorage != nullptr) {
+                // Out of the clock's hands first: what it scheduled and didn't send goes.
+                Mutex::Locker lock(midiClock->lock, WaitForever);
+                for (MidiFile *&f : midiClock->files)
+                        if (f == this) f = nullptr;
+                (void)_scheduled.setStorage(Span<MidiEvent>());
+                Memory::free(_scheduledStorage);
+                _scheduledStorage = nullptr;
+        }
+        releaseHeld();
         if (hasPort()) {
                 // After these, the router calls it no more.
                 if (_owner) {
@@ -214,6 +245,12 @@ Error MidiFile::disconnect(uint8_t destination) {
         return Midi::router().disconnect(_port, destination);
 }
 
+void MidiFile::cancelScheduled() {
+        Mutex::Locker lock(midiClock->lock, WaitForever);
+        _scheduled.clear();
+        return;
+}
+
 void MidiFile::dropInput() {
         Mutex::Locker lock(_readLock, WaitForever);
         _in.clear();
@@ -308,17 +345,58 @@ Error MidiFile::put(uint8_t byte) {
         for (size_t i = 0; i < n; ++i) {
                 MidiEvent &e = events[i];
                 e.timeNs = Clock::monotonicNs();
-                Error err;
-                if (_owner || _asSource) {
-                        err = Midi::router().send(_port, e);
-                } else {
-                        e.port = MidiRouter::NoPort; // from no port: a write to the port's file
-                        err = Midi::router().deliver(_port, e);
-                }
-                if (err == Error::NotExist) return Error::BrokenPipe;
+                if (emit(e) == Error::NotExist) return Error::BrokenPipe;
                 // WouldBlock: a full destination dropped it, counted there; writes never wait.
         }
         return Error::Ok;
+}
+
+// An event this fd sends, to its port as its writes go; the notes it holds on kept (closing lets
+// them go: a program that ends or crashes mid-note leaves none sounding on a shared synth).
+Error MidiFile::emit(MidiEvent &e) {
+        noteHeld(e);
+        if (_owner || _asSource) return Midi::router().send(_port, e);
+        e.port = MidiRouter::NoPort; // from no port: a write to the port's file
+        return Midi::router().deliver(_port, e);
+}
+
+void MidiFile::noteHeld(const MidiEvent &e) {
+        if (e.size < 3) return;
+        const uint8_t    kind = e.data[0] & 0xf0;
+        const uint8_t    channel = e.data[0] & 0x0f;
+        const uint8_t    note = e.data[1] & 0x7f;
+        SpinLock::Locker lock(_heldLock);
+        if (kind == 0x90 && e.data[2] != 0) {
+                _held[channel][note >> 3] = uint8_t(_held[channel][note >> 3] | (1u << (note & 7)));
+        } else if (kind == 0x80 || kind == 0x90) {
+                _held[channel][note >> 3] = uint8_t(_held[channel][note >> 3] & ~(1u << (note & 7)));
+        } else if (kind == 0xb0 && (e.data[1] == 120 || e.data[1] == 123)) {
+                std::memset(_held[channel], 0, sizeof(_held[channel])); // all sound off, all notes off
+        }
+        return;
+}
+
+// Closing: a note-off for each note still held.
+void MidiFile::releaseHeld() {
+        if (!hasPort() || _gone.load(std::memory_order_acquire)) return;
+        for (uint8_t c = 0; c < 16; ++c) {
+                for (uint8_t note = 0; note < 128; ++note) {
+                        bool held;
+                        {
+                                SpinLock::Locker lock(_heldLock);
+                                held = (_held[c][note >> 3] & (1u << (note & 7))) != 0;
+                        }
+                        if (!held) continue;
+                        MidiEvent off;
+                        off.timeNs = Clock::monotonicNs();
+                        off.size = 3;
+                        off.data[0] = uint8_t(0x80 | c);
+                        off.data[1] = note;
+                        off.data[2] = 0;
+                        (void)emit(off);
+                }
+        }
+        return;
 }
 
 Result<size_t> MidiFile::write(ByteSpan data, unsigned int timeoutMs) {
@@ -337,14 +415,27 @@ Result<size_t> MidiFile::write(ByteSpan data, unsigned int timeoutMs) {
                         break;
                 }
                 if (events) {
-                        // A record: its time 0 (now: later times are reserved), 1 to 5 bytes.
+                        // A record: 1 to 5 bytes, its time 0 (now) or when to send it.
                         MidiEvent e;
                         std::memcpy(&e, data.data() + done, sizeof(e));
-                        if (e.timeNs != 0 || e.size == 0 || e.size > MidiEvent::MaxBytes) {
+                        if (e.size == 0 || e.size > MidiEvent::MaxBytes) {
                                 err = Error::Invalid;
                                 break;
                         }
-                        for (uint8_t i = 0; i < e.size && err.isOk(); ++i) err = put(e.data[i]);
+                        if (e.timeNs != 0) {
+                                const int64_t now = Clock::monotonicNs();
+                                if (e.timeNs > now + MaxAheadNs) {
+                                        err = Error::Invalid;
+                                        break;
+                                }
+                                if (e.timeNs <= now) e.timeNs = 0; // passed: now
+                        }
+                        if (e.timeNs != 0) {
+                                err = schedule(e);
+                                if (err.isError()) break;
+                        } else {
+                                for (uint8_t i = 0; i < e.size && err.isOk(); ++i) err = put(e.data[i]);
+                        }
                 } else {
                         err = put(data[done]);
                 }
@@ -355,9 +446,98 @@ Result<size_t> MidiFile::write(ByteSpan data, unsigned int timeoutMs) {
         return Result<size_t>(done, err);
 }
 
+// ---- Scheduled output (devplan/audio.md §25)
+
+bool MidiFile::hasRoomToSchedule() const {
+        return _scheduledStorage == nullptr || _scheduled.capacity() - _scheduled.size() >= RecordRoom;
+}
+
+// A record for later: its events (the writer's parser) queued with its time, for the clock.
+// The writer's lock is held.
+Error MidiFile::schedule(const MidiEvent &record) {
+        MidiClock    &c = *midiClock;
+        Mutex::Locker lock(c.lock, WaitForever);
+        if (_scheduledStorage == nullptr) {
+                size_t slot = MaxScheduling;
+                for (size_t i = 0; i < MaxScheduling && slot == MaxScheduling; ++i)
+                        if (c.files[i] == nullptr) slot = i;
+                if (slot == MaxScheduling) return Error::Busy;
+                _scheduledStorage =
+                        static_cast<MidiEvent *>(Memory::alloc(MemSpace::Psram, ScheduledEvents * sizeof(MidiEvent)));
+                if (_scheduledStorage == nullptr) return Error::NoMem;
+                (void)_scheduled.setStorage(Span<MidiEvent>(_scheduledStorage, ScheduledEvents));
+                c.files[slot] = this;
+                if (!c.started) {
+                        (void)WakeTimer::init(); // sleeps that end at their time, not on the tick
+                        Thread::Config tc;
+                        tc.name = "midiclock";
+                        tc.stackBytes = 4096;
+                        tc.stackSpace = MemSpace::Psram;
+                        tc.priority = 18; // under the audio clients (19): a note is sent before its period
+                        tc.kernel = true;
+                        const Error err = c.thread.start(tc, clockMain, nullptr);
+                        if (err.isError()) {
+                                bmdsErr("midi: no clock thread: %s", err.desc());
+                                return err;
+                        }
+                        c.started = true; // for good: never joined
+                }
+        }
+        if (!_scheduled.isEmpty() && record.timeNs < _lastScheduledNs) return Error::Invalid; // in order
+        if (!hasRoomToSchedule()) return Error::WouldBlock;
+        for (uint8_t i = 0; i < record.size; ++i) {
+                MidiEvent    events[MidiParser::MaxEvents];
+                const size_t n = _parser.feed(record.data[i], events);
+                for (size_t k = 0; k < n; ++k) {
+                        events[k].timeNs = record.timeNs;
+                        (void)_scheduled.push(events[k]); // room kept for a record's worth
+                }
+        }
+        _lastScheduledNs = record.timeNs;
+        c.wake.raise();
+        return Error::Ok;
+}
+
+// The clock's lock is held: @p event, due, to the port as a write now would go, with its time.
+void MidiFile::sendScheduled(const MidiEvent &event) {
+        if (_gone.load(std::memory_order_acquire) || !hasPort()) return;
+        MidiEvent e = event;
+        (void)emit(e);
+        return;
+}
+
+// The clock's thread: each fd's events due, sent; then asleep until the next is (the wake timer),
+// or a new one comes.
+void MidiFile::clockMain(void *) {
+        MidiClock &c = *midiClock;
+        for (;;) {
+                c.wake.clear();
+                int64_t next = INT64_MAX;
+                {
+                        Mutex::Locker lock(c.lock, WaitForever);
+                        const int64_t now = Clock::monotonicNs();
+                        for (MidiFile *f : c.files) {
+                                if (f == nullptr) continue;
+                                const bool       full = !f->hasRoomToSchedule();
+                                const MidiEvent *e = f->_scheduled.peek();
+                                while (e != nullptr && e->timeNs <= now) {
+                                        MidiEvent due;
+                                        (void)f->_scheduled.pop(due);
+                                        f->sendScheduled(due);
+                                        e = f->_scheduled.peek();
+                                }
+                                if (e != nullptr && e->timeNs < next) next = e->timeNs;
+                                if (full && f->hasRoomToSchedule()) f->_pollers.notify(); // writable again
+                        }
+                }
+                const int64_t until = next != INT64_MAX ? next : Clock::monotonicNs() + 3'600'000'000'000;
+                (void)WakeTimer::sleepUntil(until, &c.wake);
+        }
+}
+
 uint8_t MidiFile::readiness() {
         if (_gone.load(std::memory_order_acquire)) return Readable | HungUp | Writable | Broken;
-        uint8_t ready = Writable;
+        uint8_t ready = hasRoomToSchedule() ? Writable : 0;
         if (!hasPort() || !_in.isEmpty() || _pendingAt < _pendingSize) ready |= Readable;
         return ready;
 }

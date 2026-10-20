@@ -392,10 +392,16 @@ int bmds_game_voice_is_playing(const bmds_game_audio_t *audio, int32_t voice);
  * @brief Plays the sound file at @p path (`bmds_audio_decode()`'s: MIDI through the synth, MP3,
  *        Ogg Vorbis, FLAC, WAV) as the music at @p volume, from its start again at its end with
  *        `BMDS_GAME_PLAY_LOOP`, decoded on a thread of its own (real-time, `SCHED_FIFO` at 1: above
- *        the game's threads); the music playing stops first.
+ *        the game's threads); the music playing stops first. With `BMDS_GAME_MUSIC_MIDI_OUT`, a
+ *        MIDI file's events go to `/dev/midi` instead (the system port: the built-in synth, or
+ *        wherever it is routed), sent ahead with their times so they keep them; the volume
+ *        scales its channels' volumes. Other files are decoded as without it.
  * @return 0, or a negative error (the open's and the decoder's, the device's, `-BMDS_ENOMEM`).
  */
 int bmds_game_music_play(bmds_game_audio_t *audio, const char *path, float volume, uint32_t flags);
+
+/** @brief `bmds_game_music_play()`'s flags: a MIDI file through `/dev/midi` (devplan/audio.md §25). */
+#define BMDS_GAME_MUSIC_MIDI_OUT 2u
 
 /** @brief Stops the music (none: nothing). */
 void bmds_game_music_stop(bmds_game_audio_t *audio);

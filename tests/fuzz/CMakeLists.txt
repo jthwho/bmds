@@ -102,6 +102,12 @@ target_compile_options(rtpmidi_fuzz PRIVATE -fno-exceptions -fno-rtti)
 target_link_libraries(rtpmidi_fuzz PRIVATE bmds_core)
 target_link_options(rtpmidi_fuzz PRIVATE -fsanitize=fuzzer)
 
+# libbmdsgame's MIDI file walker (devplan/audio.md §25): sdk/game/smf.c.
+add_executable(smf_fuzz smf.cpp ${BMDS_ROOT}/sdk/game/smf.c)
+target_include_directories(smf_fuzz PRIVATE ${BMDS_ROOT}/sdk/include)
+target_compile_options(smf_fuzz PRIVATE -fno-exceptions -fno-rtti)
+target_link_options(smf_fuzz PRIVATE -fsanitize=fuzzer)
+
 # Our SFTP server's protocol core (devplan/network.md §24): programs/sftp-server's sftp.c (C)
 # with made-up file calls.
 set(SFTP ${BMDS_ROOT}/programs/sftp-server)

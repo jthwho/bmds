@@ -2390,7 +2390,47 @@ the chosen synth. Names (the user's): `system`, `wavetable`; the `synth` command
 - **Tried:** `midi send system 90 3c 64` played at once (the font warm), idle 5 s after the
   last note-off (the stream closed); `printf '\x90\x40\x50' > /dev/midi` played. Internal RAM:
   about 1 KB less free at idle (the state, the control thread's task).
-- **Step 3 waits for a decision:** Doom gives its music to libbmdsgame as a whole MIDI file,
+- **Step 3 waited for a decision:** Doom gives its music to libbmdsgame as a whole MIDI file,
   rendered in the program. Through `system`, a sequencer must send the file's events in time:
-  either a thread waking for each (about 1 ms of jitter, the tick), or scheduled output (the
-  reserved `time_ns`: events written ahead, sent by the kernel at their time), new ABI.
+  a thread waking for each (about 1 ms of jitter), or scheduled output. The user chose the
+  latter (2026-10-20).
+
+### As built: scheduled output and Doom's music through `system` (2026-10-20)
+
+- **Scheduled output (ABI, appended):** an event record written with a `time_ns` is sent at
+  that time and carries it as its time, so a synth places it on its sample whatever the
+  dispatch costs. A time passed sends it now (the reserved values had been refused); at most
+  `BMDS_MIDI_AHEAD_MAX_NS` (60 s) ahead, else `EINVAL`; not before the fd's last scheduled,
+  else `EINVAL`; `BMDS_MIDI_SCHEDULED_MAX` (512) held per fd, then a write takes what fits or
+  fails with `EAGAIN`, and `poll()` says writable while a record fits; `BMDS_MIDI_CANCEL` (op 4)
+  drops what is scheduled. The status struct is unchanged (its size is locked; no count).
+- **In the kernel (`MidiFile`):** records are parsed when written (the fd's parser) and queued
+  with their time in the fd's queue (512 events, PSRAM, made at the first; 16 fds at once);
+  one thread for all, `midiclock` (PSRAM stack, priority 18, made at the first), sleeps on the
+  wake timer (`WakeTimer::sleepUntil()`: the hardware timer, not the 1 ms tick) until the
+  earliest event is due, sends what is, and is woken early by a new one.
+- **Held notes let go:** each fd keeps a bit for every note it has turned on (as sent, now or
+  by the clock) and not off; closing it sends their note-offs. **Found on the board:** Doom
+  killed mid-song left the wavetable's 32 voices sounding for good (its idle never came); now
+  silent, idle 5 s later. Any program that crashes on `system` is covered.
+- **The wavetable at the device's period** (240 frames, 5 ms), no longer 128: beside Doom full
+  screen it counted 136 late periods in about 30 s at 128 (no slack, the memory bus busy);
+  2 in 24 s at the device's. One client no longer forces every stream to 128 frames either.
+- **libbmdsgame:** `BMDS_GAME_MUSIC_MIDI_OUT` for `bmds_game_music_play()`: a MIDI file's events
+  to `/dev/midi`. `smf.c` walks a Standard MIDI File (format 0 and 1, the tracks merged in
+  order, the tempo map, an SMPTE division, SysEx), host-tested and fuzzed (`smf_fuzz`, 10
+  minutes, 19 million inputs, no fault); `midiout.c` is a thread writing each event 40 ms ahead
+  with its time, waking every 10 ms; the volume scales each channel's volume (controller 7) as
+  the file sets it; it resets the controllers and notes at the start, and at the stop cancels
+  what is queued and sends all notes off and all sound off. Other files are decoded as before.
+- **Doom:** `doom/music` (a program setting, `midi|built-in`, default `midi`: the user's model,
+  games playing through `system`); `built-in` is the synth fd in Doom as before. **Tried:**
+  Doom's music through `system` to the wavetable (5,439 events, none dropped, 32 voices at
+  most), killed and silent; `built-in` with the wavetable idle.
+- **progtest:** scheduled events read at their times, carrying them (the worst 31 to 266 µs
+  late on the board), a passed time sent now, too far and out of order refused, cancel, a full
+  queue (503 held, `EAGAIN`, not writable, writable after cancel); the held note let go at the
+  close. **Found:** the board's `progtest` was the card's copy (`/sd0/p0/bin`), a day old:
+  earlier "passes" of this session's MIDI checks ran the old test. It is installed from
+  `build-host/sdk-examples/progtest.elf` now; the `system` check it hadn't run then needed its
+  sink's count fixed.

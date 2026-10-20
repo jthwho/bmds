@@ -44,6 +44,7 @@ struct bmds_game_audio_t {
                 uint32_t  music_channels;
                 uint32_t  music_loop;
                 int32_t   music_gain; /* 0-32768 */
+                struct bmds_game_midi_out *music_midi; /* BMDS_GAME_MUSIC_MIDI_OUT's player, or NULL */
                 int16_t   music_buf[MUSIC_FRAMES * 2];
 };
 
@@ -368,6 +369,10 @@ static void *music_thread(void *arg) {
 }
 
 void bmds_game_music_stop(bmds_game_audio_t *audio) {
+        if (audio != NULL && audio->music_midi != NULL) {
+                bmds_game_midi_out_stop(audio->music_midi);
+                audio->music_midi = NULL;
+        }
         if (audio == NULL || !audio->music_running) return;
         STORE(audio->music_stop, 1);
         (void)bmds_audio_control(audio->music_out, BMDS_AUDIO_DROP, 0); /* a write waiting returns */
@@ -383,6 +388,13 @@ void bmds_game_music_stop(bmds_game_audio_t *audio) {
 int bmds_game_music_play(bmds_game_audio_t *audio, const char *path, float volume, uint32_t flags) {
         if (audio == NULL || path == NULL) return -BMDS_EINVAL;
         bmds_game_music_stop(audio);
+        if ((flags & BMDS_GAME_MUSIC_MIDI_OUT) != 0 && bmds_game_is_midi_file(path)) {
+                bmds_game_music_volume(audio, volume);
+                int err = 0;
+                audio->music_midi = bmds_game_midi_out_start(path, (flags & BMDS_GAME_PLAY_LOOP) != 0,
+                                                             LOAD(audio->music_gain), &err);
+                return audio->music_midi != NULL ? 0 : err;
+        }
         const int32_t fd = bmds_open(path, BMDS_O_READ);
         if (fd < 0) return fd;
         bmds_decode_config_t d;
@@ -435,5 +447,6 @@ int bmds_game_music_play(bmds_game_audio_t *audio, const char *path, float volum
 void bmds_game_music_volume(bmds_game_audio_t *audio, float volume) {
         const float v = volume < 0.0f ? 0.0f : volume > 1.0f ? 1.0f : volume;
         STORE(audio->music_gain, (int32_t)(v * 32768.0f));
+        if (audio->music_midi != NULL) bmds_game_midi_out_gain(audio->music_midi, LOAD(audio->music_gain));
         return;
 }

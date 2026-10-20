@@ -43,6 +43,9 @@ namespace {
                               BMDS_MIDI_USB_DEVICE == static_cast<uint32_t>(MidiRouter::Kind::UsbDevice) &&
                               BMDS_MIDI_SYSTEM == static_cast<uint32_t>(MidiRouter::Kind::System),
                       "the ABI's kinds are the router's");
+        static_assert(BMDS_MIDI_SCHEDULED_MAX == MidiFile::ScheduledEvents &&
+                              BMDS_MIDI_AHEAD_MAX_NS == MidiFile::MaxAheadNs,
+                      "the ABI's scheduling limits are MidiFile's");
         static_assert(BMDS_MIDI_NAME_MAX == MidiRouter::MaxName, "the ABI's name length is the router's");
         static_assert(sizeof(bmds_midi_event_t) == sizeof(MidiEvent) &&
                               offsetof(bmds_midi_event_t, time_ns) == offsetof(MidiEvent, timeNs) &&
@@ -124,9 +127,12 @@ int32_t bmds_k_midi_control(int32_t fd, uint32_t op, int32_t value) {
         MidiFile                   *file = nullptr;
         const int32_t               r = midiFileOf(handle, file);
         if (r < 0) return r;
-        if (op == BMDS_MIDI_FLUSH) {
+        if (op == BMDS_MIDI_FLUSH || op == BMDS_MIDI_CANCEL) {
                 if (value != 0) return -BMDS_EINVAL;
-                file->dropInput();
+                if (op == BMDS_MIDI_FLUSH)
+                        file->dropInput();
+                else
+                        file->cancelScheduled();
                 return 0;
         }
         if (value < 0 || value >= static_cast<int32_t>(MidiRouter::MaxPorts))

@@ -86,6 +86,7 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/game/font16.c
         ${BMDS_ROOT}/sdk/game/convert.c
         ${BMDS_ROOT}/sdk/game/mix.c
+        ${BMDS_ROOT}/sdk/game/smf.c
         blocks.cpp
         ${BMDS_ROOT}/programs/blocks/rules.c
         solitaire.cpp

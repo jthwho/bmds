@@ -23,7 +23,7 @@ BMDS_NAMESPACE_BEGIN
  * While `synth/wavetable` is on, the port (kind `system`, a destination)
  * exists. Idle, it costs the port, a ring of 256 events (PSRAM) and a control
  * thread (`wavetable`, its stack in PSRAM) waiting. The first event opens a
- * synth on `synth/font` and a real-time stream on `/dev/dsp` (128 frames), and
+ * synth on `synth/font` and a real-time stream on `/dev/dsp` (the device's period), and
  * starts the audio thread; 5 s with no events and no voice sounding, both are
  * closed. While `synth/keep-fonts` is on, the font is loaded once at the start
  * (and when `synth/font` changes) and left in the font cache, so the first note

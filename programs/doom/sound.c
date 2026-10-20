@@ -270,9 +270,31 @@ static void music_remove(void) {
         return;
 }
 
+static uint32_t g_music_flags = BMDS_GAME_MUSIC_MIDI_OUT; /* doom/music: midi, else built-in (0) */
+
+/* doom/music (devplan/audio.md §25): midi sends the music through /dev/midi, the system's synth
+   or wherever system is routed; built-in plays it on a synth of Doom's own. */
+static void read_music_setting(void) {
+        bmds_sysconf_param_t p;
+        memset(&p, 0, sizeof(p));
+        p.size = sizeof(p);
+        p.type = BMDS_SYSCONF_TYPE_ENUM;
+        p.key = "doom/music";
+        p.default_value = "midi";
+        p.help = "Doom's music: midi (through /dev/midi: the system's synth, or wherever system goes), or built-in";
+        p.choices = "midi|built-in";
+        const int32_t id = bmds_sysconf_declare(&p);
+        char          value[16] = "";
+        if (id >= 0 && bmds_sysconf_get(id, BMDS_SYSCONF_FIELD_VALUE, value, sizeof(value)) >= 0 &&
+            strcmp(value, "built-in") == 0)
+                g_music_flags = 0;
+        return;
+}
+
 static boolean music_init(void) {
         if (audio() == NULL) return false;
         if (g_music_path[0] != '\0') return true; /* early, before Doom asked */
+        read_music_setting();
         const char *tmp = getenv("TMPDIR");
         snprintf(g_music_path, sizeof(g_music_path), "%s/doom-%d.mid", tmp != NULL && tmp[0] != '\0' ? tmp : "/tmp",
                  (int)getpid());
@@ -376,7 +398,7 @@ static void music_play(void *handle, boolean looping) {
         if (g_audio == NULL || s == NULL) return;
         music_stop();
         const int err = play_midi(s->midi, s->length, g_music_paused ? 0.0f : volume_of(g_music_volume),
-                                  looping ? BMDS_GAME_PLAY_LOOP : 0);
+                                  (looping ? BMDS_GAME_PLAY_LOOP : 0) | g_music_flags);
         if (err != 0)
                 fprintf(stderr, "doom: music didn't play (%d)\n", err);
         else
@@ -389,6 +411,7 @@ void doom_bmds_sound_early(void) {
         static const uint8_t empty[] = {'M', 'T', 'h', 'd', 0, 0, 0, 6, 0,    0, 0, 1, 0,    96,   'M',
                                         'T', 'r', 'k', 0,   0, 0, 8, 0, 0xb0, 7, 0, 0, 0xff, 0x2f, 0};
         if (!music_init()) return;
+        if (g_music_flags != 0) return; /* through /dev/midi: the system's synth keeps its font loaded */
         const int err = play_midi(empty, sizeof(empty), 0.0f, 0);
         if (err != 0) fprintf(stderr, "doom: the synth's font didn't load (%d)\n", err);
         music_stop(); /* the font stays loaded (synth/keep-fonts) */

@@ -1609,7 +1609,10 @@ static int midi(void) {
         bmds_midi_event_t out = {.length = 3, .data = {0x80, 0x3c, 0x00}};
         CHECK(write(v, &out, sizeof(out)) == (ssize_t)sizeof(out));
         CHECK(read(r, ev, sizeof(ev)) == (ssize_t)sizeof(ev[0]) && ev[0].data[0] == 0x80 && ev[0].length == 3);
-        out.time_ns = 5;
+        out.time_ns = 5; /* a time passed: sent now */
+        CHECK(write(v, &out, sizeof(out)) == (ssize_t)sizeof(out));
+        CHECK(read(r, ev, sizeof(ev)) == (ssize_t)sizeof(ev[0]) && ev[0].data[0] == 0x80);
+        out.time_ns = mono_ns() + BMDS_MIDI_AHEAD_MAX_NS + 1000000000ll; /* too far ahead */
         CHECK(write(v, &out, sizeof(out)) == -1 && errno == EINVAL);
         out.time_ns = 0;
         out.length = 0;
@@ -1622,6 +1625,42 @@ static int midi(void) {
         CHECK(write(v, sx, sizeof(sx)) == (ssize_t)sizeof(sx));
         CHECK(read(r, ev, sizeof(ev)) == 2 * (ssize_t)sizeof(ev[0]));
         CHECK(ev[0].length == 5 && ev[0].data[0] == 0xf0 && ev[1].length == 2 && ev[1].data[1] == 0xf7);
+
+        /* Scheduled output (devplan/audio.md §25): each sent at its time, carrying it, in order. */
+        const int64_t     base = mono_ns() + 50000000; /* 50 ms on */
+        bmds_midi_event_t s3[3] = {{.time_ns = base, .length = 3, .data = {0x90, 0x3c, 0x40}},
+                                   {.time_ns = base + 20000000, .length = 3, .data = {0x90, 0x3e, 0x40}},
+                                   {.time_ns = base + 40000000, .length = 3, .data = {0x80, 0x3c, 0x00}}};
+        CHECK(write(v, s3, sizeof(s3)) == (ssize_t)sizeof(s3));
+        CHECK(poll(&pf, 1, 0) == 0); /* nothing yet */
+        int64_t worst = 0;
+        for (int i = 0; i < 3; ++i) {
+                CHECK(read(r, ev, sizeof(ev[0])) == (ssize_t)sizeof(ev[0])); /* waits for it */
+                const int64_t at = mono_ns();
+                CHECK(ev[0].time_ns == s3[i].time_ns && ev[0].data[1] == s3[i].data[1]);
+                CHECK(at >= s3[i].time_ns && at - s3[i].time_ns < 5000000); /* within 5 ms */
+                if (at - s3[i].time_ns > worst) worst = at - s3[i].time_ns;
+        }
+        /* Not before the last scheduled: refused. */
+        bmds_midi_event_t later = {.time_ns = mono_ns() + 100000000, .length = 2, .data = {0xc0, 0x01}};
+        CHECK(write(v, &later, sizeof(later)) == (ssize_t)sizeof(later));
+        later.time_ns -= 50000000;
+        CHECK(write(v, &later, sizeof(later)) == -1 && errno == EINVAL);
+        /* Cancelled: never sent. */
+        CHECK(bmds_midi_control(v, BMDS_MIDI_CANCEL, 1) == -BMDS_EINVAL);
+        CHECK(bmds_midi_control(v, BMDS_MIDI_CANCEL, 0) == 0);
+        usleep(150000);
+        CHECK(poll(&pf, 1, 0) == 0);
+        /* Full: about BMDS_MIDI_SCHEDULED_MAX held, then EAGAIN, and not writable until cancelled. */
+        bmds_midi_event_t many = {.time_ns = mono_ns() + 10000000000ll, .length = 2, .data = {0xc0, 0x02}};
+        int               taken = 0;
+        while (write(v, &many, sizeof(many)) == (ssize_t)sizeof(many)) ++taken;
+        CHECK(errno == EAGAIN && taken >= (int)BMDS_MIDI_SCHEDULED_MAX - 16 && taken <= (int)BMDS_MIDI_SCHEDULED_MAX);
+        struct pollfd pw = {.fd = v, .events = POLLOUT};
+        CHECK(poll(&pw, 1, 0) == 0);
+        CHECK(bmds_midi_control(v, BMDS_MIDI_CANCEL, 0) == 0);
+        CHECK(poll(&pw, 1, 0) == 1 && (pw.revents & POLLOUT) != 0);
+        printf("midi: scheduled events sent at most %ld us late; %d held\n", (long)(worst / 1000), taken);
 
         /* A second port, destination only, connected from the first. */
         const int d = open("/dev/midinew", O_RDWR);
@@ -1660,7 +1699,8 @@ static int midi(void) {
         for (int i = 0; i < 300; ++i) CHECK(write(v, &out, sizeof(out)) == (ssize_t)sizeof(out));
         CHECK(bmds_midi_status(r, &st) == 0 && st.fd_dropped == 44);
         CHECK(bmds_midi_status(d, &st) == 0 && st.fd_dropped == 44 && st.dropped == 44); /* its port's too */
-        CHECK(st.events_out == 1 + 256 && st.sides == BMDS_MIDI_DESTINATION && st.kind == BMDS_MIDI_VIRTUAL);
+        CHECK(st.events_out == 2 + 256 && st.sides == BMDS_MIDI_DESTINATION &&
+              st.kind == BMDS_MIDI_VIRTUAL); /* + system's */
         CHECK(strcmp(st.name, "progtest sink") == 0);
         CHECK(bmds_midi_control(r, BMDS_MIDI_FLUSH, 0) == 0);
         CHECK(poll(&pf, 1, 0) == 0);
@@ -1669,8 +1709,10 @@ static int midi(void) {
         CHECK(bmds_midi_control(v, BMDS_MIDI_DISCONNECT, (int32_t)sink) == 0);
         CHECK(bmds_midi_control(v, BMDS_MIDI_DISCONNECT, (int32_t)sink) == -BMDS_ENOENT);
 
-        /* The port goes with v: reads end, writes break, the file is gone. */
+        /* The port goes with v: the note it held (0x3e, scheduled above) let go first, then reads
+           end, writes break, the file is gone. */
         CHECK(close(v) == 0);
+        CHECK(read(r, ev, sizeof(ev)) == (ssize_t)sizeof(ev[0]) && ev[0].data[0] == 0x80 && ev[0].data[1] == 0x3e);
         CHECK(read(r, ev, sizeof(ev)) == 0);
         CHECK(bmds_midi_status(r, &st) == 0 && (st.flags & BMDS_MIDI_GONE) != 0);
         CHECK(write(w, volume, 3) == -1 && errno == EPIPE);

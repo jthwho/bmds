@@ -39,7 +39,6 @@ namespace {
                      0, nullptr, nullptr)
 
         constexpr size_t   RingEvents = 256;
-        constexpr uint32_t PeriodFrames = 128;     // as the synth command's: room for a chord's note-ons
         constexpr int64_t  IdleNs = 5'000'000'000; // no events, no voices: closed
         constexpr unsigned RetryMs = 5'000;        // a font not there yet (the card mounting)
         constexpr unsigned PreloadTries = 6;
@@ -171,7 +170,7 @@ namespace {
                 ac.format = SampleFormat::F32Le;
                 ac.channels = 2;
                 ac.rateHz = 0;
-                ac.wakeFrames = PeriodFrames;
+                ac.wakeFrames = 0; // the device's period: slack beside a busy game, no client forcing it down
                 ac.flags = AudioFile::Realtime;
                 Error err = audio->configure(ac);
                 if (err.isError()) {
