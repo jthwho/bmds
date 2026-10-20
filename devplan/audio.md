@@ -2131,7 +2131,8 @@ router, the fds or the ABI changes.
    `synth`, `amidi` both ways. **Done (2026-10-20):** below.
 3. **Network MIDI:** the codec and session portable and fuzzed, the lwIP glue, mDNS, the
    commands and settings. Tried with the user's machines (macOS's Network session, or
-   `rtpmidid` on Linux) both ways.
+   `rtpmidid` on Linux) both ways. **Done (2026-10-20):** below; tried with a peer of our own
+   (`tools/bmds-applemidi`), the user's Mac and Windows still to try.
 4. **The latency, measured** for both: a note from the computer to the synth's output, against
    `keytone`'s 3 to 4 ms from a local port (§21).
 
@@ -2202,6 +2203,66 @@ router, the fds or the ABI changes.
   off on that PHY then; a scope on EXT1 pin 4 would say); macOS and Windows; the latency
   (step 4).
 - **Left:** a crash's message is still lost while the device is on (the crash log keeps it).
+
+### As built: step 3, network MIDI (2026-10-20)
+
+- **Portable, in `bmds_midi`** (host-tested; `rtpmidi_fuzz`):
+  - `RtpMidi` (`rtpmidi.h`): an RTP-MIDI packet read (RTP version 2, payload type 97, the
+    marker bit ignored, contributing sources and a header extension skipped, the short and
+    long command headers) and its commands turned into MIDI bytes for a `MidiParser`: delta
+    times dropped, running status carried across packets (the phantom status), SysEx segments
+    joined, a cancelled one dropped, the journal skipped. `RtpMidiWriter`: packets of at most
+    512 bytes, the long header, no journal, deltas of 0, SysEx pieces in one segment while
+    they fit (`F0`...`F0` and `F7`... in the next when not), real-time bytes inside an open
+    SysEx, a SysEx cut by a message cancelled (`F4`).
+  - `AppleMidi` (`applemidi.h`): the session protocol on a pair of ports, no sockets and no
+    clock: accepting (`IN` answered `OK`, or `NO` when refusing or full, on each port),
+    inviting (12 tries a second apart, to the control port then its next), `BY` both ways,
+    clock sync (the inviter's, 6 at 1.5 s then every 10 s; the round trip and offset kept),
+    `RS` at most once a second after MIDI arrives, the end after 60 s of silence, sequence
+    gaps counted. 4 sessions.
+- **The network's side, in `bmds_net`** (it keeps lwIP private): `NetUdp` (`netudp.h`), a
+  kernel service's UDP port on lwIP's raw API, its datagrams given to a callback on the network
+  task; `NetStack::callLater()`/`cancelCall()` (lwIP's timers); `NetServices::advertise()`
+  (`netservices.h`): two mDNS services (`MDNS_MAX_SERVICES` 2), the SSH server's moved onto it.
+- **The service, `NetMidi`** (`netmidi.h`, the boot stage `netmidi`): the protocol on the
+  network task with no thread of its own; a thread (`netmidi`, 6 KB of PSRAM, only while on)
+  follows the settings, starts and stops the ports, looks up and invites `midi/net/sessions`
+  (again 5 s after a failure, doubling to 5 minutes), and applies `midi/connect` when a
+  session comes up (settings aren't read on the network task). A session up is a port (kind
+  `net`, `BMDS_MIDI_NET`) named as the peer; what the router delivers waits in a ring of 64
+  (PSRAM) and is sent by whoever kicks it, holding the core lock. Each event's time is its
+  packet's arrival (not its delta or the peer's timestamp: a dejitter is for later).
+- **Settings:** `midi/net/enabled` (false), `midi/net/port` (5004), `midi/net/name` (empty:
+  the host's name, followed), `midi/net/accept` (`all|none`), `midi/net/sessions`
+  (`HOST[:PORT]`, comma separated, 4 kept). The control panel's Sound page has them.
+- **Commands:** `midi net` (the service, each session: state, port, peer, name, packets,
+  losses, journals, drops, the round trip), `midi net connect HOST[:PORT]`, `midi net
+  disconnect N`.
+- **Found:**
+  - **By the fuzzer in its first 5 minutes:** a peer's clock sync times overflowed the
+    offset's signed arithmetic (UBSan); now unsigned, wrapping. Then 10 minutes (8 million
+    inputs) and 30 minutes (39 million, two workers) with no fault.
+  - **lwIP's mDNS sends no goodbye** when a service is taken back: the PC's avahi showed
+    `_apple-midi._udp` after the service stopped, from its cache; the board itself no longer
+    answered for it.
+  - **The router's connections by name** come from `midi/connect` only when it is applied;
+    the first try connected nothing until `midi` ran. Hence the thread's applying it.
+- **Tried (2026-10-20), with `tools/bmds-applemidi`** (a peer of our own in Python, both
+  roles) on the user's Linux PC over its Wi-Fi: the board advertised (`avahi-browse`); the PC
+  inviting: notes, a controller, a program change and a SysEx in (10 events, the SysEx in two
+  pieces), the board's notes out; the board inviting (`midi net connect`): MIDI out, the SysEx
+  as two segments, `BY` at the end; `midi/net/sessions` inviting by itself, the session ended
+  60 s after the peer went silent and up again 2 s after it came back; `accept none` refused;
+  `midi/connect "clarke test>synth"`: 24 events into `synth` from the PC; off: `BY`, the ports
+  closed, the service withdrawn. Clock sync round trips 1.5 to 20 ms (Wi-Fi). `progtest
+  midi`, `files` and `bmds-compat` still pass.
+- **Memory:** 1,120 bytes of internal RAM static (the sessions' MIDI sides, kept for the
+  router's late kicks; the settings' watchers); about 580 more while on (lwIP's two ports and
+  a timer). PSRAM while on: the sessions and their rings (about 6.5 KB), the thread's stack.
+  The image grew 15 KB.
+- **Not yet:** the user's Mac (Audio MIDI Setup's Network) and Windows (rtpMIDI); the
+  journal (stuck notes after a lost packet, if they show); the latency (step 4).
 
 ## 24. The patchbay: MIDI and audio connections in a window (outline, 2026-10-20)
 

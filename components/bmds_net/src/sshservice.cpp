@@ -17,6 +17,7 @@
 #include <bmds/logstream.h>
 #include <bmds/memorystream.h>
 #include <bmds/mutex.h>
+#include <bmds/netservices.h>
 #include <bmds/programlauncher.h>
 #include <bmds/semaphore.h>
 #include <bmds/sshservice.h>
@@ -27,7 +28,6 @@
 #include <bmds/thread.h>
 #include <bmds/vfs.h>
 
-#include "netmdns.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -180,7 +180,8 @@ namespace {
                         return 0;
                 }
                 bmdsInfo("ssh: the server runs on port %s (pid %ld)", port.cStr(), long(pid.value()));
-                NetMdns::setSshPort(static_cast<uint16_t>(portValue.isOk() ? portValue.value() : 22));
+                (void)NetServices::advertise("_ssh", false,
+                                             static_cast<uint16_t>(portValue.isOk() ? portValue.value() : 22), "");
                 return pid.value();
         }
 
@@ -190,7 +191,7 @@ namespace {
 
         // Ends the server (SIGTERM, then SIGKILL); its sessions go on.
         void stopServer(int32_t pid) {
-                NetMdns::setSshPort(0);
+                (void)NetServices::advertise("_ssh", false, 0, "");
                 if (state->launcher->sendSignal(pid, SigTerm).isError()) return;
                 for (int round = 0; round < 2; ++round) {
                         const Deadline deadline(StopWaitMs);

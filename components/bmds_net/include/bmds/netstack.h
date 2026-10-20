@@ -57,6 +57,20 @@ namespace NetStack {
         /** @brief True if the calling task holds the core lock. @nonblocking */
         bool isLocked();
 
+        /** @brief A function the network task calls (core lock held). */
+        using Call = void (*)(void *arg);
+
+        /**
+         * @brief Has the network task call @p fn with @p arg in @p delayMs (lwIP's
+         *        timers: a kernel service on the network task, `NetUdp`'s). Core
+         *        lock held; a holder on another task wakes the network task as it
+         *        lets go. (A timer comes from lwIP's heap; lwIP asserts if it has none.)
+         */
+        void callLater(uint32_t delayMs, Call fn, void *arg);
+
+        /** @brief Takes back every call of @p fn with @p arg not made yet. Core lock held. */
+        void cancelCall(Call fn, void *arg);
+
         /** @brief Wakes the network task (frames or work for it). Any task. @nonblocking */
         void wake();
 

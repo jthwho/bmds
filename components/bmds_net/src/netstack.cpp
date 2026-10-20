@@ -206,6 +206,18 @@ bool NetStack::isLocked() {
         return stack->holder.load(std::memory_order_relaxed) == xTaskGetCurrentTaskHandle();
 }
 
+void NetStack::callLater(uint32_t delayMs, Call fn, void *arg) {
+        LWIP_ASSERT_CORE_LOCKED();
+        sys_timeout(delayMs, fn, arg);
+        return;
+}
+
+void NetStack::cancelCall(Call fn, void *arg) {
+        LWIP_ASSERT_CORE_LOCKED();
+        sys_untimeout(fn, arg);
+        return;
+}
+
 void NetStack::wake() {
         stack->wake.release();
         return;

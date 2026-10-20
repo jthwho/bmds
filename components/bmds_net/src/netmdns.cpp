@@ -17,6 +17,7 @@
 #include <lwip/netif.h>
 #include <bmds/hostname.h>
 #include <bmds/log.h>
+#include <bmds/netservices.h>
 #include <bmds/netstack.h>
 #include <bmds/staticobject.h>
 #include <bmds/sysconf.h>
@@ -31,10 +32,26 @@ namespace {
         // Names tried after a conflict, NAME-2 to NAME-9, before giving up.
         constexpr unsigned int MaxSuffix = 9;
 
+        // A service advertised (NetServices), under the core lock.
+        struct Service {
+                        char     type[NetServices::MaxType + 1] = {};     // "_ssh"; empty: a free slot
+                        char     instance[NetServices::MaxName + 1] = {}; // empty: the host's name
+                        bool     udp = false;
+                        uint16_t port = 0;
+                        uint32_t generation = 0; // changed: each interface's is added again
+        };
+
+        // A service as an interface has it.
+        struct Added {
+                        s8_t     slot = -1; // lwIP's, or -1
+                        uint32_t generation = 0;
+                        uint32_t hostName = 0; // the interface's name generation it was added with
+        };
+
         struct Responder {
                         bool              added = false;
-                        s8_t              sshSlot = -1; // _ssh._tcp's service slot, or -1
-                        uint16_t          sshPort = 0;  // the port it advertises
+                        uint32_t          nameGeneration = 0; // moves with each new name
+                        Added             services[NetServices::MaxServices];
                         unsigned int      suffix = 0; // 0: the host name as it is
                         std::atomic<bool> conflict{false};
                         char              name[NetMdns::MaxName + 1] = {};
@@ -44,9 +61,10 @@ namespace {
                         SysConf::Id       enabledId = {};
                         SysConf::Watcher  watcher;
                         SysConf::Watcher  hostnameWatcher;
-                        std::atomic<bool>     pending{true};
-                        std::atomic<uint16_t> sshPort{0}; // _ssh._tcp's port (0: none)
+                        std::atomic<bool> pending{true};
                         // Under the core lock:
+                        Service   services[NetServices::MaxServices];
+                        uint32_t  generation = 0;
                         Responder responders[NetInterface::MaxInterfaces];
         };
 
@@ -89,6 +107,30 @@ namespace {
                 return;
         }
 
+        // The services as they should be on @p ni: each added again when it changed (or the host's
+        // name did, for one named as the host).
+        void services(NetInterface &ni, Responder &r) {
+                for (size_t i = 0; i < NetServices::MaxServices; ++i) {
+                        const Service &s = state->services[i];
+                        Added         &a = r.services[i];
+                        const bool     asHost = s.instance[0] == '\0';
+                        if (a.generation == s.generation && (a.slot >= 0) == (s.port != 0) &&
+                            (!asHost || a.hostName == r.nameGeneration))
+                                continue;
+                        if (a.slot >= 0) (void)mdns_resp_del_service(&ni.netif(), u8_t(a.slot));
+                        a = Added();
+                        a.generation = s.generation;
+                        if (s.port == 0 || s.type[0] == '\0') continue;
+                        a.hostName = r.nameGeneration;
+                        a.slot = mdns_resp_add_service(&ni.netif(), asHost ? r.name : s.instance, s.type,
+                                                       s.udp ? DNSSD_PROTO_UDP : DNSSD_PROTO_TCP, s.port, nullptr,
+                                                       nullptr);
+                        if (a.slot < 0)
+                                bmdsWarn("%s: mDNS: %s.%s not advertised", ni.name(), s.type, s.udp ? "_udp" : "_tcp");
+                }
+                return;
+        }
+
         void apply() {
                 SysConf::Id id;
                 for (SysConf::Watcher *w : {&state->watcher, &state->hostnameWatcher}) {
@@ -105,7 +147,7 @@ namespace {
                         if (!on) {
                                 if (r.added) (void)mdns_resp_remove_netif(&ni.netif());
                                 r.added = false;
-                                r.sshSlot = -1;
+                                for (Added &a : r.services) a = Added();
                                 continue;
                         }
                         const bool conflict = r.conflict.exchange(false);
@@ -124,25 +166,16 @@ namespace {
                         nameFor(host, r.suffix, want);
                         if (!r.added) {
                                 std::memcpy(r.name, want, sizeof(r.name));
+                                ++r.nameGeneration;
                                 const err_t e = mdns_resp_add_netif(&ni.netif(), r.name);
                                 r.added = e == ERR_OK;
                                 if (!r.added) bmdsErr("%s: mDNS not started (lwIP error %d)", ni.name(), e);
                         } else if (conflict || std::strcmp(want, r.name) != 0) {
                                 std::memcpy(r.name, want, sizeof(r.name));
+                                ++r.nameGeneration;
                                 (void)mdns_resp_rename_netif(&ni.netif(), r.name);
-                                if (r.sshSlot >= 0)
-                                        (void)mdns_resp_rename_service(&ni.netif(), u8_t(r.sshSlot), r.name);
                         }
-                        // The SSH server's service, named as the host.
-                        const uint16_t port = state->sshPort.load();
-                        if (!r.added || (r.sshSlot >= 0 && r.sshPort == port)) continue;
-                        if (r.sshSlot >= 0) (void)mdns_resp_del_service(&ni.netif(), u8_t(r.sshSlot));
-                        r.sshSlot = -1;
-                        if (port == 0) continue;
-                        r.sshSlot = mdns_resp_add_service(&ni.netif(), r.name, "_ssh", DNSSD_PROTO_TCP, port, nullptr,
-                                                          nullptr);
-                        r.sshPort = port;
-                        if (r.sshSlot < 0) bmdsWarn("%s: mDNS: _ssh._tcp not advertised", ni.name());
+                        if (r.added) services(ni, r);
                 }
                 return;
         }
@@ -187,12 +220,31 @@ bool NetMdns::name(size_t position, char (&out)[MaxName + 1]) {
         return true;
 }
 
-void NetMdns::setSshPort(uint16_t port) {
-        if (!started) return;
-        state->sshPort.store(port);
+Error NetServices::advertise(StringView service, bool udp, uint16_t port, StringView instance) {
+        if (!started) return Error::InvalidState;
+        if (service.isEmpty() || service.size() > MaxType || instance.size() > MaxName) return Error::Invalid;
+        {
+                NetStack::Locker lock;
+                Service         *slot = nullptr;
+                for (Service &s : state->services) {
+                        if (s.type[0] != '\0' && service == StringView(s.type) && s.udp == udp) slot = &s;
+                }
+                if (slot == nullptr && port == 0) return Error::Ok;
+                for (Service &s : state->services)
+                        if (slot == nullptr && s.type[0] == '\0') slot = &s;
+                if (slot == nullptr) return Error::Full;
+                std::snprintf(slot->type, sizeof(slot->type), "%.*s", int(service.size()), service.data());
+                std::snprintf(slot->instance, sizeof(slot->instance), "%.*s", int(instance.size()), instance.data());
+                slot->udp = udp;
+                slot->port = port;
+                slot->generation = ++state->generation;
+                if (port == 0)
+                        slot->type[0] = '\0'; // taken back: the slot is free once each interface has
+                                              // dropped it (its generation moved)
+        }
         state->pending.store(true);
         NetStack::wake();
-        return;
+        return Error::Ok;
 }
 
 bool NetMdns::isOwnName(StringView name) {

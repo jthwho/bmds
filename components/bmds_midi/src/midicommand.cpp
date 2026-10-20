@@ -17,6 +17,7 @@
 #include <bmds/command.h>
 #include <bmds/midi.h>
 #include <bmds/midifile.h>
+#include <bmds/netmidi.h>
 #include <bmds/shell.h>
 #include <bmds/vfs.h>
 
@@ -233,6 +234,81 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        const char *stateName(AppleMidi::State state) {
+                switch (state) {
+                        case AppleMidi::State::Free: return "-";
+                        case AppleMidi::State::Inviting:
+                        case AppleMidi::State::InvitingData: return "inviting";
+                        case AppleMidi::State::Accepting: return "accepting";
+                        case AppleMidi::State::Up: return "up";
+                }
+                return "?";
+        }
+
+        // midi net [connect HOST[:PORT] | disconnect N]: MIDI over the network (devplan/audio.md §23).
+        int net(CommandContext &ctx, Args args) {
+                if (args.size() == 4 && std::strcmp(args[2], "connect") == 0) {
+                        StringView   host(args[3]);
+                        uint16_t     port = 5004;
+                        const size_t colon = host.indexOf(':');
+                        if (colon != StringView::NPos) {
+                                char               *end = nullptr;
+                                const unsigned long v = std::strtoul(args[3] + colon + 1, &end, 10);
+                                if (end == args[3] + colon + 1 || *end != '\0' || v == 0 || v > 65534) {
+                                        ctx.eprintf("midi: %s: not HOST:PORT\n", args[3]);
+                                        return Shell::ExitFailure;
+                                }
+                                port = uint16_t(v);
+                                host = host.left(colon);
+                        }
+                        const Error err = NetMidi::connect(host, port);
+                        if (err.isError()) {
+                                ctx.eprintf("midi: %s: %s\n", args[3],
+                                            err == Error::InvalidState ? "network MIDI is off (midi/net/enabled)"
+                                            : err == Error::Exists     ? "a session with it already"
+                                                                       : err.desc());
+                                return Shell::ExitFailure;
+                        }
+                        ctx.printf("midi: inviting %s; 'midi net' shows it\n", args[3]);
+                        return Shell::ExitSuccess;
+                }
+                if (args.size() == 4 && std::strcmp(args[2], "disconnect") == 0) {
+                        char               *end = nullptr;
+                        const unsigned long v = std::strtoul(args[3], &end, 10);
+                        if (end == args[3] || *end != '\0' || v > 255 || NetMidi::disconnect(uint8_t(v)).isError()) {
+                                ctx.eprintf("midi: %s: no such session ('midi net' lists them)\n", args[3]);
+                                return Shell::ExitFailure;
+                        }
+                        return Shell::ExitSuccess;
+                }
+                if (args.size() != 2) return ctx.usage();
+                const NetMidi::Status st = NetMidi::status();
+                if (!st.running) {
+                        ctx.printf("Network MIDI: %s\n", st.enabled ? "starting" : "off (midi/net/enabled)");
+                        return Shell::ExitSuccess;
+                }
+                ctx.printf("Network MIDI: \"%s\" on UDP %u and %u, %s\n", st.name, st.port, st.port + 1u,
+                           st.accepting ? "taking invitations" : "not taking invitations");
+                NetMidi::SessionInfo s[AppleMidi::MaxSessions];
+                const size_t         n = NetMidi::sessions(Span<NetMidi::SessionInfo>(s, AppleMidi::MaxSessions));
+                for (size_t i = 0; i < n; ++i) {
+                        const NetMidi::SessionInfo &x = s[i];
+                        char                        port[8] = "-";
+                        if (x.midiPort != MidiRouter::NoPort) std::snprintf(port, sizeof(port), "midi%u", x.midiPort);
+                        ctx.printf("  %u  %-9s %-6s %u.%u.%u.%u:%u  %s%s\n", x.index, stateName(x.state), port,
+                                   unsigned(x.address & 0xff), unsigned((x.address >> 8) & 0xff),
+                                   unsigned((x.address >> 16) & 0xff), unsigned(x.address >> 24), x.port, x.name,
+                                   x.inviter ? " (invited)" : "");
+                        if (x.state == AppleMidi::State::Up)
+                                ctx.printf("     packets %lu in, %lu out, %lu lost, %lu with a journal; %lu dropped; "
+                                           "round trip %lu us (%lu syncs)\n",
+                                           (unsigned long)x.packetsIn, (unsigned long)x.packetsOut,
+                                           (unsigned long)x.lost, (unsigned long)x.journals, (unsigned long)x.dropped,
+                                           (unsigned long)x.roundTripUs, (unsigned long)x.syncs);
+                }
+                return Shell::ExitSuccess;
+        }
+
         int runMidi(CommandContext &ctx) {
                 const Args args = ctx.args();
                 if (!Midi::isReady()) {
@@ -247,13 +323,16 @@ namespace {
                 if (std::strcmp(sub, "disconnect") == 0) return connect(ctx, args, false);
                 if (std::strcmp(sub, "monitor") == 0) return monitor(ctx, args);
                 if (std::strcmp(sub, "send") == 0) return send(ctx, args);
+                if (std::strcmp(sub, "net") == 0) return net(ctx, args);
                 return ctx.usage();
         }
 
 } // namespace
 
 BMDS_SHELL_COMMAND(midi, runMidi,
-                   "[status [PORT] | connect SRC DST | disconnect SRC DST | monitor PORT | send PORT HEX...]",
-                   "MIDI ports and connections; a port's events as they come; bytes sent to a port")
+                   "[status [PORT] | connect SRC DST | disconnect SRC DST | monitor PORT | send PORT HEX... | "
+                   "net [connect HOST[:PORT] | disconnect N]]",
+                   "MIDI ports and connections; a port's events as they come; bytes sent to a port; MIDI over "
+                   "the network (RTP-MIDI): its sessions, one started, one ended")
 
 BMDS_NAMESPACE_END

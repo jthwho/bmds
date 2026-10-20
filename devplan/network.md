@@ -1075,7 +1075,12 @@ the System Monitor and the tray meter's alarms see the network like any subsyste
     callback restarts it on a link or address change (`LWIP_NETIF_EXT_STATUS_CALLBACK`).
   - `net/mdns/enabled` (bool, `true`) adds or removes it live.
   - One service slot (`MDNS_MAX_SERVICES`), for step 5's `_ssh._tcp`; no searching
-    (`LWIP_MDNS_SEARCH` 0).
+    (`LWIP_MDNS_SEARCH` 0). Two since network MIDI (2026-10-20, `audio.md` §23), through
+    `NetServices::advertise()` (`netservices.h`), which the SSH server uses too; lwIP sends no
+    goodbye when one is taken back (a browser's cache shows it a while).
+  - **Kernel services on the network task** (2026-10-20): `NetUdp` (`netudp.h`), a UDP port
+    whose datagrams go to a callback under the core lock, and `NetStack::callLater()`, lwIP's
+    timers: a protocol with no thread of its own (network MIDI's).
   - **The board asking:** lwIP's resolver sends a `.local` name to the mDNS group
     (`LWIP_DNS_SUPPORT_MDNS_QUERIES`), so the shell's `ping other.local` works; its own
     `${HOSTNAME}.local` is answered locally. Programs' resolver (musl) asks the DNS server only.

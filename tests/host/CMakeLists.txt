@@ -103,6 +103,7 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/programs/luckyduck/deck.c
         memspace.cpp
         midi.cpp
+        rtpmidi.cpp
         mplayer.cpp
         sysmon.cpp
         cpumeter.cpp

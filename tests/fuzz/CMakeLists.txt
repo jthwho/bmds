@@ -93,6 +93,15 @@ target_compile_options(netclassifier_fuzz PRIVATE -fno-exceptions -fno-rtti)
 target_link_libraries(netclassifier_fuzz PRIVATE bmds_core)
 target_link_options(netclassifier_fuzz PRIVATE -fsanitize=fuzzer)
 
+# Network MIDI (devplan/audio.md §23): RTP-MIDI's packets and AppleMIDI's sessions, bmds_midi's
+# portable rtpmidi.cpp, applemidi.cpp and the parser.
+set(MIDI ${BMDS_ROOT}/components/bmds_midi)
+add_executable(rtpmidi_fuzz rtpmidi.cpp ${MIDI}/src/rtpmidi.cpp ${MIDI}/src/applemidi.cpp ${MIDI}/src/midiparser.cpp)
+target_include_directories(rtpmidi_fuzz PRIVATE ${MIDI}/include)
+target_compile_options(rtpmidi_fuzz PRIVATE -fno-exceptions -fno-rtti)
+target_link_libraries(rtpmidi_fuzz PRIVATE bmds_core)
+target_link_options(rtpmidi_fuzz PRIVATE -fsanitize=fuzzer)
+
 # Our SFTP server's protocol core (devplan/network.md §24): programs/sftp-server's sftp.c (C)
 # with made-up file calls.
 set(SFTP ${BMDS_ROOT}/programs/sftp-server)

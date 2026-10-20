@@ -257,7 +257,9 @@ Plan: [`input.md`](input.md).
     USB MIDI device (the full-speed OTG controller swapped onto the USB-C; a CDC console beside
     it): designed (§23); decided (the USB-C swap, a test ID, invitations accepted). The USB
     device done (step 2: `usb device on|off`, `usb/device/mode`, cables as `usbdev` ports, a shell
-    on its serial port; tried with the user's PC); network MIDI next.
+    on its serial port; tried with the user's PC). Network MIDI done (step 3: `midi net`,
+    `midi/net/*`, sessions as `net` ports, `_apple-midi._udp`, `tools/bmds-applemidi`; fuzzed);
+    the user's Mac and Windows to try, then the latency (step 4).
   - [ ] 6b. The patchbay (§24, outlined): a graph fd for programs, an audio graph (client to
     client in a period, devices' playback and capture), and `patchbay`, MIDI and audio wires.
   - [ ] 8. Media player (`mediaplayer.md`, planned; the user's choices 2026-10-09): `mplayer`, a

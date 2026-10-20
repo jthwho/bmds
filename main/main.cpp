@@ -26,6 +26,7 @@
 #include <bmds/loader.h>
 #include <bmds/logfiles.h>
 #include <bmds/midi.h>
+#include <bmds/netmidi.h>
 #include <bmds/romdisk.h>
 #include <bmds/sshservice.h>
 #include <bmds/storage.h>
@@ -106,6 +107,7 @@ namespace {
                 {"net", bmds::EthernetDevice::init}, // eth0 (devplan/network.md)
                 {"ip", bmds::NetStack::init},        // lwIP, lo, and eth0's addresses from sysconf
                 {"ssh", startSsh},                   // dropbear from the card while net/ssh/server is on
+                {"netmidi", bmds::NetMidi::init},    // MIDI over the network while midi/net/enabled is on
                 {"shell", startSerialShell},
                 {"healthy", bmds::Update::confirm}, // the boot got here: kept if it was on probation
         };

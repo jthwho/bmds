@@ -67,6 +67,7 @@ if(COMMAND idf_component_register)
                                     src/netstack.cpp
                                     src/netstats.cpp
                                     src/netstatus.cpp
+                                    src/netudp.cpp
                                     src/ntpclient.cpp
                                     src/ntpcommand.cpp
                                     src/pingcommand.cpp

@@ -121,10 +121,10 @@
 #define LWIP_BROADCAST_PING 1
 #define LWIP_MULTICAST_PING 1
 
-// --- mDNS (devplan/network.md §22): ${HOSTNAME}.local; one service (step 5's _ssh._tcp) ----
+// --- mDNS (devplan/network.md §22): ${HOSTNAME}.local; two services (NetServices) ------------
 
 #define LWIP_MDNS_RESPONDER 1
-#define MDNS_MAX_SERVICES 1
+#define MDNS_MAX_SERVICES 2 // _ssh._tcp, _apple-midi._udp (bmds/netservices.h)
 #define LWIP_MDNS_SEARCH 0
 
 // --- TCP ------------------------------------------------------------------------------------
