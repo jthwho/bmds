@@ -34,7 +34,8 @@ namespace ImageWindow {
                         uint8_t           *base = nullptr;         ///< Where the image runs (the range's start).
                         uint32_t           pages = 0;              ///< The range's pages.
                         uint32_t           shared = 0;             ///< Of them, mapped from the entry.
-                        uint8_t          **privatePages = nullptr; // `pages` slots; null for a shared one
+                        uint8_t          **privatePages =
+                                nullptr; // `pages` slots: each private page in the range; null for a shared one
                         uint8_t           *privateBlock = nullptr; // the private pages, one after another
                         ImageCache::Entry *entry = nullptr;        // pinned while mapped
                         ImageCache        *cache = nullptr;

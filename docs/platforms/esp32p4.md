@@ -160,10 +160,26 @@ until silicon v3; then test again.
   step of a launch pays the same way (`devplan/programs.md` §19). QIO flash (since 2026-10-19)
   halves each miss's transfer: `programs.launch` 8.6 → 6.6 ms, a BusyBox launch 8.6 → 6.5 ms;
   benchmarks that run warm (syscalls, TCP loopback, the synth, the codecs, CoreMark) didn't move.
+- **Flash at 120 MHz hangs at start-up on this board** (2026-10-19, P4 v1.3, IDF v6.1-dev, QIO):
+  `CONFIG_ESPTOOLPY_FLASHFREQ_120M` (experimental, behind `IDF_EXPERIMENTAL_FEATURES`; the image
+  header still says 80m and the app switches after tuning) built with `SPI_FLASH_HPM_ENA` and
+  `SPI_FLASH_HPM_DC_DISABLE` (the defaults turn IDF's `#warning`s into errors). The app stopped
+  after `flash HPM: High performance mode of this flash model hasn't been supported` and `MSPI
+  Timing: Enter flash timing tuning`, silent from then on (USB download mode still worked: the
+  80 MHz build flashed back). The W25Q128JV's quad reads are rated to 133 MHz, so the hang is in
+  the tuning or the board's signal path at 120 MHz, not settled. Stays at 80 MHz.
 - **QIO images say DIO:** with `CONFIG_ESPTOOLPY_FLASHMODE_QIO`, ESP-IDF still writes `dio` in the
   image headers (`esptool --flash-mode dio`); the bootloader switches the flash to quad as it
   starts (`boot: SPI Mode : QIO`, then the app's `spi_flash: flash io: qio`). The header's byte
   isn't the way to check.
+- **Code written through the data cache must be written back before it runs:** each core's
+  instruction cache fetches through L2 from memory, not from the (shared) L1 data cache. Private
+  program pages written through their window addresses and left dirty ran libgcc's `lui` as the
+  file had it (a load from the bare offset); writing back the range below the writable data fixed
+  it (`devplan/programs.md` §19).
+- **The bootloader must fit 24 KB** with the partition table at 0x8000 (`check_sizes.py` fails the
+  build at 0x6000). `CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC` took ours 16 bytes over; dropping
+  `CONFIG_BOOTLOADER_COMPILE_TIME_DATE` gave back 64.
 - **The AXI-GDMA is no faster way to copy PSRAM to PSRAM in 64 KB pieces:** copying a launch's
   two private pages with `esp_async_memcpy()` (32 KB transfers, a zero page as the bss's source)
   took ~8 ms against the CPU's 2.1 ms. The steps after it ran ~0.6 ms faster with the caches left

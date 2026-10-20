@@ -606,8 +606,11 @@ void ProgramImage::placePages(const Info &info, const uint8_t *bytes, const Patc
                 if (page == nullptr) continue;
                 const uint32_t start = p * SharePageBytes;
                 const uint32_t fromFile = info.fileSize > start ? std::min(info.fileSize - start, SharePageBytes) : 0;
+                const uint32_t inImage = std::min(info.imageSize - start, SharePageBytes);
                 std::memcpy(page, bytes + start, fromFile);
-                std::memset(page + fromFile, 0, SharePageBytes - fromFile); // the bss, and past the image
+                // The bss; past the image's end the page is left as it is (nothing there is the
+                // program's: programs.md §19).
+                std::memset(page + fromFile, 0, inImage - fromFile);
         }
         // A word may straddle two pages: its bytes are read and written one by one there.
         auto at = [&](uint32_t offset) -> uint8_t & {

@@ -158,7 +158,14 @@ namespace {
                         uint32_t              stackBytes = 0;
                         bool                  display = false;   // BMDS_PROGRAM_DISPLAY
                         const ProgramEntry   *builtin = nullptr; // a program built in: no image
+                        char                  path[Loader::PathBytes] = {}; // its file, looked up ("": unknown)
         };
+
+        // Gives @p image @p path, the program file as looked up, if it fits.
+        void setImagePath(Image &image, StringView path) {
+                if (path.size() < sizeof(image.path)) std::memcpy(image.path, path.data(), path.size());
+                return;
+        }
 
         // Why a load failed: the error, and for messages a stage ("cannot
         // execute", "cannot load") and the format check's problem.
@@ -545,10 +552,15 @@ namespace {
                         if (n < 0 || used + size_t(n) >= sizeof(run->command)) break;
                         used += size_t(n);
                 }
-                // Its program file, whole (where its icons are: a surface's window shows them).
-                auto [full, ferr] = Vfs::normalize(path, cwd);
-                if (ferr.isOk() && full.view().size() < sizeof(run->path))
-                        std::memcpy(run->path, full.view().data(), full.view().size());
+                // Its program file, whole (where its icons are: a surface's window shows them): as
+                // looked up (programs.md §19), else the path normalized.
+                if (image.path[0] != '\0') {
+                        std::memcpy(run->path, image.path, sizeof(run->path));
+                } else {
+                        auto [full, ferr] = Vfs::normalize(path, cwd);
+                        if (ferr.isOk() && full.view().size() < sizeof(run->path))
+                                std::memcpy(run->path, full.view().data(), full.view().size());
+                }
                 return run;
         }
 
@@ -1305,6 +1317,7 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
                 if (!appDir.isEmpty() && env.append(appDir.view()).isError()) return -BMDS_ENOMEM;
                 if (!appId.isEmpty() && env.append(appId.view()).isError()) return -BMDS_ENOMEM;
                 LoadFailure failure;
+                setImagePath(loaded, program.path.view());
                 err = resolveExec(&program, p, current->cwd(), Span<const StringView>(env.data(), env.size()), args,
                                   loaded, failure, 0);
                 if (err.isError()) return execErrno(err);
@@ -2348,6 +2361,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
                 image.stackBytes = static_cast<uint32_t>(request.builtin->program.stackBytes);
         } else {
                 err = lookUpProgram(request.path, cwd, program);
+                setImagePath(image, program.path.view());
                 if (err.isOk()) err = loadImage(program, image, failure);
         }
         if (err.isError()) {

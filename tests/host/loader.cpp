@@ -547,7 +547,7 @@ namespace {
         constexpr uint32_t Page = ProgramImage::SharePageBytes;
 
         // place() of @p info at @p base, and placePages() with the shared pages left out: each
-        // private page is place()'s bytes there (zeros past the image), each shared page the
+        // private page is place()'s bytes there (past the image left as it was), each shared page the
         // entry's bytes as they are, which place()'s image holds at every base.
         void checkPages(const ProgramImage::Info &info, const std::vector<uint8_t> &bytes,
                         const std::vector<ProgramImage::Patch> &patches, uint32_t base) {
@@ -573,7 +573,7 @@ namespace {
                                 continue;
                         }
                         CHECK(std::memcmp(image.data() + start, pages[p], inImage) == 0);
-                        CHECK(std::all_of(pages[p] + inImage, pages[p] + Page, [](uint8_t v) { return v == 0; }));
+                        CHECK(std::all_of(pages[p] + inImage, pages[p] + Page, [](uint8_t v) { return v == 0xAA; }));
                 }
         }
 

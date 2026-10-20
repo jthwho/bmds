@@ -168,7 +168,7 @@ namespace ProgramImage {
          *        entries, each `SharePageBytes` of memory for that page of the image, or
          *        null for a shared page (`isSharedPage()`), which is left out. The pages
          *        given end up as `place()`'s image would have them at @p base; a page's
-         *        bytes past the image are zeroed.
+         *        bytes past the image are left as they were.
          * @nonblocking
          */
         void placePages(const Info &info, const uint8_t *bytes, const Patch *patches, uint8_t *const *pages,

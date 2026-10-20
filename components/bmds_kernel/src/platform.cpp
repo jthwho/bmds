@@ -7,6 +7,8 @@
  */
 
 #include <sys/time.h>
+#include <cstring>
+#include <bootloader_common.h>
 #include <bootloader_random.h>
 #include <esp_attr.h>
 #include <esp_cpu.h>
@@ -24,8 +26,11 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        // The clock record, in RTC memory that a reset leaves alone (but
-        // power-up fills with garbage): a magic number and a check word tell.
+        // The clock record, in RTC memory that a reset leaves alone (but power-up clears or fills
+        // with garbage): a magic number and a check word tell. It lives in the bootloader's custom
+        // area (CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC), at the address both firmwares agree on: in
+        // RTC_NOINIT memory each image's linker put it elsewhere, so recovery never found the main
+        // firmware's (devplan/update.md §10).
         struct RtcClockRecord {
                         uint32_t magic;
                         uint32_t check;
@@ -36,7 +41,14 @@ namespace {
 
         constexpr uint32_t ClockRecordMagic = 0x424d4343; // "BMCC"
 
-        RTC_NOINIT_ATTR RtcClockRecord rtcClockRecord;
+        static_assert(sizeof(RtcClockRecord) <= CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC_SIZE,
+                      "the clock record fits the bootloader's custom RTC area");
+
+        // The area's bytes: at offset 12 of rtc_retain_mem_t, so copied, not cast (the record
+        // holds a 64-bit field).
+        uint8_t *rtcArea() {
+                return bootloader_common_get_rtc_retain_mem()->custom;
+        }
 
         uint32_t checkWord(const RtcClockRecord &r) {
                 // FNV-1a over the payload.
@@ -127,7 +139,8 @@ int64_t Detail::persistentTimeUs() {
 }
 
 bool Detail::loadClockRecord(ClockRecord &record) {
-        const RtcClockRecord r = rtcClockRecord;
+        RtcClockRecord r;
+        std::memcpy(&r, rtcArea(), sizeof(r));
         if (r.magic != ClockRecordMagic || r.check != checkWord(r)) return false;
         record.wallMinusPersistentNs = r.wallMinusPersistentNs;
         record.frequencyPpb = r.frequencyPpb;
@@ -140,7 +153,7 @@ void Detail::saveClockRecord(const ClockRecord &record) {
         r.wallMinusPersistentNs = record.wallMinusPersistentNs;
         r.frequencyPpb = record.frequencyPpb;
         r.check = checkWord(r);
-        rtcClockRecord = r;
+        std::memcpy(rtcArea(), &r, sizeof(r));
         return;
 }
 

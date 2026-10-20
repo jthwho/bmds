@@ -6,12 +6,14 @@
  * See LICENSE file in the project root folder for license information.
  *
  * Programs' instances sharing their image's pages through the MMU (devplan/programs.md §14.2).
- * The caches are tagged by address, not by page (§2): a page is written back through the
- * address it was written at before it is mapped, and a range is invalidated after mapping (no
- * stale lines of an earlier instance) and before unmapping (a dirty line written back to an
+ * The caches are tagged by address, not by page (§2): a shared page is written back through
+ * the address it was written at before it is mapped; a private page's lines under its heap
+ * address are dropped and it is written through the range; a range is invalidated after mapping
+ * (no stale lines of an earlier instance) and before unmapping (a dirty line written back to an
  * unmapped address goes nowhere).
  */
 
+#include <algorithm>
 #include <cstring>
 #include <esp_cache.h>
 #include <esp_private/esp_mmu_map_private.h>
@@ -184,19 +186,34 @@ namespace ImageWindow {
                 }
                 for (uint32_t p = 0, k = 0; p < pages; ++p)
                         privatePages[p] = ProgramImage::isSharedPage(info, p) ? nullptr : block + size_t(k++) * Page;
-                // Placed through their heap addresses for the range, and written back there.
-                ProgramImage::placePages(info, entry.bytes(), entry.patches(), privatePages, uint32_t(uintptr_t(base)));
+                // The block's lines under its heap addresses dropped (whoever had the memory last may
+                // have left dirty ones, which would land on it later), every page mapped (the entry's
+                // bytes were written back when it was read), the range's stale lines dropped; then the
+                // private pages placed through the range itself, so the program finds its data in the
+                // cache as written. What it may execute (below the writable data: the code and
+                // constants moved to the end, programs.md §14.3) is written back: each core fetches
+                // instructions past the data cache, and found libgcc's lui unpatched otherwise (a load
+                // from the bare offset). The data and the bss stay in the cache: the write-back of two
+                // pages took ~0.5 ms (§19).
                 if (block != nullptr)
-                        (void)esp_cache_msync(block, size_t(pages - shared) * Page,
-                                              ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
-                // Every page mapped (the entry's bytes were written back when it was read), then
-                // the range's stale lines dropped.
+                        (void)esp_cache_msync(block, size_t(pages - shared) * Page, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
                 for (uint32_t p = 0; p < pages; ++p) {
                         const uint8_t *from =
                                 privatePages[p] != nullptr ? privatePages[p] : entry.bytes() + size_t(p) * Page;
                         setEntry(base + size_t(p) * Page, from);
                 }
                 invalidate(base, pages);
+                for (uint32_t p = 0; p < pages; ++p)
+                        if (privatePages[p] != nullptr) privatePages[p] = base + size_t(p) * Page;
+                ProgramImage::placePages(info, entry.bytes(), entry.patches(), privatePages, uint32_t(uintptr_t(base)));
+                uint32_t firstPrivate = pages;
+                for (uint32_t p = 0; p < pages && firstPrivate == pages; ++p)
+                        if (privatePages[p] != nullptr) firstPrivate = p;
+                const uint32_t codeStart = firstPrivate * Page;
+                const uint32_t codeEnd = std::min(info.writableOffset, info.imageSize);
+                if (codeEnd > codeStart)
+                        (void)esp_cache_msync(base + codeStart, codeEnd - codeStart,
+                                              ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
                 cache.pin(&entry);
                 out.base = base;
                 out.pages = pages;

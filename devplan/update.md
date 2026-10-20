@@ -221,6 +221,11 @@ could tell newer from older. Now:
   an unset clock counts from 1955 (`ClockModel::UnsetEpoch`). Recovery now leaves the line out
   while its clock is unset, and the main firmware adds it from its own clock when it takes the
   result, seconds later (checked: an update through recovery reads `when: 2026-10-20 01:02:16 UTC`).
+  Then the record itself moved to the bootloader's custom RTC area
+  (`CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC`, 32 bytes at an address the bootloader fixes for both
+  firmwares): recovery's log now reads `Clock: ... (carried over the reset)`, and the main
+  firmware carries the time back from recovery's record. The bootloader went 16 bytes over its
+  24 KB (the partition table at 0x8000): its build date went (48 bytes spare).
 - **Current at every build** (2026-10-19): IDF compiles `PROJECT_VER` into the app description as
   it was at configure time, so a commit since then left the old one (a package of new code said
   `a1ad6d82` two commits later, and `update` called it "the same"). After `project()`,

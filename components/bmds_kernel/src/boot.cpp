@@ -81,9 +81,14 @@ namespace {
                 bmdsInfo("Reset: %s", System::resetReason());
                 // Detail::monotonicUs() reads esp_timer's counter itself, converted by a shift: say so
                 // if IDF's own reading ever disagrees (another tick rate, another counter).
-                const int64_t ours = Detail::monotonicUs(), idf = esp_timer_impl_get_time(); // IDF's own
-                if (idf - ours > 2 || idf - ours < -2)
-                        bmdsWarn("Clock: the system timer reads %lld us, esp_timer %lld", static_cast<long long>(ours),
+                // IDF's reading is taken between two of ours: it takes microseconds itself, which a
+                // fixed tolerance mistook for a disagreement at every boot.
+                const int64_t before = Detail::monotonicUs();
+                const int64_t idf = esp_timer_impl_get_time(); // IDF's own
+                const int64_t after = Detail::monotonicUs();
+                if (idf < before - 1 || idf > after + 1)
+                        bmdsWarn("Clock: the system timer reads %lld-%lld us, esp_timer %lld",
+                                 static_cast<long long>(before), static_cast<long long>(after),
                                  static_cast<long long>(idf));
                 return;
         }

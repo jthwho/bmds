@@ -1062,3 +1062,24 @@ pages by the AXI-GDMA against the CPU's 2.1 ms (`docs/platforms/esp32p4.md` §3)
   delays, and the pins' IOMUX (`sd_host_slot_sdmmc_do_transaction()`).
 - **QIO flash** (done 2026-10-19): the -IQ part has Quad Enable fixed on and the board wires IO2
   and IO3 (`docs/HARDWARE.md`). `programs.launch` 8.6 → 6.6 ms, a BusyBox launch 8.6 → 6.5 ms.
+
+
+**Round 2 (2026-10-19), after phase (c), QIO flash and the lookup cache** (`programs.launch` then
+~5.9 ms; the timeline's marks again, removed afterwards):
+- **Where it went:** lookup 0.26 ms; two private pages of `benchprog` copied and zeroed 1.93 ms and
+  written back 0.49; `createRunning` 0.31; task creation 0.72, of it ~0.5 FreeRTOS filling the 32 KB
+  stack (the canary check and the stack high-water figures need the fill: kept); the program's
+  start and its random bytes 0.4; `exit` to the parent's wake ~0.45, in pieces of ~0.1 ms of
+  bookkeeping run cold (left).
+- **Private pages placed through the window:** mapped first, their heap addresses' lines dropped,
+  then written through the program's own addresses, so its data is in the cache as written. What
+  it may execute (below the writable data) is still written back: without that a core fetched
+  libgcc's moved `lui` unpatched and faulted on the bare offset (`progtest poll`, a panic decoded
+  by `tools/bmds-panic`). Net ~0.2 ms a launch for two private pages.
+- **Zeroed only to the image's end:** the rest of the last page is nothing of the program's.
+- **The command line's path:** the lookup's, not normalized again (~70 µs).
+- **Measured:** `programs.launch` ~5.5-5.8 ms (the bench's noise is ±25-40% now; the marks are
+  the measure). `progtest`'s suites, signals and a BusyBox smoke test pass.
+- **A measuring pitfall:** BusyBox's `time` (over ssh, `time` is `/sd0/p0/bin/time`) runs `sh` as
+  BusyBox's own shell (`FEATURE_PREFER_APPLETS`), not ours: `time sh script` timed BusyBox's
+  shell, four times slower on that loop. Time native commands from the PC, or with `bench`.
