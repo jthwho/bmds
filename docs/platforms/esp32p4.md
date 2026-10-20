@@ -157,8 +157,13 @@ until silicon v3; then test again.
 - **The kernel runs cold after a program's start:** the firmware runs from flash (DIO, 80 MHz)
   through the 128 KB L2, and a launch's 128 KB copy of private pages and the program's run push it
   out. In `exec()` a `Vfs::stat()` took 1,183 µs, then 360 µs each repeated straight after; every
-  step of a launch pays the same way (`devplan/programs.md` §19). QIO flash would halve a miss's
-  cost (not tried: it needs the bootloader flashed).
+  step of a launch pays the same way (`devplan/programs.md` §19). QIO flash (since 2026-10-19)
+  halves each miss's transfer: `programs.launch` 8.6 → 6.6 ms, a BusyBox launch 8.6 → 6.5 ms;
+  benchmarks that run warm (syscalls, TCP loopback, the synth, the codecs, CoreMark) didn't move.
+- **QIO images say DIO:** with `CONFIG_ESPTOOLPY_FLASHMODE_QIO`, ESP-IDF still writes `dio` in the
+  image headers (`esptool --flash-mode dio`); the bootloader switches the flash to quad as it
+  starts (`boot: SPI Mode : QIO`, then the app's `spi_flash: flash io: qio`). The header's byte
+  isn't the way to check.
 - **The AXI-GDMA is no faster way to copy PSRAM to PSRAM in 64 KB pieces:** copying a launch's
   two private pages with `esp_async_memcpy()` (32 KB transfers, a zero page as the bss's source)
   took ~8 ms against the CPU's 2.1 ms. The steps after it ran ~0.6 ms faster with the caches left

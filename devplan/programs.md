@@ -1060,6 +1060,5 @@ pages by the AXI-GDMA against the CPU's 2.1 ms (`docs/platforms/esp32p4.md` §3)
   `/sd0/p0/bin` reads every BusyBox link.
 - **ESP-IDF's SD host sets the bus up again for every command:** clock, width, sampling mode,
   delays, and the pins' IOMUX (`sd_host_slot_sdmmc_do_transaction()`).
-- **QIO flash:** the W25Q128JV's -IQ parts are sold with Quad Enable set (to be checked
-  against the datasheet). QIO would halve the cost of each cache miss to flash, if the board
-  wires IO2 and IO3. It needs the bootloader flashed.
+- **QIO flash** (done 2026-10-19): the -IQ part has Quad Enable fixed on and the board wires IO2
+  and IO3 (`docs/HARDWARE.md`). `programs.launch` 8.6 → 6.6 ms, a BusyBox launch 8.6 → 6.5 ms.

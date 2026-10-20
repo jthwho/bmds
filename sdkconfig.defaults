@@ -5,6 +5,9 @@ CONFIG_IDF_TARGET="esp32p4"
 
 # --- Flash and partitions -----------------------------------------------
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+# Quad I/O at 80 MHz: the W25Q128JV-IQ has QE fixed on and the board wires IO2/IO3 to the P4's
+# FLASH_WP/FLASH_HOLD (docs/HARDWARE.md). Twice DIO's rate for each cache miss to flash.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # A firmware switched to boots on probation and confirms itself (Update::confirm()); one that

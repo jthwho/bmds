@@ -27,7 +27,7 @@ U1 is a bare QFN104 ESP32-P4 chip soldered to the board, not a module.
 | TCM | 8 KB (the heap reports it as "HP core RAM"), mapped to `MemSpace::Fast` |
 | LP SRAM | 32 KB |
 | PSRAM | 32 MB in-package, HEX mode (AP Memory, generation 4, confirmed at boot). The production test runs it at 200 MHz; so does BMDS since 2026-10-05 (`devplan/psram.md`), through `IDF_EXPERIMENTAL_FEATURES`. |
-| Flash | 16 MB Winbond W25Q128JVSIQ (U3, ID 0xEF4018), DIO 80 MHz, LDO VO1; no auto-suspend (it faulted reads: devplan/update.md §16) |
+| Flash | 16 MB Winbond W25Q128JVSIQ (U3, ID 0xEF4018), QIO 80 MHz (DIO until 2026-10-19), LDO VO1; no auto-suspend (it faulted reads: devplan/update.md §16). **QIO (confirmed 2026-10-19, in use since):** its /WP(IO2) and /HOLD(IO3) pins go straight to the P4's FLASH_WP (pin 29) and FLASH_HOLD (pin 31), nothing else on either net (Rev C PCB netlist); the -IQ part has QE set and fixed at the factory, and its JEDEC id 0x4018 is the IQ/JQ one (IM/JM parts read 0x7018; datasheet §7.1.4 and its manufacturer and device ID table); 133 MHz quad at 3.0-3.6 V. |
 | Crystals | 40 MHz main crystal (Q3). A 32.768 kHz crystal (Q1) is on **GPIO0/GPIO1, so those pins are taken**. |
 | Core supply | External buck converter driven by the P4's EN_DCDC/FB_DCDC: TLV62569 on Rev C, TPS62A02 on Rev B. |
 | Chip revision | **v1.3** (eFuse block v0.3), confirmed by esptool and the boot banner on our board. BMDS builds with `ESP32P4_SELECTS_REV_LESS_V3` (the IDF default, and what Olimex's production test uses). Newer production runs may ship v3.x silicon, which needs that option off. |
