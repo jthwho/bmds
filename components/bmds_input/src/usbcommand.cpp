@@ -5,7 +5,8 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The `usb` command: the devices on the USB host (devplan/input.md). Its
+ * The `usb` command: the devices on the USB host (devplan/input.md), and the
+ * board as a USB device (devplan/audio.md §23). Its
  * output format is a userspace interface once shipped: keep the columns and
  * their order, add new ones only at the end.
  */
@@ -14,6 +15,8 @@
 #include <cstring>
 #include <bmds/command.h>
 #include <bmds/shell.h>
+#include <bmds/sysconf.h>
+#include <bmds/usbdevice.h>
 #include <bmds/usbhost.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -108,8 +111,55 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        void showDevice(CommandContext &ctx) {
+                const UsbDevice::Status s = UsbDevice::status();
+                if (!s.on) {
+                        ctx.printf("Device: off\n");
+                        return;
+                }
+                ctx.printf("Device: on, %s; serial port %s; %u MIDI cables; %lu MIDI events dropped\n",
+                           !s.configured ? "waiting for a computer"
+                           : s.suspended ? "suspended"
+                                         : "configured",
+                           s.console ? "open" : "closed", static_cast<unsigned>(s.cables),
+                           static_cast<unsigned long>(s.midiDropped));
+                return;
+        }
+
+        // usb device [on | off] [--save]: the console port as a USB device, or back.
+        int runDevice(CommandContext &ctx, Span<char *const> args) {
+                if (!UsbDevice::status().supported) {
+                        ctx.eprintf("usb: this board can't be a USB device\n");
+                        return Shell::ExitFailure;
+                }
+                if (args.size() == 2) {
+                        showDevice(ctx);
+                        return Shell::ExitSuccess;
+                }
+                const bool on = std::strcmp(args[2], "on") == 0;
+                if ((!on && std::strcmp(args[2], "off") != 0) || args.size() > 4 ||
+                    (args.size() == 4 && std::strcmp(args[3], "--save") != 0))
+                        return ctx.usage();
+                const bool       save = args.size() == 4;
+                const StringView key("usb/device/mode");
+                Error            err = SysConf::set(key, StringView(on ? "midi" : "off"));
+                if (err.isOk() && save) err = SysConf::save(key);
+                if (err.isError()) {
+                        ctx.eprintf("usb: %s\n", err.desc());
+                        return Shell::ExitFailure;
+                }
+                if (on)
+                        ctx.printf("usb: the console port becomes a USB device (a serial port with a shell, and "
+                                   "MIDI)%s\n",
+                                   save ? "" : "; not saved: a restart gives back USB-Serial/JTAG");
+                else
+                        ctx.printf("usb: the console port is USB-Serial/JTAG again%s\n", save ? " (saved)" : "");
+                return Shell::ExitSuccess;
+        }
+
         int runUsb(CommandContext &ctx) {
                 const Span<char *const> args = ctx.args();
+                if (args.size() >= 2 && std::strcmp(args[1], "device") == 0) return runDevice(ctx, args);
                 auto [host, err] = UsbHost::host(0);
                 if (err.isError()) {
                         ctx.eprintf("usb: %s\n",
@@ -127,8 +177,9 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(usb, runUsb, "[stats]",
+BMDS_SHELL_COMMAND(usb, runUsb, "[stats | device [on | off] [--save]]",
                    "List the devices on the USB host (address, hub port, speed, IDs, class, name); 'stats' counts "
-                   "them")
+                   "them; 'device' shows or turns on the console port as a USB device (a serial port with a shell, "
+                   "and MIDI cables), not saved unless --save")
 
 BMDS_NAMESPACE_END

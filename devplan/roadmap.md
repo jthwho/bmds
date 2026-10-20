@@ -253,6 +253,13 @@ Plan: [`input.md`](input.md).
     fuzzed TinySoundFont, the synth fd (slots 78-79), `synth`, MIDI files through the decoders
     (`play`, Open, `audio_decode`), the TimGM6mb package. Deferred (the user): the SDK's building
     blocks for instruments (oscillators, envelopes, filters), until an instrument needs them.
+  - [ ] 6a. MIDI over the network (RTP-MIDI with AppleMIDI sessions, mDNS) and the board as a
+    USB MIDI device (the full-speed OTG controller swapped onto the USB-C; a CDC console beside
+    it): designed (§23); decided (the USB-C swap, a test ID, invitations accepted). The USB
+    device done (step 2: `usb device on|off`, `usb/device/mode`, cables as `usbdev` ports, a shell
+    on its serial port; tried with the user's PC); network MIDI next.
+  - [ ] 6b. The patchbay (§24, outlined): a graph fd for programs, an audio graph (client to
+    client in a period, devices' playback and capture), and `patchbay`, MIDI and audio wires.
   - [ ] 8. Media player (`mediaplayer.md`, planned; the user's choices 2026-10-09): `mplayer`, a
     GUI player for audio and MIDI files (video later), with saved playlists, a library by tags, a
     visualizer, a MIDI view, a toolkit Open dialog, and a tray controller while it plays hidden;

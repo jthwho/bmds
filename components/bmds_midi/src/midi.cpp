@@ -45,7 +45,13 @@ namespace {
         };
 
         constexpr Stat::Desc PortStats[] = {
-                {"kind", Stat::Unit::Count, Stat::Kind::State, 0, {}, "usb|serial|virtual", "What the port is"},
+                {"kind",
+                 Stat::Unit::Count,
+                 Stat::Kind::State,
+                 0,
+                 {},
+                 "usb|serial|virtual|net|usbdev",
+                 "What the port is"},
                 {"events_in",
                  Stat::Unit::Count,
                  Stat::Kind::Total,
@@ -189,6 +195,8 @@ const char *Midi::kindName(MidiRouter::Kind kind) {
                 case MidiRouter::Kind::Usb: return "usb";
                 case MidiRouter::Kind::Serial: return "serial";
                 case MidiRouter::Kind::Virtual: return "virtual";
+                case MidiRouter::Kind::Net: return "net";
+                case MidiRouter::Kind::UsbDevice: return "usbdev";
         }
         return "?";
 }

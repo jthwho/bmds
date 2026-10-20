@@ -52,7 +52,8 @@ namespace Detail {
                                 {.port = 1, .sda = 22, .scl = 23, .clockHz = 100'000},
                         },
                 // UART0 on UEXT pins 3/4 (the primary console is USB-Serial/JTAG on USB-C).
-                .usbSerialJtag = true, // USB-C (GPIO24/25)
+                .usbSerialJtag = true,      // USB-C (GPIO24/25)
+                .usbDeviceOnConsole = true, // the full-speed OTG controller on the USB-C's PHY
                 .uart = {.port = 0, .tx = 37, .rx = 38},
                 .statusLed = {.gpio = 2, .activeLow = true},
                 // BOOT button; shared with RMII TXD1 and a strapping pin, so only usable when Ethernet is down.

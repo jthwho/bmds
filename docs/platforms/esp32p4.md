@@ -499,6 +499,31 @@ until silicon v3; then test again.
   running (2026-10-12). Which line change USB-Serial/JTAG takes for its reset wasn't pinned down.
   Capturing a panic still means having the port open before it happens.
 
+## 4d. The full-speed USB PHYs (`devplan/audio.md` §23)
+
+- **Two full-speed PHYs, two controllers on them:** USB-Serial/JTAG on PHY 0 (GPIO24/25, the
+  board's USB-C) and the full-speed OTG controller (`USB_WRAP`, TinyUSB's root port 0) on PHY 1
+  (GPIO26/27), by default. `LP_SYS.usb_ctrl` swaps them: `sw_hw_usb_phy_sel` = 1 (software
+  chooses), then `sw_usb_phy_sel` = 1 (OTG on PHY 0). ESP-IDF never swaps them, and its
+  `usb_wrap_ll_phy_select()` has no `break` after `case 0`, so asking it for PHY 0 sets PHY 1.
+- **Measured on the board (2026-10-20,** a temporary command writing the register):
+  - Swapping while running takes USB-Serial/JTAG off the USB-C at once (the PC's `303a:1001` and
+    `/dev/ttyACM0` go); swapping back brings it back as `/dev/ttyACM0`.
+  - **The swap survives `esp_restart()` and a panic's reset** (the LP domain isn't reset): the
+    board came up with it still set and no console on the USB-C. Whoever sets it must clear it
+    first thing at boot.
+  - **RESET (CHIP_PU) clears it,** and BOOT held through RESET brings the ROM's download mode up on
+    the USB-C with the swap set before (esptool connected).
+- **D+ outlasts a restart:** the full-speed controller's pad settings survive `esp_restart()`
+  and a panic's reset, and USB-Serial/JTAG pulls D+ up too, so swapping back with the device
+  attached, or after a reset, showed the computer no disconnect: it kept the old device and
+  never enumerated USB-Serial/JTAG. Force D+'s pull-up off (`USB_WRAP.otg_conf`'s pull
+  override), wait 20 ms, then swap (`usbdevice.cpp`, 2026-10-20).
+- **Leaving download mode needs RESET too:** a reset over USB-Serial/JTAG (esptool's
+  `--after hard_reset`, `rst:0x17 CHIP_USB_UART_RESET`) keeps the boot mode latched from BOOT
+  (`boot:0x305 DOWNLOAD`), so the ROM waits for a download again. Only a chip reset samples the
+  strapping pins again.
+
 ## 5. ESP-IDF
 
 - **Wrapping a driver function** is legitimate and cheap: `target_link_libraries(lib INTERFACE

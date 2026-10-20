@@ -97,6 +97,8 @@ class MidiRouter {
                         Usb,     ///< A USB MIDI device's cable.
                         Serial,  ///< A serial MIDI port.
                         Virtual, ///< A program's.
+                        Net,     ///< A network session (RTP-MIDI).
+                        UsbDevice, ///< A cable of the board as a USB MIDI device.
                 };
 
                 /** @brief A port's counters. */

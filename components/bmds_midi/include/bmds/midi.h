@@ -50,7 +50,7 @@ namespace Midi {
         /** @brief Returns the port `midi/default` names (`/dev/midi`), or `NotExist`. */
         Result<uint8_t> defaultPort();
 
-        /** @brief Returns a kind's name: "usb", "serial", "virtual". */
+        /** @brief Returns a kind's name: "usb", "serial", "virtual", "net", "usbdev". */
         const char *kindName(MidiRouter::Kind kind);
 
 } // namespace Midi

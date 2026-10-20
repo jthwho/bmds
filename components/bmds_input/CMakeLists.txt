@@ -1,5 +1,5 @@
 # bmds_input — USB host, keyboards and mice (devplan/input.md), gamepads (devplan/controls.md),
-# USB MIDI devices (devplan/audio.md §21).
+# USB MIDI devices (devplan/audio.md §21), the board as a USB device (devplan/audio.md §23).
 #
 # The pure parts (key events, the keymap and report decoder, keys as
 # terminal bytes, HID descriptors, pads' layouts and mappings, actions; ProgramControls on the
@@ -28,11 +28,13 @@ if(COMMAND idf_component_register)
                                     src/padcommand.cpp
                                     src/pads.cpp
                                     src/usbcommand.cpp
+                                    src/usbdevice.cpp
+                                    src/usbdevicemidi.cpp
                                     src/usbhost.cpp
                                     src/usbmidi.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_fs bmds_midi bmds_sysconf bmds_shell bmds_tinyusb esp_driver_gpio esp_hw_support
+                               PRIV_REQUIRES bmds_board bmds_console bmds_fs bmds_midi bmds_sysconf bmds_shell bmds_tinyusb esp_driver_gpio esp_hw_support esp_system soc
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()

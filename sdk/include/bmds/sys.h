@@ -633,6 +633,8 @@ typedef struct bmds_midi_event_t {
 #define BMDS_MIDI_USB 0u     /**< A USB MIDI device's cable. */
 #define BMDS_MIDI_SERIAL 1u  /**< A serial MIDI port. */
 #define BMDS_MIDI_VIRTUAL 2u /**< A program's (`BMDS_MIDI_CREATE`). */
+#define BMDS_MIDI_NET 3u     /**< A network session (RTP-MIDI). */
+#define BMDS_MIDI_USB_DEVICE 4u /**< A cable of the board as a USB MIDI device (to a computer). */
 
 /** @brief `bmds_midi_status_t::flags`. */
 #define BMDS_MIDI_GONE 0x1u /**< The port went away (unplugged): reads end, writes fail with `EPIPE`. */

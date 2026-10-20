@@ -34,6 +34,7 @@
 #include <bmds/sysmon.h>
 #include <bmds/tmpfs.h>
 #include <bmds/update.h>
+#include <bmds/usbdevice.h>
 #include <bmds/usbhost.h>
 #include <bmds/usbserialconsole.h>
 #include <bmds/vfs.h>
@@ -70,6 +71,12 @@ namespace {
                 return bmds::SshService::init(loader);
         }
 
+        // The board as a USB device while usb/device/mode says so (devplan/audio.md §23): its
+        // serial port's shells run by the loader.
+        bmds::Error startUsbDevice() {
+                return bmds::UsbDevice::init(loader);
+        }
+
         constexpr bmds::Boot::Stage SystemStages[] = {
                 {"console", bmds::UsbSerialConsole::init},
                 {"i2c", bmds::I2cBus::init},
@@ -95,6 +102,7 @@ namespace {
                 {"pads", bmds::Pads::init},                // the gamepads' table; before USB attaches any
                 {"controls", bmds::ProgramControls::init}, // programs' actions, changed live
                 {"usb", bmds::UsbHost::init},
+                {"usbdev", startUsbDevice},          // usb/device/mode: the console port as a USB device
                 {"net", bmds::EthernetDevice::init}, // eth0 (devplan/network.md)
                 {"ip", bmds::NetStack::init},        // lwIP, lo, and eth0's addresses from sysconf
                 {"ssh", startSsh},                   // dropbear from the card while net/ssh/server is on

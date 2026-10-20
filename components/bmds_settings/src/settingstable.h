@@ -48,6 +48,7 @@ namespace SettingsTable {
                 AtStart = 2, ///< Read by the next `display start`.
                 AtBoot = 4,  ///< Read at boot.
                 Empty = 8,   ///< May be empty: a `Zone` offers "Same as the system".
+                NotSaved = 16, ///< Applied, not saved (until a restart; the row's mark offers Save).
         };
 
         /** @brief A row of a page, or a section's heading (`key` null, `label` its title). */

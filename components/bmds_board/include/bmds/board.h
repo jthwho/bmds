@@ -190,6 +190,7 @@ struct Board {
                 BoardMemSpace memSpaces[MemSpaceCount] = {}; ///< Indexed by `MemSpace`.
                 BoardI2cBus   i2c[BoardI2cCount] = {};       ///< Indexed by `BoardI2c`.
                 bool          usbSerialJtag = false; ///< USB-Serial/JTAG is wired to a connector (the console port).
+                bool              usbDeviceOnConsole = false; ///< The OTG FS controller can take the console port.
                 BoardUart     uart = {};             ///< Auxiliary serial UART.
                 GpioLine      statusLed = {};        ///< User LED (asserted = lit).
                 GpioLine      userButton = {};       ///< User button (asserted = pressed).

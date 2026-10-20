@@ -1,4 +1,4 @@
-# TinyUSB (vendored, host side)
+# TinyUSB (vendored: the host side, and a device)
 
 Ha Thach's TinyUSB, <https://github.com/hathach/tinyusb>, used by `components/bmds_input` through
 `components/bmds_tinyusb` (see `devplan/input.md`). License: `LICENSE` (MIT).
@@ -10,7 +10,10 @@ Ha Thach's TinyUSB, <https://github.com/hathach/tinyusb>, used by `components/bm
   `host/`, `class/hid/hid.h`, `class/hid/hid_host.{c,h}`, `class/midi/midi.h`,
   `class/midi/midi_host.{c,h}` and `class/audio/audio.h` (MIDI, `devplan/audio.md` §21), and from
   `portable/synopsys/dwc2/` the host driver (`hcd_dwc2.c`), `dwc2_common.{c,h}`,
-  `dwc2_type.h` and `dwc2_esp32.h`.
+  `dwc2_type.h` and `dwc2_esp32.h`. For the board as a device (`devplan/audio.md` §23), from
+  the same release, unchanged: `device/` (`dcd.h`, `usbd.{c,h}`, `usbd_pvt.h`),
+  `class/midi/midi_device.{c,h}`, `class/cdc/cdc.h`, `class/cdc/cdc_device.{c,h}` and the device
+  driver (`portable/synopsys/dwc2/dcd_dwc2.c`).
 - **Changes:** two, in `hcd_dwc2.c` (marked `BMDS:`). First, a lock: the interrupt handler and the
   task's calls both start transfers (the SOF handler restarts periodic polls put off to a later
   frame), and both took channels and changed `haintmsk` unserialised, so an interrupt between a

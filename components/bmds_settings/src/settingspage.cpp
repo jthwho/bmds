@@ -147,9 +147,10 @@ EditorSet::Binding *EditorSet::add(FormLayout &form, SysConf::Id id, const Row &
         // The help: the row's, else the key's, and when it acts if not at once.
         char help[TextBlock::MaxText + 1];
         std::snprintf(help, sizeof(help), "%s%s", row.help != nullptr ? row.help : param.help,
-                      (row.flags & SettingsTable::AtStart) != 0  ? " (from the next display start)"
-                      : (row.flags & SettingsTable::AtBoot) != 0 ? " (from the next boot)"
-                                                                 : "");
+                      (row.flags & SettingsTable::AtStart) != 0    ? " (from the next display start)"
+                      : (row.flags & SettingsTable::AtBoot) != 0   ? " (from the next boot)"
+                      : (row.flags & SettingsTable::NotSaved) != 0 ? " (until a restart, unless saved)"
+                                                                   : "");
         FormRow *fr = form.addRow(b.kind == Kind::Check ? StringView() : label, StringView(help));
         if (fr == nullptr) return nullptr;
         b.formRow = fr;
@@ -422,7 +423,11 @@ void EditorSet::commit(Binding &b, StringView value, Apply apply) {
                 return;
         }
         if (apply == Apply::Only) return;
-        if ((b.row->flags & SettingsTable::Confirm) != 0) {
+        if ((b.row->flags & SettingsTable::NotSaved) != 0) {
+                char text[96];
+                std::snprintf(text, sizeof(text), "%.*s: applied, not saved", int(label.size()), label.data());
+                _window.say(StringView(text));
+        } else if ((b.row->flags & SettingsTable::Confirm) != 0) {
                 _window.confirm(b.id, before.view(), label);
         } else {
                 _window.save(b.id, label);

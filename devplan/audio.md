@@ -1987,3 +1987,283 @@ violin, 64-frame blocks (1,333 µs):
 - **Size:** the image from 1,267,248 to 1,301,904 bytes (`bmds_synth` 32 KB of flash); 236 bytes
   of internal RAM. Per synth: its voices and channels and a 16 KB event queue, in PSRAM.
 
+
+## 23. MIDI over the network and as a USB device (design, 2026-10-20)
+
+The user's request (2026-10-20): MIDI over the network (RTP-MIDI), and the board as a USB MIDI
+device, so a computer can play the synth. Both add port kinds to §21's router; nothing in the
+router, the fds or the ABI changes.
+
+### What is left of MIDI before this
+
+- **USB MIDI host:** built, never tried (no device). Needed with one: in and out, replugging,
+  `midi/connect` bringing a keyboard back, and the USB task's priority (§21).
+- **Serial MIDI** waits for its circuit (§21).
+- **Scheduled output** (`time_ns` on `write()`, reserved): if a sequencer needs it.
+- **The synth:** the cold first note-on (about 200 µs more, from flash); MIDI files' whole
+  milliseconds (`tml.h`); the instrument building blocks (deferred by the user, §22).
+
+### Facts: RTP-MIDI
+
+- **RFC 6295** carries MIDI in RTP. **AppleMIDI** is the session protocol everyone speaks with
+  it: macOS and iOS built in (Audio MIDI Setup's "Network"), Windows through Tobias Erichsen's
+  free rtpMIDI driver, Linux through `rtpmidid`. Two UDP ports, control and data (control + 1);
+  5004 by convention. Discovery is mDNS: `_apple-midi._udp` with the control port.
+- **Session packets** start `FF FF` and a two-letter command: `IN` (invite: version 2, the
+  initiator's token, its SSRC, its name), `OK` and `NO` (accept, refuse), `BY` (end), `CK` (clock
+  sync: three 64-bit times in 100 µs units, counts 0, 1, 2, started by the initiator every few
+  seconds), `RS` (receiver feedback: the last sequence number received, so the sender can trim
+  its journal). An invitation goes to the control port, then the data port.
+- **Data packets:** RTP (payload type 97, timestamps in 100 µs), then the MIDI command section:
+  a header (`B` long length, `J` journal present, `Z` first delta present, `P` phantom status,
+  the length), commands with delta times between them, running status allowed, SysEx in
+  segments (`F0`...`F0`, `F7`...`F0`, `F7`...`F7`, cancelled with `F4`).
+- **The recovery journal** (`J`) lets a receiver repair lost packets. A receiver may skip it by
+  its length; Apple's sends one. Sending without (`J` = 0) is what small implementations do
+  (the Arduino AppleMIDI library) and macOS takes it. On a switched LAN a lost packet is rare,
+  and a stuck note is the cost.
+- **Newer:** MIDI 2.0's "Network MIDI 2.0 (UDP)" (MMA, 2024; `_midi2._udp`), in Windows MIDI
+  Services. Not now: RTP-MIDI is what the user's machines already speak.
+
+### Facts: the board as a USB device
+
+- **The USB-C is USB-Serial/JTAG's** (`HARDWARE.md`): fixed function, on full-speed PHY 0
+  (GPIO24/25). The high-speed controller is wired to the hub's upstream port, so it can't be a
+  device.
+- **The P4 has a second, full-speed OTG controller** (`USB_WRAP`, TinyUSB's root port 0) and
+  two full-speed PHYs. `LP_SYS.usb_ctrl` swaps them (`sw_hw_usb_phy_sel` = 1, then
+  `sw_usb_phy_sel` = 1: OTG FS on PHY 0, the USB-C; USB-Serial/JTAG on PHY 1, GPIO26/27).
+  ESP-IDF never calls its `usb_wrap_ll_phy_select()`, and its `case 0` falls through into
+  `case 1` (no `break`), so selecting PHY 0 through it does nothing: BMDS writes the register.
+- **The cost while the swap is on:** the USB-C isn't USB-Serial/JTAG. No serial console there,
+  no JTAG, and no automatic reset into download mode for `idf.py flash`. ESP-IDF's console and
+  panic output go to USB-Serial/JTAG (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG`), now on PHY 1, whose
+  pins have no connector (GPIO26 is the PPS output, GPIO27 is free; EXT1 pins 4 and 6), so a
+  panic's message is lost. USB-Serial/JTAG's own pad output has to stay off there, so the PPS
+  pin keeps working.
+- **The way back is always the buttons:** holding BOOT (GPIO35) while pressing RESET (CHIP_PU)
+  is a power-on reset, which clears the LP domain, swap included, and the ROM's download mode
+  comes up on USB-Serial/JTAG. What a software or panic reset does to the swap (an LP register)
+  is to check: if it survives, the bootloader's and the panic's output go nowhere until BMDS
+  clears the swap, first thing at boot. BMDS also clears it before every restart
+  (`esp_register_shutdown_handler`). `idf.py flash` can't reset the board into download mode
+  while the device is on: turn it off first, or use the buttons. UART0 on UEXT is a third way.
+- **Another way, with hardware:** a USB connector on EXT1 (GPIO26/27, the second PHY, no swap),
+  with PPS moved to another pin, gives a device port and keeps the console on the USB-C. The
+  user's call.
+- **TinyUSB** does both roles at once on different root ports: the host on root port 1 as now,
+  the device on root port 0. `class/midi/midi_device.c` is MIDI 1.0 device class (several
+  cables); `class/cdc` gives a serial port. Both are added to the vendored files.
+- **USB IDs:** a device needs a vendor and product ID. Espressif gives PIDs under its VID
+  (0x303A) free for ESP-based products; pid.codes (VID 0x1209) gives them to open-source
+  projects. TinyUSB's examples' 0xCAFE is for testing only. The user's call.
+- **Power:** the USB-C is a sink (5.1k pull-downs), right for a device. There is no VBUS sense
+  pin; the session-end override (as ESP-IDF does) says VBUS is there, and a computer that isn't
+  plugged in is a device not enumerated.
+
+### Network MIDI: the plan
+
+- **A session is a port** (kind `net`), named from the peer's session name; its source is what
+  the peer plays, its destination what goes to it. `midi` lists them with the peer's address.
+- **The board listens** while `midi/net/enabled` is on, on `midi/net/port` (5004) and the next,
+  advertised as `_apple-midi._udp` named `midi/net/name` (default `${HOSTNAME}`), and accepts
+  invitations as `midi/net/accept` says (`all`, or `none`). **It invites** too:
+  `midi net connect HOST[:PORT]`, and `midi/net/sessions`, a list of hosts invited whenever the
+  network is up (as `midi/connect` remembers connections), retried with backoff.
+- **On lwIP's thread,** with its raw UDP API (callbacks, `udp_sendto`), not a `NetFlow`
+  (network.md §30d): a flow holds receive buffers and caps bulk traffic's transmit descriptors
+  while it is open, a heavy price for a listener that is always open and a few bytes a note.
+  No task and no stack: a received packet is parsed and routed in the callback (the router's
+  lock, a few copies), the clock sync and the timeouts are lwIP's timers, and a session's
+  destination ring is drained by a `tcpip_callback` when the router fills it.
+- **Sending:** one packet per drain, with every event waiting (delta times of 0 or their
+  distance), no journal (`J` = 0) at first. The journal is a later step if stuck notes show up.
+  Receiving skips the journal by its length; it is counted, not used.
+- **Time:** an event's time is its packet's arrival (`BMDS_CLOCK_MONOTONIC`), as USB's are, plus
+  its delta within the packet. The peer's timestamps and the `CK` offset are kept per session
+  (shown in `midi status`) for a later dejitter.
+- **Ending:** `BY` either way, no `CK` for 60 s, the network down, or `midi net disconnect`. The
+  port goes and its connections with it; `midi/connect` brings them back by name.
+- **mDNS:** `MDNS_MAX_SERVICES` 1 to 2 (`_ssh._tcp` and `_apple-midi._udp`).
+- **Memory:** sessions (`MaxNetSessions` 4) and their rings in PSRAM while they exist; two lwIP
+  UDP PCBs; pbufs from lwIP's heap, a packet at a time.
+- **Code:** portable, host-tested and fuzzed in `bmds_midi`: `AppleMidiSession` (the session
+  state machine, packets in and out, no sockets) and `RtpMidiCodec` (the command section both
+  ways, the journal skipped, SysEx segments); kernel glue in `bmds_midi` against `bmds_net`.
+
+### USB MIDI device: the plan
+
+- **On and off at run time** (the user, 2026-10-20: off while developing, on when wanted):
+  - `usb device on` swaps the PHY and starts TinyUSB's device on root port 0 (`tud_rhport_init`);
+    `usb device off` stops it (`tud_deinit`, both in 0.21's `usbd.c`, to confirm when vendored)
+    and swaps back. The computer sees one device leave and the other arrive: USB-Serial/JTAG
+    comes back (`/dev/ttyACM*`, maybe renumbered). `usb device` shows the state.
+  - **Not kept by default:** it is one setting, `usb/device/mode` (`off` default, or `midi`),
+    which the kernel follows live. `usb device on` sets it without saving (sysconf's "not saved"), so
+    a reboot (or BOOT with RESET) always brings the console back; `usb device on --save` saves
+    it, for a board that should come up as a device.
+  - **From the desktop:** a toggle in the control panel's USB page, setting the same value
+    unsaved, so it needs no terminal.
+  - Turning it off while a DAW is playing ends the cables' ports like an unplug: their
+    connections go, and `midi/connect` brings them back next time.
+- **The device:** a composite of MIDI (`usb/device/midi-cables`, 1 to 4, default 2: "BMDS 1",
+  "BMDS 2" on the computer) and **a CDC serial port with the shell's console on it**, so turning
+  it on keeps a console on the same cable. The panic output is still lost (above).
+- **Each cable is a port** (kind `usbdev`, "USB device 1"...), there while the computer has
+  configured the device: its source is what the computer sends, its destination what goes back.
+  `midi connect "USB device 1" synth`, kept by `midi/connect`, and a DAW plays the synth.
+- **TinyUSB's task:** the device runs on the same `usb0` task as the host, since TinyUSB's
+  device and host stacks each need one context; `tud_task_ext()` and `tuh_task_ext()` from one
+  loop, both woken by their interrupts. Sending is deferred to it as the host's is.
+- **Memory:** the FS controller's FIFOs are its own; TinyUSB's device buffers (MIDI 4 KB, CDC
+  1 KB) in internal RAM only while on.
+
+### Steps
+
+1. **The swap, checked:** swapping and swapping back, then across `reboot` and a forced
+   panic (does the swap survive; does the console come back), and BOOT with RESET into the
+   ROM's download mode. Recorded in `docs/platforms/esp32p4.md`.
+   **Done (2026-10-20):** the swap works live both ways; it **survives `reboot` and a panic**
+   (cleared at boot, then); RESET clears it; BOOT with RESET reaches download mode with it set;
+   leaving download mode needs RESET (a USB reset keeps the latched boot mode). `esp32p4.md` §4d.
+2. **USB MIDI device:** TinyUSB's device classes, `usb/device/mode`, the cables as ports, the
+   CDC console. Tried with the user's computer: the device seen, a DAW or `aplaymidi` playing
+   `synth`, `amidi` both ways. **Done (2026-10-20):** below.
+3. **Network MIDI:** the codec and session portable and fuzzed, the lwIP glue, mDNS, the
+   commands and settings. Tried with the user's machines (macOS's Network session, or
+   `rtpmidid` on Linux) both ways.
+4. **The latency, measured** for both: a note from the computer to the synth's output, against
+   `keytone`'s 3 to 4 ms from a local port (§21).
+
+### Decisions (the user, 2026-10-20)
+
+- **The USB-C swap,** not a connector on EXT1; BOOT with RESET is the way back.
+- **A test ID** for now (TinyUSB's 0xCAFE vendor; a product ID of our own under it); a real
+  one before anything ships.
+- **Network MIDI accepts invitations** from the LAN while it is on (off by default), sending
+  without a journal at first.
+- **Either first;** the USB device (step 1 decides its shape quickly).
+- **A patchbay:** a GUI for MIDI and real-time audio connections, as JACK's (§24).
+- **Port kinds appended** (ABI): `BMDS_MIDI_NET` 3, `BMDS_MIDI_USB_DEVICE` 4.
+
+### As built: step 2, the USB MIDI device (2026-10-20)
+
+- **Where:** `bmds_input` (beside the host, whose TinyUSB it shares): `usbdevice.cpp` (the
+  service, the PHY swap, the descriptors, the console), `usbdevicemidi.cpp` (the cables),
+  `bmds/usbdevice.h` (`UsbDevice::init()`, the boot stage `usbdev` after `usb`;
+  `UsbDevice::status()`). TinyUSB's device side vendored from the same 0.21.0 release,
+  unchanged (`thirdparty/tinyusb/README.md`); root port 0 as a full-speed device in
+  `tusb_config.h`. The board says it can (`Board::usbDeviceOnConsole`).
+- **Settings:** `usb/device/mode` (`off|midi`, `off`) and `usb/device/midi-cables` (1 to 4,
+  2). Not `usb/device` itself: a key can't also lead other keys (`/etc` shows the keys as
+  files). `usb device on|off [--save]` sets the mode unsaved unless asked; `usb device` shows the
+  state. The control panel's Sound page has a "USB device" section; its row applies without
+  saving (a new row flag, `NotSaved`; the row's mark offers Save).
+- **A thread of its own, not the host's `usb0`:** TinyUSB's device and host stacks each wait
+  on their own queue, and one task can't wait on both without polling. `usbd` (4 KB stack in
+  PSRAM, priority 4 as the host's) exists only while the device is on. `tud_task_ext()` returns
+  only on a timeout unless `CFG_TUD_TASK_EVENTS_PER_RUN` is set (1 here), so a stop asked for
+  by a deferred call is seen. It looks again after 2 ms only while MIDI packets or typed input
+  wait for room.
+- **The device:** `cafe:b0d5` (TinyUSB's test vendor, the user's choice for now), product the
+  board's hostname, serial its serial number, composite (IAD): a CDC serial port ("BMDS
+  console") and MIDI 1.0, one interface with its cables ("MIDI 1"... as jack names). On the
+  user's Linux PC: `BMDS bmds0`, ALSA's `bmds0 MIDI 1` and `2`, `/dev/ttyACM0`.
+- **The cables** are ports `USB device N` (kind `usbdev`, `BMDS_MIDI_USB_DEVICE` 4, appended
+  with `BMDS_MIDI_NET` 3) while the computer has the device configured; as the host's: a ring of
+  64 events in PSRAM, packed on the device's task; what the computer sends parsed per cable.
+- **The serial port's shell:** the computer opening the port (DTR) starts `sh -i` on a counted
+  pseudo-terminal (as `/dev/ptmx`'s), a thread (`usbcon`, 4 KB in PSRAM) copying its output to
+  the port; closing the port hangs it up; a shell that ends is followed by another while the
+  port stays open. Not a login shell: every `sh -l` sources `/cfg/autoexec.sh`, which starts
+  the desktop (it did, the first time: "display: in use by the desktop").
+- **Found on the board:**
+  - **The computer kept the device across a restart:** the shutdown handler swapped back while
+    the device was attached, and with D+ pulled up throughout (by the device, then by
+    USB-Serial/JTAG) the computer saw no disconnect: `lsusb` still listed `cafe:b0d5` with
+    the board on USB-Serial/JTAG. A panic did the same with no handler at all: the controller's
+    pad settings outlast the reset. Now D+'s pull-up is forced off (the pull override), held
+    20 ms, the pads turned off, then swapped back: before a restart (a shutdown handler,
+    registered at boot, with a warning if ESP-IDF's five slots are full) and first thing at
+    startup (`ESP_SYSTEM_INIT_FN`, for a panic). The ordinary off does the same through
+    `tud_deinit()` and `usb_del_phy()`, then 20 ms.
+  - **ESP-IDF's PHY call takes the UTMI PHY** (the host's) for a device unless the speed is
+    `USB_PHY_SPEED_FULL`.
+- **Tried with the user's PC (2026-10-20):** enumerated at once; `amidi` both ways on both
+  cables (note on and off, a controller, a SysEx; the cables kept apart); `midi monitor` on the
+  board; `aplaymidi` of `scale.mid` through cable 1 to `synth` (70 events, none dropped; heard
+  by the user: to confirm); the serial port's shell (`echo`, `usb device`), closed and gone;
+  4 cables live; on and off three times; `reboot` and `reboot panic` while on: the PC got
+  USB-Serial/JTAG back each time and the board came up off.
+- **Memory:** internal RAM free at idle 214 to 210.8 KB (TinyUSB's device state and buffers,
+  static); about 650 bytes more while on (ESP-IDF's PHY context). PSRAM while on: the two
+  stacks, the ring.
+- **Not checked:** the PPS output on GPIO26 while the device is on (USB-Serial/JTAG's pads are
+  off on that PHY then; a scope on EXT1 pin 4 would say); macOS and Windows; the latency
+  (step 4).
+- **Left:** a crash's message is still lost while the device is on (the crash log keeps it).
+
+## 24. The patchbay: MIDI and audio connections in a window (outline, 2026-10-20)
+
+The user's request (2026-10-20): a GUI for routing MIDI and real-time audio, as JACK's graph
+views (qjackctl's, Carla's). MIDI has its router (§21); audio has no graph yet: every stream and
+real-time client sums into its device. So this is three pieces: a public way to see and change
+the connections, an audio graph, and the program.
+
+### What a program can't do yet
+
+- **List the ports and connections:** the `midi` command reads the router in the kernel; the
+  ABI has `midi_status` for one fd's own port, nothing for the whole. A built-in program uses
+  the public ABI only (built-in apps aren't special), so the patchbay needs it.
+- **Connect two ports it doesn't own:** `BMDS_MIDI_CONNECT` works from a port's own fd, and
+  opening a port to get one makes a reader (a 4 KB ring).
+- **Hear about changes** (a keyboard plugged in, a program's port made) without polling.
+
+### The ABI it needs (appended; designed in detail before it is built)
+
+- **A graph fd,** `/dev/patch`: `read()` gives the current graph as records (ports: number,
+  kind, media MIDI or audio, direction, channels, name, owner's process; connections: source,
+  destination); `poll()` says readable when the graph has changed since the last read (a
+  generation count, no polling). Opening it costs nothing until it is read.
+- **Connecting by number** on that fd (an op through the existing `*_control` shape, or one new
+  call): connect and disconnect any source to any destination, MIDI or audio, kept by name in
+  the settings (`midi/connect`, and `audio/connect` for audio).
+
+### The audio graph (the engine's change)
+
+- **Audio ports:** a real-time client names its outputs and inputs (`audio_config` with a flag
+  and names, appended); a device's playback is a destination ("dsp0 playback"), and its capture a
+  source when capture lands (step 9). Each shared stream (OSS, native rings, `play`) is a source
+  too, so a player can go through an effects client.
+- **The default doesn't change:** a source with no connections plays to its device, as JACK's
+  auto-connect does, so every program today works unchanged.
+- **Running a period in graph order:** a client whose input is another client's output runs
+  after it in the same period (its `in` is the sum of what is connected, the buffer
+  `audio_cycle` already carries, NULL now). Clients that don't depend on each other still run
+  side by side on both cores. A cycle (A to B to A) is refused at connect time.
+- **The deadline is the period's,** shared by the chain: a long chain of slow clients runs out
+  of it; the late counters say which.
+- **Memory:** a buffer per connected output a period long, in internal RAM, as `out` is now.
+
+### The program: `patchbay`
+
+- A window of boxes (ports grouped by owner: a device, a program, a network session, a USB
+  cable), sources on the right edge, destinations on the left, wires between them: MIDI and
+  audio in two colours. Drag from a source to a destination to connect; select a wire and
+  Delete (or right click) to disconnect. Laid out automatically; positions kept per name.
+- Live: it waits on `/dev/patch` and redraws when the graph changes.
+- The toolkit only (`builtin-apps`), a `.desktop` entry, and the keyboard for everything.
+
+### Steps (after §23)
+
+1. The graph fd and connecting by number, MIDI only; `progtest patch`.
+2. `patchbay` for MIDI.
+3. The audio graph: ports, connections, graph order, `audio/connect`; `progtest rt` extended;
+   `keytone` through an effect client as the demo.
+4. `patchbay` with audio.
+
+### Decisions for the user (before step 1)
+
+- Shared streams as sources in the graph (routable through effects), or real-time clients only.
+- Audio needs capture (step 9) for its inputs to matter beyond client-to-client chains: the
+  audio graph before or after capture.
