@@ -552,6 +552,16 @@ Error AudioDevice::stopLocked(bool keepStreams) {
                 Mutex::Locker filling(_fillLock, WaitForever);
                 if (!keepStreams) dropAll();
         }
+        if (!keepStreams) {
+                // Stopped for good (not a restart): the channel's DMA buffers and the mix's go back
+                // to internal RAM (about 20 KB), made again by the next start.
+                if (_channel != nullptr) (void)i2s_del_channel(handleOf(_channel));
+                _channel = nullptr;
+                _channelPeriod = 0;
+                Memory::free(_mix);
+                Memory::free(_scratch);
+                _mix = _scratch = nullptr;
+        }
         _state = State::Stopped;
         if (_holdingFlash) FlashWrites::release();
         _holdingFlash = false;

@@ -1282,3 +1282,41 @@ typedef struct {
 blitcost` became the `display.ppa.scale`, `display.ppa.path`, `display.ppa.soak` and
 `display.blitcost` benchmarks (`devplan/bench.md` §11); `display ppa` keeps the checks. The figures
 above were taken with the old commands.
+
+## 26. Full screen out of internal RAM after another game (2026-10-20, the user's report)
+
+- **The report:** Doom full screen after a fresh boot; then Lucky Duck; then Doom again came up in
+  a window and wouldn't go full screen. The log: `ProgramSurface: full screen: Out of memory`, in
+  the scan-out's switch (its descriptor list).
+- **What full screen takes of internal DMA RAM:** about 89 KB while it lasts. The scan's line mode
+  needs a descriptor a screen line (720 × 64 bytes, 46 KB, in 4 KB chunks), the strip 30 KB
+  (8 rows of 1280 at 3 bytes), L8's triple table 8 KB. Doom full screen after a fresh boot leaves
+  20 KB of internal RAM.
+- **Not a leak:** Lucky Duck run three times kept 19 KB after the first and nothing more. Two
+  things made on first use were kept for good: the program blitter (`BMDS_SURFACE_BLIT`'s chain
+  and fill line, about 19 KB) and the audio device's mix buffers and I2S channel (about 20 KB, kept
+  after its idle stop). Free internal RAM went 149 → 129.5 (Doom) → 110.5 KB (Lucky Duck), and the
+  second Doom's switch didn't fit.
+- **Fixed:** the blitter is counted by the surfaces that blitted and freed with the last;
+  the audio device frees its buffers and channel when it stops (not on a restart), made again by
+  the next start. The same sequence: 149 → 144 → 139 KB, and the second Doom full screen.
+- **The audit (idle, after boot; `mem blocks`, attributed once with ESP-IDF's heap hooks):** a
+  553 KB heap, 149 KB free; 141 KB static besides (`.bss` 63.5 KB in small pieces, IRAM code
+  62 KB, `.data` 16 KB).
+
+  | Holder | Bytes | |
+  |---|---:|---|
+  | Ethernet rings and buffers (32 receive, 16 transmit) | 75,904 | the user's call (network.md §29) |
+  | lwIP's heap (`BMDS_NET_HEAP_KB`) | 65,792 | the user's call: frames from PSRAM vanished |
+  | dropbear's stack (64 KB asked, ~10 KB used) | 65,536 | `stackSpaceFor()`: room at boot |
+  | the window manager's strip (16 rows × 1280 × 3) | 61,568 | |
+  | PSRAM's reserved DMA pool (`SPIRAM_MALLOC_RESERVE_INTERNAL`) | 32,768 | a region of its own, still usable |
+  | surface 0's batching lines and 2D-DMA chain | 27,136 | |
+  | the window manager's pieces and clips | 8,704 | |
+  | task stacks, ~25 tasks (2-8 KB) | ~40,000 | |
+  | everything else (144 blocks under 1 KB) | ~16,000 | |
+
+- **Done:** a program's stack went to internal RAM while the largest block kept 64 KB to spare,
+  so the first long-running program (dropbear, at boot) held 64 KB of it for good. Stacks over
+  32 KB (the deep-recursion budgets, mostly untouched) now go to PSRAM (`stackSpaceFor()`); the
+  games' 32 KB stacks still go to internal RAM when there is room.

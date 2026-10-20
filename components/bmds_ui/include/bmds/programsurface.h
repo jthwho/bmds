@@ -395,6 +395,7 @@ class ProgramSurface final : public Stream {
                 uint32_t         *_triple = nullptr;  // expandTriple()'s table: L8 full screen at 3 times (presenter's)
                 std::atomic<bool> _tripleStale{true}; // the palette changed since it was made
                 size_t         _stripBytes = 0;
+                std::atomic<bool> _blitting{false}; // holds a reference to the shared blitter (blit())
 
                 Mutex     _lock; // the buffers' states, the window's size
                 State     _states[MaxBuffers] = {};

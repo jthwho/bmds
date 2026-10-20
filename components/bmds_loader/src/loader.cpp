@@ -73,6 +73,10 @@ namespace {
 
         // Internal RAM left free when a program's stack goes there.
         constexpr size_t InternalReserveBytes = 64 * 1024;
+        // The largest stack internal RAM takes: bigger ones are the deep-recursion budgets (key
+        // exchanges, Doom's BSP walk), mostly untouched, and a daemon's held it for good
+        // (dropbear's 64 KB from boot, ~10 KB used: devplan/games.md §26).
+        constexpr size_t InternalStackMaxBytes = 32 * 1024;
 
         constinit StaticObject<ProcessTable> processes;
 
@@ -578,9 +582,12 @@ namespace {
         }
 
         // Where a program's task's stack goes. Stacks are hot: internal RAM if there is room to
-        // spare. Not a built-in's (the shell's recursion budget is large).
+        // spare and it is no bigger than InternalStackMaxBytes. Not a built-in's (the shell's
+        // recursion budget is large).
         MemSpace stackSpaceFor(size_t bytes, bool builtin) {
-                return !builtin && Memory::stats(MemSpace::Internal).largestFreeBlock >= bytes + InternalReserveBytes
+                return !builtin && bytes <= InternalStackMaxBytes &&
+                                       Memory::stats(MemSpace::Internal).largestFreeBlock >=
+                                               bytes + InternalReserveBytes
                                ? MemSpace::Internal
                                : MemSpace::Psram;
         }

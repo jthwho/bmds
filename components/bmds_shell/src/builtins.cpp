@@ -10,6 +10,7 @@
  */
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <esp_heap_caps.h>
 #include <bmds/console.h>
@@ -247,11 +248,12 @@ namespace {
                 return true;
         }
 
+        // Internal RAM first: the scarcer, listed before a full list leaves it out.
         void walkHeaps(Walk &w) {
-                w.psram = true;
-                heap_caps_walk(MALLOC_CAP_SPIRAM, walkBlock, &w);
                 w.psram = false;
                 heap_caps_walk(MALLOC_CAP_INTERNAL, walkBlock, &w);
+                w.psram = true;
+                heap_caps_walk(MALLOC_CAP_SPIRAM, walkBlock, &w);
                 return;
         }
 
@@ -309,10 +311,56 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // mem blocks [MIN]: internal RAM's blocks in use of MIN bytes (1024) or more, and the
+        // count and bytes of the rest (an audit of what holds it).
+        int runMemBlocks(CommandContext &ctx, uint32_t min) {
+                auto *blocks = static_cast<HeapBlock *>(Memory::alloc(MemSpace::Psram, MaxMarked * sizeof(HeapBlock)));
+                if (blocks == nullptr) {
+                        ctx.eprint("mem: out of memory\n");
+                        return Shell::ExitFailure;
+                }
+                Walk w{blocks, MaxMarked, 0, 0, blocks, nullptr, false, false};
+                heap_caps_walk(MALLOC_CAP_INTERNAL, walkBlock, &w);
+                uint32_t listed = 0, listedBytes = 0, small = 0, smallBytes = 0;
+                for (size_t i = 0; i < w.count; ++i) {
+                        const HeapBlock &b = blocks[i];
+                        if (b.size < min) {
+                                ++small;
+                                smallBytes += b.size;
+                                continue;
+                        }
+                        ++listed;
+                        listedBytes += b.size;
+                        const auto *p = static_cast<const uint8_t *>(b.ptr);
+                        char        hex[16 * 3 + 1] = {};
+                        char        text[17] = {};
+                        for (size_t k = 0; k < 16; ++k) {
+                                std::snprintf(hex + 3 * k, 4, "%02x ", p[k]);
+                                text[k] = p[k] >= 0x20 && p[k] < 0x7f ? char(p[k]) : '.';
+                        }
+                        ctx.printf("%p %8u %-48s %s\n", b.ptr, static_cast<unsigned>(b.size), hex, text);
+                }
+                ctx.printf("mem: %u blocks of %u bytes or more, %u bytes; %u smaller, %u bytes%s\n",
+                           static_cast<unsigned>(listed), static_cast<unsigned>(min),
+                           static_cast<unsigned>(listedBytes), static_cast<unsigned>(small),
+                           static_cast<unsigned>(smallBytes), w.overflow != 0 ? " (more not walked)" : "");
+                Memory::free(blocks);
+                return Shell::ExitSuccess;
+        }
+
         int runMem(CommandContext &ctx) {
                 const Args args = ctx.args();
                 if (args.size() == 2 && StringView(args[1]) == "mark") return runMemMark(ctx);
                 if (args.size() == 2 && StringView(args[1]) == "new") return runMemNew(ctx);
+                if ((args.size() == 2 || args.size() == 3) && StringView(args[1]) == "blocks") {
+                        uint32_t min = 1024;
+                        if (args.size() == 3) {
+                                char *end = nullptr;
+                                min = uint32_t(std::strtoul(args[2], &end, 10));
+                                if (end == args[2] || *end != '\0') return ctx.usage();
+                        }
+                        return runMemBlocks(ctx, min);
+                }
                 bool human = false;
                 for (size_t i = 1; i < args.size(); ++i) {
                         if (StringView(args[i]) != "-h") return ctx.usage();
@@ -572,9 +620,10 @@ BMDS_SHELL_COMMAND(logger, runLogger, "[-s] [-p PRI] [-t TAG] [MESSAGE...]",
 BMDS_SHELL_COMMAND(log, runLog, "[show]",
                    "Show the log level and debug modules (sysconf's log/level and log/debug set them); "
                    "show the log history")
-BMDS_SHELL_COMMAND(mem, runMem, "[-h | mark | new]",
+BMDS_SHELL_COMMAND(mem, runMem, "[-h | mark | new | blocks [MIN]]",
                    "Show memory usage per memory space, and what caches hold (bytes; -h: 16.55M, 432.43k); "
-                   "'mark' records the heap blocks in use, 'new' lists those in use now that weren't then")
+                   "'mark' records the heap blocks in use, 'new' lists those in use now that weren't then; "
+                   "'blocks' lists internal RAM's blocks in use of MIN bytes (1024) or more")
 BMDS_SHELL_COMMAND(reboot, runReboot, "[recovery | panic]",
                    "Restart the system; 'recovery': into the recovery firmware (updates, repairs). In recovery, "
                    "restart into the main firmware if it checks good. 'panic': restart by a panic, to test the "

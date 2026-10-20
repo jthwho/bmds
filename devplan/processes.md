@@ -352,7 +352,7 @@ flags (`inKernel`, `kill`, `suspendedForStop`), hint word, clear word, vfork chi
 and the stack of children: a thread vforks on its own), its `Signals::Thread`, the next record.
 The first thread's is part of `Running` (a program without threads pays nothing more); the
 others are `Psram` records, their TCBs and stacks the `Task`'s (internal RAM if there is room to
-spare, as a program's first stack). FreeRTOS pointer 1, the task's owner, is the `ProgramThread`
+spare and it is 32 KB or less, as a program's first stack). FreeRTOS pointer 1, the task's owner, is the `ProgramThread`
 for a program task and the `Running` for a kernel `Thread` of the process; both start with the
 loader's `ProcessOwner` (the `Running`, the thread or null). `TaskOwner` gains `threadOwner()`:
 a `Thread` started from a program task joins its process, not the thread (a built-in program's
@@ -760,7 +760,7 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
     the `Running`), both `ProcessOwner`s (pointer 1); `TaskOwner::threadOwner()`. The handshake,
     stops, hints and vfork children per thread; the last thread to end ends the process; ended
     threads go through the stop queue, which frees each record, the `Running` with the last.
-    Kernel-allocated thread stacks (internal RAM if there is room to spare). Slots 53-57,
+    Kernel-allocated thread stacks (internal RAM if there is room to spare, 32 KB or less). Slots 53-57,
     `BMDS_PROC_THREAD`; `ps -T` gains a TID column.
   - The SDK: `linux.c`'s tables (directory fds, O_NONBLOCK and VMIN/VTIME, handlers, umask) under
     musl's lock, a vfork child working on a copy; each thread's hint word and vfork depth in TLS

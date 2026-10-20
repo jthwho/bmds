@@ -29,6 +29,7 @@
 #include <bmds/pngdecoder.h>
 #include <bmds/programsurface.h>
 #include <bmds/scanout.h>
+#include <bmds/spinlock.h>
 #include <bmds/surface.h>
 #include <bmds/sysconf.h>
 #include <bmds/videomodes.h>
@@ -39,6 +40,7 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr size_t       BufferAlign = 128; // the L2 cache line; the 2D-DMA's PSRAM alignment
+        void                   unrefBlitter();    // blit()'s shared blitter (below)
         constexpr uint16_t     StripRows = 8;     // full screen's strip: rows of the screen's width
         constexpr uint16_t     DamageColumns = 8; // damage across on these (PIE's 16 bytes in RGB565)
         constexpr size_t       WriteBackChunk = 64 * 1024;
@@ -218,6 +220,7 @@ ProgramSurface::~ProgramSurface() {
                 Memory::free(b);
                 b = nullptr;
         }
+        if (_blitting.load(std::memory_order_acquire)) unrefBlitter();
         Memory::free(_palette);
         Memory::free(_strip);
         Memory::free(_triple);
@@ -428,7 +431,8 @@ namespace {
         constexpr unsigned int BlitTimeoutMs = 100;
 
         // Every program surface's: one chain (its descriptors in internal DMA RAM) and a fill's
-        // line, made on the first blit and kept.
+        // line, made on the first blit and freed when the last surface that blitted closes (about
+        // 19 KB of internal DMA RAM: kept, it took full screen's from the next game).
         struct Blitter {
                         Mutex     lock;
                         BlitChain chain;
@@ -437,33 +441,60 @@ namespace {
                         uint8_t   lineBpp = 0;
         };
 
-        std::atomic<Blitter *> sBlitter{nullptr};
+        constinit SpinLock sBlitterLock; // sBlitter and sBlitterUsers
+        Blitter           *sBlitter = nullptr;
+        uint32_t           sBlitterUsers = 0;
 
-        Blitter *blitter() {
-                Blitter *b = sBlitter.load(std::memory_order_acquire);
-                if (b != nullptr) return b;
+        void destroyBlitter(Blitter *b, void *memory) {
+                b->chain.stop();
+                Memory::free(b->line);
+                b->~Blitter();
+                Memory::free(memory);
+                return;
+        }
+
+        // A reference to the blitter, made if there is none; nullptr without memory for it.
+        Blitter *refBlitter() {
+                {
+                        SpinLock::Locker locker(sBlitterLock);
+                        if (sBlitter != nullptr) {
+                                ++sBlitterUsers;
+                                return sBlitter;
+                        }
+                }
                 void *memory = Memory::alloc(MemSpace::Psram, sizeof(Blitter));
                 if (memory == nullptr) return nullptr;
-                b = new (memory) Blitter();
+                Blitter *b = new (memory) Blitter();
                 b->line = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, BlitLineBytes, 64));
                 if (b->line == nullptr ||
                     b->chain.start(BlitChain::Conversion::None, ProgramSurface::MaxBlitPieces, BlitFillRows)
                             .isError()) {
-                        Memory::free(b->line);
-                        b->~Blitter();
-                        Memory::free(memory);
+                        destroyBlitter(b, memory);
                         return nullptr;
                 }
-                Blitter *none = nullptr;
-                if (!sBlitter.compare_exchange_strong(none, b, std::memory_order_acq_rel)) {
-                        // Another thread made one first: ours goes.
-                        b->chain.stop();
-                        Memory::free(b->line);
-                        b->~Blitter();
-                        Memory::free(memory);
-                        return none;
+                Blitter *made = nullptr;
+                {
+                        SpinLock::Locker locker(sBlitterLock);
+                        if (sBlitter == nullptr) sBlitter = b;
+                        made = sBlitter;
+                        ++sBlitterUsers;
                 }
-                return b;
+                if (made != b) destroyBlitter(b, memory); // another thread made one first: ours goes
+                return made;
+        }
+
+        // A reference given back: the last frees it (no blit runs: each user's are over).
+        void unrefBlitter() {
+                Blitter *last = nullptr;
+                {
+                        SpinLock::Locker locker(sBlitterLock);
+                        if (sBlitterUsers > 0 && --sBlitterUsers == 0) {
+                                last = sBlitter;
+                                sBlitter = nullptr;
+                        }
+                }
+                if (last != nullptr) destroyBlitter(last, last);
+                return;
         }
 
         // Bytes [start, end) of a picture: the cache operations' ranges.
@@ -565,8 +596,12 @@ Error ProgramSurface::blit(uint8_t index, BlitSource source, uint32_t from, Span
                         srcHeight = im.height;
                 }
         }
-        Blitter *b = blitter();
-        if (b == nullptr) return Error::NoMem;
+        // The surface's reference, taken on its first blit and given back when it closes.
+        if (!_blitting.load(std::memory_order_acquire)) {
+                if (refBlitter() == nullptr) return Error::NoMem;
+                if (_blitting.exchange(true, std::memory_order_acq_rel)) unrefBlitter(); // another thread's first
+        }
+        Blitter *b = sBlitter; // ours held: neither freed nor replaced
         // The pieces cut to the buffer and the source; the cache's ranges of both.
         Piece  cut[MaxBlitPieces];
         size_t n = 0;
