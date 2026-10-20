@@ -40,7 +40,8 @@ namespace {
                               BMDS_MIDI_SERIAL == static_cast<uint32_t>(MidiRouter::Kind::Serial) &&
                               BMDS_MIDI_VIRTUAL == static_cast<uint32_t>(MidiRouter::Kind::Virtual) &&
                               BMDS_MIDI_NET == static_cast<uint32_t>(MidiRouter::Kind::Net) &&
-                              BMDS_MIDI_USB_DEVICE == static_cast<uint32_t>(MidiRouter::Kind::UsbDevice),
+                              BMDS_MIDI_USB_DEVICE == static_cast<uint32_t>(MidiRouter::Kind::UsbDevice) &&
+                              BMDS_MIDI_SYSTEM == static_cast<uint32_t>(MidiRouter::Kind::System),
                       "the ABI's kinds are the router's");
         static_assert(BMDS_MIDI_NAME_MAX == MidiRouter::MaxName, "the ABI's name length is the router's");
         static_assert(sizeof(bmds_midi_event_t) == sizeof(MidiEvent) &&

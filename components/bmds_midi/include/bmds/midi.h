@@ -47,10 +47,14 @@ namespace Midi {
         /** @brief Returns true once `init()` has run. */
         bool isReady();
 
-        /** @brief Returns the port `midi/default` names (`/dev/midi`), or `NotExist`. */
-        Result<uint8_t> defaultPort();
+        /**
+         * @brief Returns `system`'s number (`/dev/midi`, `devplan/audio.md` §25): what
+         *        programs play, a source only; a write to its file is sent from it.
+         *        `MidiRouter::NoPort` if it couldn't be made.
+         */
+        uint8_t systemPort();
 
-        /** @brief Returns a kind's name: "usb", "serial", "virtual", "net", "usbdev". */
+        /** @brief Returns a kind's name: "usb", "serial", "virtual", "net", "usbdev", "system". */
         const char *kindName(MidiRouter::Kind kind);
 
 } // namespace Midi

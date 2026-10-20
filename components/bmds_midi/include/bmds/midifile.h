@@ -30,8 +30,9 @@ BMDS_NAMESPACE_BEGIN
  *        (`devplan/audio.md` §21). The system calls (`midi_config`,
  *        `midi_status`, `midi_control`) reach it through `Stream::midiFile()`.
  *
- * - On a port (`/dev/midiN`; `/dev/midi` is `midi/default`'s): reading gives
- *   the port's source, writing goes to its destination.
+ * - On a port (`/dev/midiN`; `/dev/midi` is `system`'s): reading gives the
+ *   port's source, writing goes to its destination; for `system` (a system
+ *   port with no destination), writing is sent from its source.
  * - `/dev/midinew` is nothing until configured `Create`: then it owns a new
  *   virtual port. What it writes is the port's source; what the router
  *   delivers to the port's destination, it reads. The port ends with it.
@@ -133,6 +134,7 @@ class MidiFile final : public Stream, private MidiSink {
 
                 std::atomic<uint8_t>  _port; // NoPort: /dev/midinew, not created yet
                 bool                  _owner = false;
+                bool                  _asSource = false; // a write is sent from the port's source (`system`)
                 uint8_t               _sides = 0; // a created port's
                 std::atomic<bool>     _gone{false};
                 uint32_t              _flags = 0;

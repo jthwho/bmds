@@ -6,10 +6,10 @@
  * See LICENSE file in the project root folder for license information.
  *
  * midimon [PORT] | midimon -c NAME: MIDI events as they arrive
- * (devplan/audio.md §21). PORT (midiN, N or a path; /dev/midi if none) is
- * read; -c makes a port named NAME for others to send to (`midi send`,
- * `midi connect`), shows what reaches it and passes it on from the port's
- * source, a MIDI thru (`keytone -m NAME` plays it). Each line: the event's time in
+ * (devplan/audio.md §21). PORT (midiN, N or a path; /dev/midi, what programs
+ * play, `system` (§25), if none) is read; -c makes a port named NAME for
+ * others to send to (`midi send`, `midi connect`), shows what reaches it and
+ * passes it on from the port's source, a MIDI thru (`keytone -m NAME` plays it). Each line: the event's time in
  * seconds since boot, the gap since the one before, the port it came from,
  * its bytes and what it is. Ctrl+C stops and shows the counts.
  */

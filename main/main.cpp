@@ -40,6 +40,7 @@
 #include <bmds/usbserialconsole.h>
 #include <bmds/vfs.h>
 #include <bmds/voices.h>
+#include <bmds/wavetable.h>
 
 namespace {
 
@@ -98,7 +99,8 @@ namespace {
                 {"apps", bmds::Apps::init},        // the installed applications, /apps (after the card's mount)
                 {"programs", bmds::Loader::init},  // the process table
                 {"synth", bmds::SoundFonts::init}, // fonts synths share; after the loader: its cache is reclaimed first
-                {"speech", bmds::Voices::init},    // the voices speakers share
+                {"wavetable", bmds::Wavetable::init}, // the built-in synth's port, always there (midi/connect)
+                {"speech", bmds::Voices::init},       // the voices speakers share
                 {"input", bmds::Input::init},
                 {"pads", bmds::Pads::init},                // the gamepads' table; before USB attaches any
                 {"controls", bmds::ProgramControls::init}, // programs' actions, changed live

@@ -25,10 +25,7 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         // devplan/audio.md §21: the keys are an interface once shipped.
-        BMDS_SYSCONF(midiDefault, "midi/default", Config::Type::String, "midi0",
-                     "The MIDI port /dev/midi opens (midiN or a port's name)", 0,
-                     static_cast<int32_t>(MidiRouter::MaxName - 1), nullptr, nullptr)
-        BMDS_SYSCONF(midiConnect, "midi/connect", Config::Type::String, "",
+        BMDS_SYSCONF(midiConnect, "midi/connect", Config::Type::String, "system>wavetable",
                      "MIDI connections made whenever both ports exist: SOURCE>DEST, comma-separated", 0,
                      static_cast<int32_t>(MidiRouter::MaxAutoConnect - 1), nullptr, nullptr)
 
@@ -50,7 +47,7 @@ namespace {
                  Stat::Kind::State,
                  0,
                  {},
-                 "usb|serial|virtual|net|usbdev",
+                 "usb|serial|virtual|net|usbdev|system",
                  "What the port is"},
                 {"events_in",
                  Stat::Unit::Count,
@@ -99,6 +96,7 @@ namespace {
                         std::atomic<bool> connectChanged{true}; // read midi/connect at the next use
                         Mutex             countersLock;         // the counters' registration
                         PortCounters     *counters = nullptr;   // MaxPorts of them, in PSRAM
+                        uint8_t           systemPort = MidiRouter::NoPort; // `system` (devplan/audio.md §25)
         };
 
         constinit PsramObject<System>  midi;
@@ -159,6 +157,10 @@ Error Midi::init() {
                 const Error err = midi->watcher.start(bmdsConf_midiConnect.key, connectChanged, nullptr);
                 if (err.isError()) bmdsWarn("midi: midi/connect won't be followed: %s", err.desc());
         }
+        // `system`: what programs play (/dev/midi), a source only; the first port, midi0.
+        auto [system, serr] = midi->router.addPort(MidiRouter::Kind::System, MidiRouter::Source, "system", nullptr);
+        if (serr.isError()) bmdsWarn("midi: no system port: %s", serr.desc());
+        midi->systemPort = serr.isOk() ? system : MidiRouter::NoPort;
         ready.store(true, std::memory_order_release);
         applySettings();
         const Error err = MidiFile::addFiles();
@@ -183,11 +185,8 @@ void Midi::applySettings() {
         return;
 }
 
-Result<uint8_t> Midi::defaultPort() {
-        String name;
-        if (!SysConf::isReady() || SysConf::get(bmdsConf_midiDefault.key, name).isError())
-                return router().find("midi0");
-        return router().find(name);
+uint8_t Midi::systemPort() {
+        return midi->systemPort;
 }
 
 const char *Midi::kindName(MidiRouter::Kind kind) {
@@ -197,6 +196,7 @@ const char *Midi::kindName(MidiRouter::Kind kind) {
                 case MidiRouter::Kind::Virtual: return "virtual";
                 case MidiRouter::Kind::Net: return "net";
                 case MidiRouter::Kind::UsbDevice: return "usbdev";
+                case MidiRouter::Kind::System: return "system";
         }
         return "?";
 }

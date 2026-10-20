@@ -2328,3 +2328,69 @@ the connections, an audio graph, and the program.
 - Shared streams as sources in the graph (routable through effects), or real-time clients only.
 - Audio needs capture (step 9) for its inputs to matter beyond client-to-client chains: the
   audio graph before or after capture.
+
+## 25. The system port and the wavetable synth (design, 2026-10-20)
+
+The user's model (2026-10-20): the built-in synth is like a sound card's FM chip, there as the
+default and a reasonable fallback, one synth among those to come, any of which may be "the
+system synth". Programs and games write to a **system MIDI out**; a **default route** takes it to
+the chosen synth. Names (the user's): `system`, `wavetable`; the `synth` command stays, for more.
+
+- **`system`:** a port the kernel makes at boot, kind `system` (`BMDS_MIDI_SYSTEM` 5, appended),
+  a source only. Writing to its file sends from its source (a port of kind `system` with no
+  destination does that; nothing else does), so any number of programs write to it and the
+  router takes it where the connections say. Reading it shows what they play (`midimon`).
+- **`/dev/midi` is `system`'s file,** for ported OSS programs and our own. `midi/default` goes
+  (not released: no shim).
+- **`wavetable`:** a kernel service (`bmds_synth`), while `synth/wavetable` (bool, true) is on,
+  owns a port of kind `system`, a destination only, from boot. Idle, it is the port, a ring of
+  256 events (4 KB of PSRAM) and a control thread (PSRAM stack) waiting. The first event opens
+  a synth on `synth/font` and a real-time stream on `/dev/dsp`, and starts the audio thread (as
+  the `synth` command's: 128 frames, internal stack); 5 s with no events and no voices
+  sounding, it closes both, so the audio device's idle stop still comes.
+- **The font kept warm:** while `synth/keep-fonts` is on, the control thread loads the font when
+  it starts (in the background, at boot) and lets go of it, so the first note doesn't wait for
+  the card (0.7 s); the font cache gives it back if memory runs short, like any idle font.
+- **The default route is a connection:** `midi/connect`'s default is `system>wavetable`. Another
+  synth is chosen by changing it (a setting, later the patchbay); a list without the pair has
+  no default route, by the user's choice.
+- **Programs that render MIDI files** (`play`, the media player, Open) keep their own synth fd:
+  files need seeking, exact timing and the samples. Games are the case for `system`: Doom gets a
+  setting for its music (the built-in synth fd, or `/dev/midi`).
+- **Timing through the router:** events carry their arrival time and the synth plays them a
+  period late, fine live; a program placing notes ahead needs scheduled output (the reserved
+  `time_ns`), next when Doom's music goes through `system`.
+
+### Steps
+
+1. `BMDS_MIDI_SYSTEM`, the `system` port, `/dev/midi` on it, `midi/default` gone,
+   `midi/connect`'s default; host tests; `progtest midi` (a write to `system` reaching a port
+   connected to it).
+2. The wavetable service, its setting, the warm font; the control panel's rows.
+3. Doom's music setting.
+
+### As built: steps 1 and 2 (2026-10-20)
+
+- **`system`** is midi0, made by `Midi::init()` (kind `system`, `BMDS_MIDI_SYSTEM` 5, a source);
+  `/dev/midi` and its `/dev/midiN` take writes as its source's (`MidiFile`'s `_asSource`, for a
+  system port with no destination); `Midi::systemPort()`. `midi/default` is gone;
+  `midi/connect`'s default is `system>wavetable`. `progtest midi`: a write to `/dev/midi`
+  reaching a port connected to `system`, and `system`'s readers.
+- **`wavetable`** (`bmds/wavetable.h`, the boot stage after `synth`) is midi1 while
+  `synth/wavetable` is on: a ring of 256 events in PSRAM, a control thread (4 KB of PSRAM) for
+  good; playing, the synth fd, `/dev/dsp` real-time at 128 frames, and an audio thread (4 KB
+  internal) as the `synth` command's. It closes after 5 s with no events and no voices; any
+  `synth/*` change closes it too (the next event opens with the new font or gain). The font is
+  loaded at the start while `synth/keep-fonts` is on (tried again every 5 s, 6 times, while
+  the card isn't there): `mem` shows it cached at boot. `synth status` shows it; the control
+  panel's Synthesizer section has `synth/wavetable`.
+- **Found on the board:** `Thread::detach()` is the thread's own call (an assert): called from
+  the boot stage, every boot panicked and the third went to recovery. The control thread is
+  never joined, not detached.
+- **Tried:** `midi send system 90 3c 64` played at once (the font warm), idle 5 s after the
+  last note-off (the stream closed); `printf '\x90\x40\x50' > /dev/midi` played. Internal RAM:
+  about 1 KB less free at idle (the state, the control thread's task).
+- **Step 3 waits for a decision:** Doom gives its music to libbmdsgame as a whole MIDI file,
+  rendered in the program. Through `system`, a sequencer must send the file's events in time:
+  either a thread waking for each (about 1 ms of jitter, the tick), or scheduled output (the
+  reserved `time_ns`: events written ahead, sent by the kernel at their time), new ABI.

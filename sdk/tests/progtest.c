@@ -1642,6 +1642,20 @@ static int midi(void) {
         CHECK(read(d, buf, sizeof(buf)) == 3 && buf[0] == 0x80); /* d reads bytes */
         CHECK(read(r, ev, sizeof(ev)) == (ssize_t)sizeof(ev[0]));
 
+        /* system (/dev/midi, devplan/audio.md §25): what any program writes, sent from its source to
+           what it is connected to (wavetable too, by default: a note-on of velocity 0 is silent). */
+        const int sys = open("/dev/midi", O_RDWR);
+        CHECK(sys >= 0);
+        CHECK(bmds_midi_status(sys, &st) == 0 && st.kind == BMDS_MIDI_SYSTEM && st.sides == BMDS_MIDI_SOURCE);
+        CHECK(strcmp(st.name, "system") == 0);
+        CHECK(bmds_midi_control(sys, BMDS_MIDI_CONNECT, (int32_t)sink) == 0);
+        const uint8_t silent[3] = {0x91, 0x40, 0x00};
+        CHECK(write(sys, silent, 3) == 3);
+        CHECK(read(d, buf, sizeof(buf)) == 3 && buf[0] == 0x91);   /* to what it is connected to */
+        CHECK(read(sys, buf, sizeof(buf)) == 3 && buf[0] == 0x91); /* and to its readers */
+        CHECK(bmds_midi_control(sys, BMDS_MIDI_DISCONNECT, (int32_t)sink) == 0);
+        CHECK(close(sys) == 0);
+
         /* A full ring: 300 events unread. Each reader's ring holds 256; the rest are counted. */
         for (int i = 0; i < 300; ++i) CHECK(write(v, &out, sizeof(out)) == (ssize_t)sizeof(out));
         CHECK(bmds_midi_status(r, &st) == 0 && st.fd_dropped == 44);

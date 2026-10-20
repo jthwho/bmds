@@ -99,6 +99,7 @@ class MidiRouter {
                         Virtual, ///< A program's.
                         Net,     ///< A network session (RTP-MIDI).
                         UsbDevice, ///< A cable of the board as a USB MIDI device.
+                        System,    ///< The system's own: `system` (`/dev/midi`), `wavetable`.
                 };
 
                 /** @brief A port's counters. */

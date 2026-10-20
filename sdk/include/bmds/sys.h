@@ -635,6 +635,7 @@ typedef struct bmds_midi_event_t {
 #define BMDS_MIDI_VIRTUAL 2u /**< A program's (`BMDS_MIDI_CREATE`). */
 #define BMDS_MIDI_NET 3u     /**< A network session (RTP-MIDI). */
 #define BMDS_MIDI_USB_DEVICE 4u /**< A cable of the board as a USB MIDI device (to a computer). */
+#define BMDS_MIDI_SYSTEM 5u     /**< The system's own: `system` (what programs play, `/dev/midi`), `wavetable`. */
 
 /** @brief `bmds_midi_status_t::flags`. */
 #define BMDS_MIDI_GONE 0x1u /**< The port went away (unplugged): reads end, writes fail with `EPIPE`. */

@@ -28,7 +28,7 @@ namespace {
 
         static_assert((MidiFile::RingEvents & (MidiFile::RingEvents - 1)) == 0, "the ring: a power of two");
 
-        constexpr uint8_t DefaultPort = 0xfe; // /dev/midi: midi/default's
+        constexpr uint8_t SystemPort = 0xfe; // /dev/midi: `system`'s
         constexpr uint8_t NewPort = MidiRouter::NoPort;
 
         // midi0 to midi15's names and numbers, then /dev/midi's and /dev/midinew's.
@@ -38,10 +38,10 @@ namespace {
         };
 
         constexpr FileArg Files[] = {
-                {"midi0", 0},   {"midi1", 1},          {"midi2", 2},         {"midi3", 3},   {"midi4", 4},
-                {"midi5", 5},   {"midi6", 6},          {"midi7", 7},         {"midi8", 8},   {"midi9", 9},
-                {"midi10", 10}, {"midi11", 11},        {"midi12", 12},       {"midi13", 13}, {"midi14", 14},
-                {"midi15", 15}, {"midi", DefaultPort}, {"midinew", NewPort},
+                {"midi0", 0},   {"midi1", 1},         {"midi2", 2},         {"midi3", 3},   {"midi4", 4},
+                {"midi5", 5},   {"midi6", 6},         {"midi7", 7},         {"midi8", 8},   {"midi9", 9},
+                {"midi10", 10}, {"midi11", 11},       {"midi12", 12},       {"midi13", 13}, {"midi14", 14},
+                {"midi15", 15}, {"midi", SystemPort}, {"midinew", NewPort},
         };
         static_assert(sizeof(Files) / sizeof(Files[0]) == MidiRouter::MaxPorts + 2, "a file for every port");
 
@@ -63,11 +63,7 @@ Error MidiFile::addFiles() {
                         const auto *fa = static_cast<const FileArg *>(arg);
                         Midi::applySettings(); // called without the VFS's lock
                         uint8_t port = fa->port;
-                        if (port == DefaultPort) {
-                                auto [n, err] = Midi::defaultPort();
-                                if (err.isError()) return makeError<FileHandle::Ptr>(Error::NotExist);
-                                port = n;
-                        }
+                        if (port == SystemPort) port = Midi::systemPort();
                         return open(port, flags);
                 };
                 file.arg = const_cast<FileArg *>(&a);
@@ -84,11 +80,14 @@ Result<FileHandle::Ptr> MidiFile::open(uint8_t port, uint8_t flags) {
         const uint8_t mode =
                 ((flags & Vfs::Read) ? FileHandle::Read : 0) | ((flags & Vfs::Write) ? FileHandle::Write : 0);
         MidiRouter &router = Midi::router();
+        bool        asSource = false;
         if (port != NewPort) {
                 auto [info, err] = router.port(port);
                 if (err.isError()) return makeError<FileHandle::Ptr>(Error::NotExist);
+                // A system port with no destination (`system`) takes writes as its source's.
+                asSource = info.kind == MidiRouter::Kind::System && (info.sides & MidiRouter::Destination) == 0;
                 if (((flags & Vfs::Read) != 0 && (info.sides & MidiRouter::Source) == 0) ||
-                    ((flags & Vfs::Write) != 0 && (info.sides & MidiRouter::Destination) == 0))
+                    ((flags & Vfs::Write) != 0 && (info.sides & MidiRouter::Destination) == 0 && !asSource))
                         return makeError<FileHandle::Ptr>(Error::NotSupported);
         }
         // A ring for what it reads: an fd on a port read, or a new port (its destination's).
@@ -99,6 +98,7 @@ Result<FileHandle::Ptr> MidiFile::open(uint8_t port, uint8_t flags) {
         Span<MidiEvent> events(ring ? reinterpret_cast<MidiEvent *>(block + HeaderBytes) : nullptr,
                                ring ? RingEvents : 0);
         auto *file = ::new (block) MidiFile(port, events);
+        file->_asSource = asSource;
         if (port != NewPort) {
                 // On the port: told when it goes, and given its source's events if read.
                 const Error err = router.attach(port, *file, (flags & Vfs::Read) != 0);
@@ -309,7 +309,7 @@ Error MidiFile::put(uint8_t byte) {
                 MidiEvent &e = events[i];
                 e.timeNs = Clock::monotonicNs();
                 Error err;
-                if (_owner) {
+                if (_owner || _asSource) {
                         err = Midi::router().send(_port, e);
                 } else {
                         e.port = MidiRouter::NoPort; // from no port: a write to the port's file

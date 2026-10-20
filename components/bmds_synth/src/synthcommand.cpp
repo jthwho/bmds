@@ -30,6 +30,7 @@
 #include <bmds/synthfile.h>
 #include <bmds/thread.h>
 #include <bmds/vfs.h>
+#include <bmds/wavetable.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -110,8 +111,25 @@ namespace {
                 return ctx.usage();
         }
 
+        // synth status: the built-in synth's port (devplan/audio.md §25).
+        int showStatus(CommandContext &ctx) {
+                const Wavetable::Status s = Wavetable::status();
+                if (!s.on) {
+                        ctx.printf("wavetable: off (synth/wavetable)\n");
+                        return Shell::ExitSuccess;
+                }
+                ctx.printf("wavetable: midi%u, %s; %lu events, %lu dropped; started %lu times, %lu late periods; "
+                           "voices %lu at most\n",
+                           static_cast<unsigned>(s.port), s.playing ? "playing" : "idle",
+                           static_cast<unsigned long>(s.events), static_cast<unsigned long>(s.dropped),
+                           static_cast<unsigned long>(s.starts), static_cast<unsigned long>(s.late),
+                           static_cast<unsigned long>(s.peakVoices));
+                return Shell::ExitSuccess;
+        }
+
         int runSynth(CommandContext &ctx) {
                 const Span<char *const> args = ctx.args();
+                if (args.size() == 2 && std::strcmp(args[1], "status") == 0) return showStatus(ctx);
                 const char             *font = nullptr;
                 const char             *name = "synth";
                 uint32_t                period = DefaultPeriod;
@@ -233,7 +251,8 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(synth, runSynth, "[-f FONT] [-n NAME] [-p FRAMES] [-v VOICES]",
-                   "A General MIDI synth: a MIDI port (NAME, synth) playing a SoundFont (synth/font) on /dev/dsp")
+BMDS_SHELL_COMMAND(synth, runSynth, "[-f FONT] [-n NAME] [-p FRAMES] [-v VOICES] | status",
+                   "A General MIDI synth: a MIDI port (NAME, synth) playing a SoundFont (synth/font) on /dev/dsp, "
+                   "until Ctrl+C; 'status': the built-in one's (the wavetable port)")
 
 BMDS_NAMESPACE_END

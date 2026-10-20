@@ -24,6 +24,7 @@ if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_SYNTH_PORTABLE_SRCS}
                                     src/synthcommand.cpp
                                     src/synthfile.cpp
+                                    src/wavetable.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS ${BMDS_SYNTH_INCLUDES}
                                REQUIRES bmds_core bmds_kernel bmds_audio bmds_fs bmds_sysconf
