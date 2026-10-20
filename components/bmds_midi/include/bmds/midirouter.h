@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
@@ -147,15 +148,21 @@ class MidiRouter {
                  */
                 void removePort(uint8_t number);
 
-                /** @brief Told that ports came or went (after, without the router's lock). */
-                using PortsChanged = void (*)(void *arg);
+                /**
+                 * @brief Told that the graph changed: a port came, went or was renamed, a
+                 *        connection was made or ended (after, without the router's lock).
+                 */
+                using Changed = void (*)(void *arg);
 
-                /** @brief Sets who is told that ports came or went (one; null: none). Before ports are added. */
-                void setPortsChanged(PortsChanged fn, void *arg) {
-                        _portsChanged = fn;
-                        _portsChangedArg = arg;
+                /** @brief Sets who is told that the graph changed (one; null: none). Before ports are added. */
+                void setChanged(Changed fn, void *arg) {
+                        _changed = fn;
+                        _changedArg = arg;
                         return;
                 }
+
+                /** @brief Returns a count that moves with every change of the graph. @nonblocking */
+                uint32_t generation() const { return _generation.load(std::memory_order_acquire); }
 
                 /** @brief Renames port @p number. @return `Ok`, `NotExist`. */
                 Error rename(uint8_t number, StringView name);
@@ -251,8 +258,10 @@ class MidiRouter {
                 size_t     _connectionCount = 0;
                 Tap        _taps[MaxTaps];
                 char       _autoConnect[MaxAutoConnect] = {};
-                PortsChanged _portsChanged = nullptr;
-                void        *_portsChangedArg = nullptr;
+                void                  changed(); // after a change, the lock let go
+                Changed               _changed = nullptr;
+                void                 *_changedArg = nullptr;
+                std::atomic<uint32_t> _generation{0};
 };
 
 BMDS_NAMESPACE_END

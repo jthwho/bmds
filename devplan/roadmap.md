@@ -267,6 +267,8 @@ Plan: [`input.md`](input.md).
     close, libbmdsgame's `BMDS_GAME_MUSIC_MIDI_OUT`, Doom's `doom/music` (`midi` by default).
   - [ ] 6b. The patchbay (§24, outlined): a graph fd for programs, an audio graph (client to
     client in a period, devices' playback and capture), and `patchbay`, MIDI and audio wires.
+    MIDI done: `patchbay` (drag or keys, kept in `midi/connect`, live); the graph fd waits for
+    the audio graph, so its records are designed once for both.
   - [ ] 8. Media player (`mediaplayer.md`, planned; the user's choices 2026-10-09): `mplayer`, a
     GUI player for audio and MIDI files (video later), with saved playlists, a library by tags, a
     visualizer, a MIDI view, a toolkit Open dialog, and a tray controller while it plays hidden;

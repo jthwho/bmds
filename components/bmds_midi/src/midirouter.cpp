@@ -66,7 +66,7 @@ Result<uint8_t> MidiRouter::addPort(Kind kind, uint8_t sides, StringView name, M
                 }
         }
         if (number == NoPort) return makeError<uint8_t>(Error::Full);
-        if (_portsChanged != nullptr) _portsChanged(_portsChangedArg);
+        changed();
         return makeResult(number);
 }
 
@@ -87,16 +87,25 @@ void MidiRouter::removePort(uint8_t number) {
                 }
                 _ports[number] = Port();
         }
-        if (_portsChanged != nullptr) _portsChanged(_portsChangedArg);
+        changed();
         return;
 }
 
 Error MidiRouter::rename(uint8_t number, StringView name) {
-        Mutex::Locker lock(_lock, WaitForever);
-        if (number >= MaxPorts || !_ports[number].used) return Error::NotExist;
-        setName(_ports[number].name, name);
-        autoConnectLocked();
+        {
+                Mutex::Locker lock(_lock, WaitForever);
+                if (number >= MaxPorts || !_ports[number].used) return Error::NotExist;
+                setName(_ports[number].name, name);
+                autoConnectLocked();
+        }
+        changed();
         return Error::Ok;
+}
+
+void MidiRouter::changed() {
+        _generation.fetch_add(1, std::memory_order_acq_rel);
+        if (_changed != nullptr) _changed(_changedArg);
+        return;
 }
 
 Result<MidiRouter::PortInfo> MidiRouter::port(uint8_t number) {
@@ -155,19 +164,28 @@ Error MidiRouter::connectLocked(uint8_t source, uint8_t destination) {
 }
 
 Error MidiRouter::connect(uint8_t source, uint8_t destination) {
-        Mutex::Locker lock(_lock, WaitForever);
-        return connectLocked(source, destination);
+        Error err;
+        {
+                Mutex::Locker lock(_lock, WaitForever);
+                err = connectLocked(source, destination);
+        }
+        if (err.isOk()) changed();
+        return err;
 }
 
 Error MidiRouter::disconnect(uint8_t source, uint8_t destination) {
-        Mutex::Locker lock(_lock, WaitForever);
-        for (size_t i = 0; i < _connectionCount; ++i) {
-                if (_connections[i].source != source || _connections[i].destination != destination) continue;
+        {
+                Mutex::Locker lock(_lock, WaitForever);
+                size_t        i = 0;
+                while (i < _connectionCount &&
+                       (_connections[i].source != source || _connections[i].destination != destination))
+                        ++i;
+                if (i == _connectionCount) return Error::NotExist;
                 for (size_t j = i + 1; j < _connectionCount; ++j) _connections[j - 1] = _connections[j];
                 --_connectionCount;
-                return Error::Ok;
         }
-        return Error::NotExist;
+        changed();
+        return Error::Ok;
 }
 
 size_t MidiRouter::connections(Span<Connection> out) {
@@ -178,10 +196,16 @@ size_t MidiRouter::connections(Span<Connection> out) {
 
 Error MidiRouter::setAutoConnect(StringView list) {
         if (list.size() >= MaxAutoConnect) return Error::Invalid;
-        Mutex::Locker lock(_lock, WaitForever);
-        std::memcpy(_autoConnect, list.data(), list.size());
-        _autoConnect[list.size()] = '\0';
-        autoConnectLocked();
+        size_t before, after;
+        {
+                Mutex::Locker lock(_lock, WaitForever);
+                std::memcpy(_autoConnect, list.data(), list.size());
+                _autoConnect[list.size()] = '\0';
+                before = _connectionCount;
+                autoConnectLocked();
+                after = _connectionCount;
+        }
+        if (after != before) changed();
         return Error::Ok;
 }
 

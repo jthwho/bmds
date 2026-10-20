@@ -197,3 +197,4 @@ preferences-system-time         flat-color  clock
 preferences-system-network      flat-color  share
 preferences-other               flat-color  list
 preferences-desktop-panel       flat-color  template
+audio-patchbay                  flat-color  flow_chart

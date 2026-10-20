@@ -2329,6 +2329,56 @@ the connections, an audio graph, and the program.
 - Audio needs capture (step 9) for its inputs to matter beyond client-to-client chains: the
   audio graph before or after capture.
 
+### MIDI first: the design (2026-10-20)
+
+- **The graph fd waits for the audio graph,** so its records are designed once for both media
+  (a frozen ABI shaped for MIDI alone would need a second). The patchbay reads the graph as the
+  System Monitor reads its counters: through an interface of its own (`PatchSource`) whose
+  built-in implementation answers from the kernel's public classes (the router, `Midi`'s
+  watchers, sysconf), as the graph fd will; built apart, it would use the fd.
+- **The kernel's side:** the router tells of every change of its graph (a port added, removed
+  or renamed; a connection made or ended, by hand or by name) and counts them
+  (`MidiRouter::generation()`); `Midi::addWatch()` takes up to 4 watchers.
+- **The window, `patchbay`** (a built-in program, `bmds_patchbay`; one at a time, a second start
+  raises it), as qjackctl's Connections window: the ports with a source listed on the left
+  ("From"), those with a destination on the right ("To"), a port with both in each; the
+  connections drawn as wires in the band between (horizontal and vertical runs: the painter
+  fills, it has no lines), each in the colour of its source. Each row: the port's name, its
+  number and kind (`midi3 usb`).
+- **Connecting:** drag from a row on one side to a row on the other; or select one on each side
+  and press Enter (or Space): it connects them, or disconnects them if connected. Delete
+  disconnects the selected pair. Right click on a row: a menu of its connections (each to
+  remove) and Disconnect All. Arrows move the selection, Tab moves between the sides.
+- **Kept by name:** a connection made adds `SOURCE>DEST` to `midi/connect` (saved), one ended
+  takes it out, so the routing survives a reboot and a replug, as the user set it; the default
+  `system>wavetable` is a row like any other.
+- **Live:** a change of the graph anywhere (a keyboard plugged in, a session up, `midi connect`)
+  redraws it.
+- **Later, with the audio graph:** audio ports as rows of their own (a second colour), and the
+  graph fd.
+
+### As built: the MIDI patchbay (2026-10-20)
+
+- **The kernel:** `MidiRouter::setChanged()` (was `setPortsChanged()`) is told of every change,
+  connections and renames included, and only of real ones (an `Exists`, a `NotExist`, an
+  auto-connect list that connects nothing new tell nobody); `generation()` counts them
+  (host-tested). `Midi::addWatch()`/`removeWatch()`: 4 watchers, called on the changing task.
+- **`bmds_patchbay`:** `PatchSource` and `KernelPatchSource` (the router, the watch,
+  `midi/connect` kept by name: a connection made adds `SOURCE>DEST` and saves, one ended takes
+  it out first, so the setting can't bring it back), `PatchView` (the two columns, wires in
+  lanes, one per source, its colour; the selected pair thick; a drag's wire to the pointer; the
+  keys; a right click's menu of a row's connections and Disconnect All; a status line), and the
+  program (`BMDS_PROGRAM_ICONS`, the service `patchbay`: a second start raises it). In the Apps
+  menu (`patchbay.desktop`), its icon `audio-patchbay` (flat-color's flow chart, appended to
+  `rom/icons.list`).
+- **Found:** a widget made with no parent is never drawn: the window is the root widget, the
+  central one its child (the first window was empty, the desktop through it).
+- **Tried on the board (screenshots):** `system` to `wavetable` drawn at start; the USB
+  device's two cables appearing on both sides as it was turned on; Down, Tab, Enter connected
+  `USB device 1` to `wavetable` (the router and `midi/connect` both had it); Delete ended it;
+  a second `patchbay` raised the first. The mouse (dragging, the right click's menu) is for the
+  user to try. `midi/connect` was put back to its default after.
+
 ## 25. The system port and the wavetable synth (design, 2026-10-20)
 
 The user's model (2026-10-20): the built-in synth is like a sound card's FM chip, there as the

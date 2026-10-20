@@ -97,6 +97,11 @@ namespace {
                         Mutex             countersLock;         // the counters' registration
                         PortCounters     *counters = nullptr;   // MaxPorts of them, in PSRAM
                         uint8_t           systemPort = MidiRouter::NoPort; // `system` (devplan/audio.md §25)
+                        Mutex             watchLock;                       // the watchers, and calls to them
+                        struct Watcher {
+                                        Midi::Watch fn = nullptr;
+                                        void       *arg = nullptr;
+                        } watchers[Midi::MaxWatches];
         };
 
         constinit PsramObject<System>  midi;
@@ -115,10 +120,20 @@ namespace {
                 return;
         }
 
-        // Ports came or went (on the task that added or removed one, without the router's lock):
-        // each port's counters registered while it exists.
-        void portsChanged(void *) {
-                System       &s = *midi;
+        void portCounters(System &s);
+
+        // The graph changed (on the task that changed it, without the router's lock): each port's
+        // counters registered while it exists; the watchers told.
+        void graphChanged(void *) {
+                System &s = *midi;
+                portCounters(s);
+                Mutex::Locker lock(s.watchLock, WaitForever);
+                for (const System::Watcher &w : s.watchers)
+                        if (w.fn != nullptr) w.fn(w.arg);
+                return;
+        }
+
+        void portCounters(System &s) {
                 Mutex::Locker locker(s.countersLock, WaitForever);
                 if (s.counters == nullptr) return;
                 for (uint8_t n = 0; n < MidiRouter::MaxPorts; ++n) {
@@ -149,7 +164,7 @@ Error Midi::init() {
                 midi->counters = static_cast<PortCounters *>(block);
                 for (uint8_t n = 0; n < MidiRouter::MaxPorts; ++n) new (&midi->counters[n]) PortCounters();
                 for (uint8_t n = 0; n < MidiRouter::MaxPorts; ++n) midi->counters[n].number = n;
-                midi->router.setPortsChanged(portsChanged, nullptr);
+                midi->router.setChanged(graphChanged, nullptr);
         } else {
                 bmdsWarn("midi: the ports' counters aren't shown (no memory)");
         }
@@ -182,6 +197,26 @@ void Midi::applySettings() {
         String list;
         if (SysConf::get(bmdsConf_midiConnect.key, list).isOk() && s.router.setAutoConnect(list).isError())
                 bmdsWarn("midi: midi/connect is too long");
+        return;
+}
+
+Error Midi::addWatch(Watch fn, void *arg) {
+        System       &s = *midi;
+        Mutex::Locker lock(s.watchLock, WaitForever);
+        for (System::Watcher &w : s.watchers) {
+                if (w.fn != nullptr) continue;
+                w.fn = fn;
+                w.arg = arg;
+                return Error::Ok;
+        }
+        return Error::Full;
+}
+
+void Midi::removeWatch(Watch fn, void *arg) {
+        System       &s = *midi;
+        Mutex::Locker lock(s.watchLock, WaitForever); // a call under way ends first
+        for (System::Watcher &w : s.watchers)
+                if (w.fn == fn && w.arg == arg) w = System::Watcher();
         return;
 }
 

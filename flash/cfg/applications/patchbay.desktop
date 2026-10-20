@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Patchbay
+Comment=MIDI connections: which ports play which, by dragging between them
+Exec=patchbay
+Icon=audio-patchbay
+Terminal=false
+Categories=AudioVideo;Audio;Midi;

@@ -44,6 +44,22 @@ namespace Midi {
          */
         void applySettings();
 
+        /** @brief Watchers at once (`addWatch()`). */
+        constexpr size_t MaxWatches = 4;
+
+        /**
+         * @brief Told that the graph changed (a port came, went or was renamed; a
+         *        connection made or ended): on the task that changed it, without the
+         *        router's lock. It must not block, nor add or remove a watch.
+         */
+        using Watch = void (*)(void *arg);
+
+        /** @brief Adds a watcher (a patchbay). @return `Ok`, or `Full`. */
+        Error addWatch(Watch fn, void *arg);
+
+        /** @brief Removes a watcher; once it returns, it isn't called. */
+        void removeWatch(Watch fn, void *arg);
+
         /** @brief Returns true once `init()` has run. */
         bool isReady();
 

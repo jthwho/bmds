@@ -344,3 +344,27 @@ TEST_CASE("MidiUsbPacker") {
         CHECK(packer.pack(0, event({0x02}), p) == 0);
         CHECK(packer.pack(0, MidiEvent(), p) == 0);
 }
+
+TEST_CASE("midi: the router tells of every change of its graph") {
+        MidiRouter router;
+        int        told = 0;
+        router.setChanged([](void *arg) { ++*static_cast<int *>(arg); }, &told);
+        Collector      sink;
+        const uint32_t g0 = router.generation();
+        const uint8_t  a = router.addPort(MidiRouter::Kind::Virtual, MidiRouter::Source, "a", nullptr).value();
+        const uint8_t  b = router.addPort(MidiRouter::Kind::Virtual, MidiRouter::Destination, "b", &sink).value();
+        CHECK(told == 2);
+        CHECK(router.connect(a, b) == Error::Ok);
+        CHECK(router.connect(a, b) == Error::Exists); // no change: not told
+        CHECK(told == 3);
+        CHECK(router.rename(a, "a2") == Error::Ok);
+        CHECK(router.disconnect(a, b) == Error::Ok);
+        CHECK(router.disconnect(a, b) == Error::NotExist);
+        CHECK(told == 5);
+        CHECK(router.setAutoConnect("a2>b") == Error::Ok); // connects them
+        CHECK(router.setAutoConnect("a2>b") == Error::Ok); // already: no change
+        CHECK(told == 6);
+        router.removePort(b);
+        CHECK(told == 7);
+        CHECK(router.generation() == g0 + 7);
+}
