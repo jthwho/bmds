@@ -397,6 +397,10 @@ Plan: [`input.md`](input.md).
     configuration on the card when there is one (no flash writes, so no audio stalls), else on
     `/flash`; no syncing; `/flash`'s writes held while audio plays. All three steps built and
     tested on the board (§5). Open: a boot without a card, tried by hand.
+  - [ ] Network filesystems (`netfs.md`, the user's, 2026-10-21): mounts served by programs,
+    `sshfs` first (on Dropbear's client and SFTP). Step 1 done: volumes that lock themselves,
+    called without the storage lock, reference counted (host-tested). Next: the program-served
+    volume and its ABI.
 
 ## Phase 8 — Self-Hosting
 

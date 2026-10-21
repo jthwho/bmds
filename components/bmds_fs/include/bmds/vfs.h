@@ -150,7 +150,7 @@ class Directory {
  * ```
  *
  * The mount table is run-time state: `mount()` puts a filesystem at any
- * absolute path outside `/dev` and other mounts (up to four); the
+ * absolute path outside `/dev` and other mounts (up to `MaxMounts`); the
  * directories leading to it are virtual. `unmount()` removes the path.
  *
  * Paths are UTF-8 with `/` separators. A relative path is resolved against
@@ -199,6 +199,7 @@ namespace Vfs {
                         char        path[MaxMountPath + 1] = {}; ///< Where it is mounted.
                         char        device[12] = {};             ///< The device's name ("sd0p0"; "" for a tmpfs).
                         const char *type = ""; ///< "fat12", "fat16", "fat32", "exfat", "littlefs", "rom" or "tmpfs".
+                        bool        network = false; ///< A filesystem that locks itself, over a network (no trash).
         };
 
         /** @brief Sets up the VFS (the storage lock). Boot stage; idempotent. */

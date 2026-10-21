@@ -42,6 +42,14 @@ class DirectoryWatch;
  * Implementations come from static pools (`FatVolume`, `LittleFsVolume`, `RomVolume`),
  * acquired when mounted and released when unmounted; never deleted through
  * this interface. Everything expects the storage lock.
+ *
+ * A volume may lock itself instead (`locksItself()`: a network filesystem,
+ * devplan/netfs.md): it serializes its own calls and is called without the
+ * storage lock, so a call that waits on a network doesn't hold every other
+ * file operation. Such a volume is reference counted: the mount holds one
+ * reference, each call under way, open file and open directory another
+ * (`retain()`); `release()` drops one, and the last frees it. Unmounted with
+ * calls or files open, it fails them from then on (`NoMedia`).
  */
 /** @brief An open file's identity (`FileInfo`'s), told when it closes after writing. */
 struct FileIdentity {
@@ -82,8 +90,20 @@ class Volume {
                                 ~Cursor() = default;
                 };
 
-                /** @brief Unmounts and returns the volume to its pool. */
+                /**
+                 * @brief Unmounts and returns the volume to its pool; for one that locks
+                 *        itself, drops a reference (the last frees it).
+                 */
                 virtual void release() = 0;
+
+                /**
+                 * @brief True if it serializes its own calls and is called without the
+                 *        storage lock (a network filesystem): reference counted.
+                 */
+                virtual bool locksItself() const { return false; }
+
+                /** @brief One that locks itself: another reference, for `release()`. */
+                virtual void retain() {}
 
                 /** @brief Returns the device it is mounted on. */
                 virtual BlockDevice *device() const = 0;
@@ -174,6 +194,14 @@ namespace Fs {
 
         /** @brief Creates the lock and the filesystems' shared state (from `Vfs::init()`); idempotent. */
         Error init();
+
+        /**
+         * @brief Mounts @p volume, made elsewhere (one that locks itself: a network
+         *        filesystem's, devplan/netfs.md), at @p path; the mount takes the
+         *        reference given (an unmount releases it). Without the lock.
+         * @return `Ok`, or `Vfs::mount()`'s errors (the reference released then).
+         */
+        Error mountVolume(StringView path, Volume &volume);
 
         /**
          * @brief Calls the change hook, if any (`Vfs::setChangeHook()`), and

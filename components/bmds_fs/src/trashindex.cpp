@@ -122,6 +122,7 @@ namespace {
                 for (size_t k = 0; k < count; ++k) {
                         const size_t             slot = order[k];
                         const TrashIndex::Mount &m = mounts[slot];
+                        if (m.volume == nullptr) continue; // one that locks itself: no trash
                         bool                     noPath = false;
                         auto [cursor, err] = m.volume->openDirectory(TrashIndex::InfoRest, noPath);
                         if (err.isError()) continue; // no trash there (or unreadable): nothing listed

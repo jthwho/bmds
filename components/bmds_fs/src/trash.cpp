@@ -161,15 +161,18 @@ Error Trash::mountOf(StringView path, String &mount) {
         const size_t   n = Vfs::listMounts(Span<Vfs::MountInfo>(mounts, Vfs::MaxMounts));
         size_t         best = 0;
         bool           found = false;
+        bool           network = false;
         for (size_t i = 0; i < n && i < Vfs::MaxMounts; ++i) {
                 const StringView m(mounts[i].path);
                 if (isAtOrBelow(path, m) && (!found || m.size() > best)) {
                         best = m.size();
                         found = true;
+                        network = mounts[i].network;
                         (void)mount.assign(m);
                 }
         }
-        return found ? Error(Error::Ok) : Error(Error::NotSupported);
+        // A network filesystem has no trash (devplan/netfs.md): a removal is a removal there.
+        return found && !network ? Error(Error::Ok) : Error(Error::NotSupported);
 }
 
 Error Trash::move(StringView path, const Vfs::Context &context, String *name) {

@@ -199,8 +199,10 @@ namespace {
 
         // The mount table as the trash index takes it, by slot. Lock held.
         Span<const TrashIndex::Mount> trashMountsLocked(TrashIndex::Mount (&out)[MaxMounts]) {
+                // One that locks itself has no trash (devplan/netfs.md): its slot kept, empty.
                 for (size_t i = 0; i < mountCount; ++i)
-                        out[i] = TrashIndex::Mount{StringView(mounts[i].path), mounts[i].volume};
+                        out[i] = TrashIndex::Mount{StringView(mounts[i].path),
+                                                   mounts[i].volume->locksItself() ? nullptr : mounts[i].volume};
                 return Span<const TrashIndex::Mount>(out, mountCount);
         }
 
@@ -242,6 +244,20 @@ namespace {
                         StringView             rest; // Mounted: within the volume, "" for its root, else "/dir/file".
                         uint32_t               mount = 0; // Mounted: the mount slot + 1 (FileInfo::device).
         };
+
+        // Calls @p fn, a call into @p volume, with the storage lock held by the caller: a volume
+        // that locks itself (a network filesystem, devplan/netfs.md) is called without it,
+        // retained meanwhile, so a call waiting on a network holds no other file operation.
+        // The lock is taken back before returning; the mounts may have changed meanwhile.
+        template <typename Fn> auto callVolume(Volume &volume, Fn &&fn) -> decltype(fn()) {
+                if (!volume.locksItself()) return fn();
+                volume.retain();
+                Fs::lock().unlock();
+                auto result = fn();
+                (void)Fs::lock().lock(WaitForever);
+                volume.release();
+                return result;
+        }
 
         // FileInfo::id: FNV-1a over the normalized path, ASCII letters folded
         // (FAT names are case-insensitive). The root hashes as "", so that a
@@ -563,7 +579,7 @@ namespace {
                 }
                 if (node.rest.isEmpty()) return makeResult(directoryInfo(node.name));
                 bool        blocked = false;
-                const Error err = node.volume->stat(node.rest, info, blocked);
+                const Error err = callVolume(*node.volume, [&] { return node.volume->stat(node.rest, info, blocked); });
                 if (noPath != nullptr) *noPath = blocked;
                 if (err.isError()) return makeError<FileInfo>(err);
                 return makeResult(std::move(info));
@@ -658,7 +674,7 @@ namespace {
         }
 
         // The target of the link file at @p path on @p volume; Invalid if it isn't one. Lock held.
-        Error readLinkLocked(Volume &volume, StringView path, String &target) {
+        Error readLinkFile(Volume &volume, StringView path, String &target) {
                 target.clear();
                 auto [reader, err] = volume.openReader(path);
                 if (err.isError()) return err;
@@ -672,6 +688,11 @@ namespace {
                 err = rerr.isOk() ? Fs::parseLink(buf, got, target) : rerr;
                 Memory::free(buf);
                 return err;
+        }
+
+        // An emulated link's target (its file read whole). Lock held.
+        Error readLinkLocked(Volume &volume, StringView path, String &target) {
+                return callVolume(volume, [&] { return readLinkFile(volume, path, target); });
         }
 
         // Link targets read lately (devplan/programs.md §19): a link is a small file read whole, and
@@ -745,8 +766,9 @@ namespace {
                 const size_t n = toUtf16(target, buf + CookieBytes + 2, 2 * MaxTarget);
                 buf[CookieBytes + 2 + n] = 0;
                 buf[CookieBytes + 3 + n] = 0;
-                const Error err = n == 0 ? Error(Error::Invalid)
-                                         : volume.writeLink(path, ByteSpan(buf, CookieBytes + 2 + n + 2), noPath);
+                const Error err = n == 0 ? Error(Error::Invalid) : callVolume(volume, [&] {
+                        return volume.writeLink(path, ByteSpan(buf, CookieBytes + 2 + n + 2), noPath);
+                });
                 Memory::free(buf);
                 return err;
         }
@@ -783,7 +805,10 @@ namespace {
                         if (isLast) end = rest.size();
                         if (isLast && !last) break;
                         bool noPath = false;
-                        if (node.volume->stat(rest.left(end), entry, noPath).isError()) break;
+                        if (callVolume(*node.volume, [&] {
+                                    return node.volume->stat(rest.left(end), entry, noPath);
+                            }).isError())
+                                break;
                         if (!entry.isDirectory()) {
                                 String target;
                                 if (linkCandidate(entry.attributes, entry.type, entry.size) &&
@@ -952,7 +977,11 @@ Directory &Directory::operator=(Directory &&other) {
 void Directory::close() {
         if (_state == nullptr) return;
         const Kind kind = static_cast<Kind>(_state->kind);
-        if (kind == Kind::Mounted || (kind == Kind::TrashDir && _state->cursor != nullptr)) {
+        if (kind == Kind::Mounted && _state->volume->locksItself()) {
+                // Its own lock; the reference the open took let go after.
+                _state->volume->closeDirectory(_state->cursor);
+                _state->volume->release();
+        } else if (kind == Kind::Mounted || (kind == Kind::TrashDir && _state->cursor != nullptr)) {
                 Mutex::Locker lock(Fs::lock(), WaitForever);
                 // A stale directory (unmounted) is only freed.
                 _state->volume->closeDirectory(_state->cursor);
@@ -1033,6 +1062,10 @@ Result<FileInfo> Directory::next() {
                         for (;;) {
                                 if (s.cursor == nullptr) {
                                         if (s.index >= slots.size()) return makeError<FileInfo>(Error::EndOfFile);
+                                        if (slots[s.index].volume == nullptr) {
+                                                ++s.index;
+                                                continue;
+                                        }
                                         bool noPath = false;
                                         auto [cursor, err] =
                                                 slots[s.index].volume->openDirectory(TrashIndex::FilesRest, noPath);
@@ -1118,7 +1151,7 @@ Result<FileInfo> Directory::next() {
                 }
                 default: break;
         }
-        const Error err = s.cursor->next(info);
+        const Error err = callVolume(*s.volume, [&] { return s.cursor->next(info); });
         if (err.isError()) return makeError<FileInfo>(err);
         // A link by its attributes alone: reading every link to be sure made
         // listing a directory of BusyBox's applets take seconds (each read is
@@ -1156,7 +1189,7 @@ Error Fs::openReaderLocked(StringView path, Volume *&volume, Volume::Reader *&re
         if (info.error().isError()) return info.error();
         if (info.value().isDirectory()) return Error::IsDir;
         if (modified != nullptr) *modified = info.value().modified;
-        auto [opened, err] = node.volume->openReader(node.rest);
+        auto [opened, err] = callVolume(*node.volume, [&] { return node.volume->openReader(node.rest); });
         if (err.isError()) return err;
         volume = node.volume;
         reader = opened;
@@ -1225,7 +1258,8 @@ Result<String> Vfs::normalize(StringView path, StringView cwd) {
 
 namespace {
 
-        Error mountAt(StringView path, BlockDevice *device, uint64_t limitBytes);
+        Error mountAt(StringView path, BlockDevice *device, uint64_t limitBytes, Volume *given = nullptr);
+        Error mountGiven(StringView path, BlockDevice *device, uint64_t limitBytes, Volume *given);
 
         // The filesystem on @p device mounted on a volume from its pool: a ROM image in
         // mapped bytes (devplan/rom.md §3d), littlefs on a flash, FAT on anything else
@@ -1278,8 +1312,15 @@ Error Vfs::mount(StringView path, BlockDevice &device) {
 
 namespace {
 
-        // @p device null: a tmpfs of at most @p limitBytes.
-        Error mountAt(StringView path, BlockDevice *device, uint64_t limitBytes) {
+        // @p device null: a tmpfs of at most @p limitBytes, or @p given (Fs::mountVolume()), whose
+        // reference the mount takes (released on an error).
+        Error mountAt(StringView path, BlockDevice *device, uint64_t limitBytes, Volume *given) {
+                const Error err = mountGiven(path, device, limitBytes, given);
+                if (err.isError() && given != nullptr) given->release();
+                return err;
+        }
+
+        Error mountGiven(StringView path, BlockDevice *device, uint64_t limitBytes, Volume *given) {
                 using namespace Vfs;
                 const Result<String> normalized = normalize(path, "/");
                 if (normalized.error().isError()) return normalized.error();
@@ -1298,8 +1339,10 @@ namespace {
                         if (device != nullptr && overlaps(i, *device)) return Error::Busy;
                 }
                 if (mountCount == MaxMounts) return Error::Full;
-                Volume *volume = nullptr;
-                if (device != nullptr) {
+                Volume *volume = given;
+                if (given != nullptr) {
+                        // made elsewhere, mounted already
+                } else if (device != nullptr) {
                         const Error err = mountVolumeLocked(*device, volume);
                         if (err.isError()) return err;
                 } else {
@@ -1329,6 +1372,10 @@ namespace {
 
 Error Vfs::mountTmpfs(StringView path, uint64_t limitBytes) {
         return mountAt(path, nullptr, limitBytes);
+}
+
+Error Fs::mountVolume(StringView path, Volume &volume) {
+        return mountAt(path, nullptr, 0, &volume);
 }
 
 Error Vfs::setTmpfsLimit(StringView path, uint64_t limitBytes) {
@@ -1539,6 +1586,7 @@ size_t Vfs::listMounts(Span<MountInfo> out) {
                         if (e != nullptr) std::memcpy(info.device, e->name, sizeof(info.device));
                 }
                 info.type = mounts[i].volume->typeName();
+                info.network = mounts[i].volume->locksItself();
         }
         return n;
 }
@@ -1726,7 +1774,8 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                 }
                 bool                    noPath = false;
                 const FileIdentity      identity{pathId(storage.view()), Fs::folderId(storage.view()), node.mount};
-                Result<FileHandle::Ptr> handle = node.volume->open(node.rest, flags, identity, noPath, &target);
+                Result<FileHandle::Ptr> handle = callVolume(
+                        *node.volume, [&] { return node.volume->open(node.rest, flags, identity, noPath, &target); });
                 if (handle.error().isError()) {
                         // A link as the last component (openFile read it), or along the way.
                         if (!target.isEmpty()) {
@@ -1853,6 +1902,8 @@ Result<ByteSpan> Vfs::map(StringView path, const Context &context) {
         if (info.value().isDirectory()) return makeError<ByteSpan>(Error::IsDir);
         if (node.kind != Kind::Mounted) return makeError<ByteSpan>(Error::NotSupported);
         bool noPath = false;
+        // Bytes in place: a filesystem in memory or on the flash, never one that locks itself.
+        if (node.volume->locksItself()) return makeError<ByteSpan>(Error::NotSupported);
         return node.volume->map(node.rest, noPath);
 }
 
@@ -1974,8 +2025,10 @@ Result<Directory> Vfs::openDirectory(StringView path, const Context &context) {
                 }
                 if (node.kind == Kind::Mounted) {
                         bool noPath = false;
-                        auto [cursor, err] = node.volume->openDirectory(node.rest, noPath);
+                        auto [cursor, err] =
+                                callVolume(*node.volume, [&] { return node.volume->openDirectory(node.rest, noPath); });
                         state->cursor = cursor;
+                        if (err.isOk() && node.volume->locksItself()) node.volume->retain(); // while open
                         if (err.isError()) {
                                 state->~State();
                                 Memory::free(mem);
@@ -2045,7 +2098,7 @@ Error Vfs::mkdir(StringView path, const Context &context) {
                 if (err == Error::NotExist && outsideFilesystemsLocked(storage)) err = Error::PermissionDenied;
                 if (err.isError()) return err;
                 bool        noPath = false;
-                const Error made = node.volume->mkdir(node.rest, noPath);
+                const Error made = callVolume(*node.volume, [&] { return node.volume->mkdir(node.rest, noPath); });
                 if (noPath && followPathLocked(storage, false)) continue;
                 if (made.isOk()) Fs::tellEntryLocked(storage.view(), DirectoryWatch::Entries, false);
                 return made;
@@ -2069,7 +2122,7 @@ Error Vfs::rmdir(StringView path, const Context &context) {
                 if (noPath && followPathLocked(storage, false)) continue;
                 if (info.error().isError()) return info.error();
                 if (!info.value().isDirectory()) return Error::NotDir;
-                const Error removed = node.volume->rmdir(node.rest);
+                const Error removed = callVolume(*node.volume, [&] { return node.volume->rmdir(node.rest); });
                 if (removed.isOk()) {
                         Fs::tellEntryLocked(storage.view(), DirectoryWatch::Entries, true);
                         dropTrashInfoLocked(node, storage.view());
@@ -2099,7 +2152,7 @@ Error Vfs::remove(StringView path, const Context &context) {
                 if (noPath && followPathLocked(storage, false)) continue;
                 if (info.error().isError()) return info.error();
                 if (info.value().isDirectory()) return Error::IsDir;
-                err = node.volume->remove(node.rest);
+                err = callVolume(*node.volume, [&] { return node.volume->remove(node.rest); });
                 if (err.isOk()) {
                         Fs::changedLocked(node.mount, pathId(storage.view()));
                         Fs::tellEntryLocked(storage.view(), DirectoryWatch::Entries, false);
@@ -2146,7 +2199,9 @@ namespace {
                         }
                         if (fromNode.volume != toNode.volume) return Error::NotSupported;
                         bool        noPath = false;
-                        const Error renamed = fromNode.volume->rename(fromNode.rest, toNode.rest, mode, noPath);
+                        const Error renamed = callVolume(*fromNode.volume, [&] {
+                                return fromNode.volume->rename(fromNode.rest, toNode.rest, mode, noPath);
+                        });
                         if (noPath && (followPathLocked(fromStorage, false) || followPathLocked(toStorage, false)))
                                 continue;
                         if (renamed.isOk()) {
@@ -2210,7 +2265,7 @@ Error Vfs::setModified(StringView path, Timestamp time, const Context &context) 
         Node node;
         err = targetLocked(storage, Error::PermissionDenied, node);
         if (err.isError()) return err;
-        err = node.volume->setModified(node.rest, time);
+        err = callVolume(*node.volume, [&] { return node.volume->setModified(node.rest, time); });
         if (err.isOk()) {
                 Fs::changedLocked(node.mount, pathId(storage.view()));
                 Fs::tellEntryLocked(storage.view(), DirectoryWatch::Contents, false);
@@ -2240,7 +2295,8 @@ Result<FsInfo> Vfs::statfs(StringView path, const Context &context) {
         const Result<Node> found = lookupLocked(path, context, storage);
         if (found.error().isError()) return makeError<FsInfo>(found.error());
         if (found.value().kind != Kind::Mounted) return makeError<FsInfo>(Error::NotSupported);
-        return found.value().volume->info();
+        Volume &volume = *found.value().volume;
+        return callVolume(volume, [&] { return volume.info(); });
 }
 
 // --- Directory watches (directorywatch.h) ----------------------------------
