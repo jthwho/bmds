@@ -17,6 +17,7 @@ set(BMDS_NET_PORTABLE_SRCS
         src/icmpratelimit.cpp
         src/multicastfilter.cpp
         src/netclassifier.cpp
+        src/netmountlist.cpp
         src/ntp.cpp
         src/ptp.cpp
         src/ptpport.cpp)
@@ -77,6 +78,7 @@ if(COMMAND idf_component_register)
                                     src/ptpservice.cpp
                                     src/socket.cpp
                                     src/socketfastpath.cpp
+                                    src/netmounts.cpp
                                     src/sshservice.cpp
                                     src/timesync.cpp
                                INCLUDE_DIRS include

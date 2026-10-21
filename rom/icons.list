@@ -198,3 +198,6 @@ preferences-system-network      flat-color  share
 preferences-other               flat-color  list
 preferences-desktop-panel       flat-color  template
 audio-patchbay                  flat-color  flow_chart
+
+# --- Network filesystems (devplan/netfs.md step 4)
+folder-remote                   glyphs      cloud

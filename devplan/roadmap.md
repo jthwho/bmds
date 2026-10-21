@@ -402,7 +402,8 @@ Plan: [`input.md`](input.md).
     called without the storage lock, reference counted (host-tested). Step 2 done: filesystems
     served by programs (slot 123, `fs_serve`; `progtest netfs`). Step 3 done: `sshfs` in `/rom/bin`,
     the VFS following a filesystem's own links (tried through a local `sftp-server`; a session to
-    a real SSH server still to try). Next: mounts from the settings.
+    a real SSH server still to try). Step 4 done: `net/mounts`, kept mounted by a kernel service
+    once the network is up, and a network mount's icon in the file browser.
 
 ## Phase 8 — Self-Hosting
 

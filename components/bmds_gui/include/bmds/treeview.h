@@ -52,6 +52,19 @@ class TreeView : public ItemView {
                  */
                 void setChildIcon(StringView name, const Icon *icon);
 
+                /** @brief `setPathIcon()`'s paths at most. */
+                static constexpr size_t MaxPathIcons = 4;
+
+                /**
+                 * @brief Draws the row whose path is @p path (shown or not yet) with @p icon (the
+                 *        caller's) rather than a folder's: a network mount's in the file browser.
+                 * @return `Ok`, `Full` (`MaxPathIcons` paths already), `Invalid` (too long).
+                 */
+                Error setPathIcon(StringView path, const Icon *icon);
+
+                /** @brief Forgets every `setPathIcon()`. */
+                void clearPathIcons();
+
                 /** @brief Adds a root (its name a path, `/sd0/p0`). @return `Ok` or `NoMem`. */
                 Error addRoot(StringView path);
 
@@ -128,6 +141,11 @@ class TreeView : public ItemView {
                 const Icon *_openIcon = nullptr;
                 const Icon *_childIcon = nullptr; // setChildIcon()'s, for a root's child named _childName
                 char        _childName[32] = {};
+                struct PathIcon {
+                                const Icon *icon = nullptr; // null: the entry is free
+                                char        path[64] = {};  // Vfs::MountInfo's
+                };
+                PathIcon    _pathIcons[MaxPathIcons];
                 void        tellRowsChanged() {
                         if (_rowsChanged != nullptr) _rowsChanged(_rowsChangedArg, *this);
                         return;

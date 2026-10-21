@@ -28,6 +28,7 @@
 #include <bmds/midi.h>
 #include <bmds/netmidi.h>
 #include <bmds/romdisk.h>
+#include <bmds/netmounts.h>
 #include <bmds/sshservice.h>
 #include <bmds/storage.h>
 #include <bmds/synthfile.h>
@@ -73,6 +74,11 @@ namespace {
                 return bmds::SshService::init(loader);
         }
 
+        // The network filesystems kept mounted from net/mounts (devplan/netfs.md step 4).
+        bmds::Error startNetMounts() {
+                return bmds::NetMounts::init(loader);
+        }
+
         // The board as a USB device while usb/device/mode says so (devplan/audio.md §23): its
         // serial port's shells run by the loader.
         bmds::Error startUsbDevice() {
@@ -109,6 +115,7 @@ namespace {
                 {"net", bmds::EthernetDevice::init}, // eth0 (devplan/network.md)
                 {"ip", bmds::NetStack::init},        // lwIP, lo, and eth0's addresses from sysconf
                 {"ssh", startSsh},                   // dropbear from the card while net/ssh/server is on
+                {"netmounts", startNetMounts},       // net/mounts' filesystems, mounted once the network is up
                 {"netmidi", bmds::NetMidi::init},    // MIDI over the network while midi/net/enabled is on
                 {"shell", startSerialShell},
                 {"healthy", bmds::Update::confirm}, // the boot got here: kept if it was on probation

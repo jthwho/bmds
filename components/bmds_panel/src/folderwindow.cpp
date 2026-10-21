@@ -175,6 +175,17 @@ Error FolderWindow::build() {
         return Error::Ok;
 }
 
+// The tree's network mounts drawn as such (devplan/netfs.md step 4); again at each mount and unmount.
+void FolderWindow::markNetworkMounts() {
+        _tree->clearPathIcons();
+        Vfs::MountInfo mounts[Vfs::MaxMounts];
+        const size_t   n = Vfs::listMounts(Span<Vfs::MountInfo>(mounts));
+        const Icon    *remote = _host.fileIcons().named(IconId::FolderRemote, 16);
+        for (size_t i = 0; i < n && remote != nullptr; ++i)
+                if (mounts[i].network) (void)_tree->setPathIcon(StringView(mounts[i].path), remote);
+        return;
+}
+
 // The window's and the tree's icons (again after a new theme: the old ones are gone).
 void FolderWindow::setIcons() {
         FileIcons  &icons = _host.fileIcons();
@@ -183,6 +194,7 @@ void FolderWindow::setIcons() {
         // The trash's own (full or empty), else a folder; the tree's /trash too.
         const IconId trash = icons.isTrashFull() ? IconId::UserTrashFull : IconId::UserTrash;
         _tree->setChildIcon(Vfs::TrashPath.mid(1), icons.named(trash, 16));
+        markNetworkMounts();
         const IconId own = isTrash() ? trash : IconId::Folder;
         setIcon(icons.named(own, 16) != nullptr ? icons.named(own, 16) : folder);
         setLargeIcon(icons.named(own, 32) != nullptr ? icons.named(own, 32) : icons.named(IconId::Folder, 32));
@@ -338,6 +350,7 @@ void FolderWindow::watchedChanged(StringView folder, uint8_t changes) {
                         refresh();
                 }
         }
+        if ((changes & DirectoryWatch::Mounts) != 0) markNetworkMounts();
         if ((changes & (DirectoryWatch::Entries | DirectoryWatch::Mounts)) != 0) treeChanged(folder);
         return;
 }

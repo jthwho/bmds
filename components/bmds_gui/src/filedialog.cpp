@@ -206,7 +206,9 @@ void FileDialog::setPlaces() {
         if (Vfs::stat(Home, Root).isOk()) add("Home", Home, IconId::UserHome);
         for (size_t i = 0; i < n; ++i)
                 add(StringView(mounts[i].path), StringView(mounts[i].path),
-                    StringView(mounts[i].type) == "rom" ? IconId::MediaFlash : IconId::DriveHarddisk);
+                    mounts[i].network                     ? IconId::FolderRemote
+                    : StringView(mounts[i].type) == "rom" ? IconId::MediaFlash
+                                                          : IconId::DriveHarddisk);
         add("/", "/", IconId::Computer);
         for (; k < MaxPlaces; ++k) _places[k].button->setVisible(false);
         static_cast<BoxLayout *>(_places[0].button->parent())->relayout();

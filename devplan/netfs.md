@@ -1,7 +1,7 @@
 # Network Filesystems: Mounts Served by Programs, `sshfs` First
 
-Status: **steps 1 to 3 done** (`sshfs`; its speed over a real SSH link still to measure); next,
-mounts from the settings (2026-10-21).
+Status: **steps 1 to 4 done** (2026-10-21); still to try: a session to a real SSH server (speed
+against `scp`, the prompts).
 
 ## 1. Goal
 
@@ -132,8 +132,30 @@ shell and the file browser use it as they use the card.
 
 ### Mounts from the settings (step 4)
 
-- `net/mounts`: mounts made when the network is up (`sshfs pc:/home/user /net/pc`),
-  retried with backoff; the file browser shows them with the card's.
+- **`net/mounts`** (a `String`, empty by default): the network filesystems to keep mounted,
+  `;`-separated, each a mount program and its arguments as typed:
+  `sshfs jth@pc:src /net/pc; sshfs -p 2222 me@server: /net/server`. Up to 4. Checked when set:
+  the program is one the system knows as a mount program (`sshfs`, for now), the arguments end in
+  an absolute mount point, the points differ. No quoting: an argument has no spaces or `;`.
+- **A kernel service, `netmounts`** (`bmds_net`, as the SSH server's, `sshservice.cpp`): a thread
+  that exists while `net/mounts` has entries. Each entry's program runs in the foreground
+  (`sshfs -f ...`: the service's child is the server itself), started when an interface is up
+  with an address (`NetStatus::Watcher` wakes it), its output to the system log (`netmounts`),
+  `HOME` and `PATH` as a shell's. When it ends (the connection dropped, the server gone), it is
+  started again after 5 s, doubling to 5 minutes, back to 5 s after a run of a minute; while no
+  interface is up, it waits for one. A setting changed: the entries gone or changed are
+  stopped (`SIGTERM`, which unmounts; `SIGKILL` 5 s later), the new ones started, the rest
+  left alone. `umount` by hand ends that run; the service mounts it again (to stop that, remove
+  the entry).
+- **No prompts:** a program the service starts has no terminal, so a mount from the settings
+  needs a key that needs no passphrase and a host already in `known_hosts` (connect once by hand:
+  `ssh` or `sshfs`), or `-y`. A refused login is in the log, and retried with the backoff.
+- **The file browser and the file dialog** show a network mount with its own icon
+  (`folder-remote`, appended to the icon theme): the tree's rows by path (`TreeView::setPathIcon`),
+  the dialog's places by `MountInfo::network`; both follow mounts and unmounts as now.
+- **Tests:** host: the entries' parsing and checking; the board: an entry through a local
+  `sftp-server` (`sshfs -s`): mounted at boot and after a change, again after its server is
+  killed, gone when the entry is removed; the log's lines.
 
 ## 4. Steps
 
@@ -169,7 +191,26 @@ shell and the file browser use it as they use the card.
 - **Not yet:** the zone database and the leap-second list read through `closeReader()` under the
   lock; harmless until one is put on a network mount (step 4 can refuse that).
 
-## 6. As built: step 3 (2026-10-21)
+## 6. As built: step 4 (2026-10-21)
+
+- **`net/mounts`** as designed (§3), declared by the service (`SysConf::declareKernel`, 1023 bytes
+  at most) with its check; the parsing is portable (`netmountlist.cpp`, `NetMounts::parse()`,
+  host-tested), the service not (`netmounts.cpp`, booted after `ssh`). Its log tag:
+  `netmounts`. Looking a program up on `shell/path` is shared with the SSH server's service
+  (`findprogram.h`).
+- **The thread** ends when the list is empty, checking under its lock that no entries came
+  meanwhile (the SSH service's thread could miss a change made as it ended; not fixed there).
+- **The icon:** `folder-remote` (Glyphs' `cloud`), appended to `rom/icons.list`; the tree's rows
+  by path (`TreeView::setPathIcon()`, 4 at most), the file dialog's places by
+  `MountInfo::network`. A folder view of `/net` still draws a mount point as a folder.
+- **Tried on the board,** through local `sftp-server`s (`sshfs -s`): an entry set and mounted at
+  once; its server killed, the mount gone and back 5 s later (the log saying so); a second entry
+  added with the first's program left running; one removed (stopped, the tree's row and icon
+  gone); the list emptied (nothing left running); a bad value refused; an entry saved and the
+  board rebooted: mounted 0.84 s after boot, as DHCP gave eth0 its address. The setting was put
+  back to its default and saved (`saved: (none)`).
+
+## 7. As built: step 3 (2026-10-21)
 
 - **Links in the VFS** (`fslayer.h`): a volume may keep links of its own (`hasLinks()`): its
   `stat()` says `FileType::Link`, `readLink()` reads one, `writeLink()` takes the target itself.
@@ -213,7 +254,7 @@ shell and the file browser use it as they use the card.
   child are measured. Requests go one at a time: several callers wait on each other's round
   trips (a pipelined loop if that shows).
 
-## 7. As built: step 2 (2026-10-21)
+## 8. As built: step 2 (2026-10-21)
 
 - **ABI (slot 123, `fs_serve`):** `bmds_fs_serve_t`, `bmds_fs_request_t`, `bmds_fs_reply_t`,
   `bmds_fs_entry_t`, `bmds_fs_space_t` (`STATFS`'s payload: `bmds_fs_info_t` was taken, by
@@ -238,7 +279,7 @@ shell and the file browser use it as they use the card.
   checks through it, then the server's fd closed (`ENOMEDIUM`, then the mount gone). The host
   suite, `progtest files` and `posix` on `/tmp`, and the compatibility corpus pass.
 
-## 8. Alternatives (not now)
+## 9. Alternatives (not now)
 
 - **SFTP in the kernel:** the SSH transport twice. No.
 - **NFSv3 or 9P in the kernel** (no encryption): fast and simple, but the PC needs a server

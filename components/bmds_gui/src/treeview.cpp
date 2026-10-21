@@ -54,6 +54,33 @@ void TreeView::setChildIcon(StringView name, const Icon *icon) {
         return;
 }
 
+Error TreeView::setPathIcon(StringView path, const Icon *icon) {
+        if (path.size() >= sizeof(PathIcon::path)) return Error::Invalid;
+        PathIcon *free = nullptr;
+        for (PathIcon &e : _pathIcons) {
+                if (e.icon == nullptr) {
+                        if (free == nullptr) free = &e;
+                        continue;
+                }
+                if (StringView(e.path) != path) continue;
+                e.icon = icon;
+                update();
+                return Error::Ok;
+        }
+        if (icon == nullptr) return Error::Ok;
+        if (free == nullptr) return Error::Full;
+        std::snprintf(free->path, sizeof(free->path), "%.*s", int(path.size()), path.data());
+        free->icon = icon;
+        update();
+        return Error::Ok;
+}
+
+void TreeView::clearPathIcons() {
+        for (PathIcon &e : _pathIcons) e.icon = nullptr;
+        update();
+        return;
+}
+
 void TreeView::changedRows(int keep) {
         resetSelecting(keep, false);
         if (keep >= 0) showRow(size_t(keep));
@@ -234,6 +261,9 @@ void TreeView::paintRows(Painter &painter, const Rect &viewport) {
         const size_t first = scrollY() / RowHeight;
         const size_t last = (scrollY() + viewport.height) / RowHeight;
         const bool   focus = showsFocus();
+        int          pathRows[MaxPathIcons]; // setPathIcon()'s rows, found once
+        for (size_t k = 0; k < MaxPathIcons; ++k)
+                pathRows[k] = _pathIcons[k].icon != nullptr ? _rows.find(StringView(_pathIcons[k].path)) : -1;
         for (size_t row = first; row <= last && row < _rows.count(); ++row) {
                 const TreeRows::Row &r = _rows.row(row);
                 const int            y = int(viewport.y) + int(row) * RowHeight - int(scrollY());
@@ -259,6 +289,8 @@ void TreeView::paintRows(Painter &painter, const Rect &viewport) {
                                                                         : _folderIcon;
                 if (r.depth == 1 && _childIcon != nullptr && _rows.name(row) == StringView(_childName))
                         icon = _childIcon;
+                for (size_t k = 0; k < MaxPathIcons; ++k)
+                        if (pathRows[k] == int(row)) icon = _pathIcons[k].icon;
                 if (icon != nullptr && icon->isValid() && icon->height <= 16)
                         (void)painter.image(x + Indent, y + (RowHeight - icon->height) / 2, *icon, background);
                 if (int(row) == editing()) continue;

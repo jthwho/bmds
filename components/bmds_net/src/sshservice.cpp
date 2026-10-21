@@ -27,6 +27,7 @@
 #include <bmds/texttemplate.h>
 #include <bmds/thread.h>
 #include <bmds/vfs.h>
+#include "findprogram.h"
 
 
 BMDS_NAMESPACE_BEGIN
@@ -40,8 +41,6 @@ namespace {
         constexpr const char *AuthorizedKey = "net/ssh/authorized-keys-dir";
 
         constexpr const char *HostKeyName = "dropbear_ed25519_host_key";
-        constexpr const char *DefaultPath =
-                "/bin:/rom/bin:/apps:/sd0/p0/bin"; // as the shell's, when shell/path is unset
 
         constexpr unsigned int FirstRetryMs = 5'000;
         constexpr unsigned int MaxRetryMs = 300'000;
@@ -70,25 +69,6 @@ namespace {
         bool enabled() {
                 auto [on, err] = SysConf::getBool(StringView(ServerKey));
                 return err.isOk() && on;
-        }
-
-        // @p name in the directories of shell/path (the first that has it), into @p out.
-        bool findProgram(const char *name, String &out) {
-                String path(MemSpace::Psram);
-                if (SysConf::get(StringView("shell/path"), path).isError() || path.isEmpty())
-                        (void)path.assign(StringView(DefaultPath));
-                StringView rest = path.view();
-                while (!rest.isEmpty()) {
-                        const size_t     colon = rest.indexOf(':');
-                        const StringView dir = colon == StringView::NPos ? rest : rest.left(colon);
-                        rest = colon == StringView::NPos ? StringView() : rest.mid(colon + 1);
-                        if (dir.isEmpty()) continue;
-                        out.clear();
-                        if (out.appendf("%.*s/%s", int(dir.size()), dir.data(), name).isError()) return false;
-                        const Result<FileInfo> info = Vfs::stat(out.view(), Vfs::Context{"/", nullptr});
-                        if (info.isOk() && !info.value().isDirectory()) return true;
-                }
-                return false;
         }
 
         // A request with no input, its output to the log.
@@ -147,7 +127,7 @@ namespace {
         // Starts the server with the settings now: its pid, or 0.
         int32_t startServer() {
                 String dropbear(MemSpace::Psram);
-                if (!findProgram("dropbear", dropbear)) {
+                if (!NetPrograms::find("dropbear", dropbear)) {
                         bmdsWarn("ssh: no dropbear on shell/path (install the dropbear package)");
                         return 0;
                 }

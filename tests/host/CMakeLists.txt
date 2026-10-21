@@ -74,6 +74,7 @@ add_executable(bmds_host_tests
         netvolume.cpp
         servedfs.cpp
         sshfs.cpp
+        netmounts.cpp
         sshfs_posix.c
         ${BMDS_ROOT}/programs/sshfs/sshfs.c
         ${BMDS_ROOT}/programs/sftp-server/sftp.c

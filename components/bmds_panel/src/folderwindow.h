@@ -239,6 +239,7 @@ class FolderWindow final : public GuiWindow {
                 void        updateStatus();
                 void        updateTools();
                 void        setIcons();
+                void        markNetworkMounts(); // the tree's network mounts drawn as such
                 void        startRename(size_t row, StringView text);
                 void        createNew(FileOps::NewKind kind);
                 void        closeWindow();
