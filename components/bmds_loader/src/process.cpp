@@ -366,6 +366,43 @@ int32_t Process::errnoFor(Error err) {
         }
 }
 
+Error Process::errorFor(int32_t error) {
+        switch (-error) {
+                case 0: return Error::Ok;
+                case BMDS_EINVAL: return Error::Invalid;
+                case BMDS_ENOMEM: return Error::NoMem;
+                case BMDS_ETIMEDOUT: return Error::Timeout;
+                case BMDS_EAGAIN: return Error::WouldBlock;
+                case BMDS_EBUSY: return Error::Busy;
+                case BMDS_ENOENT: return Error::NotExist;
+                case BMDS_EEXIST: return Error::Exists;
+                case BMDS_ENOTSUP:
+                case BMDS_ENOSYS: return Error::NotSupported;
+                case BMDS_ENOSPC: return Error::NoSpace;
+                case BMDS_ERANGE: return Error::OutOfRange;
+                case BMDS_EACCES:
+                case BMDS_EPERM: return Error::PermissionDenied;
+                case BMDS_ECANCELED: return Error::Cancelled;
+                case BMDS_EBADF: return Error::BadDescriptor;
+                case BMDS_EMFILE: return Error::TooManyOpen;
+                case BMDS_ELOOP: return Error::TooManyLinks;
+                case BMDS_EISDIR: return Error::IsDir;
+                case BMDS_ENOTDIR: return Error::NotDir;
+                case BMDS_ENOTEMPTY: return Error::NotEmpty;
+                case BMDS_EROFS: return Error::ReadOnly;
+                case BMDS_EINTR: return Error::Interrupted;
+                case BMDS_EPIPE: return Error::BrokenPipe;
+                case BMDS_ENOMEDIUM: return Error::NoMedia;
+                case BMDS_ECONNREFUSED: return Error::ConnectionRefused;
+                case BMDS_ECONNRESET: return Error::ConnectionReset;
+                case BMDS_ENOTCONN: return Error::NotConnected;
+                case BMDS_ENETDOWN: return Error::NetworkDown;
+                case BMDS_ENETUNREACH: return Error::NetworkUnreachable;
+                case BMDS_EHOSTUNREACH: return Error::HostUnreachable;
+                default: return Error::IoError;
+        }
+}
+
 int32_t Process::read(int32_t fd, void *buf, uint32_t size) {
         const FileHandle::Ptr h = handleOf(fd);
         if (!h) return -BMDS_EBADF;

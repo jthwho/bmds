@@ -80,6 +80,10 @@
  *   progtest speech [quiet] text to speech (speech.md §4): audio_speak's errors, a sentence's
  *                         samples, the info, NUL, markup, speed, odd reads, full writes, two fds;
  *                         bmds_say aloud unless quiet
+ *   progtest netfs        a filesystem this program serves (fs_serve, netfs.md step 2): a tree in
+ *                         memory at /net/progtest; the bad configs, a big file's gathered writes and
+ *                         reads ahead, times, renames, then files' checks through it; unmounted when
+ *                         the server's fd closes
  *   progtest rtnet [PEER] real-time sockets (network.md §30f): SO_PRIORITY and IP_TOS, the
  *                         timestamp options and their control messages on loopback, the error
  *                         queue's errors, BMDS_SO_FASTPATH's; with PEER (a UDP reflector on port
@@ -205,6 +209,393 @@ static int files(const char *dir) {
         while (opened < 9 && (many[opened] = opendir(".")) != NULL) ++opened;
         CHECK(opened == 8 && errno == EMFILE);
         printf("files: ok\n");
+        return 0;
+}
+
+/* --- A filesystem served by this program (devplan/netfs.md step 2). */
+
+#define NETFS_NODES 48
+#define NETFS_PATH 128
+#define NETFS_DATA 8192u
+#define NETFS_SPACE (4u << 20)
+
+typedef struct netfs_node_t {
+                int     used;
+                int     dir;
+                char    path[NETFS_PATH];
+                char   *data;
+                size_t  len;
+                size_t  cap;
+                int64_t modified;
+} netfs_node_t;
+
+static netfs_node_t netfs_nodes[NETFS_NODES];
+static int          netfs_fd = -1;
+static volatile int netfs_quit;
+static int          netfs_requests; /* __atomic: the server counts, the test reads */
+static uint8_t     *netfs_in, *netfs_out;
+
+static int64_t netfs_now(void) {
+        struct timespec t;
+        clock_gettime(CLOCK_REALTIME, &t);
+        return (int64_t)t.tv_sec * 1000000000LL + t.tv_nsec;
+}
+
+static int netfs_find(const char *p, size_t n) {
+        for (int i = 0; i < NETFS_NODES; ++i)
+                if (netfs_nodes[i].used && strlen(netfs_nodes[i].path) == n && memcmp(netfs_nodes[i].path, p, n) == 0)
+                        return i;
+        return -1;
+}
+
+static int netfs_add(const char *p, size_t n, int dir) {
+        if (n >= NETFS_PATH) return -1;
+        for (int i = 0; i < NETFS_NODES; ++i) {
+                netfs_node_t *node = &netfs_nodes[i];
+                if (node->used) continue;
+                memset(node, 0, sizeof(*node));
+                node->used = 1;
+                node->dir = dir;
+                memcpy(node->path, p, n);
+                node->modified = netfs_now();
+                return i;
+        }
+        return -1;
+}
+
+static void netfs_free(int i) {
+        free(netfs_nodes[i].data);
+        memset(&netfs_nodes[i], 0, sizeof(netfs_nodes[i]));
+        return;
+}
+
+/* Is @p node directly in directory @p p (@p n bytes)? */
+static int netfs_in_dir(const netfs_node_t *node, const char *p, size_t n) {
+        if (strcmp(node->path, "/") == 0) return 0;
+        size_t at = (size_t)(strrchr(node->path, '/') - node->path);
+        if (at == 0) at = 1; /* in "/" */
+        return at == n && memcmp(node->path, p, n) == 0;
+}
+
+static int netfs_has_children(int dir) {
+        for (int i = 0; i < NETFS_NODES; ++i)
+                if (netfs_nodes[i].used &&
+                    netfs_in_dir(&netfs_nodes[i], netfs_nodes[dir].path, strlen(netfs_nodes[dir].path)))
+                        return 1;
+        return 0;
+}
+
+static int netfs_resize(netfs_node_t *node, size_t len) {
+        if (len > node->cap) {
+                const size_t cap = len > node->cap * 2 ? len : node->cap * 2;
+                char        *d = realloc(node->data, cap);
+                if (d == NULL) return -BMDS_ENOSPC;
+                node->data = d;
+                node->cap = cap;
+        }
+        if (len > node->len) memset(node->data + node->len, 0, len - node->len);
+        node->len = len;
+        node->modified = netfs_now();
+        return 0;
+}
+
+static size_t netfs_entry(uint8_t *out, const netfs_node_t *node) {
+        const char     *name = strcmp(node->path, "/") == 0 ? "" : strrchr(node->path, '/') + 1;
+        bmds_fs_entry_t e = {0};
+        e.type = node->dir ? BMDS_TYPE_DIRECTORY : BMDS_TYPE_FILE;
+        e.bytes = node->len;
+        e.modified_ns = node->modified;
+        e.mode = node->dir ? 0755 : 0644;
+        e.name_len = (uint32_t)strlen(name);
+        e.size = (uint32_t)((sizeof(e) + e.name_len + 7) & ~(size_t)7);
+        memset(out, 0, e.size);
+        memcpy(out, &e, sizeof(e));
+        memcpy(out + sizeof(e), name, e.name_len);
+        return e.size;
+}
+
+/* RENAME: @p from to @p to, and everything under it. */
+static int netfs_rename(int from, const char *to, size_t n, uint32_t flags) {
+        const int there = netfs_find(to, n);
+        if (there == from) return 0;
+        if (there >= 0) {
+                if ((flags & BMDS_FS_REPLACE) == 0) return -BMDS_EEXIST;
+                if (netfs_nodes[there].dir && netfs_has_children(there)) return -BMDS_ENOTEMPTY;
+                netfs_free(there);
+        }
+        char         old[NETFS_PATH];
+        const size_t on = strlen(netfs_nodes[from].path);
+        memcpy(old, netfs_nodes[from].path, on + 1);
+        for (int i = 0; i < NETFS_NODES; ++i) {
+                netfs_node_t *node = &netfs_nodes[i];
+                if (!node->used || strncmp(node->path, old, on) != 0 || (node->path[on] != '/' && node->path[on] != 0))
+                        continue;
+                char         path[NETFS_PATH];
+                const size_t rest = strlen(node->path + on);
+                if (n + rest >= NETFS_PATH) return -BMDS_ENAMETOOLONG;
+                memcpy(path, to, n);
+                memcpy(path + n, node->path + on, rest + 1);
+                memcpy(node->path, path, n + rest + 1);
+        }
+        return 0;
+}
+
+/* The reply to the request in @p in, made in @p out; its bytes. */
+static size_t netfs_answer(const uint8_t *in, uint8_t *out) {
+        bmds_fs_request_t r;
+        memcpy(&r, in, sizeof(r));
+        const char     *path = (const char *)in + sizeof(r);
+        const char     *path2 = path + r.path_len;
+        const uint8_t  *data = (const uint8_t *)path2 + r.path2_len;
+        bmds_fs_reply_t y = {0};
+        uint8_t        *pay = out + sizeof(y);
+        size_t          n = 0;
+        int             at = netfs_find(path, r.path_len);
+        netfs_node_t   *h = r.handle >= 1 && r.handle <= NETFS_NODES && netfs_nodes[r.handle - 1].used
+                                    ? &netfs_nodes[r.handle - 1]
+                                    : NULL;
+        y.id = r.id;
+        switch (r.op) {
+                case BMDS_FS_STAT:
+                        if (at < 0)
+                                y.error = -BMDS_ENOENT;
+                        else
+                                n = netfs_entry(pay, &netfs_nodes[at]);
+                        break;
+                case BMDS_FS_OPEN:
+                        if (at < 0 && (r.flags & BMDS_FS_O_CREATE) == 0) {
+                                y.error = -BMDS_ENOENT;
+                        } else if (at >= 0 && (r.flags & BMDS_FS_O_EXCLUSIVE) != 0) {
+                                y.error = -BMDS_EEXIST;
+                        } else if (at >= 0 && netfs_nodes[at].dir) {
+                                y.error = -BMDS_EISDIR;
+                        } else {
+                                if (at < 0) at = netfs_add(path, r.path_len, 0);
+                                if (at < 0) {
+                                        y.error = -BMDS_ENOSPC;
+                                        break;
+                                }
+                                if ((r.flags & BMDS_FS_O_TRUNCATE) != 0) netfs_nodes[at].len = 0;
+                                y.handle = (uint64_t)at + 1;
+                        }
+                        break;
+                case BMDS_FS_READ:
+                        if (h == NULL) {
+                                y.error = -BMDS_EBADF;
+                        } else if (r.offset < h->len) {
+                                n = h->len - (size_t)r.offset < r.length ? h->len - (size_t)r.offset : r.length;
+                                memcpy(pay, h->data + r.offset, n);
+                        }
+                        y.count = (uint32_t)n;
+                        break;
+                case BMDS_FS_WRITE:
+                        if (h == NULL) {
+                                y.error = -BMDS_EBADF;
+                                break;
+                        }
+                        if (r.offset + r.length > h->len) y.error = netfs_resize(h, (size_t)r.offset + r.length);
+                        if (y.error == 0) {
+                                memcpy(h->data + r.offset, data, r.length);
+                                h->modified = netfs_now();
+                                y.count = r.length;
+                        }
+                        break;
+                case BMDS_FS_TRUNCATE:
+                        if (h == NULL) {
+                                y.error = -BMDS_EBADF;
+                        } else if (r.offset > NETFS_SPACE) {
+                                y.error = -BMDS_EFBIG;
+                        } else if (r.offset <= h->len) {
+                                h->len = (size_t)r.offset;
+                                h->modified = netfs_now();
+                        } else {
+                                y.error = netfs_resize(h, (size_t)r.offset);
+                        }
+                        break;
+                case BMDS_FS_CLOSE: break;
+                case BMDS_FS_READDIR: {
+                        if (at < 0 || !netfs_nodes[at].dir) {
+                                y.error = at < 0 ? -BMDS_ENOENT : -BMDS_ENOTDIR;
+                                break;
+                        }
+                        uint64_t skip = r.offset;
+                        for (int i = 0; i < NETFS_NODES; ++i) {
+                                if (!netfs_nodes[i].used || !netfs_in_dir(&netfs_nodes[i], path, r.path_len)) continue;
+                                if (skip > 0) {
+                                        --skip;
+                                        continue;
+                                }
+                                uint8_t      one[sizeof(bmds_fs_entry_t) + NETFS_PATH + 8];
+                                const size_t k = netfs_entry(one, &netfs_nodes[i]);
+                                if (n + k > r.length) break;
+                                memcpy(pay + n, one, k);
+                                n += k;
+                                ++y.count;
+                        }
+                        break;
+                }
+                case BMDS_FS_MKDIR:
+                        if (at >= 0)
+                                y.error = -BMDS_EEXIST;
+                        else if (netfs_add(path, r.path_len, 1) < 0)
+                                y.error = -BMDS_ENOSPC;
+                        break;
+                case BMDS_FS_RMDIR:
+                        if (at < 0)
+                                y.error = -BMDS_ENOENT;
+                        else if (!netfs_nodes[at].dir)
+                                y.error = -BMDS_ENOTDIR;
+                        else if (netfs_has_children(at))
+                                y.error = -BMDS_ENOTEMPTY;
+                        else
+                                netfs_free(at);
+                        break;
+                case BMDS_FS_REMOVE:
+                        if (at < 0)
+                                y.error = -BMDS_ENOENT;
+                        else if (netfs_nodes[at].dir)
+                                y.error = -BMDS_EISDIR;
+                        else
+                                netfs_free(at);
+                        break;
+                case BMDS_FS_RENAME:
+                        y.error = at < 0 ? -BMDS_ENOENT : netfs_rename(at, path2, r.path2_len, r.flags);
+                        break;
+                case BMDS_FS_SETTIME:
+                        if (at < 0)
+                                y.error = -BMDS_ENOENT;
+                        else
+                                netfs_nodes[at].modified = r.time_ns;
+                        break;
+                case BMDS_FS_STATFS: {
+                        bmds_fs_space_t space = {NETFS_SPACE, NETFS_SPACE};
+                        for (int i = 0; i < NETFS_NODES; ++i) space.free -= netfs_nodes[i].len;
+                        memcpy(pay, &space, sizeof(space));
+                        n = sizeof(space);
+                        break;
+                }
+                default: y.error = -BMDS_ENOSYS; break;
+        }
+        y.size = (uint32_t)(sizeof(y) + n);
+        memcpy(out, &y, sizeof(y));
+        return y.size;
+}
+
+/* The server: a request read, its reply written, until told to stop (at the next request)
+ * or the mount goes; its fd closed as it ends, which unmounts it. */
+static void *netfs_server(void *arg) {
+        (void)arg;
+        for (;;) {
+                const ssize_t n = read(netfs_fd, netfs_in, BMDS_FS_REQUEST_MAX(NETFS_DATA));
+                if (n <= 0 || netfs_quit) break;
+                __atomic_add_fetch(&netfs_requests, 1, __ATOMIC_RELAXED);
+                const size_t m = netfs_answer(netfs_in, netfs_out);
+                if (write(netfs_fd, netfs_out, m) != (ssize_t)m) break;
+        }
+        close(netfs_fd);
+        return NULL;
+}
+
+static int netfs_count(void) {
+        return __atomic_load_n(&netfs_requests, __ATOMIC_RELAXED);
+}
+
+static int netfs(void) {
+        const char     *at = "/net/progtest";
+        char            path[64], other[64];
+        struct stat     st;
+        bmds_fs_serve_t c = {.size = sizeof(c), .path = "/dev/pt", .type = "progtest", .max_data = NETFS_DATA};
+        // The bad configs.
+        CHECK(bmds_fs_serve(&c) == -BMDS_EINVAL);
+        c.path = at;
+        c.type = "a-name-too-long-for-it";
+        CHECK(bmds_fs_serve(&c) == -BMDS_EINVAL);
+        c.type = "";
+        CHECK(bmds_fs_serve(&c) == -BMDS_EINVAL);
+        c.type = "progtest";
+        c.max_data = BMDS_FS_DATA_MIN - 1;
+        CHECK(bmds_fs_serve(&c) == -BMDS_EINVAL);
+        c.max_data = NETFS_DATA;
+        c.flags = 0x80;
+        CHECK(bmds_fs_serve(&c) == -BMDS_EINVAL);
+        c.flags = BMDS_O_CLOEXEC;
+        CHECK(bmds_fs_serve(NULL) == -BMDS_EFAULT);
+        // Served: one mount there, the server a thread of this program.
+        netfs_in = malloc(BMDS_FS_REQUEST_MAX(NETFS_DATA));
+        netfs_out = malloc(sizeof(bmds_fs_reply_t) + NETFS_DATA + 4096);
+        CHECK(netfs_in != NULL && netfs_out != NULL && netfs_add("/", 1, 1) == 0);
+        netfs_fd = bmds_fs_serve(&c);
+        CHECK(netfs_fd >= 3 && (fcntl(netfs_fd, F_GETFD) & FD_CLOEXEC) != 0);
+        CHECK(bmds_fs_serve(&c) == -BMDS_EEXIST);
+        pthread_t server;
+        CHECK(pthread_create(&server, NULL, netfs_server, NULL) == 0);
+        bmds_fs_info_t info = {.size = sizeof(info)};
+        CHECK(bmds_fs_info(at, &info) == 0 && strcmp(info.type, "progtest") == 0 && info.total_bytes == NETFS_SPACE);
+        CHECK(stat(at, &st) == 0 && S_ISDIR(st.st_mode));
+        // A big file: 100 000 bytes written 1 000 at a time, gathered into NETFS_DATA's; read back
+        // 3 000 at a time from reads ahead.
+        static uint8_t chunk[3000];
+        snprintf(path, sizeof(path), "%s/big.bin", at);
+        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        CHECK(fd >= 3);
+        int before = netfs_count();
+        for (int i = 0; i < 100; ++i) {
+                for (int k = 0; k < 1000; ++k) chunk[k] = (uint8_t)((i * 1000 + k) * 7);
+                CHECK(write(fd, chunk, 1000) == 1000);
+        }
+        const int writes = netfs_count() - before;
+        CHECK(writes <= (int)(100000 / NETFS_DATA) + 1);
+        CHECK(close(fd) == 0);
+        const int big = netfs_find("/big.bin", 8);
+        CHECK(big >= 0 && netfs_nodes[big].len == 100000);
+        CHECK(stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size == 100000);
+        fd = open(path, O_RDONLY);
+        CHECK(fd >= 3);
+        before = netfs_count();
+        for (int at_ = 0; at_ < 100000;) {
+                const ssize_t n = read(fd, chunk, sizeof(chunk));
+                CHECK(n > 0);
+                for (ssize_t k = 0; k < n; ++k) CHECK(chunk[k] == (uint8_t)((at_ + k) * 7));
+                at_ += (int)n;
+        }
+        CHECK(read(fd, chunk, sizeof(chunk)) == 0);
+        const int reads = netfs_count() - before;
+        CHECK(reads <= (int)(100000 / NETFS_DATA) + 3);
+        CHECK(lseek(fd, 0, SEEK_END) == 100000 && pread(fd, chunk, 10, 50000) == 10 &&
+              chunk[3] == (uint8_t)(50003 * 7));
+        CHECK(close(fd) == 0);
+        // Its time set and read back; not renamed to another filesystem.
+        struct timespec times[2] = {{0, UTIME_OMIT}, {1700000000, 0}};
+        CHECK(utimensat(AT_FDCWD, path, times, 0) == 0 && stat(path, &st) == 0 && st.st_mtime == 1700000000);
+        CHECK(rename(path, "/tmp/pt-netfs.bin") == -1 && errno == EXDEV);
+        // A directory renamed takes what is in it.
+        snprintf(other, sizeof(other), "%s/d", at);
+        CHECK(mkdir(other, 0755) == 0);
+        snprintf(other, sizeof(other), "%s/d/f", at);
+        CHECK(rename(path, other) == 0 && stat(path, &st) == -1 && errno == ENOENT);
+        snprintf(path, sizeof(path), "%s/d", at);
+        snprintf(other, sizeof(other), "%s/e", at);
+        CHECK(rename(path, other) == 0);
+        snprintf(path, sizeof(path), "%s/e/f", at);
+        CHECK(stat(path, &st) == 0 && st.st_size == 100000);
+        snprintf(other, sizeof(other), "%s/d/f", at);
+        CHECK(stat(other, &st) == -1 && errno == ENOENT);
+        CHECK(unlink(path) == 0);
+        snprintf(path, sizeof(path), "%s/e", at);
+        CHECK(rmdir(path) == 0);
+        // The files checks through it (they end in it with directories open).
+        const int served = netfs_count();
+        if (files(at) != 0) return 1;
+        // The server ends at the request this makes; its fd closes and the mount goes.
+        CHECK(chdir("/") == 0);
+        netfs_quit = 1;
+        snprintf(path, sizeof(path), "%s/wake", at);
+        CHECK(stat(path, &st) == -1 && errno == ENOMEDIUM);
+        CHECK(pthread_join(server, NULL) == 0);
+        CHECK(stat(path, &st) == -1 && errno == ENOENT);
+        CHECK(stat(at, &st) == -1 && errno == ENOENT);
+        printf("netfs: ok (%d requests: %d writes and %d reads for 100 000 bytes, files %d)\n", netfs_count(), writes,
+               reads, netfs_count() - served);
         return 0;
 }
 
@@ -3806,7 +4197,7 @@ int main(int argc, char **argv) {
                         "threads|"
                         "threadspin|filetype|audio|decode|rt|midi|synth|speech|mididecode|hog|stats|tasks|"
                         "procs|"
-                        "system|notify|expand|image|net|netwatch|rtnet|sched|ptp [arg]\n");
+                        "system|notify|expand|image|net|netwatch|rtnet|sched|ptp|netfs [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -3913,6 +4304,7 @@ int main(int argc, char **argv) {
                 return 0;
         }
         if (strcmp(what, "files") == 0) return files(arg);
+        if (strcmp(what, "netfs") == 0) return netfs();
         if (strcmp(what, "time") == 0) return timing();
         if (strcmp(what, "sleep") == 0) {
                 const int r = usleep((useconds_t)atoi(arg) * 1000);

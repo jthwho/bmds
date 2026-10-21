@@ -903,6 +903,7 @@ namespace {
         }
 
         void removeMountLocked(size_t index) {
+                mounts[index].volume->unmounted();
                 mounts[index].volume->release();
                 for (size_t j = index + 1; j < mountCount; ++j) mounts[j - 1] = mounts[j];
                 mounts[--mountCount] = Mount();
@@ -1376,6 +1377,15 @@ Error Vfs::mountTmpfs(StringView path, uint64_t limitBytes) {
 
 Error Fs::mountVolume(StringView path, Volume &volume) {
         return mountAt(path, nullptr, 0, &volume);
+}
+
+void Fs::unmountVolume(const Volume &volume) {
+        Mutex::Locker lock(Fs::lock(), WaitForever);
+        for (size_t i = 0; i < mountCount; ++i) {
+                if (mounts[i].volume != &volume) continue;
+                removeMountLocked(i);
+                return;
+        }
 }
 
 Error Vfs::setTmpfsLimit(StringView path, uint64_t limitBytes) {

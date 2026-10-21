@@ -72,6 +72,7 @@ add_executable(bmds_host_tests
         lfsvfs.cpp
         tmpfs.cpp
         netvolume.cpp
+        servedfs.cpp
         list.cpp
         littlefs.cpp
         lwip.cpp

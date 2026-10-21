@@ -105,6 +105,13 @@ class Volume {
                 /** @brief One that locks itself: another reference, for `release()`. */
                 virtual void retain() {}
 
+                /**
+                 * @brief Its mount is going (an unmount, its card pulled), told before the
+                 *        mount's reference is released: one served by a program tells it.
+                 *        Lock held.
+                 */
+                virtual void unmounted() {}
+
                 /** @brief Returns the device it is mounted on. */
                 virtual BlockDevice *device() const = 0;
 
@@ -202,6 +209,9 @@ namespace Fs {
          * @return `Ok`, or `Vfs::mount()`'s errors (the reference released then).
          */
         Error mountVolume(StringView path, Volume &volume);
+
+        /** @brief Unmounts the mount whose volume is @p volume, if one is. Without the lock. */
+        void unmountVolume(const Volume &volume);
 
         /**
          * @brief Calls the change hook, if any (`Vfs::setChangeHook()`), and

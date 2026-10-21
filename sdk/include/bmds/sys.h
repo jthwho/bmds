@@ -197,6 +197,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_SURFACE_CONTROL                                                                                       \
         121u /**< `int32_t surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size)`. */
 #define BMDS_SYS_CONTROLS 122u /**< `int32_t controls(uint32_t op, void *arg, uint32_t size)`. */
+#define BMDS_SYS_FS_SERVE 123u /**< `int32_t fs_serve(const bmds_fs_serve_t *config)`: the server fd. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1778,6 +1779,107 @@ typedef struct bmds_timer_t {
                 uint64_t interval_us; /**< Then again every so many; 0: once. */
 } bmds_timer_t;
 
+/* --- Filesystems served by programs (devplan/netfs.md step 2; slot 123, appended 2026-10-21) --- */
+
+/**
+ * @brief A filesystem served by the program (`fs_serve`): mounted at `path`, every operation on
+ *        it a request the program reads from the server fd (`bmds_fs_request_t`), answered by a
+ *        reply it writes there (`bmds_fs_reply_t`); closing the fd unmounts it.
+ */
+typedef struct bmds_fs_serve_t {
+                uint32_t    size;     /**< Set by the caller: `sizeof(bmds_fs_serve_t)`. */
+                uint32_t    flags;    /**< `BMDS_O_CLOEXEC`, or 0. */
+                const char *path;     /**< Where to mount it (absolute; not over another mount, nor in `/dev`). */
+                const char *type;     /**< Its type's name, for `df` and the file browser ("sshfs"; 1-15 bytes). */
+                uint32_t    max_data; /**< The most bytes one READ or WRITE moves, 4096 to 65536 (0: 32768). */
+} bmds_fs_serve_t;
+
+/** @brief `max_data`'s range and default. */
+#define BMDS_FS_DATA_MIN 4096u
+#define BMDS_FS_DATA_MAX 65536u
+#define BMDS_FS_DATA_DEFAULT 32768u
+
+/** @brief The longest path in a request, in bytes (no NUL). */
+#define BMDS_FS_PATH_MAX 1024u
+
+/** @brief The buffer a server's `read()` needs: one whole request with the most data. */
+#define BMDS_FS_REQUEST_MAX(max_data) (sizeof(bmds_fs_request_t) + 2u * BMDS_FS_PATH_MAX + (max_data))
+
+/**
+ * @brief A request (`read()` from the server fd gives one), then `path_len` bytes of path (from
+ *        the mount's root: `/`, or `/dir/name`; no NUL), `path2_len` bytes of a second path
+ *        (`BMDS_FS_RENAME`'s target, `BMDS_FS_SYMLINK`'s), then `BMDS_FS_WRITE`'s data.
+ */
+typedef struct bmds_fs_request_t {
+                uint32_t size;   /**< The record's bytes, all of it. */
+                uint32_t op;     /**< `BMDS_FS_STAT`... */
+                uint32_t id;     /**< The reply's `id`. */
+                uint32_t flags;  /**< `BMDS_FS_OPEN`'s, `BMDS_FS_RENAME`'s. */
+                uint64_t handle; /**< A file `BMDS_FS_OPEN` gave (READ, WRITE, CLOSE, TRUNCATE). */
+                uint64_t offset; /**< READ, WRITE: where; TRUNCATE: the size; READDIR: entries to skip. */
+                /** READ: the bytes wanted; WRITE: the data's; READDIR, READLINK: the most the reply may carry. */
+                uint32_t length;
+                uint32_t path_len;  /**< The path's bytes. */
+                uint32_t path2_len; /**< The second path's bytes. */
+                uint32_t reserved;  /**< 0. */
+                int64_t  time_ns;   /**< SETTIME: the modification time, ns since the epoch (UTC). */
+} bmds_fs_request_t;
+
+/** @brief A reply (`write()` to the server fd, one or more a write), then its payload. */
+typedef struct bmds_fs_reply_t {
+                uint32_t size;  /**< The record's bytes, all of it. */
+                uint32_t id;    /**< The request's. */
+                int32_t  error; /**< 0, or a negative `BMDS_E*`. */
+                /** READ: the bytes after it (0: the end); WRITE: the bytes written; READDIR: the entries
+                 *  after it (0: the end); READLINK: the target's bytes. */
+                uint32_t count;
+                uint64_t handle;   /**< `BMDS_FS_OPEN`'s. */
+                uint64_t reserved; /**< 0. */
+} bmds_fs_reply_t;
+
+/** @brief A file's attributes (STAT's payload) or a directory entry (READDIR's), then its name. */
+typedef struct bmds_fs_entry_t {
+                uint32_t size;        /**< With the name, padded to a multiple of 8. */
+                uint32_t type;        /**< `BMDS_TYPE_FILE`, `_DIRECTORY`, `_DEVICE`, `_LINK`. */
+                uint64_t bytes;       /**< A file's size. */
+                int64_t  modified_ns; /**< Its modification time, ns since the epoch (UTC; 0: unknown). */
+                uint32_t mode;        /**< The server's permission bits (shown, not enforced). */
+                uint32_t name_len;    /**< The name's bytes (no NUL). */
+} bmds_fs_entry_t;
+
+/** @brief `BMDS_FS_STATFS`'s payload. */
+typedef struct bmds_fs_space_t {
+                uint64_t total; /**< Bytes. */
+                uint64_t free;  /**< Bytes. */
+} bmds_fs_space_t;
+
+/** @brief `bmds_fs_request_t::op`: what is asked (an op the server doesn't know: `-BMDS_ENOSYS`). */
+#define BMDS_FS_STAT 1u      /**< path: an entry (a link itself, not where it leads). */
+#define BMDS_FS_OPEN 2u      /**< path, flags `BMDS_FS_READ`...: a `handle`. */
+#define BMDS_FS_READ 3u      /**< handle, offset, length: `count` bytes. */
+#define BMDS_FS_WRITE 4u     /**< handle, offset, data: `count` written. */
+#define BMDS_FS_CLOSE 5u     /**< handle. */
+#define BMDS_FS_READDIR 6u   /**< path, offset (entries to skip), length: `count` entries. */
+#define BMDS_FS_MKDIR 7u     /**< path. */
+#define BMDS_FS_RMDIR 8u     /**< path (empty). */
+#define BMDS_FS_REMOVE 9u    /**< path (not a directory). */
+#define BMDS_FS_RENAME 10u   /**< path to path2, flags `BMDS_FS_REPLACE`. */
+#define BMDS_FS_SETTIME 11u  /**< path, time_ns. */
+#define BMDS_FS_STATFS 12u   /**< A `bmds_fs_space_t`. */
+#define BMDS_FS_TRUNCATE 13u /**< handle, offset (the size). */
+#define BMDS_FS_READLINK 14u /**< path, length: `count` bytes, the target. */
+#define BMDS_FS_SYMLINK 15u  /**< path (the link), path2 (its target). */
+
+/** @brief `BMDS_FS_OPEN`'s flags. */
+#define BMDS_FS_O_READ 0x1u
+#define BMDS_FS_O_WRITE 0x2u
+#define BMDS_FS_O_CREATE 0x4u    /**< Made if it isn't there. */
+#define BMDS_FS_O_EXCLUSIVE 0x8u /**< With CREATE: `-BMDS_EEXIST` if it is. */
+#define BMDS_FS_O_TRUNCATE 0x10u /**< Emptied. */
+
+/** @brief `BMDS_FS_RENAME`'s flags. */
+#define BMDS_FS_REPLACE 0x1u /**< A file there is replaced (else `-BMDS_EEXIST`). */
+
 /* --- Calls ----------------------------------------------------------- */
 
 typedef void (*bmds_sys_exit_fn)(int32_t status);
@@ -1895,6 +1997,7 @@ typedef int32_t (*bmds_sys_surface_acquire_fn)(int32_t fd, int32_t timeout_ms);
 typedef int32_t (*bmds_sys_surface_present_fn)(int32_t fd, const bmds_surface_present_t *present);
 typedef int32_t (*bmds_sys_surface_control_fn)(int32_t fd, uint32_t op, void *arg, uint32_t size);
 typedef int32_t (*bmds_sys_controls_fn)(uint32_t op, void *arg, uint32_t size);
+typedef int32_t (*bmds_sys_fs_serve_fn)(const bmds_fs_serve_t *config);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -3172,6 +3275,21 @@ static inline int32_t bmds_surface_control(int32_t fd, uint32_t op, void *arg, u
 static inline int32_t bmds_controls(uint32_t op, void *arg, uint32_t size) {
         if (!bmds_sys_has(BMDS_SYS_CONTROLS)) return -BMDS_ENOSYS;
         return ((bmds_sys_controls_fn)bmds_sys->slot[BMDS_SYS_CONTROLS])(op, arg, size);
+}
+
+/**
+ * @brief Mounts a filesystem the program serves at `config->path` (devplan/netfs.md): read
+ *        requests from the fd returned (`bmds_fs_request_t`; a buffer of
+ *        `BMDS_FS_REQUEST_MAX(max_data)` bytes), write replies to it (`bmds_fs_reply_t`); `poll()`
+ *        says when a request waits. Closing the fd unmounts it; a request unanswered within
+ *        `netfs/timeout` fails its caller with `-BMDS_EIO`.
+ * @return The server fd, or `-BMDS_EINVAL` (a field), `-BMDS_EEXIST` (something mounted there),
+ *         `-BMDS_EBUSY`, `-BMDS_ENOSPC` (no mount free), `-BMDS_ENOMEM`, `-BMDS_EFAULT`,
+ *         `-BMDS_ENOSYS` (a system without it).
+ */
+static inline int32_t bmds_fs_serve(const bmds_fs_serve_t *config) {
+        if (!bmds_sys_has(BMDS_SYS_FS_SERVE)) return -BMDS_ENOSYS;
+        return ((bmds_sys_fs_serve_fn)bmds_sys->slot[BMDS_SYS_FS_SERVE])(config);
 }
 
 /**

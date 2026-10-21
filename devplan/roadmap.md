@@ -399,8 +399,8 @@ Plan: [`input.md`](input.md).
     tested on the board (§5). Open: a boot without a card, tried by hand.
   - [ ] Network filesystems (`netfs.md`, the user's, 2026-10-21): mounts served by programs,
     `sshfs` first (on Dropbear's client and SFTP). Step 1 done: volumes that lock themselves,
-    called without the storage lock, reference counted (host-tested). Next: the program-served
-    volume and its ABI.
+    called without the storage lock, reference counted (host-tested). Step 2 done: filesystems
+    served by programs (slot 123, `fs_serve`; `progtest netfs`). Next: `sshfs`.
 
 ## Phase 8 — Self-Hosting
 

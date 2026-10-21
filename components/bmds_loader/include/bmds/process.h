@@ -250,6 +250,12 @@ class Process {
                 /** @brief Returns the negated `BMDS_E...` number for @p err. */
                 static int32_t errnoFor(Error err);
 
+                /**
+                 * @brief Returns the error a program's negated `BMDS_E...` number stands for
+                 *        (`errnoFor()`'s inverse; `IoError` for one with none).
+                 */
+                static Error errorFor(int32_t error);
+
                 /** @brief Returns a reference to @p fd's handle, or none (for calls on a kind of fd). */
                 FileHandle::Ptr handle(int32_t fd) const { return handleOf(fd); }
 
