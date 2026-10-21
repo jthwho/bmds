@@ -1,0 +1,8 @@
+# ssh-copy-id (programs/ssh-copy-id): this machine's public key put in a server's authorized_keys,
+# through Dropbear's client (devplan/network.md §24).
+name = "ssh-copy-id"
+version = "1"
+description = "Put this machine's SSH key in a server's authorized_keys (through dbclient)"
+license = "MIT"
+source_tree = "programs/ssh-copy-id"
+license_files = ["../../LICENSE"]

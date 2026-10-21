@@ -28,7 +28,9 @@ BMDS_NAMESPACE_BEGIN
  * The volume locks itself (`fslayer.h`): calls run without the storage lock,
  * up to `MaxPending` waiting for replies at once, each up to its timeout.
  * Reads are read ahead and writes gathered, `maxData` bytes at a time;
- * attributes are kept a while. Closing the server fd unmounts it.
+ * attributes are kept a while. Closing the server fd unmounts it. Several of the
+ * server's threads may read its end at once, each given a request of its own (each
+ * woken in turn: one wake, passed on while requests are queued, and at the end).
  *
  * @par Thread Safety
  * Thread-safe.

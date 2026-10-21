@@ -397,13 +397,14 @@ Plan: [`input.md`](input.md).
     configuration on the card when there is one (no flash writes, so no audio stalls), else on
     `/flash`; no syncing; `/flash`'s writes held while audio plays. All three steps built and
     tested on the board (§5). Open: a boot without a card, tried by hand.
-  - [ ] Network filesystems (`netfs.md`, the user's, 2026-10-21): mounts served by programs,
+  - [x] Network filesystems (`netfs.md`, the user's, 2026-10-21): mounts served by programs,
     `sshfs` first (on Dropbear's client and SFTP). Step 1 done: volumes that lock themselves,
     called without the storage lock, reference counted (host-tested). Step 2 done: filesystems
     served by programs (slot 123, `fs_serve`; `progtest netfs`). Step 3 done: `sshfs` in `/rom/bin`,
-    the VFS following a filesystem's own links (tried through a local `sftp-server`; a session to
-    a real SSH server still to try). Step 4 done: `net/mounts`, kept mounted by a kernel service
-    once the network is up, and a network mount's icon in the file browser.
+    the VFS following a filesystem's own links (tried against the user's PC: 2.2 MB/s each way,
+    faster than `scp`). `ssh-copy-id` in `/rom/bin` too. Step 4 done: `net/mounts`, kept mounted
+    by a kernel service once the network is up, and a network mount's icon in the file browser.
+    Step 5 done: sshfs's requests in parallel (4 workers; `ls -l` during a copy twice as fast).
 
 ## Phase 8 — Self-Hosting
 

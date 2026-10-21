@@ -7,7 +7,7 @@
  *
  * sshfs: a directory on an SSH server mounted here (devplan/netfs.md step 3). Dropbear's client
  * runs the server's `sftp` subsystem on a pair of pipes; this program serves the mount
- * (fs_serve) from it, a request at a time (sshfs.c). Mounted, it goes on in the background
+ * (fs_serve) from it, several requests at once (sshfs.c's workers). Mounted, it goes on in the background
  * (-f: in the foreground) until the mount is unmounted (umount) or the connection ends.
  */
 
@@ -15,7 +15,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -106,44 +106,118 @@ static pid_t start_client(char **argv, link_t *l) {
         return pid;
 }
 
-/* Serves the mount until it is unmounted or the connection ends. */
-static int serve(sshfs_t *fs, int server, const link_t *l) {
-        const size_t request_max = BMDS_FS_REQUEST_MAX(fs->max_data);
-        uint8_t     *request = malloc(request_max);
-        uint8_t     *reply = malloc(sshfs_reply_max(fs));
-        if (request == NULL || reply == NULL) {
-                free(request);
-                free(reply);
+/* The workers and what they share. */
+typedef struct serving {
+                sshfs_t        *fs;
+                int             server;
+                link_t         *l;
+                pthread_mutex_t lock;
+                int             running;   /* workers still answering */
+                int             unmounted; /* a worker's read ended: the mount went */
+                sshfs_worker_t  workers[SSHFS_WORKERS];
+                pthread_t       threads[SSHFS_WORKERS];
+                uint8_t        *requests[SSHFS_WORKERS];
+                uint8_t        *replies[SSHFS_WORKERS];
+} serving_t;
+
+typedef struct worker_arg {
+                serving_t *s;
+                int        index;
+} worker_arg_t;
+
+/* A worker: a request read, answered, its reply written, until the mount goes or the connection
+ * does. Cancelled only while it waits for a request (the connection gone: main()). */
+static void *work(void *arg) {
+        const worker_arg_t *a = arg;
+        serving_t          *s = a->s;
+        const size_t        request_max = BMDS_FS_REQUEST_MAX(s->fs->max_data);
+        uint8_t            *request = s->requests[a->index], *reply = s->replies[a->index];
+        (void)pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+        for (;;) {
+                (void)pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+                const ssize_t n = read(s->server, request, request_max);
+                (void)pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) {
+                        pthread_mutex_lock(&s->lock);
+                        s->unmounted = 1;
+                        pthread_mutex_unlock(&s->lock);
+                        break;
+                }
+                const size_t m = sshfs_answer(&s->workers[a->index], request, (size_t)n, reply);
+                if (m == 0) break; /* the connection broke */
+                if (write(s->server, reply, m) != (ssize_t)m) break;
+        }
+        /* The last to go ends the client (its input closed), so the reader's read ends. */
+        pthread_mutex_lock(&s->lock);
+        if (--s->running == 0 && s->l->to >= 0) {
+                close(s->l->to);
+                s->l->to = -1;
+        }
+        pthread_mutex_unlock(&s->lock);
+        return NULL;
+}
+
+/* Serves the mount until it is unmounted or the connection ends: the workers on threads of
+ * their own, the replies read here (devplan/netfs.md step 5). */
+static int serve(sshfs_t *fs, int server, link_t *l) {
+        static serving_t    s;
+        static worker_arg_t args[SSHFS_WORKERS];
+        s.fs = fs;
+        s.server = server;
+        s.l = l;
+        pthread_mutex_init(&s.lock, NULL);
+        int started = 0, status = 0;
+        for (; started < SSHFS_WORKERS; ++started) {
+                s.requests[started] = malloc(BMDS_FS_REQUEST_MAX(fs->max_data));
+                s.replies[started] = malloc(sshfs_reply_max(fs));
+                if (s.requests[started] == NULL || s.replies[started] == NULL ||
+                    sshfs_worker_init(fs, &s.workers[started]) != 0) {
+                        free(s.requests[started]);
+                        free(s.replies[started]);
+                        break;
+                }
+        }
+        if (started == 0) {
+                fprintf(stderr, "sshfs: %s: out of memory\n", fs->mount);
                 return 1;
         }
-        int status = 0;
-        for (;;) {
-                struct pollfd p[2] = {{.fd = server, .events = POLLIN}, {.fd = l->from, .events = POLLIN}};
-                if (poll(p, 2, -1) < 0) {
-                        if (errno == EINTR) continue;
-                        status = 1;
+        /* The answers' paths are on the stack (4 KB of them): more than a thread's least. */
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 32 * 1024);
+        int threads = 0;
+        for (; threads < started; ++threads) {
+                args[threads].s = &s;
+                args[threads].index = threads;
+                pthread_mutex_lock(&s.lock);
+                s.running++;
+                pthread_mutex_unlock(&s.lock);
+                if (pthread_create(&s.threads[threads], &attr, work, &args[threads]) != 0) {
+                        pthread_mutex_lock(&s.lock);
+                        s.running--;
+                        pthread_mutex_unlock(&s.lock);
                         break;
                 }
-                /* The server says nothing unasked: anything from it now is its end. */
-                if (p[1].revents != 0) {
-                        fprintf(stderr, "sshfs: %s: the connection closed\n", fs->mount);
-                        status = 1;
-                        break;
-                }
-                if (p[0].revents == 0) continue;
-                const ssize_t n = read(server, request, request_max);
-                if (n < 0 && errno == EINTR) continue;
-                if (n <= 0) break; /* unmounted */
-                const size_t m = sshfs_answer(fs, request, (size_t)n, reply);
-                if (m == 0) {
-                        fprintf(stderr, "sshfs: %s: the connection broke\n", fs->mount);
-                        status = 1;
-                        break;
-                }
-                if (write(server, reply, m) != (ssize_t)m) break;
         }
-        free(request);
-        free(reply);
+        pthread_attr_destroy(&attr);
+        if (threads > 0) sshfs_read_replies(fs);
+        /* The connection's end without an unmount: it broke. */
+        pthread_mutex_lock(&s.lock);
+        const int unmounted = s.unmounted;
+        pthread_mutex_unlock(&s.lock);
+        if (!unmounted) {
+                fprintf(stderr, "sshfs: %s: the connection closed\n", fs->mount);
+                status = 1;
+                for (int i = 0; i < threads; ++i) (void)pthread_cancel(s.threads[i]);
+        }
+        for (int i = 0; i < threads; ++i) (void)pthread_join(s.threads[i], NULL);
+        for (int i = 0; i < started; ++i) {
+                sshfs_worker_finish(&s.workers[i]);
+                free(s.requests[i]);
+                free(s.replies[i]);
+        }
+        pthread_mutex_destroy(&s.lock);
         return status;
 }
 
@@ -310,7 +384,7 @@ int main(int argc, char **argv) {
                 status = serve(&fs, server, &l);
                 close(server); /* unmounted, if it wasn't */
         }
-        close(l.to);
+        if (l.to >= 0) close(l.to);
         close(l.from);
         int st;
         while (waitpid(client_pid, &st, 0) < 0 && errno == EINTR) {}

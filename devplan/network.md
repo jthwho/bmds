@@ -1220,6 +1220,22 @@ What Dropbear 2025.88 and BMDS each need, found by reading both before porting:
     a table) and a loop (`main.c`), so the core is fuzzed on the host with fake file calls
     (`tests/fuzz/sftp.cpp`), as §12 asks of what parses a peer's input.
   - Up to 32 handles; reads and writes up to 64 KB (what `limits` reports).
+- **`ssh-copy-id`** (2026-10-21, `programs/ssh-copy-id`, `dist/ssh-copy-id`, in `/rom/bin`): the
+  board's public key put in a server's `~/.ssh/authorized_keys`, so `dbclient`, `scp` and
+  `sshfs` (`netfs.md`, `net/mounts`) log in there without a password. OpenSSH's is a shell
+  script around its own key files; ours is C around Dropbear's:
+  `ssh-copy-id [-n] [-i KEY] [-p PORT] [-o OPTION] [user@]host`.
+  - The key: `-i` a public one (`.pub`) or Dropbear's private one (`dropbearkey -y`); by default
+    `~/.ssh/id_dropbear`, `dbclient`'s own, made with `dropbearkey -t ed25519` if there is none
+    (the board has no `ssh-keygen`). `-n` only shows it.
+  - On the server, through `dbclient` (the password and host key prompts on the terminal), one
+    command in `sh` whatever the login shell: `~/.ssh` made with `umask 077`, the key appended
+    unless a line is it already (a last line without its newline given one first); it prints
+    which, and so does `ssh-copy-id`. The key goes into that command quoted, so a key with
+    anything but a key's characters is refused.
+  - Tried on the PC against `/bin/sh` (a stand-in `dbclient` running the command there: added,
+    already there, a file without its last newline, a key made, a key refused) and on the board
+    (a key made with `dropbearkey` in a scratch `HOME`, `-n`, the errors).
 - **Order of work:**
   1. Kernel: `/dev/ptmx`, `/dev/pts`, `/dev/tty`, the controlling terminal, slot 110 and
      `linux.c`'s `ioctl`s; `/etc/passwd` and `group`; host tests (`pty`, VFS) and a `progtest`

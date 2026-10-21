@@ -402,6 +402,9 @@ namespace {
                                         Pending &p = v.pending[v.queue[v.queueHead]];
                                         v.queueHead = (v.queueHead + 1) % MaxPending;
                                         --v.queueCount;
+                                        // More: the wake passed on to another reader (a server's
+                                        // threads read one fd; the semaphore holds one wake).
+                                        if (v.queueCount != 0) v.requestReady.release();
                                         Request r = p.request;
                                         r.pathLength = uint32_t(p.path.size());
                                         r.path2Length = uint32_t(p.path2.size());
@@ -420,7 +423,10 @@ namespace {
                                         p.sent = true;
                                         return makeResult(size_t(r.size));
                                 }
-                                if (v.dead.load(std::memory_order_acquire)) return makeError<size_t>(Error::EndOfFile);
+                                if (v.dead.load(std::memory_order_acquire)) {
+                                        v.requestReady.release(); // the end told to the next reader too
+                                        return makeError<size_t>(Error::EndOfFile);
+                                }
                         }
                         const Error err = Interrupt::waitCurrent(v.requestReady, deadline);
                         if (err.isError()) return makeError<size_t>(err);

@@ -1,7 +1,6 @@
 # Network Filesystems: Mounts Served by Programs, `sshfs` First
 
-Status: **steps 1 to 4 done** (2026-10-21); still to try: a session to a real SSH server (speed
-against `scp`, the prompts).
+Status: **done** (steps 1 to 5, 2026-10-21), tried against a real SSH server.
 
 ## 1. Goal
 
@@ -191,6 +190,53 @@ shell and the file browser use it as they use the card.
 - **Not yet:** the zone database and the leap-second list read through `closeReader()` under the
   lock; harmless until one is put on a network mount (step 4 can refuse that).
 
+### sshfs's requests in parallel (step 5, 2026-10-21; done)
+
+- **Measured** (the user's PC over Wi-Fi, OpenSSH): the SSH link carries 8 MB in 3.2 s
+  (`dbclient ... cat`, its 2.2 s login taken off: 2.6 MB/s); sshfs reads it in 3.9 s (2.1 MB/s),
+  two files at once in 7.9 s (the same total). Bulk transfers are the link's. But `ls -l` of 20
+  files takes 0.34 s alone and 2.98 s while a file is read: each small request waits for sshfs's
+  whole round trip of the 64 KB read before it is even sent.
+- **The design:** several requests in flight on the one connection, as SFTP allows (ids).
+  - **Workers** (4 threads), each reading a request from the server fd, answering it as now
+    (`sshfs_answer()`, unchanged in its ops) and writing the reply. Each has its own request
+    buffer and two reply slots (an `OPEN` sends its `LSTAT` alongside).
+  - **One reader** (the main thread) reads the connection and hands each reply to the worker
+    whose request has its id; a worker waits on its own condition. Sends are whole packets under
+    a lock. The id counter, the file table and the directory cursors are under the core's lock;
+    a directory cursor in use by a worker is busy (another takes another).
+  - **Ending:** unmounted, the workers' reads end; the last closes the client's input, so the
+    client ends and the reader's read ends. The connection gone, the reader ends; the workers
+    waiting for replies are told, those reading the server fd are cancelled
+    (`pthread_cancel`: no call unmounts but closing the fd, held by those reads); then the fd
+    is closed and the mount goes.
+  - **Memory:** each worker a request buffer of `max_data` and the paths (70 KB), reply slots
+    as large as the replies (64 KB at most): about 0.5 MB of the program's PSRAM with 4.
+- **Tests:** host: the core's tests with workers and the reader; many callers at once against a
+  server with a round trip's delay (all in parallel, well under the serial time). Board: `ls -l`
+  during a bulk read against the PC again, `progtest files` and `posix`, an unmount, a
+  connection killed.
+- **As built:**
+  - **A kernel bug found:** the server end's "a request is ready" is a semaphore of one wake,
+    released once a request: with several threads reading the fd, a second request queued at
+    once waited for the next event (or its timeout), and the end woke one reader only (the host
+    test hung). A reader that takes a request with more queued, or finds the end, now passes
+    the wake on (`servedvolume.cpp`); `servedfs.h` says several threads may read.
+  - **Memory:** a `WRITE`'s data is sent from the request where it lies (the packet's head,
+    then the data, under the send lock), so a worker's request buffer holds two paths and the
+    fields (5 KB, not 70); a `READ`'s `DATA` is read into the reply buffer where its reply needs
+    it (`begin_into()`), not into a slot and copied. sshfs: 627 KB with 4 workers (898 KB
+    before both; 230 KB one at a time): each worker's request and reply buffers (66 KB each),
+    its 32 KB stack.
+  - **Measured** (as above): `ls -l` during a read 2.98 s to 1.38-1.57 s; two reads at once
+    7.9 s to 6.1 s (2.75 MB/s: the link full); one read and writes unchanged (3.8-4.1 s for
+    8 MB: the kernel asks one `READ` of a file at a time). Host: 40 stats from 8 callers over a
+    20 ms round trip in 0.37 s with the test's setup (0.8 s at least one at a time).
+  - **Ending:** `umount` ends it and its client; the client killed (the connection gone) ends it
+    within 2 s, the workers waiting for requests cancelled, the mount gone.
+  - **Next, if wanted:** a file's next `READ` asked before the program wants it (the kernel's
+    read-ahead in flight), for one stream's last 30 % (2.0 of the link's 2.6-2.75 MB/s).
+
 ## 6. As built: step 4 (2026-10-21)
 
 - **`net/mounts`** as designed (§3), declared by the service (`SysConf::declareKernel`, 1023 bytes
@@ -248,11 +294,13 @@ shell and the file browser use it as they use the card.
   surviving its SSH session, `umount` ending it, its server killed ending it and the mount, the
   errors (no directory, a file, a mount there, `dbclient` refused or not authenticated) with no
   mount or process left. `known_hosts` untouched (`-y -y`).
-- **Not yet:** a session to a real SSH server (none here to authenticate to: starting one on the
-  PC was declined, and the board's own takes only its owner's keys), so neither the speed over
-  SSH (against `scp`) nor the first host key's and a password's prompts from the background
-  child are measured. Requests go one at a time: several callers wait on each other's round
-  trips (a pipelined loop if that shows).
+- **A real server** (2026-10-21, the user's: `ssh-copy-id` for the key, then
+  `sshfs jth@clarke:/home/jth /net/clarke` by hand; OpenSSH 9.6 on Linux, the PC on Wi-Fi):
+  `df` gives the PC's disk; `progtest files` and `posix` pass through it (0.5 s and 0.4 s);
+  8 MB read in 3.8 s and written in 3.8 s (2.2 MB/s each way, the data intact), where `scp` took
+  6.7 s down and 4.7 s up (a handshake each); a home directory of 77 entries listed in 0.8 s.
+  Requests go one at a time: several callers wait on each other's round trips (a pipelined loop
+  if that shows).
 
 ## 8. As built: step 2 (2026-10-21)
 
