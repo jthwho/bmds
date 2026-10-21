@@ -400,7 +400,9 @@ Plan: [`input.md`](input.md).
   - [ ] Network filesystems (`netfs.md`, the user's, 2026-10-21): mounts served by programs,
     `sshfs` first (on Dropbear's client and SFTP). Step 1 done: volumes that lock themselves,
     called without the storage lock, reference counted (host-tested). Step 2 done: filesystems
-    served by programs (slot 123, `fs_serve`; `progtest netfs`). Next: `sshfs`.
+    served by programs (slot 123, `fs_serve`; `progtest netfs`). Step 3 done: `sshfs` in `/rom/bin`,
+    the VFS following a filesystem's own links (tried through a local `sftp-server`; a session to
+    a real SSH server still to try). Next: mounts from the settings.
 
 ## Phase 8 — Self-Hosting
 

@@ -91,20 +91,23 @@ elseif(NOT BOOTLOADER_BUILD)
         else()
                 message(STATUS "zic not found: the ROM has no time zone database (devplan/rom.md §3g)")
         endif()
-        # The SSH programs (devplan/network.md §24): Dropbear and our sftp-server, built by
+        # The SSH programs (devplan/network.md §24, netfs.md): Dropbear, our sftp-server and sshfs, built by
         # tools/bmds-dist into this build directory (nested: no build wrapper, one job at a time;
         # Dropbear's release is fetched once into ~/.cache/bmds-dist) and put in /rom/bin.
         set(BMDS_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/../..)
         set(BMDS_ROM_DIST ${BMDS_ROM_OUT}/dist)
         set(BMDS_ROM_DROPBEAR ${BMDS_ROM_DIST}/stage/dropbear)
         set(BMDS_ROM_SFTP ${BMDS_ROM_DIST}/stage/sftp-server)
+        set(BMDS_ROM_SSHFS ${BMDS_ROM_DIST}/stage/sshfs)
         file(GLOB_RECURSE BMDS_ROM_DIST_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT_DIR}/dist/dropbear/*
              ${BMDS_ROOT_DIR}/dist/sftp-server/* ${BMDS_ROOT_DIR}/programs/sftp-server/*
+             ${BMDS_ROOT_DIR}/dist/sshfs/* ${BMDS_ROOT_DIR}/programs/sshfs/*
              ${BMDS_ROOT_DIR}/sdk/crt/* ${BMDS_ROOT_DIR}/sdk/include/* ${BMDS_ROOT_DIR}/sdk/cmake/*
              ${BMDS_ROOT_DIR}/sdk/ld/*)
         add_custom_command(OUTPUT ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
+                                  ${BMDS_ROM_SSHFS}/bin/sshfs
                            COMMAND ${BMDS_STORAGE_PYTHON} ${BMDS_ROOT_DIR}/tools/bmds-dist --out ${BMDS_ROM_DIST}
-                                   --nested build dropbear sftp-server
+                                   --nested build dropbear sftp-server sshfs
                            DEPENDS ${BMDS_ROOT_DIR}/tools/bmds-dist ${BMDS_ROM_DIST_SOURCES}
                            VERBATIM)
         set(BMDS_ROM_SSH
@@ -113,6 +116,7 @@ elseif(NOT BOOTLOADER_BUILD)
             --link bin/dropbearkey=dropbearmulti --link bin/dropbearconvert=dropbearmulti
             --link bin/scp=dropbearmulti
             --file bin/sftp-server=${BMDS_ROM_SFTP}/bin/sftp-server
+            --file bin/sshfs=${BMDS_ROM_SSHFS}/bin/sshfs
             --file share/licenses/dropbear/LICENSE=${BMDS_ROM_DROPBEAR}/share/licenses/dropbear/LICENSE)
         # IANA's leap-second list (devplan/network.md §31e): CLOCK_TAI and PTP's UTC offset; a newer one
         # on the card (clock/leapseconds) wins.
@@ -139,6 +143,7 @@ elseif(NOT BOOTLOADER_BUILD)
                                    ${BMDS_ROM_PADS} --hash-header ${BMDS_ROM_HASH}
                            DEPENDS ${BMDS_MKROM} ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/bmds.LICENSES
                                    ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
+                                   ${BMDS_ROM_SSHFS}/bin/sshfs
                                    ${BMDS_ROM_TREE_FILES} ${BMDS_ROM_ZONES_FILE} ${BMDS_ROM_LEAP_FILE}
                                    ${BMDS_ROM_SPEECH_FILES} ${BMDS_ROM_PADS_FILE}
                            VERBATIM)

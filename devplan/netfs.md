@@ -1,6 +1,7 @@
 # Network Filesystems: Mounts Served by Programs, `sshfs` First
 
-Status: **steps 1 and 2 done**; next, `sshfs` (2026-10-21).
+Status: **steps 1 to 3 done** (`sshfs`; its speed over a real SSH link still to measure); next,
+mounts from the settings (2026-10-21).
 
 ## 1. Goal
 
@@ -120,11 +121,10 @@ shell and the file browser use it as they use the card.
 
 ### `sshfs` (step 3)
 
-- **`sshfs [user@]host:[dir] MOUNTPOINT [-p port] [-o reconnect]`** (a program, `/bin` or the
-  card): runs `dbclient` with the `sftp` subsystem (`-s sftp`, to check; else the host's
-  `sftp-server` by path) on a pair of pipes, speaks SFTP version 3's client side, and serves the
-  mount's requests. Keys and known hosts as `dbclient` has them (the board's
-  `~/.ssh`, `net/ssh/` settings).
+- **`sshfs [-f] [-p PORT] [-i KEY] [-y] [-o OPTION] [-s COMMAND] [user@]host:[dir] MOUNTPOINT`**
+  (a program in `/rom/bin`): runs `dbclient -s` with the `sftp` subsystem on a pair of pipes,
+  speaks SFTP version 3's client side, and serves the mount's requests. Keys and known hosts as
+  `dbclient` has them (the board's `~/.ssh`, `net/ssh/` settings). Reconnecting is step 4's.
 - **Symbolic links** are the server's own (SFTP's `readlink`, `symlink`), not the emulated
   link files FAT needs.
 - **Speed:** measured against `scp` from the same host; read-ahead and write-behind sizes
@@ -169,7 +169,51 @@ shell and the file browser use it as they use the card.
 - **Not yet:** the zone database and the leap-second list read through `closeReader()` under the
   lock; harmless until one is put on a network mount (step 4 can refuse that).
 
-## 6. As built: step 2 (2026-10-21)
+## 6. As built: step 3 (2026-10-21)
+
+- **Links in the VFS** (`fslayer.h`): a volume may keep links of its own (`hasLinks()`): its
+  `stat()` says `FileType::Link`, `readLink()` reads one, `writeLink()` takes the target itself.
+  `vfs.cpp` reads and follows such links where it read emulated ones (`isLinkOn()`), and lists
+  them as the volume says. The served volume has them: `READLINK`, `SYMLINK`, and an `OPEN` the
+  server refuses with `ELOOP` hands the kernel the link's target. The ABI says so (`sys.h`): a
+  path's last component is never followed by the server; links on the way to it are its own to
+  follow, as its system does (sshfs can't do otherwise: SFTP resolves paths on the server).
+- **`sshfs`** (`programs/sshfs`, `dist/sshfs`, in `/rom/bin` beside `sftp-server`, 213 KB):
+  - `sshfs.c`, the core, reaches the server through two calls (send, receive), so the host test
+    runs it against our own `sftp-server`'s core. One request at a time; an `OPEN` without
+    `O_CREAT` sends its `LSTAT` alongside (one round trip), one with it looks first (the server
+    would follow a link, or make what a dangling one names).
+  - `max_data` from the server's `limits@openssh.com` (64 KB from ours; else 32 KB, what every
+    server takes); `posix-rename@openssh.com` for a replacing rename; `statvfs@openssh.com` for
+    `df`.
+  - **SFTP's errors say little** (`FAILURE` is most of POSIX's; OpenSSH and ours send `ENOTDIR` as
+    `NO_SUCH_FILE`): where the kernel must know which, a failure is looked into with an `LSTAT`
+    (`EEXIST`, `ENOTEMPTY`, `ENOTDIR`, `EISDIR`, `EINVAL` for a readlink of a file).
+  - **Directories** are listed through up to 4 SFTP directory handles, each at the entry it has
+    reached; a `READDIR` at another offset opens it again and skips. `.` and `..` are never sent.
+  - **Links:** an absolute target in the directory mounted is shown at the mount, and one at the
+    mount written there (sshfs's `transform_symlinks`); others as they are.
+  - **Running:** it mounts, then goes on in the background (a child of its own, `setsid()`), the
+    one started waiting until the child says it mounted or fails (`-f`: in the foreground).
+    `SIGHUP` is ignored by it and `dbclient`; `umount` ends it, and so does the connection's end
+    (the mount goes). `-s COMMAND` runs an SFTP server of one's own instead of `dbclient` (a
+    tunnel; a directory here, as the board test does).
+- **Tests:** host (`tests/host/sshfs.cpp`): the whole path (the VFS, the served volume, sshfs's
+  core, our `sftp-server`'s core, a scratch directory of the host's): 200 000 bytes each way in
+  at most 10 SFTP requests, append, truncate, 150 entries listed across batches, the failures
+  told apart, times, links both ways, `df`, the unmount; a directory missing or not one. Board:
+  `sshfs -s sftp-server :/tmp/share /net/loop`: `mount`, `df`, `progtest files` and `posix`
+  through it (links, loops, renames), 4 MB written and read in about 0.5 s each way, the mount
+  surviving its SSH session, `umount` ending it, its server killed ending it and the mount, the
+  errors (no directory, a file, a mount there, `dbclient` refused or not authenticated) with no
+  mount or process left. `known_hosts` untouched (`-y -y`).
+- **Not yet:** a session to a real SSH server (none here to authenticate to: starting one on the
+  PC was declined, and the board's own takes only its owner's keys), so neither the speed over
+  SSH (against `scp`) nor the first host key's and a password's prompts from the background
+  child are measured. Requests go one at a time: several callers wait on each other's round
+  trips (a pipelined loop if that shows).
+
+## 7. As built: step 2 (2026-10-21)
 
 - **ABI (slot 123, `fs_serve`):** `bmds_fs_serve_t`, `bmds_fs_request_t`, `bmds_fs_reply_t`,
   `bmds_fs_entry_t`, `bmds_fs_space_t` (`STATFS`'s payload: `bmds_fs_info_t` was taken, by
@@ -194,7 +238,7 @@ shell and the file browser use it as they use the card.
   checks through it, then the server's fd closed (`ENOMEDIUM`, then the mount gone). The host
   suite, `progtest files` and `posix` on `/tmp`, and the compatibility corpus pass.
 
-## 7. Alternatives (not now)
+## 8. Alternatives (not now)
 
 - **SFTP in the kernel:** the SSH transport twice. No.
 - **NFSv3 or 9P in the kernel** (no encryption): fast and simple, but the PC needs a server

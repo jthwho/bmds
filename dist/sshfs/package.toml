@@ -1,0 +1,8 @@
+# sshfs (programs/sshfs): a directory on an SSH server mounted here, over SFTP through Dropbear's
+# client (devplan/netfs.md step 3).
+name = "sshfs"
+version = "1"
+description = "Mount a directory of an SSH server over SFTP (through dbclient)"
+license = "MIT"
+source_tree = "programs/sshfs"
+license_files = ["../../LICENSE"]

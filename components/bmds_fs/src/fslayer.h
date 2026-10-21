@@ -112,6 +112,21 @@ class Volume {
                  */
                 virtual void unmounted() {}
 
+                /**
+                 * @brief True if it keeps symbolic links of its own (a network filesystem's):
+                 *        `stat()` says `FileType::Link`, `readLink()` reads one,
+                 *        `writeLink()` takes the target itself, and `open()` of one gives
+                 *        its target as an emulated link's (§4) is given.
+                 */
+                virtual bool hasLinks() const { return false; }
+
+                /** @brief The target of link @p path, one that `hasLinks()`. */
+                virtual Error readLink(StringView path, String &target) {
+                        (void)path;
+                        target.clear();
+                        return Error::NotSupported;
+                }
+
                 /** @brief Returns the device it is mounted on. */
                 virtual BlockDevice *device() const = 0;
 
@@ -163,7 +178,8 @@ class Volume {
 
                 /**
                  * @brief Makes @p path a new System file holding @p contents (an emulated
-                 *        symbolic link, §4).
+                 *        symbolic link, §4); one that `hasLinks()` makes a link to
+                 *        @p contents, the target itself.
                  * @return `Ok`, `Exists`, `Invalid` (the name), `NotExist`, `NoSpace`, ...
                  */
                 virtual Error writeLink(StringView path, ByteSpan contents, bool &noPath) = 0;

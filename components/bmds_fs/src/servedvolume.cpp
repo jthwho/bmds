@@ -120,6 +120,7 @@ namespace {
                                 return;
                         }
                         bool         locksItself() const override { return true; }
+                        bool         hasLinks() const override { return true; }
                         void         retain() override { refs.fetch_add(1, std::memory_order_relaxed); }
                         void         unmounted() override { end(); }
                         BlockDevice *device() const override { return nullptr; }
@@ -181,9 +182,37 @@ namespace {
                                 return err;
                         }
 
-                        Error writeLink(StringView, ByteSpan, bool &noPath) override {
+                        // SYMLINK: @p target is the link's target itself (hasLinks()).
+                        Error writeLink(StringView path, ByteSpan target, bool &noPath) override {
                                 noPath = false;
-                                return Error::NotSupported; // its own links: devplan/netfs.md step 3
+                                Request r;
+                                r.op = SymLink;
+                                Reply       reply;
+                                size_t      got = 0;
+                                const Error err =
+                                        call(r, path,
+                                             StringView(reinterpret_cast<const char *>(target.data()), target.size()),
+                                             ByteSpan(), WritableByteSpan(), reply, got);
+                                forget(path);
+                                return err;
+                        }
+
+                        Error readLink(StringView path, String &target) override {
+                                target.clear();
+                                auto *buf = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, MaxPathBytes));
+                                if (buf == nullptr) return Error::NoMem;
+                                Request r;
+                                r.op = ReadLink;
+                                r.length = MaxPathBytes;
+                                Reply  reply;
+                                size_t got = 0;
+                                Error err = call(r, path, StringView(), ByteSpan(), WritableByteSpan(buf, MaxPathBytes),
+                                                 reply, got);
+                                if (err.isOk() && (got == 0 || reply.count != got)) err = Error::IoError;
+                                if (err.isOk())
+                                        err = target.assign(StringView(reinterpret_cast<const char *>(buf), got));
+                                Memory::free(buf);
+                                return err;
                         }
 
                         Result<Cursor *> openDirectory(StringView path, bool &noPath) override;
@@ -706,7 +735,7 @@ namespace {
                                                 info = FileInfo();
                                                 (void)info.name.assign(name);
                                                 info.type = typeOf(e.type);
-                                                info.size = info.type == FileType::File ? e.bytes : 0;
+                                                info.size = info.type == FileType::Directory ? 0 : e.bytes;
                                                 info.modified = Timestamp{e.modifiedNs};
                                                 return Error::Ok;
                                         }
@@ -745,13 +774,13 @@ namespace {
                 info = FileInfo();
                 (void)info.name.assign(lastComponent(path));
                 info.type = a.type;
-                info.size = a.type == FileType::File ? a.size : 0;
+                info.size = a.type == FileType::Directory ? 0 : a.size; // a link's: its target's length
                 info.modified = Timestamp{a.modifiedNs};
                 return Error::Ok;
         }
 
         Result<FileHandle::Ptr> ServedVolume::open(StringView path, uint8_t flags, const FileIdentity &identity,
-                                                   bool &noPath, String *) {
+                                                   bool &noPath, String *link) {
                 noPath = false;
                 Request r;
                 r.op = Open;
@@ -762,6 +791,9 @@ namespace {
                 size_t got = 0;
                 Error  err = call(r, path, StringView(), ByteSpan(), WritableByteSpan(), reply, got);
                 if ((flags & (Vfs::Write | Vfs::Create | Vfs::Truncate)) != 0) forget(path);
+                // A link (the server opens none: ELOOP): its target, for the VFS to follow.
+                if (err == Error::TooManyLinks && link != nullptr && readLink(path, *link).isOk())
+                        return makeError<FileHandle::Ptr>(Error::Invalid);
                 if (err.isError()) return makeError<FileHandle::Ptr>(err);
                 void *mem = Memory::alloc(MemSpace::Psram, sizeof(ServedFile));
                 if (mem == nullptr) {

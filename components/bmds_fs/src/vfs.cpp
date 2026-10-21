@@ -604,6 +604,13 @@ namespace {
                 return Fs::isLinkCandidate(attributes, type, size);
         }
 
+        // Is @p info, found on @p volume, a link: one of its own, or an emulated one by its
+        // attributes?
+        bool isLinkOn(const Volume &volume, const FileInfo &info) {
+                if (volume.hasLinks()) return info.type == FileType::Link;
+                return linkCandidate(info.attributes, info.type, info.size);
+        }
+
         // UTF-16LE (with surrogate pairs) to UTF-8.
         Error fromUtf16(const uint8_t *p, size_t units, String &out) {
                 for (size_t i = 0; i < units; ++i) {
@@ -690,8 +697,9 @@ namespace {
                 return err;
         }
 
-        // An emulated link's target (its file read whole). Lock held.
+        // A link's target: the volume's own, or an emulated one's (its file read whole). Lock held.
         Error readLinkLocked(Volume &volume, StringView path, String &target) {
+                if (volume.hasLinks()) return callVolume(volume, [&] { return volume.readLink(path, target); });
                 return callVolume(volume, [&] { return readLinkFile(volume, path, target); });
         }
 
@@ -758,6 +766,12 @@ namespace {
         // Writes a new link file at @p path on @p volume. Lock held.
         Error writeLinkLocked(Volume &volume, StringView path, StringView target, bool &noPath) {
                 noPath = false;
+                if (volume.hasLinks())
+                        return callVolume(volume, [&] {
+                                return volume.writeLink(
+                                        path, ByteSpan(reinterpret_cast<const uint8_t *>(target.data()), target.size()),
+                                        noPath);
+                        });
                 auto *buf = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, MaxLinkFile));
                 if (buf == nullptr) return Error::NoMem;
                 std::memcpy(buf, Cookie, CookieBytes);
@@ -811,7 +825,7 @@ namespace {
                                 break;
                         if (!entry.isDirectory()) {
                                 String target;
-                                if (linkCandidate(entry.attributes, entry.type, entry.size) &&
+                                if (isLinkOn(*node.volume, entry) &&
                                     readLinkCachedLocked(*node.volume, rest.left(end), entry, target).isOk()) {
                                         String           next;
                                         const StringView link = storage.view().left(mountLength + end);
@@ -840,8 +854,7 @@ namespace {
                         Result<FileInfo> info = statLocked(node, &noPath);
                         if (info.error().isOk()) {
                                 FileInfo &fi = info.value();
-                                if (node.kind != Kind::Mounted || !linkCandidate(fi.attributes, fi.type, fi.size))
-                                        return info;
+                                if (node.kind != Kind::Mounted || !isLinkOn(*node.volume, fi)) return info;
                                 String target;
                                 if (readLinkCachedLocked(*node.volume, node.rest, fi, target).isError()) return info;
                                 if (!followLast) {
@@ -1154,11 +1167,12 @@ Result<FileInfo> Directory::next() {
         }
         const Error err = callVolume(*s.volume, [&] { return s.cursor->next(info); });
         if (err.isError()) return makeError<FileInfo>(err);
-        // A link by its attributes alone: reading every link to be sure made
+        // A link of the volume's own is one as it says. Else, a link by its attributes alone: reading every link to be sure made
         // listing a directory of BusyBox's applets take seconds (each read is
         // a lookup in that directory). System files Windows makes are also
         // Hidden; lstat() and readLink() read the cookie when it matters.
-        if (linkCandidate(info.attributes, info.type, info.size) && (info.attributes & FileInfo::Hidden) == 0) {
+        if (!s.volume->hasLinks() && linkCandidate(info.attributes, info.type, info.size) &&
+            (info.attributes & FileInfo::Hidden) == 0) {
                 info.type = FileType::Link;
                 info.size = (info.size - CookieBytes - 4) / 2; // the target's length, if ASCII
         }
@@ -1772,8 +1786,7 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                 String target;
                 if ((flags & Truncate) != 0) {
                         const Result<FileInfo> info = statLocked(node);
-                        if (info.error().isOk() &&
-                            linkCandidate(info.value().attributes, info.value().type, info.value().size) &&
+                        if (info.error().isOk() && isLinkOn(*node.volume, info.value()) &&
                             readLinkLocked(*node.volume, node.rest, target).isOk()) {
                                 String next;
                                 err = linkDestination(storage.view(), target, StringView(), next);

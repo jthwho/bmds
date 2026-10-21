@@ -1853,9 +1853,15 @@ typedef struct bmds_fs_space_t {
                 uint64_t free;  /**< Bytes. */
 } bmds_fs_space_t;
 
-/** @brief `bmds_fs_request_t::op`: what is asked (an op the server doesn't know: `-BMDS_ENOSYS`). */
+/**
+ * @brief `bmds_fs_request_t::op`: what is asked (an op the server doesn't know: `-BMDS_ENOSYS`).
+ *
+ * A path's last component is never followed if it is a link: `STAT` describes the link, `OPEN`
+ * refuses it with `-BMDS_ELOOP`, and the kernel reads it (`READLINK`) and follows it itself.
+ * Links on the way to it are the server's to follow, as its own system does.
+ */
 #define BMDS_FS_STAT 1u      /**< path: an entry (a link itself, not where it leads). */
-#define BMDS_FS_OPEN 2u      /**< path, flags `BMDS_FS_READ`...: a `handle`. */
+#define BMDS_FS_OPEN 2u      /**< path, flags `BMDS_FS_O_*`: a `handle` (a link: `-BMDS_ELOOP`). */
 #define BMDS_FS_READ 3u      /**< handle, offset, length: `count` bytes. */
 #define BMDS_FS_WRITE 4u     /**< handle, offset, data: `count` written. */
 #define BMDS_FS_CLOSE 5u     /**< handle. */

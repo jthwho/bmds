@@ -39,7 +39,8 @@ namespace {
         const Vfs::Context Root{"/", nullptr};
 
         // The server's error numbers, as a program's are (a few of BMDS's own).
-        constexpr int32_t ENoEnt = -2, EExist = -17, ENotDir = -20, EIsDir = -21, ENotEmpty = -39, ENoSys = -38;
+        constexpr int32_t ENoEnt = -2, EExist = -17, ENotDir = -20, EIsDir = -21, EInval = -22, ENotEmpty = -39,
+                          ENoSys = -38, ELoop = -40;
 
         Error errorOf(int32_t e) {
                 switch (e) {
@@ -49,6 +50,8 @@ namespace {
                         case EIsDir: return Error::IsDir;
                         case ENotEmpty: return Error::NotEmpty;
                         case ENoSys: return Error::NotSupported;
+                        case EInval: return Error::Invalid;
+                        case ELoop: return Error::TooManyLinks;
                         default: return Error::IoError;
                 }
         }
@@ -60,6 +63,7 @@ namespace {
                                         bool        dir = false;
                                         std::string data;
                                         int64_t     modified = 0;
+                                        bool        link = false; // data: its target
                         };
 
                         std::map<std::string, Node>     nodes;
@@ -101,7 +105,16 @@ namespace {
                                 std::vector<std::vector<uint8_t>> batch;
                                 FileHandle::Ptr                   h = end; // ours while it runs
                                 for (;;) {
-                                        auto [n, err] = h->read(WritableByteSpan(buf.data(), buf.size()), WaitForever);
+                                        // A batch begun is answered when no more come soon (the last callers').
+                                        auto [n, err] = h->read(WritableByteSpan(buf.data(), buf.size()),
+                                                                batch.empty() ? WaitForever : 20);
+                                        if (err.isError() && !batch.empty() && err != Error::EndOfFile &&
+                                            !quit.load()) {
+                                                for (auto it = batch.rbegin(); it != batch.rend(); ++it)
+                                                        (void)h->write(ByteSpan(it->data(), it->size()), WaitForever);
+                                                batch.clear();
+                                                continue;
+                                        }
                                         if (err.isError() || quit.load()) break;
                                         ++requests;
                                         if (ignore.load()) continue;
@@ -121,7 +134,9 @@ namespace {
 
                         static void entry(std::vector<uint8_t> &out, const std::string &name, const Node &node) {
                                 Served::Entry e;
-                                e.type = node.dir ? Served::TypeDirectory : Served::TypeFile;
+                                e.type = node.dir    ? Served::TypeDirectory
+                                         : node.link ? Served::TypeLink
+                                                     : Served::TypeFile;
                                 e.bytes = node.data.size();
                                 e.modifiedNs = node.modified;
                                 e.nameLength = uint32_t(name.size());
@@ -163,6 +178,8 @@ namespace {
                                                         reply.error = EExist;
                                                 } else if (found != nodes.end() && found->second.dir) {
                                                         reply.error = EIsDir;
+                                                } else if (found != nodes.end() && found->second.link) {
+                                                        reply.error = ELoop; // never opened: the kernel follows it
                                                 } else {
                                                         Node &node = nodes[path];
                                                         if (r.flags & Served::OpenTruncate) node.data.clear();
@@ -258,6 +275,22 @@ namespace {
                                                 put(payload, &i, sizeof(i));
                                                 break;
                                         }
+                                        case Served::ReadLink:
+                                                if (found == nodes.end())
+                                                        reply.error = ENoEnt;
+                                                else if (!found->second.link)
+                                                        reply.error = EInval;
+                                                else
+                                                        put(payload, found->second.data.data(),
+                                                            found->second.data.size());
+                                                reply.count = uint32_t(payload.size());
+                                                break;
+                                        case Served::SymLink:
+                                                if (found != nodes.end())
+                                                        reply.error = EExist;
+                                                else
+                                                        nodes[path] = Node{false, path2, 0, true};
+                                                break;
                                         default: reply.error = ENoSys; break;
                                 }
                                 reply.size = uint32_t(sizeof(reply) + payload.size());
@@ -450,4 +483,64 @@ TEST_CASE("servedfs: bad configurations and an unmount the server hears of") {
         CHECK(Vfs::unmount("/srv") == Error::Ok);
         server.thread.join(); // its read got the end
         server.end.reset();
+}
+
+TEST_CASE("servedfs: the server's own links, followed by the kernel") {
+        REQUIRE(Vfs::init().isOk());
+        REQUIRE(Vfs::mountTmpfs("/t", 1 << 20).isOk());
+        TestServer server;
+        server.nodes["/f"] = TestServer::Node{false, "hello", 0};
+        server.nodes["/d"] = TestServer::Node{true, "", 0};
+        {
+                auto [end, err] = Served::serve(configFor("/srv"));
+                REQUIRE(err.isOk());
+                server.start(std::move(end));
+        }
+        // Made through the mount: SYMLINK with the target as given.
+        CHECK(Vfs::symlink("f", "/srv/l", Root) == Error::Ok);
+        CHECK(server.nodes["/l"].link);
+        CHECK(server.nodes["/l"].data == "f");
+        CHECK(Vfs::symlink("x", "/srv/l", Root) == Error::Exists);
+        CHECK(Vfs::readLink("/srv/l", Root).value().view() == "f");
+        CHECK(Vfs::readLink("/srv/f", Root).error() == Error::Invalid);
+        // lstat says a link, the target's length; stat and open follow it.
+        auto [ls, lerr] = Vfs::lstat("/srv/l", Root);
+        CHECK(lerr.isOk());
+        CHECK(ls.type == FileType::Link);
+        CHECK(ls.size == 1);
+        CHECK(Vfs::stat("/srv/l", Root).value().size == 5);
+        CHECK(readAll("/srv/l") == "hello");
+        // Listed as a link.
+        {
+                auto [dir, err] = Vfs::openDirectory("/srv", Root);
+                REQUIRE(err.isOk());
+                bool seen = false;
+                for (;;) {
+                        auto [info, ierr] = dir.next();
+                        if (ierr.isError()) break;
+                        if (info.name.view() == "l") seen = info.type == FileType::Link && info.size == 1;
+                }
+                CHECK(seen);
+        }
+        // An absolute target is this system's: out of the mount, into tmpfs.
+        {
+                auto [h, err] = Vfs::open("/t/a", Vfs::Write | Vfs::Create, Root);
+                REQUIRE(err.isOk());
+                REQUIRE(h->write(ByteSpan(reinterpret_cast<const uint8_t *>("tmp"), 3), WaitForever).error().isOk());
+        }
+        server.nodes["/out"] = TestServer::Node{false, "/t/a", 0, true};
+        CHECK(readAll("/srv/out") == "tmp");
+        // Relative to the link's directory; dangling; a loop.
+        server.nodes["/d/up"] = TestServer::Node{false, "../f", 0, true};
+        CHECK(readAll("/srv/d/up") == "hello");
+        server.nodes["/gone"] = TestServer::Node{false, "nothing", 0, true};
+        CHECK(Vfs::stat("/srv/gone", Root).error() == Error::NotExist);
+        CHECK(Vfs::lstat("/srv/gone", Root).isOk());
+        server.nodes["/loop"] = TestServer::Node{false, "loop", 0, true};
+        CHECK(Vfs::open("/srv/loop", Vfs::Read, Root).error() == Error::TooManyLinks);
+        // Removed as a file is.
+        CHECK(Vfs::remove("/srv/l", Root) == Error::Ok);
+        CHECK(server.nodes.count("/l") == 0);
+        server.stop();
+        CHECK(Vfs::unmount("/t") == Error::Ok);
 }

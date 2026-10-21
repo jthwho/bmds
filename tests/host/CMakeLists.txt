@@ -73,6 +73,10 @@ add_executable(bmds_host_tests
         tmpfs.cpp
         netvolume.cpp
         servedfs.cpp
+        sshfs.cpp
+        sshfs_posix.c
+        ${BMDS_ROOT}/programs/sshfs/sshfs.c
+        ${BMDS_ROOT}/programs/sftp-server/sftp.c
         list.cpp
         littlefs.cpp
         lwip.cpp
