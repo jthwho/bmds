@@ -82,6 +82,18 @@ class LanguageSupport {
                 virtual Error runCommand(StringView path, int reportFd, List<String> &argv) const = 0;
                 /** @brief Reads a run's report. @return True if it says where it failed. */
                 virtual bool failure(StringView report, Failure &out) const = 0;
+                /**
+                 * @brief Fills @p argv with the command that runs @p path under the debugger
+                 *        (`devplan/editor.md` §17): its report and events on @p reportFd, its
+                 *        commands from @p commandFd. @return `NotSupported` if the language can't.
+                 */
+                virtual Error debugCommand(StringView path, int reportFd, int commandFd, List<String> &argv) const {
+                        (void)path;
+                        (void)reportFd;
+                        (void)commandFd;
+                        argv.clear();
+                        return Error::NotSupported;
+                }
 };
 
 /**
@@ -107,6 +119,7 @@ class AngelSupport final : public LanguageSupport {
                 void        typeNames(List<String> &out) const override;
                 Error       runCommand(StringView path, int reportFd, List<String> &argv) const override;
                 bool        failure(StringView report, Failure &out) const override;
+                Error debugCommand(StringView path, int reportFd, int commandFd, List<String> &argv) const override;
 
                 /** @brief Returns angel's path (found on PATH), or empty. */
                 StringView program() const { return _program.view(); }

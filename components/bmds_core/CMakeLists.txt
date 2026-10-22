@@ -53,7 +53,7 @@ set(BMDS_CORE_SRCS
         src/jsonwriter.cpp
         src/logtext.cpp
         src/string.cpp
-        src/syntax.cpp
+        src/textsyntax.cpp
         src/timezone.cpp
         src/topview.cpp
         src/updatepackage.cpp

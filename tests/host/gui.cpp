@@ -45,6 +45,7 @@
 #include <bmds/trayprotocol.h>
 #include <bmds/trayrow.h>
 #include <bmds/treerows.h>
+#include <bmds/windowplacement.h>
 #include <bmds/windowstack.h>
 
 using bmds::DesktopEntry;
@@ -1177,6 +1178,41 @@ TEST_CASE("TreeRows: a folder read again keeps what is open below the children s
                 REQUIRE(t.setChildren(4, desktop).isOk());
         }
         CHECK(names() == "/ .sd0 ..p0 .home ..Desktop ...x ..docs ..odd "); // round 299
+}
+
+TEST_CASE("TreeRows: a leaf has no box; the owner's data stays with its row") {
+        bmds::TreeRows t;
+        REQUIRE(t.addRoot("Globals", 7).isOk());
+        const bmds::StringView vars[] = {"n: int = 1", "b: Ball = {x: 1}"};
+        REQUIRE(t.setChildren(0, vars).isOk());
+        t.setHasChildren(1, false); // a plain value
+        t.setData(2, 9);
+        CHECK((t.row(1).flags & bmds::TreeRows::HasChildren) == 0);
+        CHECK((t.row(2).flags & bmds::TreeRows::HasChildren) != 0);
+        CHECK(t.row(0).data == 7);
+        CHECK(t.row(2).data == 9);
+        const bmds::StringView members[] = {"x: float = 1"};
+        REQUIRE(t.setChildren(2, members).isOk());
+        CHECK(t.count() == 4);
+        CHECK(t.row(2).data == 9);
+        t.setHasChildren(9, false); // past the end: nothing
+}
+
+TEST_CASE("WindowPlacement: as the setting keeps it, and what isn't one") {
+        bmds::WindowPlacement p;
+        REQUIRE(bmds::WindowPlacement::parse("280 86 720 576", p));
+        CHECK(p.normal.x == 280);
+        CHECK(p.normal.y == 86);
+        CHECK(p.normal.width == 720);
+        CHECK(p.normal.height == 576);
+        CHECK(!p.maximized);
+        REQUIRE(bmds::WindowPlacement::parse(" 0 28 1280 692 maximized ", p));
+        CHECK(p.maximized);
+        CHECK(p.format().view() == "0 28 1280 692 maximized");
+        p.maximized = false;
+        CHECK(p.format().view() == "0 28 1280 692");
+        for (const char *bad : {"", "1 2 3", "1 2 0 4", "1 2 3 4 big", "a b c d", "1 2 3 70000", "-1 2 3 4"})
+                CHECK_MESSAGE(!bmds::WindowPlacement::parse(bad, p), bad);
 }
 
 TEST_CASE("ListItemModel: names, icons by size, columns") {

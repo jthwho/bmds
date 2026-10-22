@@ -59,6 +59,9 @@ class GuiWindow : public Widget {
                                 bool focusOnPress = true; ///< False: a press doesn't give it the keys.
                 };
 
+                /** @brief Where it is when not maximized, and whether it is (`devplan/editor.md` §18). */
+                using Placement = WindowManager::Placement;
+
                 /** @brief Told the window was closed by the window manager (its close button). */
                 using Closed = void (*)(void *arg, GuiWindow &window);
 
@@ -80,8 +83,22 @@ class GuiWindow : public Widget {
                 /** @brief Opens it at @p rect (outer) instead. */
                 Error show(const Rect &rect);
 
-                /** @brief Returns its rectangle (outer) when it last closed, to open it there again (empty: never). */
-                Rect lastRect() const { return _lastRect; }
+                /**
+                 * @brief Returns its rectangle (outer, not maximized) when it last closed, to open
+                 *        it there again (empty: never).
+                 */
+                Rect lastRect() const { return _lastPlacement.normal; }
+
+                /**
+                 * @brief Opens it at @p placement's rectangle (moved onto the work area if it is
+                 *        off it, and no larger), then maximized if it was.
+                 * @return `Ok`, or as `show()`.
+                 */
+                Error show(const Placement &placement);
+
+                /** @brief Returns its placement: the window manager's while open, else as it last closed (empty: never). */
+                Placement placement() const;
+
 
                 /** @brief Closes it (it may be shown again). */
                 void close();
@@ -260,7 +277,7 @@ class GuiWindow : public Widget {
 
         private:
                 static void redraw(void *arg, Painter &painter);
-                static void closedEntry(void *arg, const Rect &outer);
+                static void closedEntry(void *arg, const WindowManager::Placement &placement);
                 static void keyEntry(void *arg, const KeyEvent &event);
                 static void padEntry(void *arg, const PadEvent &event);
                 static void activatedEntry(void *arg, bool active);
@@ -289,7 +306,7 @@ class GuiWindow : public Widget {
                 uint8_t              _slot = 0;
                 uint8_t              _generation = 0;
                 Rect                 _screen;
-                Rect                   _lastRect; // outer, as it last closed
+                Placement              _lastPlacement; // as it last closed
                 Widget              *_central = nullptr;
                 const Icon          *_icon = nullptr;
                 const Icon          *_largeIcon = nullptr;

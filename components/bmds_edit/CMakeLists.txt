@@ -9,7 +9,9 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 if(COMMAND idf_component_register)
         idf_component_register(SRCS src/angelsupport.cpp
+                                    src/debugsession.cpp
                                     src/editapp.cpp
+                                    src/editdebug.cpp
                                     src/editrun.cpp
                                     src/editwindow.cpp
                                PRIV_REQUIRES bmds_core bmds_fs bmds_gui bmds_input bmds_kernel bmds_shell bmds_sysconf

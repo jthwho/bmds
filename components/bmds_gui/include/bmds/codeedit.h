@@ -13,7 +13,7 @@
 #include <bmds/config.h>
 #include <bmds/list.h>
 #include <bmds/string.h>
-#include <bmds/syntax.h>
+#include <bmds/textsyntax.h>
 #include <bmds/textedit.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -53,7 +53,16 @@ class CodeEdit : public TextEdit {
                                 uint32_t    bracket = 0xc0d8ff; ///< A matched bracket's background.
                                 uint32_t    error = 0xff0000;   ///< An error's underline and mark.
                                 uint32_t    warning = 0xe0a000; ///< A warning's.
+                                uint32_t    breakpoint = 0xc81e1e;    ///< A breakpoint's dot.
+                                uint32_t    execution = 0xfff3a0;     ///< The line about to run's background.
+                                uint32_t    executionMark = 0xe0a000; ///< And its arrow in the gutter.
                 };
+
+                /** @brief Told that the breakpoints changed (toggled, cleared, or moved by an edit). */
+                using BreakpointsChanged = void (*)(void *arg, CodeEdit &edit);
+
+                /** @brief No line (`setExecutionLine()`'s none). */
+                static constexpr uint32_t NoLine = UINT32_MAX;
 
                 /** @brief How bad a diagnostic is. */
                 enum class Severity : uint8_t {
@@ -105,6 +114,30 @@ class CodeEdit : public TextEdit {
                 /** @brief Returns the diagnostic at @p position, or null. */
                 const Diagnostic *diagnosticAt(TextPosition position) const;
 
+                /**
+                 * @brief Shows the breakpoints' column, a click in the gutter toggling a line's
+                 *        (a language that can debug); off, the gutter selects lines as before.
+                 */
+                void setBreakpointsEnabled(bool on);
+                bool areBreakpointsEnabled() const { return _breakpointsEnabled; }
+                /** @brief Sets or clears line @p line's breakpoint. @return True if it is set now. */
+                bool toggleBreakpoint(uint32_t line);
+                /** @brief Clears every breakpoint. */
+                void clearBreakpoints();
+                /** @brief Returns the lines with breakpoints (from 0, sorted); they move with their lines as the text is edited. */
+                Span<const uint32_t> breakpoints() const { return _breakpoints.span(); }
+                /** @brief Returns true if line @p line has a breakpoint. */
+                bool hasBreakpoint(uint32_t line) const;
+                /** @brief Has @p fn told when the breakpoints change. */
+                void setBreakpointsChanged(BreakpointsChanged fn, void *arg) {
+                        _breakpointsChanged = fn;
+                        _breakpointsChangedArg = arg;
+                        return;
+                }
+                /** @brief Marks line @p line as the one about to run (a debugger stopped there; `NoLine`: none). */
+                void     setExecutionLine(uint32_t line);
+                uint32_t executionLine() const { return _executionLine; }
+
                 /** @brief Comments the selected lines (or the cursor's) with the language's line comment, or uncomments them if all are. */
                 void toggleComment();
 
@@ -121,6 +154,7 @@ class CodeEdit : public TextEdit {
                 void     documentChanged(const TextDocument::Change &change) override;
                 void     paintOver(Painter &painter, uint32_t line, int y, const Rect &area) override;
                 void     cursorMovedHook() override;
+                void     gutterClicked(uint32_t line, const WindowManager::MouseEvent &event) override;
 
         private:
                 void        ensureStates(uint32_t line); // the end states of the lines before @p line known
@@ -134,6 +168,8 @@ class CodeEdit : public TextEdit {
                 String      indentationOf(uint32_t line) const;
                 uint32_t    digits() const;
                 bool        hasDiagnostic(uint32_t line, Severity &worst) const;
+                uint16_t    markWidth() const; // the marks' column, left of the numbers
+                void        tellBreakpoints();
 
                 size_t addTypeNames(StringView text, StyleSpan *spans, size_t count, size_t max) const;
 
@@ -151,6 +187,11 @@ class CodeEdit : public TextEdit {
                 List<Diagnostic> _diagnostics{MemSpace::Psram};
                 TextPosition     _hover; // the pointer's place, for the tooltip
                 bool             _hovering = false;
+                List<uint32_t>     _breakpoints{MemSpace::Psram};
+                bool               _breakpointsEnabled = false;
+                uint32_t           _executionLine = NoLine;
+                BreakpointsChanged _breakpointsChanged = nullptr;
+                void              *_breakpointsChangedArg = nullptr;
 };
 
 BMDS_NAMESPACE_END

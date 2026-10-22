@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# angel --serve and --report-fd (devplan/editor.md §9): the editor's checker and Run's report.
-# The protocol is ABI once shipped: these are its checks.
+# angel --serve, --report-fd and --debug (devplan/editor.md §9, §17): the editor's checker, Run's
+# report and the debugger. The protocols are ABI once shipped: these are their checks.
 #
 #   serve.py ANGEL
 
@@ -29,6 +29,118 @@ def reported(angel, script):
     report = os.read(r, 4096).decode()
     os.close(r)
     return result, report
+
+
+# Runs the script under the debugger: commands on descriptor 4, events on 3 (the shell puts them
+# there). Returns the process, the events' reader and a function sending a command.
+def debugged(angel, script):
+    events_r, events_w = os.pipe()
+    commands_r, commands_w = os.pipe()
+    p = subprocess.Popen(["sh", "-c", 'exec "$0" --report-fd 3 --debug 4 "$1" 3>&%d 4<&%d' % (events_w, commands_r),
+                          angel, script], pass_fds=(events_w, commands_r), stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE)
+    os.close(events_w)
+    os.close(commands_r)
+    events = os.fdopen(events_r)
+    commands = os.fdopen(commands_w, "w")
+
+    def send(line):
+        commands.write(line + "\n")
+        commands.flush()
+
+    return p, events, commands, send
+
+
+def answer(events):
+    lines = []
+    while True:
+        line = events.readline()
+        if line in ("end\n", ""):
+            return lines
+        lines.append(line.rstrip("\n").split("\t"))
+
+
+def debug_checks(angel, scratch):
+    script = os.path.join(scratch, "debug.as")
+    with open(script, "w") as f:
+        f.write("class Ball { float x = 1.5; int[] hits = {1, 2, 3}; string name = \"a\\tb\"; }\n"  # 1
+                "int twice(int n) {\n"                                                          # 2
+                "        int r = n * 2;\n"                                                      # 3
+                "        return r;\n"                                                           # 4
+                "}\n"                                                                           # 5
+                "Ball b;\n"                                                                     # 6
+                "int total = 0;\n"                                                              # 7
+                "for (int i = 0; i < 3; i++) {\n"                                               # 8
+                "        total += twice(i);\n"                                                  # 9
+                "}\n"                                                                           # 10
+                "println(total);\n"                                                             # 11
+                "int[] a;\n"                                                                    # 12
+                "a[2] = 1;\n")                                                                  # 13
+    p, events, commands, send = debugged(angel, script)
+    send("break\t%s\t3" % script)
+    send("go")
+    check("debug: a breakpoint", events.readline() == "stopped\tbreak\t%s\t3\n" % script)
+    send("stack")
+    check("debug: the stack", answer(events) == [["frame", "0", "int twice(int)", script, "3"],
+                                                 ["frame", "1", "the top level", script, "9"]])
+    send("vars\t0\t")
+    check("debug: a frame's variables", answer(events) == [["var", "n", "int", "0", "0"]])
+    send("vars\tg\t")
+    check("debug: the globals", answer(events) == [["var", "total", "int", "0", "0"],
+                                                   ["var", "b", "Ball", '{x: 1.5, hits: […], name: "a\\tb"}', "3"],
+                                                   ["var", "a", "int[]", "[]", "0"]])
+    send("vars\tg\tb")
+    check("debug: an object's members", answer(events) == [["var", "x", "float", "1.5", "0"],
+                                                           ["var", "hits", "int[]", "[1, 2, 3]", "3"],
+                                                           ["var", "name", "string", '"a\\tb"', "0"]])
+    send("vars\t1\tb.hits")
+    check("debug: an array's elements", [v[1] for v in answer(events)] == ["[0]", "[1]", "[2]"])
+    send("value\t0\tb.hits[1]")
+    check("debug: a path's value", answer(events) == [["var", "b.hits[1]", "int", "2", "0"]])
+    send("value\t0\tnope")
+    check("debug: no such variable", answer(events) == [["error", "no such variable here"]])
+    send("value\t0\tb.hits[9]")
+    check("debug: an index too far", answer(events) == [["error", "index out of bounds"]])
+    send("bogus")
+    check("debug: an unknown command", answer(events) == [["error", "unknown command"]])
+    send("next")
+    check("debug: step over", events.readline() == "stopped\tstep\t%s\t4\n" % script)
+    send("out")
+    check("debug: step out", events.readline().startswith("stopped\tstep\t%s\t" % script))
+    send("vars\tg\t")
+    check("debug: a value changed", ["var", "total", "int", "0", "0"] in answer(events))
+    send("clear\t%s\t3" % script)
+    send("go")
+    check("debug: an uncaught exception",
+          events.readline() == "stopped\texception\t%s\t13\tIndex out of bounds\n" % script)
+    send("go")
+    check("debug: then the report", events.readline() == "exception\t%s\t13\t1\tIndex out of bounds\n" % script)
+    check("debug: the exit status", p.wait(timeout=10) == 1)
+    check("debug: the output", p.stdout.read() == b"6\n")
+    events.close()
+    commands.close()
+
+    # Step from the first line; a pause while it runs; the editor gone: it runs on, undebugged.
+    loop = os.path.join(scratch, "loop.as")
+    with open(loop, "w") as f:
+        f.write("int n = 0;\nwhile (n >= 0) {\n        n++;\n        if (n == 100000000) n = 0;\n}\n")
+    p, events, commands, send = debugged(angel, loop)
+    send("step")
+    check("debug: the first line", events.readline() == "stopped\tstep\t%s\t1\n" % loop)
+    send("go")
+    send("pause")
+    check("debug: a pause", events.readline().startswith("stopped\tpause\t%s\t" % loop))
+    commands.close()
+    try:
+        p.wait(timeout=0.5)
+        check("debug: runs on when the editor goes", False)
+    except subprocess.TimeoutExpired:
+        pass
+    p.kill()
+    p.wait()
+    events.close()
+    check("debug: --debug needs --report-fd",
+          subprocess.run([angel, "--debug", "4", loop], capture_output=True).returncode == 2)
 
 
 def main():
@@ -99,6 +211,7 @@ def main():
         check("report-fd: a compile error", report.startswith("error\t%s\t1\t" % script))
         check("report-fd: bad descriptor", subprocess.run([angel, "--report-fd", "x", script],
                                                          capture_output=True).returncode == 2)
+        debug_checks(angel, scratch)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     print("serve: %d failed" % failures)

@@ -95,11 +95,39 @@ Error GuiWindow::show(const Rect &rect) {
         return Error();
 }
 
+Error GuiWindow::show(const Placement &placement) {
+        // On the work area (a setting saved on a larger screen, or with a panel elsewhere).
+        const Rect work = _app.windowManager().workArea();
+        Rect       r = placement.normal;
+        if (r.width == 0 || r.height == 0) r = _config.rect;
+        if (work.width != 0 && work.height != 0) {
+                if (r.width > work.width) r.width = work.width;
+                if (r.height > work.height) r.height = work.height;
+                if (r.x < work.x) r.x = work.x;
+                if (r.y < work.y) r.y = work.y;
+                if (r.x + r.width > work.x + work.width) r.x = uint16_t(work.x + work.width - r.width);
+                if (r.y + r.height > work.y + work.height) r.y = uint16_t(work.y + work.height - r.height);
+        }
+        const Error err = show(r);
+        if (err.isError() || !placement.maximized) return err;
+        (void)_app.windowManager().maximize(id());
+        return Error::Ok;
+}
+
+GuiWindow::Placement GuiWindow::placement() const {
+        const uint8_t id = this->id();
+        if (id != 0) {
+                auto [placed, err] = _app.windowManager().placement(id);
+                if (err.isOk()) return placed;
+        }
+        return _lastPlacement;
+}
+
 void GuiWindow::close() {
         const uint8_t id = _id.exchange(0, std::memory_order_acq_rel);
         if (id != 0) {
-                auto [outer, err] = _app.windowManager().rect(id);
-                if (err.isOk()) _lastRect = outer;
+                auto [placed, err] = _app.windowManager().placement(id);
+                if (err.isOk()) _lastPlacement = placed;
                 (void)_app.windowManager().close(id);
         }
         _screen = Rect();
@@ -335,13 +363,14 @@ void GuiWindow::queue(GuiApplication::Event event) {
         return;
 }
 
-void GuiWindow::closedEntry(void *arg, const Rect &outer) {
+void GuiWindow::closedEntry(void *arg, const WindowManager::Placement &placement) {
         GuiApplication::Event e;
         e.type = Type::Closed;
-        e.x = outer.x;
-        e.y = outer.y;
-        e.width = outer.width;
-        e.height = outer.height;
+        e.x = placement.normal.x;
+        e.y = placement.normal.y;
+        e.width = placement.normal.width;
+        e.height = placement.normal.height;
+        e.maximized = placement.maximized;
         static_cast<GuiWindow *>(arg)->queue(e);
         return;
 }
@@ -516,7 +545,10 @@ void GuiWindow::handle(const GuiApplication::Event &event) {
                 }
                 case Type::Closed:
                         if (_id.exchange(0, std::memory_order_acq_rel) != 0) {
-                                if (event.width != 0) _lastRect = Rect{event.x, event.y, event.width, event.height};
+                                if (event.width != 0) {
+                                        _lastPlacement.normal = Rect{event.x, event.y, event.width, event.height};
+                                        _lastPlacement.maximized = event.maximized;
+                                }
                                 _screen = Rect();
                                 _grab = _hover = nullptr;
                                 if (_dropWidget != nullptr) _dropWidget->dragLeft();

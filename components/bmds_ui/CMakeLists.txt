@@ -20,6 +20,7 @@ set(BMDS_UI_PURE_SRCS
         src/terminalselection.cpp
         src/terminalview.cpp
         src/windowpalette.cpp
+        src/windowplacement.cpp
         src/windowstack.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)

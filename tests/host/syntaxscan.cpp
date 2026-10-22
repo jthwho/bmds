@@ -12,7 +12,7 @@
 
 #include <cstring>
 #include <string>
-#include <bmds/syntax.h>
+#include <bmds/textsyntax.h>
 
 using bmds::Span;
 using bmds::StringView;

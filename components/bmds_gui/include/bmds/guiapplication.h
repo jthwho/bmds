@@ -287,6 +287,7 @@ class GuiApplication {
                                 uint16_t                  height = 0;
                                 uint16_t                  x = 0; ///< `Closed`: where it was (with the size).
                                 uint16_t                  y = 0;
+                                bool                      maximized = false; ///< `Closed`: it was maximized.
                                 Callback                  fn = nullptr;
                                 void                     *arg = nullptr;
                 };

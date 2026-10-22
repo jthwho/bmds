@@ -34,6 +34,7 @@
 #include <bmds/task.h>
 #include <bmds/waitlist.h>
 #include <bmds/windowpalette.h>
+#include <bmds/windowplacement.h>
 #include <bmds/windowstack.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -122,11 +123,14 @@ class WindowManager {
                  */
                 using Closed = void (*)(void *arg);
 
+                /** @brief Where a window is when it isn't maximized, and whether it is (`WindowPlacement`). */
+                using Placement = WindowPlacement;
+
                 /**
-                 * @brief Told that the window closed, and where it was (@p outer, frame
-                 *        included), as `Closed` (in its place when set).
+                 * @brief Told that the window closed, and where it was (its placement), as
+                 *        `Closed` (in its place when set).
                  */
-                using ClosedAt = void (*)(void *arg, const Rect &outer);
+                using ClosedAt = void (*)(void *arg, const Placement &placement);
 
                 /**
                  * @brief Takes a key typed while the window has the focus (on the
@@ -947,6 +951,9 @@ class WindowManager {
                 /** @brief Returns window @p id's outer rectangle (screen coordinates; minimized too). */
                 Result<Rect> rect(uint8_t id);
 
+                /** @brief Returns window @p id's placement: its normal rectangle and whether it is maximized. */
+                Result<Placement> placement(uint8_t id);
+
                 /**
                  * @brief Returns window @p id's client area (screen coordinates; minimized too).
                  *        While a round draws, as at its start (it doesn't wait).
@@ -1116,6 +1123,7 @@ class WindowManager {
                 bool            dndKey(const KeyEvent &event);      // Escape, modifiers; true: taken
                 void            dndEnd(DropAction done);            // the source told after the round
                 void            dndClosed(uint8_t id);              // a window gone
+                Placement       placementLocked(uint8_t id);        // its normal rectangle, maximized or not
                 Pointer         dndShape() const;
                 void            dndRetire(); // the image and its under out of use
                 void            dndFree();   // and freed, once nothing drawn holds them

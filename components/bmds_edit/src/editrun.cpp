@@ -5,8 +5,8 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * edit's language tools (devplan/editor.md §9): the pane (Output, Problems, Help), checks as you
- * type, Run and Stop, F1 help, completion, templates and the examples.
+ * edit's language tools (devplan/editor.md §9): the pane (Output, Problems, Help, Debug), checks as
+ * you type, Run and Stop (plain or debugged, §17), F1 help, completion, templates and the examples.
  */
 
 #include <cstdio>
@@ -29,9 +29,11 @@ namespace {
                 OutputTab = 0,
                 ProblemsTab = 1,
                 HelpTab = 2,
+                DebugTab = 3,
         };
 
-        constexpr int      ReportFd = 3; // where a run's report is written
+        constexpr int      ReportFd = 3;  // where a run's report is written (and a debugged one's events)
+        constexpr int      CommandFd = 4; // where a debugged run reads the debugger's commands
         constexpr uint32_t BusyRetryMs = 300;
         constexpr size_t   MaxCompletions = 24;
 
@@ -104,6 +106,8 @@ Error EditWindow::buildPane(Widget *parent) {
         _helpView->setReadOnly(true);
         _problems->setCursorMoved(problemPicked, this);
         _output->setEnded(runEnded, this);
+        Error err = buildDebugTab();
+        if (err.isError()) return err;
         _pane->setVisible(false);
         (void)_examplesDialog.addFilter("AngelScript", "*.as");
         (void)_examplesDialog.addFilter("All files", "");
@@ -250,7 +254,18 @@ void EditWindow::problemPicked(void *arg, TextEdit &edit) {
 
 // ---- Running
 
-void EditWindow::run() {
+// F5: on from a stop; else under the debugger if the script (or another open one) has breakpoints,
+// else plainly (no line cues: faster).
+void EditWindow::runOrDebug() {
+        if (_debug != nullptr && _debug->isActive()) {
+                resume(DebugSession::Resume::Go); // stopped: goes on (running: nothing)
+                return;
+        }
+        run(hasBreakpoints() ? RunMode::Debug : RunMode::Plain);
+        return;
+}
+
+void EditWindow::run(RunMode mode) {
         Document *doc = current();
         if (doc == nullptr) return;
         LanguageSupport *support = supportFor(*doc);
@@ -268,6 +283,7 @@ void EditWindow::run() {
         const bool   modified = doc->edit->document().isModified();
         if (doc->path.isEmpty() || (doc->readOnly && modified)) {
                 _runAfterSave = true;
+                _runAfterSaveMode = mode;
                 if (doc->path.isEmpty()) {
                         // The scripts' folder (a setting, `${HOME}` and the like expanded), made if missing.
                         String raw(MemSpace::Psram), folder(MemSpace::Psram);
@@ -285,20 +301,39 @@ void EditWindow::run() {
                 return;
         }
         if (modified && !save(index)) return;
+        const bool debug = mode != RunMode::Plain;
         auto [pipe, perr] = Pipe::create();
+        auto [commands, cerr] = debug ? Pipe::create() : makeResult(Pipe::Ends{});
         List<String> argv(MemSpace::Psram);
-        Error        err = perr.isError() ? perr : support->runCommand(doc->path.view(), ReportFd, argv);
+        Error        err = perr.isError() ? perr : cerr;
+        if (err.isOk())
+                err = debug ? support->debugCommand(doc->path.view(), ReportFd, CommandFd, argv)
+                            : support->runCommand(doc->path.view(), ReportFd, argv);
+        if (err == Error::NotSupported) {
+                _status->setText(0, "This language has no debugger: F5 runs it without");
+                return;
+        }
         if (err.isError()) {
                 warn("Can't run", doc->path.view(), err);
                 return;
+        }
+        if (debug && _debug == nullptr) {
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(DebugSession));
+                if (mem == nullptr) {
+                        warn("Can't debug", doc->path.view(), Error::NoMem);
+                        return;
+                }
+                _debug = ::new (mem) DebugSession(application(), *this);
         }
         StringView args[8];
         size_t     n = 0;
         for (const String &a : argv)
                 if (n < 8) args[n++] = a.view();
-        TerminalWidget::ExtraFd extra[1];
+        TerminalWidget::ExtraFd extra[2];
         extra[0].fd = ReportFd;
         extra[0].handle = std::move(pipe.write);
+        extra[1].fd = CommandFd;
+        extra[1].handle = std::move(commands.read);
         TerminalWidget::Command command;
         command.path = args[0];
         command.args = Span<const StringView>(args, n);
@@ -306,7 +341,7 @@ void EditWindow::run() {
         command.cwd = folderOf(doc->path.view());
         command.launcher = _startup.launcher;
         command.process = _startup.process;
-        command.extraFds = Span<TerminalWidget::ExtraFd>(extra, 1);
+        command.extraFds = Span<TerminalWidget::ExtraFd>(extra, debug ? 2 : 1);
         // The doc's diagnostics from a run before go; a check puts its own back.
         (void)doc->edit->setDiagnostics(Span<const CodeEdit::Diagnostic>());
         String banner(MemSpace::Psram);
@@ -319,11 +354,27 @@ void EditWindow::run() {
                 warn("Can't run", doc->path.view(), err);
                 return;
         }
-        _report = std::move(pipe.read);
         _runDoc = doc->id;
         _stopAsked = false;
         _output->setFocus(); // what it reads is typed here
-        _status->setText(0, "Running (Shift+F5 stops it)");
+        if (!debug) {
+                _report = std::move(pipe.read);
+                _status->setText(0, "Running (Shift+F5 stops it)");
+                return;
+        }
+        // Debugged: the events read as they come; the breakpoints first, then how it starts.
+        err = _debug->start(std::move(pipe.read), std::move(commands.write));
+        if (err.isError()) {
+                (void)_output->stop(true);
+                warn("Can't debug", doc->path.view(), err);
+                return;
+        }
+        for (size_t i = 0; i < _count; ++i) {
+                _docs[i].sentBreaks.clear();
+                syncBreakpoints(_docs[i]);
+        }
+        (void)_debug->resume(mode == RunMode::DebugStep ? DebugSession::Resume::Step : DebugSession::Resume::Go);
+        _status->setText(0, "Debugging (Shift+F5 stops it)");
         return;
 }
 
@@ -340,7 +391,10 @@ void EditWindow::stopRun() {
 void EditWindow::runEnded(void *arg, TerminalWidget &terminal, int status) {
         auto  *self = static_cast<EditWindow *>(arg);
         String report(MemSpace::Psram);
-        if (self->_report) {
+        if (self->_debug != nullptr && self->_debug->isActive()) {
+                report = self->_debug->finish();
+                self->debugEnded();
+        } else if (self->_report) {
                 for (;;) {
                         uint8_t buf[256];
                         auto [n, err] = self->_report->read(WritableByteSpan(buf, sizeof(buf)), 1);
@@ -557,6 +611,7 @@ void EditWindow::newFromTemplate(size_t index) {
         if (doc == nullptr) return;
         (void)doc->edit->setText(StringView(Templates[index].text));
         doc->edit->setSyntax(Templates[index].syntax != nullptr ? Syntax::find(Templates[index].syntax) : nullptr);
+        doc->edit->setBreakpointsEnabled(supportFor(*doc) != nullptr);
         if (supportFor(*doc) != nullptr) {
                 namesChanged();
                 scheduleCheck(0);

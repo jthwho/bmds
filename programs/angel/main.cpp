@@ -12,7 +12,8 @@
  * another file (its declarations only). Errors are reported as compilers do,
  * `file:line:column: error: message`; `--report-fd N` writes them to descriptor N as well, a
  * tab-separated line each, and an uncaught exception too (for an editor's Run). `--serve` is the
- * editor's checker (devplan/editor.md §9): requests on stdin, answers on stdout.
+ * editor's checker (devplan/editor.md §9): requests on stdin, answers on stdout. `--debug N` is
+ * its debugger (§17, debug.cpp): commands on descriptor N, events on --report-fd's.
  */
 
 #include <errno.h>
@@ -38,10 +39,11 @@ namespace {
         constexpr const char *TopLevel = "$top";
 
         void usage() {
-                fprintf(stderr, "usage: angel [-c] [--report-fd N] SCRIPT [ARGUMENT...]\n"
+                fprintf(stderr, "usage: angel [-c] [--report-fd N [--debug N]] SCRIPT [ARGUMENT...]\n"
                                 "       angel --api | --api-help | --serve | --version\n"
                                 "  -c              check the script: report its errors, run nothing\n"
                                 "  --report-fd N   errors and an uncaught exception to descriptor N too\n"
+                                "  --debug N       debugger commands on descriptor N, events on --report-fd's\n"
                                 "  --api           the script API's declarations, one a line\n"
                                 "  --api-help      the same, each with its help\n"
                                 "  --serve         answer an editor's requests (check, api) on stdin\n");
@@ -481,6 +483,7 @@ namespace {
                         fprintf(stderr, "angel: can't start the script\n");
                         return 70;
                 }
+                if (angel::isDebugging()) angel::debugContext(ctx);
                 const int r = ctx->Execute();
                 int       status = 0;
                 if (r == asEXECUTION_FINISHED) {
@@ -642,6 +645,7 @@ void angel::reportException(asIScriptContext *ctx) {
 int main(int argc, char **argv) {
         bool checkOnly = false;
         int  first = 1;
+        int  debugFd = -1;
         if (argc >= 2 && (strcmp(argv[1], "--api") == 0 || strcmp(argv[1], "--api-help") == 0)) {
                 asIScriptEngine *engine = makeEngine();
                 angel::printApi(engine, strcmp(argv[1], "--api-help") == 0);
@@ -673,9 +677,22 @@ int main(int argc, char **argv) {
                                 return ExitUsage;
                         }
                         first += 2;
+                } else if (first + 1 < argc && strcmp(argv[first], "--debug") == 0) {
+                        char      *end = nullptr;
+                        const long fd = strtol(argv[first + 1], &end, 10);
+                        if (end == argv[first + 1] || *end != 0 || fd <= 2) {
+                                fprintf(stderr, "angel: --debug %s: not a descriptor\n", argv[first + 1]);
+                                return ExitUsage;
+                        }
+                        debugFd = int(fd);
+                        first += 2;
                 } else {
                         break;
                 }
+        }
+        if (debugFd >= 0 && !angel::startDebugger(debugFd, reportFile)) {
+                fprintf(stderr, "angel: --debug needs --report-fd (its events go there)\n");
+                return ExitUsage;
         }
         if (first >= argc || argv[first][0] == '-') {
                 usage();
@@ -684,6 +701,8 @@ int main(int argc, char **argv) {
         angel::setArguments(argc - first, argv + first);
         if (load(argv[first], nullptr, 0) < 0 || loadErrors != 0) return ExitFailure;
         asIScriptEngine *engine = makeEngine();
+        // Debugged: built with line cues, where the line callback is called.
+        if (angel::isDebugging()) engine->SetEngineProperty(asEP_BUILD_WITHOUT_LINE_CUES, 0);
         asIScriptModule *module = engine->GetModule("script", asGM_ALWAYS_CREATE);
         // The script first: only its section may have top-level statements.
         for (int i = 0; i < sourceCount; ++i)

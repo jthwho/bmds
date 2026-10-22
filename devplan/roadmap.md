@@ -431,11 +431,14 @@ Plan: [`input.md`](input.md).
   example, snake with sounds. Step 6 done (§13): `Socket`, `ServerSocket`, `UdpSocket`,
   `Http` (plain HTTP/1.1, redirects), `localAddress()`, `lookup()`; chat and fetch examples.
   Step 7 done (`editor.md`): `edit` and its AngelScript mode (checks as you type, F5 Run in an
-  Output pane, Stop, F1 help, completion, templates), `angel --serve` and `--report-fd`. Next:
-  the debugger (step 8).
+  Output pane, Stop, F1 help, completion, templates), `angel --serve` and `--report-fd`. Step 8
+  done (`editor.md` §17): the debugger, `angel --debug` and the IDE's Debug tab (breakpoints,
+  stepping, the call stack, variables and watches, stops on uncaught exceptions). Next: the
+  guide and examples (step 9).
 - [x] On-device text editor (`editor.md`, 2026-10-22): `edit`, on `TextDocument`, `TextEdit` and
   `CodeEdit`, one application for plain text (nine languages coloured), the angel IDE, and later
-  C and C++; `TerminalWidget` for its Output (`/bin/terminal` onto it later, step 4b).
+  C and C++; `TerminalWidget` for its Output (`/bin/terminal` onto it later, step 4b). Then the
+  debugger (§17) and its window's place remembered (`editor/window`, `WindowPlacement`, §18).
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

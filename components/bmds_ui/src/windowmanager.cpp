@@ -289,8 +289,7 @@ void WindowManager::stop() {
                 const uint8_t id = i < _stack.count() ? _stack.idAt(i) : _stack.hiddenIdAt(i - _stack.count());
                 Window       &w = _windows[id - 1];
                 if (w.closedAt != nullptr) {
-                        const Result<Rect> r = _stack.rectOf(id);
-                        w.closedAt(w.arg, r.isOk() ? r.value() : Rect());
+                        w.closedAt(w.arg, placementLocked(id));
                 } else if (w.closed != nullptr) {
                         w.closed(w.arg);
                 }
@@ -2172,8 +2171,8 @@ Error WindowManager::close(uint8_t id) {
 Error WindowManager::closeLocked(uint8_t id) {
         const uint8_t      oldTop = focusId();
         const Level        level = _stack.levelOf(id);
-        const Result<Rect> was = _stack.rectOf(id); // for closedAt
-        const Rect         outer = was.isOk() ? was.value() : Rect();
+        const bool         known = id != 0 && id <= _windows.size();
+        const Placement    placed = known && _windows[id - 1].closedAt != nullptr ? placementLocked(id) : Placement();
         const Error        err = _stack.close(id);
         if (err.isError()) return err;
         const Window w = _windows[id - 1];
@@ -2186,7 +2185,7 @@ Error WindowManager::closeLocked(uint8_t id) {
                 _bandPieces.clear();
         }
         if (w.closedAt != nullptr) {
-                w.closedAt(w.arg, outer);
+                w.closedAt(w.arg, placed);
         } else if (w.closed != nullptr) {
                 w.closed(w.arg);
         }
@@ -3836,6 +3835,26 @@ bool WindowManager::isMinimized(uint8_t id) {
 Result<Rect> WindowManager::rect(uint8_t id) {
         Mutex::Locker lock(_lock, WaitForever);
         return _stack.rectOf(id);
+}
+
+Result<WindowManager::Placement> WindowManager::placement(uint8_t id) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (id == 0 || id > _windows.size() || _stack.rectOf(id).isError())
+                return makeError<Placement>(Error::NotFound);
+        return makeResult(placementLocked(id));
+}
+
+WindowManager::Placement WindowManager::placementLocked(uint8_t id) {
+        Placement     p;
+        const Window &w = _windows[id - 1];
+        auto [at, err] = _stack.rectOf(id);
+        if (err.isOk()) p.normal = at;
+        if (w.maximized || w.snapped)
+                p.normal = w.restore;
+        else if (w.shaded)
+                p.normal.height = w.shadeHeight; // rolled up: its height unrolled
+        p.maximized = w.maximized;
+        return p;
 }
 
 Result<Rect> WindowManager::clientRect(uint8_t id) {

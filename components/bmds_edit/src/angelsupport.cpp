@@ -6,7 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  *
  * AngelScript's tools for the editor (devplan/editor.md §9): `angel --serve` for checks and the
- * API, `angel --report-fd` for runs.
+ * API, `angel --report-fd` for runs, `angel --debug` for debugged ones (§17).
  */
 
 #include "languagesupport.h"
@@ -421,6 +421,20 @@ Error AngelSupport::runCommand(StringView path, int reportFd, List<String> &argv
         char fd[8];
         std::snprintf(fd, sizeof(fd), "%d", reportFd);
         for (StringView a : {_program.view(), StringView("--report-fd"), StringView(fd), path}) {
+                String s(MemSpace::Psram);
+                if (s.assign(a).isError() || argv.append(std::move(s)).isError()) return Error::NoMem;
+        }
+        return Error::Ok;
+}
+
+Error AngelSupport::debugCommand(StringView path, int reportFd, int commandFd, List<String> &argv) const {
+        if (_program.isEmpty()) return Error::NotExist;
+        argv.clear();
+        char report[8], commands[8];
+        std::snprintf(report, sizeof(report), "%d", reportFd);
+        std::snprintf(commands, sizeof(commands), "%d", commandFd);
+        for (StringView a : {_program.view(), StringView("--report-fd"), StringView(report), StringView("--debug"),
+                             StringView(commands), path}) {
                 String s(MemSpace::Psram);
                 if (s.assign(a).isError() || argv.append(std::move(s)).isError()) return Error::NoMem;
         }

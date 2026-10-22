@@ -17,6 +17,7 @@
 #include <angelscript.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 namespace angel {
 
@@ -129,6 +130,16 @@ namespace angel {
 
         // The type of `array<string>` (registerString's, for split()).
         asITypeInfo *stringArrayType(asIScriptEngine *engine);
+
+        // ---- The debugger (debug.cpp, devplan/editor.md §17).
+        // Commands on descriptor @p fd, events and answers on @p reportFile (--report-fd's).
+        // @return False if either is missing.
+        bool startDebugger(int fd, FILE *reportFile);
+        // True under --debug (the script is built with line cues).
+        bool isDebugging();
+        // The script's context debugged: its line and exception callbacks set, then the
+        // editor's commands read until one starts it (its breakpoints come first).
+        void debugContext(asIScriptContext *ctx);
 
         // Flushes stdout and restores the terminal (console.cpp): before exiting.
         void restoreTerminal();

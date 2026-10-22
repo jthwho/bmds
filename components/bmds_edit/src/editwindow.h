@@ -23,6 +23,8 @@
 #include <bmds/codeedit.h>
 #include <bmds/furniture.h>
 #include <bmds/terminalwidget.h>
+#include <bmds/treeview.h>
+#include "debugsession.h"
 #include "languagesupport.h"
 
 BMDS_NAMESPACE_BEGIN
@@ -30,13 +32,13 @@ BMDS_NAMESPACE_BEGIN
 /**
  * @brief `edit`'s window (`devplan/editor.md` §8): documents in tabs, each a `CodeEdit`
  *        coloured for its language; the menus; the find bar; the status bar; a pane below
- *        (Output, Problems, Help) for a language's tools (§9): AngelScript's checks as you
- *        type, Run and Stop, F1 help, completion.
+ *        (Output, Problems, Help, Debug) for a language's tools (§9): AngelScript's checks as
+ *        you type, Run and Stop, F1 help, completion, and the debugger (§17).
  *
  * @par Thread Safety
  * The GUI loop's thread (the application's lock held).
  */
-class EditWindow final : public GuiWindow, private LanguageSupport::Listener {
+class EditWindow final : public GuiWindow, private LanguageSupport::Listener, private DebugSession::Listener {
         public:
                 /** @brief What it starts programs with (its process's). */
                 struct Startup {
@@ -55,6 +57,8 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener {
                 void open(StringView path);
                 /** @brief A new, empty, untitled document. */
                 void newDocument();
+                /** @brief Shows it where `editor/window` says it was (`devplan/editor.md` §18), else at its config's place. */
+                Error showPlaced();
 
         protected:
                 bool keyFirst(const KeyEvent &event) override;
@@ -69,6 +73,8 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener {
                                 bool      wasModified = false;   // as the title shows it
                                 bool      readOnly = false;      // its file can't be written (/rom's)
                                 uint32_t  id = 0;                // for checks' answers, which may come late
+                                List<uint32_t> sentBreaks{
+                                        MemSpace::Psram}; // the breakpoints the debugger has (lines from 0)
                 };
 
                 enum Choice : int {
@@ -110,6 +116,16 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener {
                         ChooseHelpWord,
                         ChooseComplete,
                         ChooseExamples,
+                        ChooseRunNoDebug,
+                        ChooseContinue,
+                        ChooseStepOver,
+                        ChooseStepInto,
+                        ChooseStepOut,
+                        ChoosePause,
+                        ChooseToggleBreakpoint,
+                        ChooseClearBreakpoints,
+                        ChooseAddWatch,
+                        ChooseClearWatches,
                         ChooseTemplate,                         // + the template's index
                         ChooseCompletion = ChooseTemplate + 16, // + the candidate's index
                         ChooseAbout,
@@ -137,10 +153,17 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener {
                 static void problemPicked(void *arg, TextEdit &edit);
                 static void completionChosen(void *arg, int item);
                 static void examplesChosen(void *arg, FileDialog &dialog, int result);
+                static void breakpointsChanged(void *arg, CodeEdit &edit);
+                static void varsExpanding(void *arg, TreeView &view, size_t row);
+                static void framePicked(void *arg, TextEdit &edit);
 
                 // LanguageSupport::Listener
                 void checked(uint32_t token, Span<const CodeEdit::Diagnostic> diagnostics) override;
                 void namesChanged() override;
+                // DebugSession::Listener
+                void debugStopped(StringView reason, StringView file, uint32_t line, StringView message) override;
+                void debugStack(Span<const DebugSession::Frame> frames) override;
+                void debugVars(uint32_t token, Span<const DebugSession::Var> vars, StringView error) override;
 
                 Error     buildMenus();
                 Document *current();
@@ -170,7 +193,14 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener {
                 Document        *documentById(uint32_t id);
                 void             scheduleCheck(uint32_t delayMs);
                 void             checkCurrent();
-                void             run();
+                // How a run starts: plainly, or under the debugger (going, or stopped at the first line).
+                enum class RunMode : uint8_t {
+                        Plain,
+                        Debug,
+                        DebugStep,
+                };
+                void             run(RunMode mode);
+                void             runOrDebug(); // F5: under the debugger if there are breakpoints
                 void             stopRun();
                 void             showPane(size_t tab);
                 void             showProblems();
@@ -179,6 +209,22 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener {
                 void             newFromTemplate(size_t index);
                 void             wordAtCursor(StringView &owner, StringView &word, TextRange &range);
                 String           declaredType(StringView owner);
+                // The debugger (editdebug.cpp)
+                Error  buildDebugTab();
+                bool   hasBreakpoints();
+                void   syncBreakpoints(Document &doc); // the debugger told of what changed
+                void   resume(DebugSession::Resume how);
+                void   debugEnded();
+                void   showExecution(StringView file, uint32_t line); // from 1; 0: none
+                void   showFrame(size_t index);
+                void   refreshVariables();
+                void   addVarRows(int row, int level, StringView parent, int watch,
+                                  Span<const DebugSession::Var> vars); // under @p row (-1: roots)
+                void   addWatch();
+                void   removeWatch();
+                void   clearWatches();
+                String varKey(int level, StringView path) const; // for what stays expanded
+                void   finish(int status);                       // its placement kept, then quit
 
                 String          _cwd{MemSpace::Psram};
                 Startup         _startup;
@@ -197,6 +243,26 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener {
                 TerminalWidget *_output = nullptr;
                 TextEdit       *_problems = nullptr;
                 TextEdit       *_helpView = nullptr;
+                Menu            _debugMenu;
+                Splitter       *_debugSplit = nullptr;
+                TextEdit       *_stackView = nullptr;
+                TreeView       *_varsView = nullptr;
+                DebugSession   *_debug = nullptr;
+                // What a row of the variables asks its children with (a row's data is its index + 1).
+                struct VarNode {
+                                int    level = 0; // a frame's, or DebugSession::Globals
+                                String path{MemSpace::Psram};
+                                int    watch = -1; // a watch's root: its index
+                };
+                List<DebugSession::Frame>            _frames{MemSpace::Psram};
+                List<VarNode>                        _varNodes{MemSpace::Psram};
+                List<String>                         _watches{MemSpace::Psram};
+                List<String>                         _expanded{MemSpace::Psram}; // rows kept expanded from stop to stop
+                size_t                               _frame = 0;                 // the frame shown (its index)
+                uint32_t                             _generation = 0;            // a stop's: older answers are dropped
+                uint32_t                             _localsCount = 0;           // the last frame's variables
+                bool                                 _stackShowing = false; // filling the stack (not the user's click)
+                bool                                 _debugSplitPlaced = false; // the Debug tab's split set once
                 FileDialog      _examplesDialog;
                 AngelSupport   *_angel = nullptr;
                 int             _checkTimer = -1;
@@ -204,6 +270,7 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener {
                 uint32_t        _runDoc = 0;              // the document running (its id)
                 FileHandle::Ptr _report;                  // the run's report's end
                 bool            _runAfterSave = false;    // Save As asked by Run: run once saved
+                RunMode                              _runAfterSaveMode = RunMode::Plain;
                 bool            _stopAsked = false;       // Stop pressed once: the next kills
                 bool            _problemsShowing = false; // filling the list (not the user's click)
                 List<const LanguageSupport::Entry *> _completions{MemSpace::Psram};

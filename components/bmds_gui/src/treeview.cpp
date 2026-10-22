@@ -135,6 +135,13 @@ void TreeView::collapse(size_t row) {
         return;
 }
 
+void TreeView::setHasChildren(size_t row, bool has) {
+        if (row >= _rows.count()) return;
+        _rows.setHasChildren(row, has);
+        update();
+        return;
+}
+
 void TreeView::clear() {
         _rows.clear();
         modelReset();

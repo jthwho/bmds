@@ -32,6 +32,9 @@ namespace {
                      "The text editor's colours: classic, qbasic or dark", 0, 0, nullptr, nullptr)
         BMDS_SYSCONF(editorLineNumbers, "editor/line-numbers", Config::Type::Bool, "true",
                      "The text editor shows line numbers", 0, 0, nullptr, nullptr)
+        BMDS_SYSCONF(editorWindow, "editor/window", Config::Type::String, "",
+                     "Where the text editor's window opens: X Y W H, then maximized if it was (kept as it closes)", 0,
+                     0, nullptr, nullptr)
 
         constexpr size_t MaxFileBytes = 16u * 1024u * 1024u; // larger files are refused, not half read
 
@@ -41,7 +44,11 @@ namespace {
 
         constexpr uint8_t  F3 = HidKey::F1 + 2;
         constexpr uint8_t  F5 = HidKey::F1 + 4;
+        constexpr uint8_t  F7 = HidKey::F1 + 6;
         constexpr uint8_t  F8 = HidKey::F1 + 7;
+        constexpr uint8_t  F9 = HidKey::F1 + 8;
+        constexpr uint8_t  F10 = HidKey::F1 + 9;
+        constexpr uint8_t  F11 = HidKey::F1 + 10;
         constexpr uint32_t CheckAfterMs = 500; // a check when the typing pauses this long
 
         StringView fileName(StringView path) {
@@ -60,14 +67,20 @@ namespace {
 EditWindow::EditWindow(GuiApplication &app, const Config &config, const Startup &startup)
     : GuiWindow(app, config), _startup(startup), _fileMenu(app), _editMenu(app), _viewMenu(app), _helpMenu(app),
       _endingsMenu(app), _languageMenu(app), _schemeMenu(app), _runMenu(app), _newMenu(app), _completionMenu(app),
-      _examplesDialog(app, FileDialog::Mode::Open, "Examples"), _openDialog(app, FileDialog::Mode::Open, "Open"),
-      _saveDialog(app, FileDialog::Mode::Save, "Save As") {
+      _debugMenu(app), _examplesDialog(app, FileDialog::Mode::Open, "Examples"),
+      _openDialog(app, FileDialog::Mode::Open, "Open"), _saveDialog(app, FileDialog::Mode::Save, "Save As") {
         (void)_cwd.assign(startup.cwd);
         _startup.cwd = _cwd.view();
 }
 
 EditWindow::~EditWindow() {
         _settings.stop();
+        if (_debug != nullptr) {
+                // A program stopped in the debugger would wait for it forever: ended first.
+                if (_output != nullptr && _output->isRunning()) (void)_output->stop(true);
+                _debug->~DebugSession();
+                Memory::free(_debug);
+        }
         if (_checkTimer >= 0) application().stopTimer(_checkTimer);
         if (_angel != nullptr) {
                 _angel->~AngelSupport();
@@ -89,6 +102,7 @@ Error EditWindow::build() {
         if (err.isOk()) err = bar->addMenu("&Edit", _editMenu);
         if (err.isOk()) err = bar->addMenu("&View", _viewMenu);
         if (err.isOk()) err = bar->addMenu("&Run", _runMenu);
+        if (err.isOk()) err = bar->addMenu("&Debug", _debugMenu);
         if (err.isOk()) err = bar->addMenu("&Help", _helpMenu);
         if (err.isError()) return err;
         bar->setAboutToShow(aboutToShow, this);
@@ -151,9 +165,10 @@ Error EditWindow::buildMenus() {
         if (err.isOk()) err = _newMenu.addItem("&AngelScript Program", ChooseTemplate + 1);
         if (err.isOk()) err = _newMenu.addItem("AngelScript &Game", ChooseTemplate + 2);
         if (err.isOk()) err = _runMenu.addItem("&Run", ChooseRun, 0, "F5", theme.find(IconId::MediaPlaybackStart, 16));
+        if (err.isOk()) err = _runMenu.addItem("Run &Without Debugging", ChooseRunNoDebug, 0, "Ctrl+F5");
         if (err.isOk())
                 err = _runMenu.addItem("&Stop", ChooseStop, 0, "Shift+F5", theme.find(IconId::MediaPlaybackStop, 16));
-        if (err.isOk()) err = _runMenu.addItem("&Check", ChooseCheck, 0, "Ctrl+F5");
+        if (err.isOk()) err = _runMenu.addItem("&Check", ChooseCheck, 0, "Ctrl+F7");
         if (err.isOk()) err = _runMenu.addSeparator();
         if (err.isOk()) err = _runMenu.addItem("&Next Problem", ChooseNextProblem, 0, "F8");
         if (err.isOk()) err = _runMenu.addItem("&Previous Problem", ChoosePreviousProblem, 0, "Shift+F8");
@@ -161,6 +176,17 @@ Error EditWindow::buildMenus() {
         if (err.isOk()) err = _runMenu.addSeparator();
         if (err.isOk()) err = _runMenu.addItem("Show or Hide the &Pane", ChoosePane, 0, "F12");
         if (err.isOk()) err = _runMenu.addItem("C&lear the Output", ChooseClearOutput);
+        if (err.isOk()) err = _debugMenu.addItem("&Continue", ChooseContinue, 0, "F5");
+        if (err.isOk()) err = _debugMenu.addItem("Step &Over", ChooseStepOver, 0, "F10");
+        if (err.isOk()) err = _debugMenu.addItem("Step &Into", ChooseStepInto, 0, "F11");
+        if (err.isOk()) err = _debugMenu.addItem("Step O&ut", ChooseStepOut, 0, "Shift+F11");
+        if (err.isOk()) err = _debugMenu.addItem("&Pause", ChoosePause, 0, "Pause");
+        if (err.isOk()) err = _debugMenu.addSeparator();
+        if (err.isOk()) err = _debugMenu.addItem("Toggle &Breakpoint", ChooseToggleBreakpoint, 0, "F9");
+        if (err.isOk()) err = _debugMenu.addItem("C&lear All Breakpoints", ChooseClearBreakpoints, 0, "Ctrl+Shift+F9");
+        if (err.isOk()) err = _debugMenu.addSeparator();
+        if (err.isOk()) err = _debugMenu.addItem("Add &Watch", ChooseAddWatch, 0, "Shift+F9");
+        if (err.isOk()) err = _debugMenu.addItem("Clear W&atches", ChooseClearWatches);
         if (err.isOk())
                 err = _helpMenu.addItem("&Help on the Word", ChooseHelpWord, 0, "F1",
                                         theme.find(IconId::HelpContents, 16));
@@ -169,7 +195,7 @@ Error EditWindow::buildMenus() {
         if (err.isOk())
                 err = _helpMenu.addItem("&About", ChooseAbout, 0, StringView(), theme.find(IconId::HelpAbout, 16));
         for (Menu *m : {&_fileMenu, &_editMenu, &_viewMenu, &_helpMenu, &_endingsMenu, &_languageMenu, &_schemeMenu,
-                        &_runMenu, &_newMenu})
+                        &_runMenu, &_newMenu, &_debugMenu})
                 m->setTriggered(chosen, this);
         _completionMenu.setTriggered(completionChosen, this);
         return err;
@@ -211,6 +237,26 @@ void EditWindow::aboutToShow(void *arg, MenuBar &, size_t index, Menu &menu) {
                 (void)menu.addItem("Toggle Co&mment", ChooseComment,
                                    on(writable && e->syntax() != nullptr && e->syntax()->lineComment != nullptr),
                                    "Ctrl+/");
+        } else if (index == 4) {
+                // The debugger's: what can be done now.
+                const bool active = self->_debug != nullptr && self->_debug->isActive();
+                const bool stopped = active && self->_debug->isStopped();
+                const bool script = doc != nullptr && e->areBreakpointsEnabled();
+                const bool running = self->_output != nullptr && self->_output->isRunning();
+                menu.clear();
+                (void)menu.addItem(active ? "&Continue" : "Start &Debugging", ChooseContinue,
+                                   on(stopped || (!running && script)), "F5");
+                (void)menu.addItem("Step &Over", ChooseStepOver, on(stopped || (!running && script)), "F10");
+                (void)menu.addItem("Step &Into", ChooseStepInto, on(stopped || (!running && script)), "F11");
+                (void)menu.addItem("Step O&ut", ChooseStepOut, on(stopped), "Shift+F11");
+                (void)menu.addItem("&Pause", ChoosePause, on(active && !stopped), "Pause");
+                (void)menu.addSeparator();
+                (void)menu.addItem("Toggle &Breakpoint", ChooseToggleBreakpoint, on(script), "F9");
+                (void)menu.addItem("C&lear All Breakpoints", ChooseClearBreakpoints, on(self->hasBreakpoints()),
+                                   "Ctrl+Shift+F9");
+                (void)menu.addSeparator();
+                (void)menu.addItem("Add &Watch", ChooseAddWatch, on(script), "Shift+F9");
+                (void)menu.addItem("Clear W&atches", ChooseClearWatches, on(!self->_watches.isEmpty()));
         } else if (index == 2) {
                 menu.clear();
                 self->_endingsMenu.clear();
@@ -272,8 +318,32 @@ void EditWindow::choose(int item) {
                         if (doc != nullptr) closeTab(index, true);
                         break;
                 case ChooseQuit: quit(); break;
-                case ChooseRun: run(); break;
+                case ChooseRun: runOrDebug(); break;
+                case ChooseRunNoDebug: run(RunMode::Plain); break;
                 case ChooseStop: stopRun(); break;
+                case ChooseContinue:
+                        if (_debug != nullptr && _debug->isActive())
+                                resume(DebugSession::Resume::Go);
+                        else
+                                run(RunMode::Debug);
+                        break;
+                case ChooseStepOver:
+                case ChooseStepInto:
+                        if (_debug != nullptr && _debug->isActive())
+                                resume(item == ChooseStepOver ? DebugSession::Resume::Next
+                                                              : DebugSession::Resume::Step);
+                        else
+                                run(RunMode::DebugStep);
+                        break;
+                case ChooseStepOut: resume(DebugSession::Resume::Out); break;
+                case ChoosePause:
+                        if (_debug != nullptr && _debug->isActive()) (void)_debug->pause();
+                        break;
+                case ChooseClearBreakpoints:
+                        for (size_t i = 0; i < _count; ++i) _docs[i].edit->clearBreakpoints();
+                        break;
+                case ChooseAddWatch: addWatch(); break;
+                case ChooseClearWatches: clearWatches(); break;
                 case ChooseCheck: scheduleCheck(0); break;
                 case ChooseClearOutput:
                         if (_output != nullptr) _output->clear();
@@ -329,6 +399,12 @@ void EditWindow::choose(int item) {
                         showStatus();
                         break;
                 case ChooseComment: e->toggleComment(); break;
+                case ChooseToggleBreakpoint:
+                        if (e->areBreakpointsEnabled())
+                                (void)e->toggleBreakpoint(e->selection().cursor.line);
+                        else
+                                _status->setText(0, "Breakpoints are for AngelScript scripts, for now");
+                        break;
                 case ChooseNextProblem:
                 case ChoosePreviousProblem:
                         if (e->nextDiagnostic(item == ChoosePreviousProblem) == nullptr)
@@ -342,6 +418,7 @@ void EditWindow::choose(int item) {
                                 const Span<const Syntax *const> all = Syntax::all();
                                 const size_t                    n = size_t(item - ChooseLanguage);
                                 e->setSyntax(n == 0 || n > all.size() ? nullptr : all[n - 1]);
+                                e->setBreakpointsEnabled(supportFor(*doc) != nullptr);
                                 showStatus();
                         } else if (item >= ChooseTemplate && item < ChooseCompletion) {
                                 newFromTemplate(size_t(item - ChooseTemplate));
@@ -353,14 +430,22 @@ void EditWindow::choose(int item) {
         return;
 }
 
-// Run's keys work wherever the keys are, the output's terminal included (which would send them to
-// the program).
+// Run's and the debugger's keys work wherever the keys are, the output's terminal included (which
+// would send them to the program). F10 steps only while a session is under way: otherwise it opens
+// the menus, as in every window.
 bool EditWindow::keyFirst(const KeyEvent &event) {
         if (event.action == KeyEvent::Action::Release || event.hasAlt()) return false;
         const bool ctrl = event.hasCtrl(), shift = event.hasShift();
+        const bool active = _debug != nullptr && _debug->isActive();
         int        item = 0;
-        if (event.usage == F5 && !(ctrl && shift)) item = ctrl ? ChooseCheck : shift ? ChooseStop : ChooseRun;
+        if (event.usage == F5 && !(ctrl && shift)) item = ctrl ? ChooseRunNoDebug : shift ? ChooseStop : ChooseRun;
+        if (event.usage == F7 && ctrl && !shift) item = ChooseCheck;
         if (event.usage == HidKey::F12 && !ctrl && !shift) item = ChoosePane;
+        if (event.usage == F9 && !ctrl) item = shift ? ChooseAddWatch : ChooseToggleBreakpoint;
+        if (event.usage == F9 && ctrl && shift) item = ChooseClearBreakpoints;
+        if (event.usage == F10 && !ctrl && !shift && active) item = ChooseStepOver;
+        if (event.usage == F11 && !ctrl) item = shift ? ChooseStepOut : ChooseStepInto;
+        if (event.usage == HidKey::Pause && !ctrl && !shift && active) item = ChoosePause;
         if (item == 0) return false;
         choose(item);
         return true;
@@ -370,6 +455,12 @@ bool EditWindow::keyUnused(const KeyEvent &event) {
         if (event.action == KeyEvent::Action::Release) return false;
         if (event.usage == HidKey::Escape && _findBar->isVisible()) {
                 _findBar->close();
+                return true;
+        }
+        // Delete on a watch's row in the variables: it goes.
+        if (event.usage == HidKey::Delete && !event.hasCtrl() && !event.hasShift() && _varsView != nullptr &&
+            _varsView->hasFocus()) {
+                removeWatch();
                 return true;
         }
         // The window's keys: each with its modifiers exactly (Ctrl+Tab is the tab widget's own).
@@ -435,6 +526,7 @@ EditWindow::Document *EditWindow::addDocument() {
         apply(*edit);
         edit->setChanged(textChanged, this);
         edit->setCursorMoved(cursorMoved, this);
+        edit->setBreakpointsChanged(breakpointsChanged, this);
         return &doc;
 }
 
@@ -615,7 +707,7 @@ void EditWindow::savedAs(void *arg, FileDialog &dialog, int result) {
         self->showTitle(size_t(index));
         if (self->_runAfterSave) {
                 self->_runAfterSave = false;
-                self->run();
+                self->run(self->_runAfterSaveMode);
                 return;
         }
         // Saved as part of closing: go on with it.
@@ -625,7 +717,7 @@ void EditWindow::savedAs(void *arg, FileDialog &dialog, int result) {
                         self->closeTab(size_t(index), false);
                 } else {
                         self->closeTab(size_t(index), false);
-                        if (!self->askNext(Then::Quit)) self->application().quit(0);
+                        if (!self->askNext(Then::Quit)) self->finish(0);
                 }
         }
         return;
@@ -668,12 +760,8 @@ void EditWindow::closeTab(size_t index, bool ask) {
         if (_findBar->target() == gone) _findBar->setTarget(nullptr);
         _tabs->removeTab(index);
         gone->destroy();
-        for (size_t i = index; i + 1 < _count; ++i) {
-                _docs[i].edit = _docs[i + 1].edit;
-                (void)_docs[i].path.assign(_docs[i + 1].path.view());
-                _docs[i].untitled = _docs[i + 1].untitled;
-                _docs[i].wasModified = _docs[i + 1].wasModified;
-        }
+        // The ones after it move down, all of each (its id and read-only state too).
+        for (size_t i = index; i + 1 < _count; ++i) _docs[i] = std::move(_docs[i + 1]);
         _docs[--_count] = Document{};
         if (_count == 0 && !_quitting) newDocument(); // never empty
         if (Document *d = current(); d != nullptr) {
@@ -686,8 +774,29 @@ void EditWindow::closeTab(size_t index, bool ask) {
 
 void EditWindow::quit() {
         _quitting = true;
-        if (!askNext(Then::Quit)) application().quit(0);
+        if (!askNext(Then::Quit)) finish(0);
         return;
+}
+
+// The end: where the window is kept for the next start (`editor/window`), then the loop quits.
+void EditWindow::finish(int status) {
+        const Placement placed = placement();
+        if (placed.normal.width != 0) {
+                const String text = placed.format();
+                String       was(MemSpace::Psram);
+                if (SysConf::get(StringView("editor/window"), was).isError() || was.view() != text.view())
+                        setSetting("editor/window", text.view());
+        }
+        application().quit(status);
+        return;
+}
+
+Error EditWindow::showPlaced() {
+        String    text(MemSpace::Psram);
+        Placement placed;
+        if (SysConf::get(StringView("editor/window"), text).isOk() && Placement::parse(text.view(), placed))
+                return show(placed);
+        return show();
 }
 
 bool EditWindow::askNext(Then then) {
@@ -732,7 +841,7 @@ void EditWindow::answered(void *arg, MessageBox::Answer answer) {
         }
         // Quitting: this one is settled (saved, or its changes let go); then the next.
         self->_docs[index].edit->document().setSaved();
-        if (!self->askNext(Then::Quit)) self->application().quit(0);
+        if (!self->askNext(Then::Quit)) self->finish(0);
         return;
 }
 
@@ -743,12 +852,12 @@ void EditWindow::closedByManager() {
         bool modified = false;
         for (size_t i = 0; i < _count; ++i) modified = modified || _docs[i].edit->document().isModified();
         if (!modified) {
-                application().quit(0);
+                finish(0);
                 return;
         }
-        const Rect was = lastRect();
-        if ((was.width != 0 ? show(was) : show()).isError()) {
-                application().quit(1);
+        const Placement was = placement();
+        if ((was.normal.width != 0 ? show(was) : show()).isError()) {
+                finish(1);
                 return;
         }
         quit();
@@ -884,6 +993,7 @@ void EditWindow::apply(CodeEdit &edit) {
 void EditWindow::chooseLanguage(Document &doc) {
         const TextDocument &d = doc.edit->document();
         doc.edit->setSyntax(Syntax::forFile(doc.path.view(), d.line(0)));
+        doc.edit->setBreakpointsEnabled(supportFor(doc) != nullptr);
         if (supportFor(doc) != nullptr) {
                 namesChanged(); // its type names
                 scheduleCheck(0);

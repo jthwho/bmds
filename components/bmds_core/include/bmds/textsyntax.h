@@ -1,5 +1,5 @@
 /**
- * @file      syntax.h
+ * @file      textsyntax.h
  * @copyright Jason Howard. All rights reserved.
  *
  * SPDX-License-Identifier: MIT

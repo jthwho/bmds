@@ -1,7 +1,8 @@
 # The Editor: Text Widgets, Syntax, and One Application for All Text
 
-Status: **steps 1-5 built** (2026-10-22; 4b waits): `TextDocument`, `TextEdit`, `FindBar`, `edit`,
-the languages and `CodeEdit`, `TerminalWidget`, and the angel IDE (§14 to §16). Designed 2026-10-22. Scripting's step 7 (`scripting.md`
+Status: **steps 1-5 built** (2026-10-22; 4b waits), then the debugger (§17) and remembered window
+placement (§18): `TextDocument`, `TextEdit`, `FindBar`, `edit`, the languages and `CodeEdit`,
+`TerminalWidget`, the angel IDE (§14 to §16), and its debugger (§19). Designed 2026-10-22. Scripting's step 7 (`scripting.md`
 §5), widened by the user: the editor is the system's one place for text, of which the angel IDE
 is one mode.
 
@@ -283,7 +284,7 @@ aren't userspace ABI (built-in applications only), as the rest of `bmds_gui`.
 
 ## 15. As built: step 3 (2026-10-22)
 
-- **`Syntax`** (`bmds/syntax.h`, `bmds_core`; the style enum is `SyntaxStyle`, `TextStyle` being
+- **`Syntax`** (`bmds/textsyntax.h`, `bmds_core`: not `syntax.h`, the shell's; the style enum is `SyntaxStyle`, `TextStyle` being
   the terminal's attributes already): nine languages, AngelScript, C, C++, shell, INI (`.conf`,
   `.desktop`, `.list`), JSON, Makefile, Markdown, diff. Six are tables for one scanner (line and
   block comments, strings with their escapes, `"""` strings across lines, C's numbers, three word
@@ -382,3 +383,171 @@ aren't userspace ABI (built-in applications only), as the rest of `bmds_gui`.
   finds `Type name` declarations); word wrap; moving a selection by dragging; regular
   expressions in find; `.syntax` files; C and C++ with a compiler (Phase 8); the debugger
   (`scripting.md` step 8) on this pane.
+
+## 17. The debugger (`scripting.md` step 8; designed 2026-10-22)
+
+**What the writer gets** (QBasic's and Visual Studio's habits, keyboard first):
+- **Breakpoints:** F9 toggles one on the cursor's line, as does a click in the gutter. A red
+  dot marks it. Breakpoints move with their lines as the text is edited. They last while the
+  document is open.
+- **Starting:** F5 runs as before. If the script has breakpoints, F5 runs it under the debugger
+  instead. F11 (step into) and F10 (step over) start it under the debugger stopped at its first
+  line. Ctrl+F5 always runs it without the debugger.
+- **While stopped:**
+  - The line about to run is marked by a yellow arrow and a yellow background. The editor shows
+    it, opening an included file if needed.
+  - F5 continues, F10 steps over, F11 steps into, Shift+F11 steps out, and Shift+F5 stops.
+  - Pause (the Pause key, or Run ▸ Pause) stops a running script at the next line it runs.
+- **F10 while no session runs:** it keeps opening the menu bar. It is a step key only while a
+  debugging session is under way: the menus are still Alt's.
+- **An uncaught exception** stops the script where it was raised, before it unwinds, so its
+  variables can be seen. Continuing ends the script as before: the report, the cursor on the line.
+- **The Debug tab** in the pane:
+  - **Call stack:** a list, the innermost frame first. Picking a frame shows its line and its
+    variables.
+  - **Variables:** a tree.
+    - The roots, in order: the watches, the frame's locals (and `this` in a method), then
+      Globals.
+    - Globals is expanded at first for the top level, where a script's variables are globals.
+    - Objects, arrays and handles expand to their members and elements. A value shows as
+      `name: type = value`.
+    - What was expanded stays expanded from one stop to the next.
+  - **Watches:** Debug ▸ Add Watch (Shift+F9) watches the selection, or the name at the cursor.
+    Delete on a watch's row removes it.
+- **Menus:** a Debug menu with the actions and their keys; Run keeps Run, Stop and Check.
+
+**The protocol** (ABI once shipped, as `--serve`'s; `docs/ABI.md`):
+- **Starting it:** `angel --report-fd 3 --debug 4 FILE`.
+  - The script is built with line cues, and runs only once the IDE says so.
+  - Commands come on descriptor 4, a line each. Events and answers go on the report
+    descriptor, with the report's own lines (`error`, `exception`).
+  - Two descriptors, not a third: the terminal widget passes two.
+- **Commands, the IDE to angel:**
+  - `break FILE LINE` sets a breakpoint, and `clear FILE LINE` clears one. Neither is answered.
+    They may come while the script runs.
+  - `go`, `step`, `next` and `out` resume: continue, step into, step over, step out.
+  - `pause` stops at the next line run.
+  - `stack`, while stopped, answers `frame LEVEL FUNCTION FILE LINE` lines and then `end`.
+  - `vars LEVEL PATH`, while stopped, answers `var NAME TYPE VALUE CHILDREN` lines and then
+    `end`.
+    - LEVEL is a frame's, or `g` for the globals.
+    - An empty PATH lists the frame's variables; otherwise PATH's members or elements are listed.
+    - A path is a name followed by `.member` and `[index]` parts.
+    - CHILDREN is how many there are to expand (0 for a plain value).
+    - A failure answers `error MESSAGE`, then `end`.
+  - `value LEVEL PATH` answers one `var` line (a watch), or `error MESSAGE`, then `end`.
+- **Events, angel to the IDE:** `stopped REASON FILE LINE [MESSAGE]`.
+  - REASON is `break`, `step`, `pause` or `exception`; an exception's line includes its message.
+- **Waiting for commands:** angel waits for a resuming command before the first line, and
+  after each `stopped`. Until the IDE has sent one, the script doesn't run at all.
+- **The IDE closes the channel:** the script runs on to its end undebugged.
+
+**In `angel` (`programs/angel/debug.cpp`):**
+- **The line callback:** it is set on the script's context only under `--debug`. Contexts
+  nested in it (games' `tick()` and `draw()`, events) share it.
+- **The fast path:** with no breakpoints and no step pending, it counts down. Every 256 lines
+  it polls the command descriptor (`poll()` with a zero timeout), so `pause` and new
+  breakpoints take effect.
+  - A script blocked in `input()` or a game's wait stops at its next line, not before.
+- **Breakpoints:** at most 64, each a file and a line.
+  - Files are compared by their canonical paths (`realpath`).
+  - A breakpoint stops when its line is entered from another one or another depth, not on each
+    statement of the line.
+- **Stepping** compares against where the stop was:
+  - **Into:** any other line, or any other depth.
+  - **Over:** a lower depth, or another line at the same depth.
+  - **Out:** a lower depth.
+  - Depth is the call stack's size, nested calls included.
+- **Values are described without running script code:** `toString()` isn't called (it would
+  run the script under its own debugger).
+  - Primitives, strings (quoted, escaped) and enums are shown as values; handles are followed.
+  - Arrays show their first elements (`[1, 2, 3, …]`), script objects a summary of their first
+    properties (`{x: 1, y: 2}`), and registered objects `<Window>`.
+  - At most 80 bytes a value, and 500 children a list.
+- **Exceptions:** the exception callback stops with `exception` unless the script will catch
+  it (`WillExceptionBeCaught()`).
+
+**In `edit`:**
+- **`LanguageSupport::debugCommand(path, reportFd, commandFd, argv)`:** a language that can
+  debug fills in the command; the others answer `NotSupported`.
+- **`DebugSession`** (`components/bmds_edit/src/debugsession.*`):
+  - A reader thread splits the event descriptor into lines and posts them to the GUI loop.
+  - The session keeps the report's lines for the run's end, as Run's report.
+  - Answers are matched to the questions asked, in order.
+- **`CodeEdit`** (the toolkit, for any language):
+  - `setBreakpointsEnabled()` lets gutter clicks toggle breakpoints.
+  - `toggleBreakpoint()`, `breakpoints()` and the `BreakpointsChanged` callback: the lines move
+    with edits, as diagnostics' do.
+  - `setExecutionLine()` draws the arrow and the background.
+- **`TreeView`:** gains rows without children (`TreeRows::setLeaf()`), so a plain value has
+  no box.
+
+## 18. Remembered window placement (2026-10-22; the user's request)
+
+- **The window manager:**
+  - `WindowManager::Placement`: the normal (restored) rectangle and whether the window is
+    maximized.
+  - `placement(id)` returns it while the window is open, and `ClosedAt` passes it at the close.
+    A snapped window's normal rectangle is the one from before it snapped.
+- **`WindowPlacement`** (`bmds_ui`, pure, host-tested; `WindowManager::Placement` is it):
+  `parse()` and `format()` read and write the setting's text, `X Y W H` and then `maximized`
+  when it was.
+- **`GuiWindow`:**
+  - `placement()`: live while open, the last one after it closed.
+  - `show(const Placement &)`: opens at the normal rectangle, then maximizes if it was. A
+    rectangle off the work area is moved back onto it, and made no larger than it.
+- **`edit`** declares the setting `editor/window` (empty by default: the centred default
+  place). It saves the setting when its window closes, by the close button or File ▸ Exit, and
+  uses it when it starts.
+- **Other applications** use the same calls when they want it; `edit` is the first.
+
+## 19. As built: the debugger and placement (2026-10-22)
+
+- **Files:**
+  - `programs/angel/debug.cpp`: the line and exception callbacks, the commands, describing values.
+  - `components/bmds_edit/src/debugsession.*`: the protocol's client.
+  - `components/bmds_edit/src/editdebug.cpp`: the Debug tab, breakpoints, stops and watches.
+  - In the toolkit: `CodeEdit`'s breakpoints and line about to run, `TreeView::setHasChildren()`
+    and `setRowData()`, and `WindowPlacement` in `bmds_ui`.
+- **Keys as built:**
+  - F5 runs, or continues from a stop; Ctrl+F5 runs without the debugger.
+  - Check moved from Ctrl+F5 to Ctrl+F7.
+  - F9 toggles a breakpoint, Ctrl+Shift+F9 clears them all, and Shift+F9 adds a watch.
+  - F10, F11 and Shift+F11 step; Pause pauses.
+- **The pane:** a stop shows the Debug tab and raises the editor over the program's windows.
+  Resuming shows the Output, where a running script's input is typed.
+- **Tests:**
+  - `tests/scripts/serve.py` checks the protocol: a breakpoint, the stack, a frame's variables,
+    the globals, members, elements, paths and their errors, step over and out, the stop on an
+    exception and then the report, a step from the first line, a pause, and running on once the
+    editor's end closes.
+  - `tests/host/gui.cpp` checks leaf rows and the placement's text.
+- **Tried on the board:**
+  - A breakpoint in a function; expanding the globals and an object, which stayed expanded over
+    a step; step over, step out, clearing the breakpoints, and continuing to an uncaught
+    exception, which stopped with the variables there; a watch.
+  - Snake under the debugger, paused in `draw()`, the stack showing the nested
+    `Window::run()`.
+  - The editor closed while a script was stopped: both ended.
+  - Placement: maximized, quit, reopened maximized; restored to the place before; moved and
+    closed by the window manager, reopened there; a saved place off the screen brought back onto
+    it.
+- **Found on the way:**
+  - **A header name clash from step 7.** `bmds_core`'s `bmds/syntax.h` shadowed the shell's
+    `bmds/syntax.h` in components that include both. An incremental build hid it until
+    `windowmanager.h` changed. The editor's is now `bmds/textsyntax.h`.
+  - **Closing a tab** moved only some of each later document's fields, losing its `id` and
+    read-only state. Whole documents move now.
+  - **F5 at a stop** after all breakpoints were cleared said "running already". It continues now.
+  - **The Pause key** goes to the window that has the keys. While a game's window has them,
+    pause from the editor's window or its Debug menu.
+- **Behaviour of the line cues:**
+  - Stepping out of a function stops at the caller's next cue. In a `for` loop, that can be the
+    increment rather than the rest of the calling line.
+  - F11 at the start stops at the first statement with a cue. Global objects are already
+    initialized by then.
+- **Left:**
+  - Showing a value when the pointer is over its name.
+  - Conditional breakpoints and hit counts.
+  - Editing a value while stopped.
+  - Breakpoints kept with the file between sessions.

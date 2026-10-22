@@ -84,7 +84,7 @@ namespace {
                                 err = window->build();
                                 if (err.isOk()) {
                                         window->setClosed(windowClosed, app);
-                                        err = window->show();
+                                        err = window->showPlaced();
                                 }
                                 if (err.isOk()) {
                                         if (paths.isEmpty()) window->newDocument();

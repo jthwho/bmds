@@ -1,10 +1,10 @@
 # Scripting: AngelScript, a Runtime with the Whole System, and an IDE
 
-Status: **steps 1-7 built** (2026-10-22): C++ in the SDK; `angel` in the ROM with its core,
+Status: **steps 1-8 built** (2026-10-22): C++ in the SDK; `angel` in the ROM with its core,
 the text screen, files and other programs, graphics and input, sound, the network; the patches;
 the corpus and the API lock; the editor and the IDE (`editor.md`: `edit`, its AngelScript mode,
-`angel --serve` and `--report-fd`). As built and measured: §10 to §13, `editor.md` §14 to §16.
-Next: step 8, the debugger.
+`angel --serve` and `--report-fd`); the debugger (`angel --debug`, `editor.md` §17). As built
+and measured: §10 to §13, `editor.md` §14 to §16 and §19. Next: step 9, the guide and examples.
 
 ## 1. Goal
 
@@ -407,9 +407,9 @@ one text editor. What follows is the IDE's list as first planned, kept for its i
    application for all text (`edit`), on reusable widgets (`TextEdit`, then `CodeEdit` on top),
    with syntaxes for many languages; the angel IDE is its AngelScript mode (`angel --serve`, Run
    and Stop, diagnostics, F1 and completion, templates, `text/x-angelscript`), C and C++ later.
-8. **The debugger:** breakpoints, stepping, the call stack and watching variables, through a
-   line callback in `angel` with line cues on. Controlled by the IDE over the same kind of pipe
-   as `--serve`.
+8. **The debugger** (done 2026-10-22, `editor.md` §17 and §19): breakpoints, stepping, the call
+   stack and watching variables, through a line callback in `angel` with line cues on
+   (`--debug`). It is controlled by the IDE over a pipe, its events on `--report-fd`'s.
 9. **The guide and examples:** a tutorial in steps, from `println("Hello")` to a game, and
    games of our own in the spirit of Nibbles and Gorillas, newly written. QBasic's own are
    Microsoft's.

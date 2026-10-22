@@ -1,5 +1,5 @@
 /**
- * @file      syntax.cpp
+ * @file      textsyntax.cpp
  * @copyright Jason Howard. All rights reserved.
  *
  * SPDX-License-Identifier: MIT
@@ -8,7 +8,7 @@
  * Languages as data and the scanner that colours them (devplan/editor.md §5).
  */
 
-#include <bmds/syntax.h>
+#include <bmds/textsyntax.h>
 
 #include <cstring>
 

@@ -87,6 +87,12 @@ class TreeView : public ItemView {
                 /** @brief Returns the rows. */
                 const TreeRows &rows() const { return _rows; }
 
+                /** @brief Sets @p row's data (the owner's, `rows().row(row).data`). */
+                void setRowData(size_t row, uintptr_t data) { _rows.setData(row, data); }
+
+                /** @brief Marks @p row as having children to expand (its box drawn) or none (a leaf). */
+                void setHasChildren(size_t row, bool has);
+
                 /** @brief Selects the row whose path is @p path, if shown. @return Its row, or -1. */
                 int selectPath(StringView path);
 

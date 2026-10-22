@@ -80,6 +80,14 @@ class TreeRows {
                         return;
                 }
 
+                /** @brief Marks @p row as having children (a box shown, expandable) or none. */
+                void setHasChildren(size_t row, bool has) {
+                        if (row < _rows.size())
+                                _rows[row].flags = static_cast<uint8_t>(has ? (_rows[row].flags | HasChildren)
+                                                                            : (_rows[row].flags & ~HasChildren));
+                        return;
+                }
+
                 /** @brief Returns row @p row's name. */
                 StringView name(size_t row) const {
                         const Row &r = _rows[row];

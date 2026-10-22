@@ -24,7 +24,8 @@ namespace {
         using Kind = TextDocument::EditKind;
 
         constexpr uint16_t LineHeight = GuiStyle::TextHeight;
-        constexpr uint16_t MarkWidth = 8;     // the diagnostic mark's column, left of the numbers
+        constexpr uint16_t MarkWidth = 8;       // the diagnostic mark's column, left of the numbers
+        constexpr uint16_t BreakMarkWidth = 16; // with breakpoints: their dot, the arrow, then the mark
         constexpr uint32_t MatchLines = 2000; // how far a bracket's match is looked for
         constexpr uint8_t  SlashKey = 0x38;   // HID's `/`
 
@@ -69,6 +70,9 @@ namespace {
                 s.bracket = 0xc8dcff;
                 s.error = 0xe00000;
                 s.warning = 0xd09000;
+                s.breakpoint = 0xc81e1e;
+                s.execution = 0xfff3a0;
+                s.executionMark = 0xe0a000;
                 return s;
         }();
 
@@ -105,6 +109,9 @@ namespace {
                 s.bracket = 0x0000ff;
                 s.error = 0xff5555;
                 s.warning = 0xffff55;
+                s.breakpoint = 0xff5555;
+                s.execution = 0xaa5500;
+                s.executionMark = 0xffff55;
                 return s;
         }();
 
@@ -140,6 +147,9 @@ namespace {
                 s.bracket = 0x3a4a5a;
                 s.error = 0xf44747;
                 s.warning = 0xcca700;
+                s.breakpoint = 0xe51400;
+                s.execution = 0x4b4b18;
+                s.executionMark = 0xffcc00;
                 return s;
         }();
 
@@ -275,14 +285,29 @@ void CodeEdit::documentChanged(const TextDocument::Change &change) {
                 _resyncEnd = change.firstLine; // nothing past this change can be trusted
         }
         // Diagnostics after the change move with their lines; those on changed lines stay where they were.
+        const auto moved = [&](uint32_t line) {
+                if (line >= change.firstLine + change.removedLines) return uint32_t(int64_t(line) + delta);
+                if (line >= change.firstLine + change.insertedLines) return change.firstLine;
+                return line;
+        };
         if (delta != 0 && !_diagnostics.isEmpty()) {
-                for (Diagnostic &d : _diagnostics) {
-                        if (d.line >= change.firstLine + change.removedLines)
-                                d.line = uint32_t(int64_t(d.line) + delta);
-                        else if (d.line >= change.firstLine + change.insertedLines)
-                                d.line = change.firstLine;
-                }
+                for (Diagnostic &d : _diagnostics) d.line = moved(d.line);
         }
+        // So do breakpoints (two on lines joined become one) and the line about to run.
+        if (delta != 0 && !_breakpoints.isEmpty()) {
+                bool   changed = false;
+                size_t kept = 0;
+                for (size_t i = 0; i < _breakpoints.size(); ++i) {
+                        const uint32_t line = moved(_breakpoints[i]);
+                        changed = changed || line != _breakpoints[i];
+                        if (kept > 0 && _breakpoints[kept - 1] == line) continue;
+                        _breakpoints[kept++] = line;
+                }
+                changed = changed || kept != _breakpoints.size();
+                while (_breakpoints.size() > kept) _breakpoints.removeAt(_breakpoints.size() - 1);
+                if (changed) tellBreakpoints();
+        }
+        if (delta != 0 && _executionLine != NoLine) _executionLine = moved(_executionLine);
         const uint32_t now = digits();
         if (now != _digits) {
                 _digits = now;
@@ -644,10 +669,14 @@ uint32_t CodeEdit::digits() const {
         return d < 3 ? 3 : d;
 }
 
+uint16_t CodeEdit::markWidth() const {
+        return _breakpointsEnabled ? BreakMarkWidth : MarkWidth;
+}
+
 uint16_t CodeEdit::gutterWidth() const {
-        if (!_lineNumbers) return _diagnostics.isEmpty() ? 0 : MarkWidth + 4;
+        if (!_lineNumbers) return _diagnostics.isEmpty() && !_breakpointsEnabled ? 0 : markWidth() + 4;
         // The mark's column, the digits, a space; a multiple of 4 so the text stays on its column.
-        return uint16_t(((MarkWidth + (_digits + 1) * cellWidth()) + 3) & ~3u);
+        return uint16_t(((markWidth() + (_digits + 1) * cellWidth()) + 3) & ~3u);
 }
 
 bool CodeEdit::hasDiagnostic(uint32_t line, Severity &worst) const {
@@ -664,10 +693,31 @@ bool CodeEdit::hasDiagnostic(uint32_t line, Severity &worst) const {
 void CodeEdit::paintGutter(Painter &painter, uint32_t line, const Rect &row) {
         (void)painter.fill(row, _scheme.gutterBackground);
         if (line == UINT32_MAX) return;
+        const int cy = row.y + row.height / 2; // the marks' middle
+        if (hasBreakpoint(line)) {
+                // A dot, 10 pixels across, as spans.
+                static constexpr uint8_t Half[] = {2, 3, 4, 5, 5, 5, 5, 4, 3, 2};
+                Rect                     spans[sizeof(Half)];
+                for (size_t i = 0; i < sizeof(Half); ++i)
+                        spans[i] = Rect{uint16_t(row.x + 7 - Half[i]), uint16_t(cy - 5 + int(i)), uint16_t(Half[i] * 2),
+                                        1};
+                (void)painter.fill(Span<const Rect>(spans, sizeof(Half)), _scheme.breakpoint);
+        }
+        if (line == _executionLine) {
+                // An arrow: a shaft, then a head narrowing to the right.
+                Rect spans[12];
+                spans[0] = Rect{uint16_t(row.x + 2), uint16_t(cy - 2), 5, 4};
+                for (int i = 0; i < 11; ++i) {
+                        const int d = i - 5;
+                        spans[i + 1] = Rect{uint16_t(row.x + 7), uint16_t(cy + d), uint16_t(6 - (d < 0 ? -d : d)), 1};
+                }
+                (void)painter.fill(Span<const Rect>(spans, 12), _scheme.executionMark);
+        }
         Severity worst;
         if (hasDiagnostic(line, worst)) {
                 const uint32_t color = worst == Severity::Error ? _scheme.error : _scheme.warning;
-                (void)painter.fill(Rect{uint16_t(row.x + 2), uint16_t(row.y + 4), 4, 8}, color);
+                const uint16_t x = uint16_t(row.x + (_breakpointsEnabled ? BreakMarkWidth - 3 : 2));
+                (void)painter.fill(Rect{x, uint16_t(row.y + 4), uint16_t(_breakpointsEnabled ? 3 : 4), 8}, color);
         }
         if (!_lineNumbers) return;
         char           text[16];
@@ -684,8 +734,70 @@ void CodeEdit::paintGutter(Painter &painter, uint32_t line, const Rect &row) {
 }
 
 uint32_t CodeEdit::lineBackground(uint32_t line) const {
+        if (line == _executionLine) return _scheme.execution;
         if (line == selection().cursor.line && !selection().hasSelection()) return _scheme.currentLine;
         return _scheme.background;
+}
+
+// ---- Breakpoints and the line about to run
+
+void CodeEdit::setBreakpointsEnabled(bool on) {
+        if (on == _breakpointsEnabled) return;
+        _breakpointsEnabled = on;
+        relayoutContent();
+        return;
+}
+
+bool CodeEdit::hasBreakpoint(uint32_t line) const {
+        for (uint32_t b : _breakpoints)
+                if (b == line) return true;
+        return false;
+}
+
+bool CodeEdit::toggleBreakpoint(uint32_t line) {
+        size_t at = 0;
+        while (at < _breakpoints.size() && _breakpoints[at] < line) ++at;
+        bool set = false;
+        if (at < _breakpoints.size() && _breakpoints[at] == line) {
+                _breakpoints.removeAt(at);
+        } else {
+                if (_breakpoints.insert(at, uint32_t(line)).isError()) return false;
+                set = true;
+        }
+        updateLine(line);
+        tellBreakpoints();
+        return set;
+}
+
+void CodeEdit::clearBreakpoints() {
+        if (_breakpoints.isEmpty()) return;
+        _breakpoints.clear();
+        updateGutter();
+        tellBreakpoints();
+        return;
+}
+
+void CodeEdit::tellBreakpoints() {
+        if (_breakpointsChanged != nullptr) _breakpointsChanged(_breakpointsChangedArg, *this);
+        return;
+}
+
+void CodeEdit::setExecutionLine(uint32_t line) {
+        if (line == _executionLine) return;
+        const uint32_t was = _executionLine;
+        _executionLine = line;
+        if (was != NoLine) updateLine(was);
+        if (line != NoLine) updateLine(line);
+        return;
+}
+
+void CodeEdit::gutterClicked(uint32_t line, const WindowManager::MouseEvent &event) {
+        if (!_breakpointsEnabled) {
+                TextEdit::gutterClicked(line, event);
+                return;
+        }
+        if (line < document().lineCount()) (void)toggleBreakpoint(line);
+        return;
 }
 
 // ---- Diagnostics
