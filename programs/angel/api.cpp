@@ -225,4 +225,95 @@ namespace angel {
                 return;
         }
 
+        namespace {
+
+                // A field of a record: tabs and newlines would split it, so they are spaces.
+                void field(const char *text) {
+                        for (const char *p = text != nullptr ? text : ""; *p != 0; ++p)
+                                putchar(*p == '\t' || *p == '\n' || *p == '\r' ? ' ' : *p);
+                        return;
+                }
+
+                void record(const char *kind, const char *name, const char *decl, const char *help) {
+                        fputs("api\t", stdout);
+                        field(kind);
+                        putchar('\t');
+                        field(name);
+                        putchar('\t');
+                        field(decl);
+                        putchar('\t');
+                        field(help);
+                        putchar('\n');
+                        return;
+                }
+
+                void functionRecord(const char *kind, const char *owner, asIScriptFunction *f) {
+                        if (f == nullptr) return;
+                        Text        name;
+                        const char *ns = f->GetNamespace();
+                        if (owner != nullptr)
+                                name.appendf("%s.", owner);
+                        else if (ns != nullptr && ns[0] != 0)
+                                name.appendf("%s::", ns);
+                        name.append(f->GetName());
+                        const char *decl = f->GetDeclaration(true, true, false);
+                        record(kind, name.data(), decl, helpOf(decl));
+                        return;
+                }
+
+        } // namespace
+
+        void printApiRecords(asIScriptEngine *engine) {
+                Text line;
+                for (asUINT i = 0; i < engine->GetObjectTypeCount(); ++i) {
+                        asITypeInfo *type = engine->GetObjectTypeByIndex(i);
+                        line.clear();
+                        line.appendf("class %s", engine->GetTypeDeclaration(type->GetTypeId(), true));
+                        record("type", type->GetName(), line.data(), nullptr);
+                        for (asUINT m = 0; m < type->GetFactoryCount(); ++m)
+                                functionRecord("constructor", nullptr, type->GetFactoryByIndex(m));
+                        for (asUINT m = 0; m < type->GetMethodCount(); ++m)
+                                functionRecord("method", type->GetName(), type->GetMethodByIndex(m));
+                        for (asUINT p = 0; p < type->GetPropertyCount(); ++p) {
+                                const char *name = nullptr;
+                                type->GetProperty(p, &name);
+                                Text full;
+                                full.appendf("%s.%s", type->GetName(), name != nullptr ? name : "");
+                                line.clear();
+                                line.appendf("%s::%s", type->GetName(), type->GetPropertyDeclaration(p, true));
+                                record("property", full.data(), line.data(), nullptr);
+                        }
+                }
+                for (asUINT i = 0; i < engine->GetEnumCount(); ++i) {
+                        asITypeInfo *e = engine->GetEnumByIndex(i);
+                        const char  *ns = e->GetNamespace();
+                        Text         prefix;
+                        if (ns != nullptr && ns[0] != 0) prefix.appendf("%s::", ns);
+                        prefix.append(e->GetName());
+                        line.clear();
+                        line.appendf("enum %s", prefix.data());
+                        record("enum", prefix.data(), line.data(), nullptr);
+                        for (asUINT v = 0; v < e->GetEnumValueCount(); ++v) {
+                                int         value = 0;
+                                const char *name = e->GetEnumValueByIndex(v, &value);
+                                Text        full, decl;
+                                full.appendf("%s::%s", prefix.data(), name);
+                                decl.appendf("%s = %d", full.data(), value);
+                                record("constant", full.data(), decl.data(), nullptr);
+                        }
+                }
+                for (asUINT i = 0; i < engine->GetGlobalFunctionCount(); ++i)
+                        functionRecord("function", nullptr, engine->GetGlobalFunctionByIndex(i));
+                for (asUINT i = 0; i < engine->GetGlobalPropertyCount(); ++i) {
+                        const char *name = nullptr, *ns = nullptr;
+                        engine->GetGlobalPropertyByIndex(i, &name, &ns);
+                        Text full;
+                        if (ns != nullptr && ns[0] != 0) full.appendf("%s::", ns);
+                        full.append(name != nullptr ? name : "");
+                        globalPropertyDecl(engine, i, line);
+                        record("variable", full.data(), line.data(), helpOf(line.data()));
+                }
+                return;
+        }
+
 } // namespace angel

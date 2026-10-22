@@ -1,0 +1,20 @@
+Hello, world!
+first second third
+until the end
+Hello, world!
+POST /echo application/x-www-form-urlencoded [None] name=Ada%20Lovelace
+POST /echo application/json [None] {}
+GET /echo None [None] 
+200 OK text/plain yes []
+true
+true
+PUT /echo/put text/plain [angel] data
+200 []
+404 GET /missing None [None] 
+true
+HTTP 404 Not Found: BASE/missing
+Too many redirects from 'BASE/loop'
+HTTPS isn't supported yet: 'https://example.com/' (only http:// addresses)
+'ftp://example.com/' isn't an http:// address
+'http:///path' has no host name
+'http://host:99999/' has a bad port

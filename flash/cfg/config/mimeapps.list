@@ -9,8 +9,8 @@
 # text-like (scripts, JSON, empty files), then application/octet-stream.
 
 [Default Applications]
-text/*=vi.desktop
-text/plain=vi.desktop
+text/*=edit.desktop;vi.desktop
+text/plain=edit.desktop;vi.desktop
 application/x-executable=run.desktop
 audio/*=mplayer.desktop;play.desktop
 image/*=imageview.desktop

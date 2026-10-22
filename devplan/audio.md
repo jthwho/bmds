@@ -2484,3 +2484,161 @@ the chosen synth. Names (the user's): `system`, `wavetable`; the `synth` command
   earlier "passes" of this session's MIDI checks ran the old test. It is installed from
   `build-host/sdk-examples/progtest.elf` now; the `system` check it hadn't run then needed its
   sink's count fixed.
+
+## 26. The FM synth, the default system synth (design, 2026-10-22)
+
+The user's request (2026-10-22): an FM synth, like a sound card's OPL chip, with a low CPU cost;
+**a setting chooses the default system synth, and FM is the default**, since it is wholly built
+in: it needs no SoundFont on the card. This is §25's model ("the built-in synth is like a sound
+card's FM chip ... one synth among those to come") made literal. The question that led here:
+whether a smaller wavetable font could live in `/rom` (`rom.md` §6). None with clean rights
+does: the small GM fonts (Scc1t2, GM.sf2, gm.sf2) are Windows' `gm.dls` (Roland's samples),
+gzdoom.sf2 has no stated source (CC BY-ND by other accounts), and the free ones are 30 MB and
+up. TimGM6mb (GPL-2) could be cut to about 2.7 MB (44.1 kHz samples to 22.05 kHz, 8-bit μ-law,
+which the voice loop would decode), kept here as the alternative.
+
+### Not an emulation
+
+An OPL emulator (Nuked OPL3, cycle-exact) computes all 36 operators every sample, playing or
+not, gate by gate: right for authenticity on a PC, a large part of a 400 MHz core here. Ours is
+**a voice engine with the OPL's semantics**, so OPL instrument banks sound as their authors
+meant, at a fraction of the cost:
+- **Operators:** a 32-bit phase accumulator; the OPL2's four waveforms (sine, half sine, absolute
+  sine, quarter "pulse") and the OPL3's eight, all from one quarter-sine table (256 entries,
+  512 bytes) with the chip's own bit tricks for sign, halves and quarters; frequency multiplier
+  (MULT: ½, 1-10, 12, 15), total level, key scale level, key scale rate, vibrato and tremolo
+  enables, sustain/percussive envelope type.
+- **Voices:** 2-operator, FM (modulator into carrier's phase, the chip's scaling) or additive
+  (the connection bit); feedback on the first operator (the average of its last two outputs, as
+  the chip). 4-operator OPL3 voices (four algorithms) later, with banks that use them.
+- **Envelopes** with the OPL's attack, decay, sustain level and release rates (the chip's rate
+  tables, scaled from its 49,716 Hz to the output rate), computed every 16 frames and ramped
+  between (as the wavetable voice loop does, §22). The vibrato (6.1 Hz) and tremolo (3.7 Hz)
+  LFOs are global, as on the chip, also per 16 frames.
+- **MIDI on top** (what an OPL MIDI driver adds, here in the engine): 16 channels, program
+  change, channel 10's drums (a bank's percussion entries, each with its fixed note), velocity
+  (scaling the carrier's level, DMX's curve), pitch bend (RPN 0 for its range, ±2 semitones by
+  default), volume (7), expression (11), pan (10: per-voice left/right gains, stereo out as the
+  wavetable's), sustain (64), modulation (1: vibrato depth), all notes off, all sound off, reset
+  controllers, GM System On. A bank's two-voice instruments (GENMIDI's double-voice flag, with
+  its fine tune) take two voices.
+- **Not the chip's limits:** 32 voices by default (the synth fd's `max_voices`), not 9 or 18;
+  the quietest released voice stolen first; the phase increment from the MIDI note and the bend
+  in `float` at note-on and per 16 frames, not F-numbers and blocks.
+
+### Cheap
+
+- **Only sounding voices cost anything;** a voice is freed when its envelope reaches silence.
+- **The per-sample work** for a 2-operator voice: two phase adds, two table lookups with the
+  waveform's bit operations, the modulation add, two multiplies by the envelopes' levels, and
+  a multiply-add into each output channel. About 20-30 cycles; all integer, single-cycle on
+  this core.
+- **Everything in internal RAM:** the quarter-sine table, the exponent table if the log-sin
+  form is used (the chip's: no multiplies; chosen by measurement), the voice states (about
+  100 bytes each). The inner loop in IRAM. No PSRAM traffic, unlike the wavetable's samples.
+- **Blocks:** rendered 64 frames (or the period) at a time, voice by voice, into an `int32`
+  mix converted once to the fd's format.
+- **SIMD:** PIE has no gather, so the table lookups stay scalar, and feedback is serial; a
+  modulator's block could be computed ahead of its carrier's. Scalar first; PIE only if the
+  measurement says it pays (`efficiency-every-trick`).
+- **Goal, to be measured:** at most 5 µs a 2-operator voice a 64-frame block (the wavetable:
+  about 16), so 16 voices are about 6 % of a core and 32 about 12 %. 4-operator voices about
+  twice that.
+
+### The bank
+
+- **Freedoom's GENMIDI** (BSD-3): a complete GM bank in DMX's OP2 format, 128 instruments and
+  47 percussion entries, 2-operator (OPL2), 11,908 bytes. Freedoom builds it from SBI files whose
+  registers come from OpenBSD's OPL driver. `dist/freedoom` already packages Freedoom 0.13.0; the
+  ROM build takes the `GENMIDI` lump out of `freedoom2.wad` (a WAD directory is a few lines of
+  Python) and installs `/rom/share/synth/genmidi.op2` with Freedoom's licence in
+  `/rom/share/licenses/freedoom`.
+- **Read in place** from `/rom` (`Vfs::map()`, as the icons and voices are), so it costs no RAM;
+  a bank elsewhere (the card) is read into PSRAM (12 KB).
+- **Others, chosen by `synth/fm-bank`:** any OP2 file (DMXOPL, a better-sounding bank of the
+  same format, if its licence allows shipping it); libADLMIDI's WOPL format (its many banks,
+  4-operator ones among them) later, with 4-operator voices.
+- **A bank is untrusted input:** parsed with bounds checks, fuzzed with the other decoders
+  (`synth_fuzz`'s fonts, a bank and a MIDI stream played through it).
+
+### The system synth
+
+- **`synth/system`** (new, a string: a MIDI port's name; default `fm`; `""`: no default route):
+  the synth `system`'s events go to. It replaces `system>wavetable` as `midi/connect`'s default,
+  which becomes empty (not released: no shim). The router keeps the route from `system` to that
+  port, and follows the setting live, as `midi/connect`. Being a port's name, it can be any
+  destination: `wavetable`, `fm`, a USB synth or a network session (§23), a future synth
+  program's port. `midi/connect` can still add other routes from `system` (to a monitor or a
+  second synth); the default one is set only here (`sysconf.md` §13: one way to set a thing).
+- **`fm`:** a kernel service like `wavetable` (§25): while `synth/fm` (bool, default true) is
+  on, a port of kind `system`, a destination only, from boot; idle, the port, its ring of
+  events (4 KB of PSRAM) and a control thread waiting; the first event opens an FM synth and a
+  real-time stream on `/dev/dsp`, at the device's period; 5 s with no events and no voices
+  sounding, it closes both. Its own settings: `synth/fm-bank` (default
+  `/rom/share/synth/genmidi.op2`) and `synth/gain` shared with `wavetable` (one gain for the
+  system's MIDI sound; the mixer window shows it, §17).
+- **`wavetable` stays** (`synth/wavetable`, the user's choice of a real font). Its warm font
+  (§25: TimGM6mb loaded at boot while `synth/keep-fonts` is on, 5.7 MB of PSRAM) is loaded only
+  while `wavetable` is the system synth; otherwise its first note loads the font (0.7 s).
+- **Programs' own synth fds** (`play FILE.mid`, Open, libbmdsgame's built-in music): an appended
+  field of `bmds_synth_config_t`, `engine`: `BMDS_SYNTH_ENGINE_DEFAULT` (0; the system synth's
+  engine when it is `fm` or `wavetable`, else FM), `BMDS_SYNTH_ENGINE_WAVETABLE` (1),
+  `BMDS_SYNTH_ENGINE_FM` (2). With FM, `font` is a bank's path (NULL: `synth/fm-bank`).
+  Programs built before see `engine` 0 (their `size` is shorter), so they follow the system
+  synth: MIDI files play from the ROM on a board with no card. `bmds_synth_info_t` gains the
+  engine (appended).
+- **`synth`** (the command) gets `-e fm|wavetable`; `synth status` shows both services and
+  which is the system synth. The control panel's Synthesizer section: the system synth (a list
+  of the destination ports), `synth/fm`, `synth/fm-bank`, beside the wavetable's rows.
+- **angel** needs nothing: `play()` and the live notes write to `/dev/midi`, which is `system`.
+
+### In the code
+
+- **`SynthEngine`**, an interface over what `Synth` does now (events at frames, render, the
+  voice limit, the counters); `Synth`'s SoundFont engine and the new `FmSynth` behind it, in
+  `bmds_synth`; `SynthFile` and the services take either. `FmSynth` and `Op2Bank` are portable,
+  host-tested like the rest of the synth.
+- **The sample rate:** the output's (48 kHz on the board); the chip's tables are scaled once at
+  open for it.
+
+### ABI (appended when built)
+
+`bmds_synth_config_t.engine` and its constants, `bmds_synth_info_t`'s engine; the settings
+`synth/system`, `synth/fm`, `synth/fm-bank`; the `fm` port's name; `synth -e`; the bank's path
+in `/rom`. `midi/connect`'s default changes before release.
+
+### Budget
+
+- **Flash:** the engine about 10-20 KB (the inner loop 1-2 KB of it in IRAM); the bank 12 KB in
+  the ROM.
+- **Internal RAM:** about 4 KB while playing (the table, 32 voice states); idle, the control
+  thread's task only (its stack in PSRAM, as `wavetable`'s).
+- **PSRAM:** the event ring (4 KB); none for the bank in `/rom`. Against the warm wavetable
+  font's 5.7 MB, which the default no longer loads.
+- **CPU:** the goal above; measured per voice per block on the board, beside the wavetable's.
+
+### Testing
+
+- **Host:** an operator's pitch (zero crossings of a sine at MULT 1 and 2, with a bend); the
+  envelope's times against the OPL's rate tables; each waveform's shape; feedback's stability;
+  velocity, volume, expression and pan; the drum channel's fixed notes; sustain; stealing at
+  the voice limit; the double-voice instruments; the OP2 parser on the real bank and on damaged
+  copies (fuzzed). A host tool renders a MIDI file to WAV, so the bank can be heard on a PC
+  before the board; an OPL emulator (ymfm, BSD-3) may be a test-only reference for the spectra
+  of a few instruments, never shipped.
+- **Board:** CPU per voice per block (2-operator; later 4); 32 voices with Doom's music through
+  `system` and no late periods; `play scale.mid` and the piano and snake examples through `fm`;
+  no card at all, MIDI still sounding; switching `synth/system` live; the user listening.
+
+### Steps
+
+1. **The engine on the host:** `FmSynth`, `Op2Bank`, the tests, the fuzzing, the WAV tool; the
+   bank built from Freedoom's WAD.
+2. **`SynthEngine`** and the synth fd's `engine` (appended), `synth -e`, `play` following the
+   system synth; `progtest synth` for FM.
+3. **The `fm` service** and `synth/system` (the router's route, `midi/connect`'s default
+   emptied), `synth/fm`, `synth/fm-bank`, the wavetable's warm font only as the system synth;
+   the control panel's rows.
+4. **The ROM** (the bank, Freedoom's licence) and the board's measurements; the user listening.
+5. **Later:** 4-operator voices and WOPL banks; DMXOPL if its licence allows; PIE if measured
+   worthwhile.

@@ -1,8 +1,10 @@
 # Scripting: AngelScript, a Runtime with the Whole System, and an IDE
 
-Status: **steps 1-5 built** (2026-10-21): C++ in the SDK; `angel` in the ROM with its core,
-the text screen, files and other programs, graphics and input, sound; the patches; the corpus
-and the API lock. As built and measured: §10 to §12. Next: step 6, the network.
+Status: **steps 1-7 built** (2026-10-22): C++ in the SDK; `angel` in the ROM with its core,
+the text screen, files and other programs, graphics and input, sound, the network; the patches;
+the corpus and the API lock; the editor and the IDE (`editor.md`: `edit`, its AngelScript mode,
+`angel --serve` and `--report-fd`). As built and measured: §10 to §13, `editor.md` §14 to §16.
+Next: step 8, the debugger.
 
 ## 1. Goal
 
@@ -315,17 +317,34 @@ table, so they can't disagree.
     `changeDirectory`;
   - what fails raises an exception that says why, which `try`/`catch` can handle;
   - paths are the system's, so network mounts work as well.
-- **Network:**
-  - `Socket` (TCP `connect` and `listen`/`accept`, `send`, `receive`, `receiveLine`, UDP
-    `sendTo` and `receiveFrom`, timeouts);
-  - `Http::get(url)` and `post`, plain HTTP over `Socket` in the runtime. HTTPS waits on a TLS
-    client (§9).
+- **Network** (built, step 6; IPv4):
+  - `Socket(host, port)` connects (TCP); it reads and writes as a `File` does (`read(most)`,
+    `readLine`, `readAll`, `eof`, `write` and `writeLine` of any value), and `ready(ms)` says
+    whether something can be read, so a loop can do other things meanwhile; `address()` and
+    `port()` are the other end's;
+  - `ServerSocket(port)` listens: `accept()`, `ready(ms)`, `port()` (port 0: any free one);
+  - `UdpSocket(port)`: `sendTo(host, port, data)` (broadcast allowed), `receive()`, then
+    `sender()` and `senderPort()`;
+  - all three: `setTimeout(ms)` (0, the start: no limit; then an exception says it timed out),
+    `close()`, `isOpen()`;
+  - `localAddress()` (this computer's), `lookup(host)`;
+  - `Http::get(url)` and `Http::post(url, body, type)` return the body (an exception for a
+    status that isn't 2xx); `Http::request(method, url, body, headers)` returns an
+    `HttpResponse` (`status`, `reason`, `body`, `url`, `header(name)`, `headers()`) whatever the
+    status; `Http::encode(text)`. Plain HTTP/1.1 in the runtime, over the same connections;
+    redirects followed. HTTPS waits on a TLS client (§9).
+  - Names changed from the plan's (`send`, `receive`, `receiveLine`): a socket reads and writes
+    with the names a `File` uses, so what a child learned for files works here.
 - **System:**
   - built (step 3): `run(command)` (its output on the screen; the exit status) and
     `output(command)` (what it printed);
   - built (step 4): `setting(key)` (a setting's value, read only) and `notify(title, text)`.
 
-### The IDE (working name *Workshop*)
+### The IDE (working name *Workshop*; now `editor.md`'s `edit`)
+
+Superseded in detail by `editor.md` (2026-10-22): the IDE is the AngelScript mode of the system's
+one text editor. What follows is the IDE's list as first planned, kept for its intent.
+
 
 - **The editor** is `CodeEdit`:
   - line numbers, syntax colouring, matching brackets, auto-indent;
@@ -382,12 +401,12 @@ table, so they can't disagree.
    Examples: a bouncing ball, a paint program, a snake game.
 5. **Sound** (done 2026-10-21): `Sound`, `playMusic`, `tone`, `beep`, `play` (the music
    language, on the synth), `say`. A piano example; snake's sounds.
-6. **Network:** `Socket`, `Http`. Examples: a chat between two boards, fetching a page.
-7. **`CodeEdit` and the IDE:**
-   - the widget, which also closes Phase 8's "on-device text editor" with a plain editor
-     application;
-   - then the IDE: `angel --serve`, Run and Stop, diagnostics, F1 and completion, templates, the
-     `.as` file type.
+6. **Network** (done 2026-10-22): `Socket`, `ServerSocket`, `UdpSocket`, `Http`. Examples: a
+   chat between two computers, fetching a page.
+7. **The editor and the IDE** (done 2026-10-22, `editor.md`, the user's direction): one
+   application for all text (`edit`), on reusable widgets (`TextEdit`, then `CodeEdit` on top),
+   with syntaxes for many languages; the angel IDE is its AngelScript mode (`angel --serve`, Run
+   and Stop, diagnostics, F1 and completion, templates, `text/x-angelscript`), C and C++ later.
 8. **The debugger:** breakpoints, stepping, the call stack and watching variables, through a
    line callback in `angel` with line cues on. Controlled by the IDE over the same kind of pipe
    as `--serve`.
@@ -570,3 +589,31 @@ calls). New system calls, if a binding needs one, follow the usual rules.
   note from key down to key up, plays chords, and the mouse holds one while its button is down.
   Watched with `midi monitor midi0`: note on on channel 2 at the press, note off 301 ms later
   at the release; `play()`'s notes on channel 1 beside them.
+
+## 13. As built (step 6, 2026-10-22)
+
+- **`network.cpp`:** POSIX sockets, the same code on the board and the PC, so the host corpus
+  runs it over loopback: `network.as` (a server and its client in one script, lines, partial
+  reads, `ready()`, timeouts, the end of a connection, datagrams, a refused connection) and
+  `http.as` against a small HTTP server `run.py` starts on loopback (`$TEST_HTTP`: a plain page,
+  a chunked one, one ended by closing, redirects (301, 303 after a POST, a loop), a missing
+  page, an echo of the method, headers and body). `network.as` gives the same output on the
+  board.
+- **Waiting** is `poll()` with the socket's timeout, so a script waiting for data or a
+  connection costs nothing. `Socket(host, port)` connects without blocking and waits at most
+  10 s (a dead address fails in 10 s, not after TCP's minutes of retries); `Http`'s waits are
+  30 s each. A socket's input is buffered (2 KB) for `readLine()`; a `UdpSocket`'s 64 KB
+  buffer is made at its first `receive()`. Writes use `MSG_NOSIGNAL`: a closed connection is an
+  exception, not SIGPIPE.
+- **HTTP/1.1** with `Connection: close`: one connection a request, the body by
+  `Content-Length`, chunks, or to the end; 1xx answers skipped; up to 5 redirects (303, and
+  301/302 after a POST, become a GET without the body, as browsers do); an `https://` address is
+  an exception saying HTTPS isn't supported yet.
+- **On the board** (`fetch.as` and httpbin.org): example.com in 60 ms; redirects, a chunked
+  answer, a form posted, 100 KB fetched, a 404 as an exception, a bad host ("Name does not
+  resolve") and a dead address (timed out in 10 s). `chat.as` between the board (waiting) and
+  the PC (joining), each in a pty: names exchanged, lines both ways, UTF-8, Backspace over an
+  `é`, Escape leaving and the other side told.
+- **Size:** `network.cpp` is 19 KB of text, musl's resolver (`getaddrinfo` and DNS) about
+  10 KB more; `angel` is now 1,002 KB of text.
+

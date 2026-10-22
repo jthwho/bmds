@@ -324,3 +324,50 @@ void allNotesOff()
 void instrument(int)
 void noteOff(int)
 void noteOn(int, int = 100)
+# Step 6 (2026-10-22): the network.
+HttpResponse::const int status
+HttpResponse::const string body
+HttpResponse::const string reason
+HttpResponse::const string url
+HttpResponse@ Http::request(const string&in, const string&in, const string&in = "", const string[]@ = null)
+ServerSocket@ ServerSocket(int)
+Socket@ ServerSocket::accept()
+Socket@ Socket(const string&in, int)
+UdpSocket@ UdpSocket(int = 0)
+bool ServerSocket::isOpen() const
+bool ServerSocket::ready(int = 0)
+bool Socket::eof()
+bool Socket::isOpen() const
+bool Socket::ready(int = 0)
+bool UdpSocket::isOpen() const
+bool UdpSocket::ready(int = 0)
+class HttpResponse
+class ServerSocket
+class Socket
+class UdpSocket
+int ServerSocket::port() const
+int Socket::port() const
+int UdpSocket::port() const
+int UdpSocket::senderPort() const
+string Http::encode(const string&in)
+string Http::get(const string&in)
+string Http::post(const string&in, const string&in, const string&in = "application/x-www-form-urlencoded")
+string HttpResponse::header(const string&in) const
+string HttpResponse::headers() const
+string Socket::address() const
+string Socket::read(int = 4096)
+string Socket::readAll()
+string Socket::readLine()
+string UdpSocket::receive()
+string UdpSocket::sender() const
+string localAddress()
+string lookup(const string&in)
+void ServerSocket::close()
+void ServerSocket::setTimeout(int)
+void Socket::close()
+void Socket::setTimeout(int)
+void Socket::write(const ?&in)
+void Socket::writeLine(const ?&in)
+void UdpSocket::close()
+void UdpSocket::sendTo(const string&in, int, const string&in)
+void UdpSocket::setTimeout(int)

@@ -60,6 +60,7 @@ namespace {
                 {"ini", "text/plain", Text},
                 {"list", "text/plain", Text},
                 {"sh", "application/x-shellscript", Text},
+                {"as", "text/x-angelscript", Text}, // angel's scripts (devplan/editor.md §9)
                 {"js", "text/javascript", Text},
                 {"json", "application/json", Text},
                 {"xml", "application/xml", Text},

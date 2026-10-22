@@ -289,9 +289,13 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
   The second isn't simple: flash and PSRAM are separate windows of the MMU, so an image's shared
   pages in flash and its private pages in PSRAM can't sit side by side as `programs.md` §14 lays
   them out.
+- **A General MIDI synth from the ROM** (2026-10-22): no small SoundFont has clean rights, so
+  the built-in default is FM with a 12 KB bank in `/rom` (`audio.md` §26).
 
 ## 7. Budget (estimates)
 
+- **Measured 2026-10-22:** 5.94 MB used; about half of each program file is relocations and
+  symbols the loader doesn't apply (1.69 MB of 3.47 MB). Ways to shrink them: `programs.md` §20.
 - **Flash:** the ROM's 9.375 MB, used at first about 1.3 MB (icons about 1 MB, the bundle
   0.23 MB); the main firmware a few KB more (the volume, `Vfs::map()`, the command).
 - **RAM:** none at rest beyond the mount's record; icons from `/rom` cost no PSRAM.

@@ -58,6 +58,13 @@ class TabWidget : public Widget {
                 /** @brief Returns page @p index, or null. */
                 Widget *page(size_t index) const { return index < _count ? _tabs[index].page : nullptr; }
 
+                /**
+                 * @brief Takes tab @p index away, its page hidden but still its child (the caller
+                 *        destroys it or adds it again); the next tab (or the one before, at the
+                 *        end) becomes current.
+                 */
+                void removeTab(size_t index);
+
                 /** @brief Shows page @p index (not told to `Changed`). */
                 void setCurrent(size_t index);
 

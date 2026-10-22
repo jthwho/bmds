@@ -87,6 +87,10 @@ namespace angel {
         void check(int r, const char *what);
         // Every declaration registered, one a line, sorted (`--api`); with their help (`--api-help`).
         void printApi(asIScriptEngine *engine, bool help);
+        // The same as records for an editor (`angel --serve`'s `api`): `api KIND NAME DECLARATION
+        // HELP`, tab-separated, a line each; KIND is type, constructor, method, property, enum,
+        // constant, function or variable; a member's NAME is `Type.name`.
+        void printApiRecords(asIScriptEngine *engine);
 
         // ---- The parts (each registers its own).
         void registerString(asIScriptEngine *engine);
@@ -96,6 +100,7 @@ namespace angel {
         void registerSystem(asIScriptEngine *engine);
         void registerGraphics(asIScriptEngine *engine);
         void registerSound(asIScriptEngine *engine);
+        void registerNetwork(asIScriptEngine *engine);
 
         // At the script's end: what play() put in the background is heard to its end.
         void finishSound();

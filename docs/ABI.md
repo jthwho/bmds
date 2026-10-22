@@ -16,7 +16,7 @@ This document defines what "userspace" means in BMDS, the rules for evolving it,
 | **Runtime environment** | Memory regions a program may use, stack size guarantees, how the console/graphics/input are handed to the program, what happens at exit. |
 | **Shell interface** | Command names, options, exit codes, and machine-parsable output used by scripts. |
 | **On-disk formats** | Config files, directory conventions (e.g. where programs live), any file format BMDS writes that users or programs read. |
-| **Scripts** (`devplan/scripting.md`) | `angel`'s script API (every type, function, method, property and constant registered), its language (the AngelScript version, the engine settings, float literals and top-level statements), its command line, exit statuses and diagnostic format. Scripts are kept as source; bytecode isn't ABI. |
+| **Scripts** (`devplan/scripting.md`) | `angel`'s script API (every type, function, method, property and constant registered), its language (the AngelScript version, the engine settings, float literals and top-level statements), its command line, exit statuses and diagnostic format, `--report-fd`'s lines, and `--serve`'s protocol (`devplan/editor.md` §9: an editor may use it). Scripts are kept as source; bytecode isn't ABI. |
 
 Kernel internals — C++ classes, driver interfaces, internal headers under `components/` — are **not** userspace and may change freely.
 

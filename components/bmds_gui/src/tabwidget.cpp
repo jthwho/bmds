@@ -54,6 +54,29 @@ Error TabWidget::addTab(Widget *page, StringView title) {
         return Error::Ok;
 }
 
+void TabWidget::removeTab(size_t index) {
+        if (index >= _count) return;
+        Widget    *gone = _tabs[index].page;
+        GuiWindow *w = window();
+        const bool focusIn = w != nullptr && contains(gone, w->focusWidget());
+        gone->setVisible(false);
+        for (size_t i = index; i + 1 < _count; ++i) _tabs[i] = _tabs[i + 1];
+        _tabs[--_count] = Tab{};
+        if (_count == 0) {
+                _current = 0;
+        } else {
+                if (_current > index || _current == _count) --_current;
+                if (_current >= _count) _current = _count - 1;
+                Widget *page = _tabs[_current].page;
+                page->setGeometry(pageRect());
+                page->setVisible(true);
+                if (focusIn) w->setFocusWidget(firstFocusable(page));
+        }
+        layout();
+        update();
+        return;
+}
+
 void TabWidget::setTitle(size_t index, StringView title) {
         if (index >= _count) return;
         size_t n = title.size() < MaxTitle ? title.size() : MaxTitle;

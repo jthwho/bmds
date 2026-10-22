@@ -46,6 +46,10 @@ if(COMMAND idf_component_register)
                                     src/icontheme.cpp
                                     src/itemview.cpp
                                     src/lineedit.cpp
+                                    src/textedit.cpp
+                                    src/findbar.cpp
+                                    src/codeedit.cpp
+                                    src/terminalwidget.cpp
                                     src/listeditor.cpp
                                     src/menu.cpp
                                     src/menubar.cpp
@@ -62,7 +66,7 @@ if(COMMAND idf_component_register)
                                     src/treeview.cpp
                                     src/widget.cpp
                                INCLUDE_DIRS include
-                               REQUIRES bmds_clipboard bmds_core bmds_files bmds_fs bmds_input bmds_kernel bmds_loader bmds_sysconf bmds_ui)
+                               REQUIRES bmds_clipboard bmds_console bmds_core bmds_files bmds_fs bmds_input bmds_kernel bmds_loader bmds_sysconf bmds_ui)
         bmds_target_options(${COMPONENT_LIB})
 else()
         add_library(bmds_gui STATIC ${BMDS_GUI_PURE_SRCS})

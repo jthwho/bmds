@@ -37,6 +37,7 @@ set(BMDS_CORE_SRCS
         src/notificationlog.cpp
         src/hostname.cpp
         src/leapseconds.cpp
+        src/textdocument.cpp
         src/texttemplate.cpp
         src/bmp.cpp
         src/imageplan.cpp
@@ -52,6 +53,7 @@ set(BMDS_CORE_SRCS
         src/jsonwriter.cpp
         src/logtext.cpp
         src/string.cpp
+        src/syntax.cpp
         src/timezone.cpp
         src/topview.cpp
         src/updatepackage.cpp

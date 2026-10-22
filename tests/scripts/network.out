@@ -1,0 +1,28 @@
+true
+false
+true
+127.0.0.1 a port
+hello
+two
+three 42
+false
+true
+abc
+def
+back
+Timed out waiting for data (50 ms)
+false
+last
+
+true
+true
+The socket is closed
+false
+ping 127.0.0.1 true
+pong
+Timed out waiting for a datagram (50 ms)
+true
+Port 70000 isn't 0 to 65535
+The socket is closed
+127.0.0.1
+true

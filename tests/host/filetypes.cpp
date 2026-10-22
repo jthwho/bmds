@@ -36,6 +36,7 @@ TEST_CASE("FileFormat: by name") {
         CHECK(str(FileFormat::byName("notes.txt")) == "text/plain");
         CHECK(str(FileFormat::byName("/sd0/p0/Shot.PNG")) == "image/png");
         CHECK(str(FileFormat::byName("main.c")) == "text/x-csrc");
+        CHECK(str(FileFormat::byName("game.as")) == "text/x-angelscript");
         CHECK(str(FileFormat::byName("Song.MID")) == "audio/midi");
         CHECK(str(FileFormat::byName("song.midi")) == "audio/midi");
         CHECK(str(FileFormat::byName("Album.M3U")) == "audio/x-mpegurl"); // a playlist, text-like
@@ -123,6 +124,7 @@ TEST_CASE("FileFormat: by content") {
 TEST_CASE("FileFormat: text-like types and icons") {
         CHECK(FileFormat::isText("text/plain"));
         CHECK(FileFormat::isText("text/x-csrc"));
+        CHECK(FileFormat::isText("text/x-angelscript"));
         CHECK(FileFormat::isText("application/json"));
         CHECK(FileFormat::isText("application/x-shellscript"));
         CHECK(FileFormat::isText("application/x-zerosize"));

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Edit
+Comment=Edits text: notes, settings, scripts and programs
+Exec=edit %F
+Icon=accessories-text-editor
+Terminal=false
+Categories=Utility;TextEditor;
+MimeType=text/plain;

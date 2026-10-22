@@ -10,7 +10,9 @@
  * or, made only of declarations, through its main(). Decimal literals are float
  * (AS_FLOAT_LITERALS: 1.5d for a double). The first line may be `#!`; `#include "file"` adds
  * another file (its declarations only). Errors are reported as compilers do,
- * `file:line:column: error: message`.
+ * `file:line:column: error: message`; `--report-fd N` writes them to descriptor N as well, a
+ * tab-separated line each, and an uncaught exception too (for an editor's Run). `--serve` is the
+ * editor's checker (devplan/editor.md §9): requests on stdin, answers on stdout.
  */
 
 #include <errno.h>
@@ -36,15 +38,54 @@ namespace {
         constexpr const char *TopLevel = "$top";
 
         void usage() {
-                fprintf(stderr, "usage: angel [-c] SCRIPT [ARGUMENT...]\n"
-                                "       angel --api | --api-help | --version\n"
-                                "  -c          check the script: report its errors, run nothing\n"
-                                "  --api       the script API's declarations, one a line\n"
-                                "  --api-help  the same, each with its help\n");
+                fprintf(stderr, "usage: angel [-c] [--report-fd N] SCRIPT [ARGUMENT...]\n"
+                                "       angel --api | --api-help | --serve | --version\n"
+                                "  -c              check the script: report its errors, run nothing\n"
+                                "  --report-fd N   errors and an uncaught exception to descriptor N too\n"
+                                "  --api           the script API's declarations, one a line\n"
+                                "  --api-help      the same, each with its help\n"
+                                "  --serve         answer an editor's requests (check, api) on stdin\n");
                 return;
         }
 
         // ---- Diagnostics
+
+        FILE *reportFile = nullptr; // --report-fd's
+        bool  serving = false;      // --serve: diagnostics are the answer's
+
+        // A field of a tab-separated line: tabs and newlines would split it.
+        void field(FILE *f, const char *text) {
+                for (const char *p = text != nullptr ? text : ""; *p != 0; ++p)
+                        fputc(*p == '\t' || *p == '\n' || *p == '\r' ? ' ' : *p, f);
+                return;
+        }
+
+        void reportLine(FILE *f, const char *prefix, const char *severity, const char *file, int line, int column,
+                        const char *text) {
+                if (prefix != nullptr) fprintf(f, "%s\t", prefix);
+                field(f, severity);
+                fputc('\t', f);
+                field(f, file);
+                fprintf(f, "\t%d\t%d\t", line, column);
+                field(f, text);
+                fputc('\n', f);
+                return;
+        }
+
+        // Every diagnostic: as a compiler writes it on stderr, a line on --report-fd's too; when
+        // serving, a line of the answer instead.
+        void diagnostic(const char *severity, const char *file, int line, int column, const char *text) {
+                if (serving) {
+                        reportLine(stdout, "diag", severity, file, line, column, text);
+                        return;
+                }
+                fprintf(stderr, "%s:%d:%d: %s: %s\n", file, line, column, severity, text);
+                if (reportFile != nullptr) {
+                        reportLine(reportFile, nullptr, severity, file, line, column, text);
+                        fflush(reportFile);
+                }
+                return;
+        }
 
         void message(const asSMessageInfo *msg, void *) {
                 const char *kind = "error";
@@ -55,7 +96,7 @@ namespace {
                         if (strncmp(msg->message, "Compiling ", 10) == 0) return;
                         kind = "note";
                 }
-                fprintf(stderr, "%s:%d:%d: %s: %s\n", msg->section, msg->row, msg->col, kind, msg->message);
+                diagnostic(kind, msg->section, msg->row, msg->col, msg->message);
                 return;
         }
 
@@ -96,6 +137,11 @@ namespace {
                 const int   line = ctx->GetExceptionLineNumber(&column, &section);
                 fprintf(stderr, "%s:%d:%d: error: %s\n", section != nullptr ? section : "?", line, column,
                         ctx->GetExceptionString());
+                if (reportFile != nullptr) {
+                        reportLine(reportFile, nullptr, "exception", section != nullptr ? section : "?", line, column,
+                                   ctx->GetExceptionString());
+                        fflush(reportFile);
+                }
                 const asUINT frames = ctx->GetCallstackSize();
                 for (asUINT n = 0; n < frames && frames > 1; ++n) {
                         Text where;
@@ -156,9 +202,9 @@ namespace {
         }
 
         void loadError(const char *path, int line, const char *format, const char *detail) {
-                fprintf(stderr, "%s:%d:1: error: ", path, line);
-                fprintf(stderr, format, detail);
-                fputc('\n', stderr);
+                Text text;
+                text.appendf(format, detail);
+                diagnostic("error", path, line, 1, text.data());
                 ++loadErrors;
                 return;
         }
@@ -292,6 +338,36 @@ namespace {
                 return index;
         }
 
+        // The sources forgotten (a check's, before the next).
+        void resetSources() {
+                for (int i = 0; i < sourceCount; ++i) {
+                        free(sources[i].path);
+                        free(sources[i].canonical);
+                        free(sources[i].code);
+                }
+                sourceCount = 0;
+                loadErrors = 0;
+                return;
+        }
+
+        // The script from memory (an editor's unsaved text), its includes from the files beside
+        // @p path.
+        bool loadText(const char *path, const char *code, size_t length) {
+                char  resolved[PATH_MAX];
+                char *canonical = realpath(path, resolved) != nullptr ? strdup(resolved) : strdup(path);
+                char *copy = static_cast<char *>(malloc(length + 1));
+                if (canonical == nullptr || copy == nullptr) {
+                        free(canonical);
+                        free(copy);
+                        return false;
+                }
+                memcpy(copy, code, length);
+                copy[length] = 0;
+                sources[sourceCount++] = Source{strdup(path), canonical, copy, length};
+                preprocess(0);
+                return true;
+        }
+
         // ---- The engine
 
         asIScriptEngine *makeEngine() {
@@ -360,40 +436,46 @@ namespace {
                 angel::registerSystem(engine);
                 angel::registerGraphics(engine);
                 angel::registerSound(engine);
+                angel::registerNetwork(engine);
                 return engine;
         }
 
         // ---- Running
 
-        int run(asIScriptEngine *engine, asIScriptModule *module) {
+        // What runs: the top-level statements or main(); null (and why said) if neither will do.
+        asIScriptFunction *entryOf(asIScriptModule *module) {
                 asIScriptFunction *top = module->GetFunctionByName(TopLevel);
                 asIScriptFunction *main = module->GetFunctionByName("main");
                 if (top != nullptr && main != nullptr) {
                         const char *section = nullptr;
                         int         line = 0, column = 0;
                         main->GetDeclaredAt(&section, &line, &column);
-                        fprintf(stderr,
-                                "%s:%d:%d: error: a script with statements outside functions runs them; it can't "
-                                "have a main() as well\n",
-                                section != nullptr ? section : sources[0].path, line, column);
-                        return ExitFailure;
+                        diagnostic("error", section != nullptr ? section : sources[0].path, line, column,
+                                   "a script with statements outside functions runs them; it can't have a main() "
+                                   "as well");
+                        return nullptr;
                 }
                 asIScriptFunction *entry = top != nullptr ? top : main;
                 if (entry == nullptr) {
-                        fprintf(stderr,
-                                "%s:1:1: error: nothing to run: no statements outside functions, and no main()\n",
-                                sources[0].path);
-                        return ExitFailure;
+                        diagnostic("error", sources[0].path, 1, 1,
+                                   "nothing to run: no statements outside functions, and no main()");
+                        return nullptr;
                 }
                 if (entry->GetParamCount() != 0 ||
                     (entry->GetReturnTypeId() != asTYPEID_VOID && entry->GetReturnTypeId() != asTYPEID_INT32)) {
                         const char *section = nullptr;
                         int         line = 0, column = 0;
                         entry->GetDeclaredAt(&section, &line, &column);
-                        fprintf(stderr, "%s:%d:%d: error: main() must be 'void main()' or 'int main()'\n",
-                                section != nullptr ? section : sources[0].path, line, column);
-                        return ExitFailure;
+                        diagnostic("error", section != nullptr ? section : sources[0].path, line, column,
+                                   "main() must be 'void main()' or 'int main()'");
+                        return nullptr;
                 }
+                return entry;
+        }
+
+        int run(asIScriptEngine *engine, asIScriptModule *module) {
+                asIScriptFunction *entry = entryOf(module);
+                if (entry == nullptr) return ExitFailure;
                 asIScriptContext *ctx = engine->CreateContext();
                 if (ctx == nullptr || ctx->Prepare(entry) < 0) {
                         fprintf(stderr, "angel: can't start the script\n");
@@ -417,6 +499,137 @@ namespace {
                 angel::finishSound();
                 angel::waitForWindows();
                 return status;
+        }
+
+        // ---- Serving an editor (devplan/editor.md §9)
+
+        // The script's own names, for completion: `symbol KIND NAME DECLARATION FILE LINE`.
+        void printSymbols(asIScriptEngine *engine, asIScriptModule *module) {
+                for (asUINT i = 0; i < module->GetFunctionCount(); ++i) {
+                        asIScriptFunction *f = module->GetFunctionByIndex(i);
+                        if (f == nullptr || strcmp(f->GetName(), TopLevel) == 0) continue;
+                        const char *section = nullptr;
+                        int         line = 0;
+                        f->GetDeclaredAt(&section, &line, nullptr);
+                        printf("symbol\tfunction\t");
+                        field(stdout, f->GetName());
+                        putchar('\t');
+                        field(stdout, f->GetDeclaration(true, true, true));
+                        putchar('\t');
+                        field(stdout, section);
+                        printf("\t%d\n", line);
+                }
+                for (asUINT i = 0; i < module->GetGlobalVarCount(); ++i) {
+                        const char *name = nullptr;
+                        if (module->GetGlobalVar(i, &name) < 0) continue;
+                        printf("symbol\tvariable\t");
+                        field(stdout, name);
+                        putchar('\t');
+                        field(stdout, module->GetGlobalVarDeclaration(i, true));
+                        printf("\t\t0\n");
+                }
+                for (asUINT i = 0; i < module->GetObjectTypeCount(); ++i) {
+                        asITypeInfo *type = module->GetObjectTypeByIndex(i);
+                        printf("symbol\tclass\t");
+                        field(stdout, type->GetName());
+                        printf("\tclass ");
+                        field(stdout, type->GetName());
+                        printf("\t\t0\n");
+                        for (asUINT m = 0; m < type->GetMethodCount(); ++m) {
+                                asIScriptFunction *f = type->GetMethodByIndex(m);
+                                printf("symbol\tmethod\t%s.", type->GetName());
+                                field(stdout, f->GetName());
+                                putchar('\t');
+                                field(stdout, f->GetDeclaration(true, true, true));
+                                printf("\t\t0\n");
+                        }
+                        for (asUINT p = 0; p < type->GetPropertyCount(); ++p) {
+                                const char *name = nullptr;
+                                type->GetProperty(p, &name);
+                                printf("symbol\tproperty\t%s.", type->GetName());
+                                field(stdout, name);
+                                putchar('\t');
+                                field(stdout, type->GetPropertyDeclaration(p, true));
+                                printf("\t\t0\n");
+                        }
+                }
+                for (asUINT i = 0; i < module->GetEnumCount(); ++i) {
+                        asITypeInfo *e = module->GetEnumByIndex(i);
+                        printf("symbol\tenum\t");
+                        field(stdout, e->GetName());
+                        printf("\tenum ");
+                        field(stdout, e->GetName());
+                        printf("\t\t0\n");
+                        for (asUINT v = 0; v < e->GetEnumValueCount(); ++v) {
+                                int         value = 0;
+                                const char *name = e->GetEnumValueByIndex(v, &value);
+                                printf("symbol\tconstant\t%s::", e->GetName());
+                                field(stdout, name);
+                                printf("\t%s::", e->GetName());
+                                field(stdout, name);
+                                printf(" = %d\t\t0\n", value);
+                        }
+                }
+                (void)engine;
+                return;
+        }
+
+        // Requests on stdin, a line each (`check PATH LENGTH` and the text's LENGTH bytes; `api`;
+        // `quit`); each answer's lines on stdout, then `end`. One engine for all: a check builds
+        // the text and runs nothing (globals aren't initialized either).
+        int serve() {
+                serving = true;
+                static char  argv0[] = "script";
+                static char *argv[] = {argv0, nullptr};
+                angel::setArguments(1, argv);
+                asIScriptEngine *engine = makeEngine();
+                engine->SetEngineProperty(asEP_INIT_GLOBAL_VARS_AFTER_BUILD, 0);
+                char header[1024];
+                while (fgets(header, sizeof(header), stdin) != nullptr) {
+                        size_t n = strlen(header);
+                        while (n > 0 && (header[n - 1] == '\n' || header[n - 1] == '\r')) header[--n] = 0;
+                        char *tab = strchr(header, '\t');
+                        if (tab != nullptr) *tab = 0;
+                        if (strcmp(header, "quit") == 0) break;
+                        if (strcmp(header, "api") == 0) {
+                                angel::printApiRecords(engine);
+                        } else if (strcmp(header, "check") == 0 && tab != nullptr) {
+                                char *path = tab + 1;
+                                char *lengthText = strchr(path, '\t');
+                                if (lengthText != nullptr) *lengthText++ = 0;
+                                const long length = lengthText != nullptr ? strtol(lengthText, nullptr, 10) : -1;
+                                char *code = length >= 0 ? static_cast<char *>(malloc(size_t(length) + 1)) : nullptr;
+                                if (code == nullptr || fread(code, 1, size_t(length), stdin) != size_t(length)) {
+                                        free(code);
+                                        printf("error\tbad check request\nend\n");
+                                        fflush(stdout);
+                                        if (code == nullptr && length >= 0) continue;
+                                        break; // the stream is out of step: done
+                                }
+                                resetSources();
+                                if (loadText(path, code, size_t(length))) {
+                                        asIScriptModule *module = engine->GetModule("check", asGM_ALWAYS_CREATE);
+                                        bool             added = true;
+                                        for (int i = 0; i < sourceCount && added; ++i)
+                                                added = module->AddScriptSection(sources[i].path, sources[i].code,
+                                                                                 sources[i].length) >= 0;
+                                        if (added && module->Build() >= 0) {
+                                                (void)entryOf(module);
+                                                printSymbols(engine, module);
+                                        }
+                                        module->Discard();
+                                }
+                                free(code);
+                        } else {
+                                printf("error\tunknown request\n");
+                        }
+                        printf("end\n");
+                        fflush(stdout);
+                }
+                resetSources();
+                angel::releaseArguments();
+                engine->ShutDownAndRelease();
+                return 0;
         }
 
 } // namespace
@@ -445,9 +658,24 @@ int main(int argc, char **argv) {
                 );
                 return 0;
         }
-        if (argc >= 2 && strcmp(argv[1], "-c") == 0) {
-                checkOnly = true;
-                first = 2;
+        if (argc >= 2 && strcmp(argv[1], "--serve") == 0) return serve();
+        for (;;) {
+                if (first < argc && strcmp(argv[first], "-c") == 0) {
+                        checkOnly = true;
+                        ++first;
+                } else if (first + 1 < argc && strcmp(argv[first], "--report-fd") == 0) {
+                        char      *end = nullptr;
+                        const long fd = strtol(argv[first + 1], &end, 10);
+                        reportFile = end != argv[first + 1] && *end == 0 && fd > 2 ? fdopen(int(fd), "w") : nullptr;
+                        if (reportFile == nullptr) {
+                                fprintf(stderr, "angel: --report-fd %s: not a descriptor open for writing\n",
+                                        argv[first + 1]);
+                                return ExitUsage;
+                        }
+                        first += 2;
+                } else {
+                        break;
+                }
         }
         if (first >= argc || argv[first][0] == '-') {
                 usage();

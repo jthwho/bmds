@@ -265,6 +265,11 @@ Plan: [`input.md`](input.md).
     `wavetable` midi1, `system>wavetable` by default, the font warm at boot). Step 3 done:
     scheduled MIDI output (`time_ns`, `BMDS_MIDI_CANCEL`, `midiclock`), held notes let go at a
     close, libbmdsgame's `BMDS_GAME_MUSIC_MIDI_OUT`, Doom's `doom/music` (`midi` by default).
+  - [ ] 6d. The FM synth (§26, designed 2026-10-22, the user's request): a voice engine with the
+    OPL's semantics (not an emulation; the goal about 5 µs a 2-operator voice a 64-frame block,
+    a third of the wavetable's), Freedoom's GENMIDI bank (BSD-3, 12 KB) read in place from
+    `/rom`, an `fm` port beside `wavetable`, and `synth/system` choosing the system synth, `fm`
+    by default: MIDI with no card.
   - [ ] 6b. The patchbay (§24, outlined): a graph fd for programs, an audio graph (client to
     client in a period, devices' playback and capture), and `patchbay`, MIDI and audio wires.
     MIDI done: `patchbay` (drag or keys, kept in `midi/connect`, live); the graph fd waits for
@@ -423,8 +428,14 @@ Plan: [`input.md`](input.md).
   `notify()`; ellipses, polygons and flood fill in `libbmdsgame`; bounce, paint and snake
   examples. Step 5 done (§12): `Sound` effects, `playMusic`, `tone` and `beep`, QBasic's
   `play()` language on the synth (timed MIDI events, `MB` in the background), `say()`; a piano
-  example, snake with sounds. Next: the network (step 6).
-- [ ] On-device text editor.
+  example, snake with sounds. Step 6 done (§13): `Socket`, `ServerSocket`, `UdpSocket`,
+  `Http` (plain HTTP/1.1, redirects), `localAddress()`, `lookup()`; chat and fetch examples.
+  Step 7 done (`editor.md`): `edit` and its AngelScript mode (checks as you type, F5 Run in an
+  Output pane, Stop, F1 help, completion, templates), `angel --serve` and `--report-fd`. Next:
+  the debugger (step 8).
+- [x] On-device text editor (`editor.md`, 2026-10-22): `edit`, on `TextDocument`, `TextEdit` and
+  `CodeEdit`, one application for plain text (nine languages coloured), the angel IDE, and later
+  C and C++; `TerminalWidget` for its Output (`/bin/terminal` onto it later, step 4b).
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

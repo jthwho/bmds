@@ -1083,3 +1083,59 @@ pages by the AXI-GDMA against the CPU's 2.1 ms (`docs/platforms/esp32p4.md` §3)
 - **A measuring pitfall:** BusyBox's `time` (over ssh, `time` is `/sd0/p0/bin/time`) runs `sh` as
   BusyBox's own shell (`FEATURE_PREFER_APPLETS`), not ours: `time sh script` timed BusyBox's
   shell, four times slower on that loop. Time native commands from the PC, or with `bench`.
+## 20. Smaller program files (idea, 2026-10-22; not scheduled)
+
+The user's question: is the ROM's space used well? Measured on the ROM as built (5.94 MB of
+10 MB): the data files are stored as they should be (the speech voices and the icons are read
+in place, so they stay uncompressed), but **about half of every program file is relocations
+and symbols the loader doesn't apply**. The user's decision: not now, recorded here.
+
+**What is in the files** (`readelf` on `build/rom/dist/rootfs/bin`):
+
+| Program | file | `.rela.*`, `.symtab`, `.strtab` | relocations applied |
+|---|---:|---:|---:|
+| angel | 2,034,932 | 1,009,108 | 32,628 (2,704 × 12) |
+| dropbearmulti | 768,436 | 360,837 | 4,200 |
+| sshfs | 253,404 | 112,547 | 372 |
+| sftp-server | 216,352 | 109,368 | 684 |
+| ssh-copy-id | 197,196 | 99,417 | 432 |
+
+- **Relocations:** `--emit-relocs` (§3) keeps every relocation the linker made. angel has 49,382:
+  22,935 `CALL_PLT`, 8,676 `PCREL_HI20`, 8,608 `PCREL_LO12_I`, 2,052 each of `ADD32`/`SUB32`,
+  branches and the rest; the loader patches only `R_RISCV_32` (2,704) and `R_RISCV_HI20` (none
+  in angel). It reads the others only to check that the code is position-independent (§3's
+  refusals) and to find which pages are private (§14).
+- **Symbols:** angel's table has 18,469 entries: 15,568 untyped (local labels kept as
+  relocation targets), 2,700 functions, 195 objects, 6 TLS. The loader uses symbols to leave
+  relocations against absolute and undefined symbols alone; the profiler and crash reports name
+  functions from them.
+- **Flash only:** the image cache (§14) keeps the loaded bytes and its own compact patch list,
+  so none of this costs PSRAM once a program has run. It costs flash, the card, and the
+  loader's reading (and checking) at a cache miss.
+
+**What could be done, in order of value:**
+1. **A compact patch list in place of `.rela.*`.** `bmds-link` already reads the output's kept
+   relocations to build `.patched` (§14.3). It could check position independence there (the
+   same refusals as `ProgramImage`, so a bad program fails at its link, not its run), then write
+   the patches as a section of their own (offset and kind; 4 bytes each would do, with the kind
+   in the low bits of a 4-aligned offset) and drop the relocation sections. Saves about 1.2 MB
+   on these five programs. The loader would take the list as it is (the image cache already
+   holds patches in such a form) and skip the per-relocation checks.
+   - **ABI:** the executable format is frozen once the first program ships. Before then it can
+     change outright; after, it would be an addition (a flag in the program note, the old form
+     still loaded). Cheapest done before the first release.
+   - Package builds that link outside `bmds-link` would keep `.rela.*` (still loaded), or be
+     converted by a post-link tool (`bmds-pack`), which also works on files already built.
+2. **Function symbols only.** The profiler and crash names need functions (and perhaps objects);
+   the local labels go once the relocations are gone. Saves about 0.4 MB more. A program could
+   also be stripped of names entirely (a release option), the profiler then showing addresses.
+3. **Compressed program files in the ROM.** Programs are copied to PSRAM before they run, so
+   unlike the voices and icons they needn't be readable in place. `xz -9` takes angel from
+   2.03 MB to 0.66 MB (`zstd -19`: 0.76 MB). After 1 and 2, maybe 1 MB more across the ROM.
+   Costs: a decompressor in the kernel (LZ4 would be fast and small; xz or zstd smaller files),
+   a per-file flag in the ROM format (`rom.md` §3), `read()` of such a file decompressing (or the
+   loader alone allowed to open them), and time at a program's first run after boot (cached
+   after, §14).
+
+Together, 1 and 2 take the five programs from 3.47 MB to about 1.8 MB (the ROM to about 4.3 MB),
+and shrink programs on the card the same way.

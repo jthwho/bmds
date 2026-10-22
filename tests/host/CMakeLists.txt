@@ -129,6 +129,8 @@ add_executable(bmds_host_tests
         topview.cpp
         hostname.cpp
         texttemplate.cpp
+        textdocument.cpp
+        syntaxscan.cpp
         images.cpp
         pixelrepeat.cpp
         imageview.cpp
@@ -297,6 +299,8 @@ if(Python3_Interpreter_FOUND)
                  ${BMDS_ROOT}/tests/scripts)
         add_test(NAME angel_api_lock COMMAND ${Python3_EXECUTABLE} ${BMDS_ROOT}/tests/scripts/apilock.py
                  $<TARGET_FILE:angel> ${BMDS_ROOT}/tests/scripts/api.lock)
+        add_test(NAME angel_serve COMMAND ${Python3_EXECUTABLE} ${BMDS_ROOT}/tests/scripts/serve.py
+                 $<TARGET_FILE:angel>)
 endif()
 
 # The corpus's expectations, checked against real bash (when there is one).
