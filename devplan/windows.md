@@ -717,6 +717,9 @@ internal RAM and asks for copies, or calls drawing system calls), damage reporte
 with `uint32_t size` (`docs/ABI.md`). Built-in programs (the terminal) use the same API as external
 ones once it exists.
 
+Designed in `guiprograms.md` (2026-10-22): the toolkit as a service, with windows resized, levels
+and an asked close; surfaces stay for games.
+
 ## 7. Open questions
 
 - ~~The first surface's name~~: surface 0 (the user, 2026-10-05).

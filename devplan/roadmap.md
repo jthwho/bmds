@@ -440,6 +440,12 @@ Plan: [`input.md`](input.md).
   `CodeEdit`, one application for plain text (nine languages coloured), the angel IDE, and later
   C and C++; `TerminalWidget` for its Output (`/bin/terminal` onto it later, step 4b). Then the
   debugger (§17) and its window's place remembered (`editor/window`, `WindowPlacement`, §18).
+- [ ] GUI programs (`guiprograms.md`, designed 2026-10-22, the user's request): the toolkit as a
+  service programs reach through a protocol in X11's spirit (a local connection or TCP through
+  SSH, so applications can run remotely), with windows, widgets, menus, dialogs and a `Canvas`;
+  windows resized, levels and an asked close for every application; angel's bindings to it (many
+  windows, one loop, callbacks) and to the rest of the system (settings, notifications,
+  processes, pads, audio, the clipboard). Next: step 1, the protocol's spine.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.
