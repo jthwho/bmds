@@ -359,6 +359,7 @@ namespace {
                 angel::registerFiles(engine);
                 angel::registerSystem(engine);
                 angel::registerGraphics(engine);
+                angel::registerSound(engine);
                 return engine;
         }
 
@@ -413,6 +414,7 @@ namespace {
                 ctx->Release();
                 // Windows stay up, the picture to be seen, until closed.
                 fflush(stdout);
+                angel::finishSound();
                 angel::waitForWindows();
                 return status;
         }

@@ -1,0 +1,18 @@
+play: 'H' isn't a PLAY command (at 1 in "H")
+play: O needs an octave 0 to 6 (at 1 in "O9")
+play: L needs a length 1 to 64 (at 1 in "L0")
+play: a note's length is 1 to 64 (at 1 in "C65")
+play: a pause's length is 1 to 64 (at 1 in "P0")
+play: M is followed by N, L, S, F or B (at 1 in "MX")
+play: N needs a note 0 (a rest) to 84 (at 1 in "N85")
+play: N needs a note 0 (a rest) to 84 (at 1 in "N")
+play: T needs a tempo 32 to 255 (at 1 in "T20")
+play: T needs a tempo 32 to 255 (at 1 in "T256")
+play: I needs an instrument 0 to 127 (General MIDI's) (at 1 in "I128")
+play: V needs a volume 0 to 127 (at 1 in "V200")
+play: '!' isn't a PLAY command (at 4 in "CDE!")
+Loading sounds (x.wav) needs BMDS
+Playing music (x.mid) needs BMDS
+A note is 0 to 127 (middle C is 60), not 128
+A note is 0 to 127 (middle C is 60), not -1
+An instrument is 0 to 127 (General MIDI's), not 128

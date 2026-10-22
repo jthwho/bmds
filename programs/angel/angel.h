@@ -95,6 +95,10 @@ namespace angel {
         void registerFiles(asIScriptEngine *engine);
         void registerSystem(asIScriptEngine *engine);
         void registerGraphics(asIScriptEngine *engine);
+        void registerSound(asIScriptEngine *engine);
+
+        // At the script's end: what play() put in the background is heard to its end.
+        void finishSound();
 
         // At the script's end: its open windows stay until the user closes them.
         void waitForWindows();

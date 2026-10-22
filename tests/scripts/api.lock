@@ -303,3 +303,24 @@ void Window::save(const string&in)
 void Window::stop()
 void Window::title(const string&in)
 void notify(const string&in, const string&in)
+# Step 5 (2026-10-21): sound.
+Sound@ Sound(const string&in)
+bool Sound::playing()
+class Sound
+float Sound::length() const
+void Sound::loop(float = 1, float = 0)
+void Sound::play(float = 1, float = 0)
+void Sound::stop()
+void beep()
+void musicVolume(float)
+void play(const string&in)
+void playMusic(const string&in, bool = false, float = 1)
+void say(const string&in)
+void stopMusic()
+void tone(float, uint, float = 0.5)
+# 2026-10-22: live notes, Event::repeat.
+Event::const bool repeat
+void allNotesOff()
+void instrument(int)
+void noteOff(int)
+void noteOn(int, int = 100)

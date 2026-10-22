@@ -1,6 +1,7 @@
 #!/rom/bin/angel
 // Snake: steer with the arrow keys, eat the apples, don't hit the walls or yourself.
 // A game in Window.run(): tick() moves the snake ten times a second, draw() draws each frame.
+// The sounds are play()'s notes, in the background ("MB") so the game goes on.
 
 const int CELL = 16;
 const int COLS = 40, ROWS = 28;
@@ -56,12 +57,14 @@ class Snake : Game {
                 int x = xs[0] + dx, y = ys[0] + dy;
                 if (x < 0 || y < 0 || x >= COLS || y >= ROWS || onSnake(x, y)) {
                         over = true;
+                        play("MB T100 I80 O2 L8 G E C");
                         return;
                 }
                 xs.insertAt(0, x);
                 ys.insertAt(0, y);
                 if (x == appleX && y == appleY) {
                         score++;
+                        play("MB T240 I80 O4 L32 C E G");
                         placeApple();
                 } else {
                         xs.removeLast();

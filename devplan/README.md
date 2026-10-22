@@ -33,7 +33,7 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`apps.md`](apps.md) — application folders (`apps/NAME.app`): found by looking, every one a command in a virtual `/apps`, their data in the home.
 - [`controls.md`](controls.md) — gamepads, and actions with keyboard and pad bindings for every application, changed in one standard editor.
 - [`controlpanel.md`](controlpanel.md) — Settings, the control panel: every sysconf setting in grouped pages, like the Mac's System Settings (planned).
-- [`scripting.md`](scripting.md) — AngelScript for children and amateurs: `angel` with the whole system as a frozen script API, and an IDE like QBasic's (steps 1-4 built).
+- [`scripting.md`](scripting.md) — AngelScript for children and amateurs: `angel` with the whole system as a frozen script API, and an IDE like QBasic's (steps 1-5 built).
 - [`games.md`](games.md) — surfaces for programs (windowed or full screen, Alt+Enter), the SDK's game library, Blocks, Doom, Solitaire.
 
 ## Plan Document Template

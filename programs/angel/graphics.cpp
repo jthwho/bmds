@@ -164,6 +164,7 @@ namespace angel {
                                 char key[16];
                                 char text[8];
                                 int  x, y, button, wheel;
+                                bool repeat;
                 };
 
                 // The script's Event: reference counted, its fields read-only properties.
@@ -172,11 +173,12 @@ namespace angel {
                                 String key;
                                 String text;
                                 int    x = 0, y = 0, button = 0, wheel = 0;
+                                bool   repeat = false;
                                 int    refs = 1;
 
                                 explicit Event(const RawEvent &e)
                                     : type(e.type), key(e.key), text(e.text), x(e.x), y(e.y), button(e.button),
-                                      wheel(e.wheel) {}
+                                      wheel(e.wheel), repeat(e.repeat) {}
                                 void addRef() { ++refs; }
                                 void release() {
                                         if (--refs == 0) delete this;
@@ -294,8 +296,11 @@ namespace angel {
                 Window *openWindows[8];
 
                 // A script that calls frame() is shown only by frame() (and when it waits for input),
-                // so an animation never shows a frame half drawn; one that hasn't for this long is
-                // shown as it draws, as QBasic's screen was.
+                // so an animation never shows a frame half drawn; what it draws and leaves unshown
+                // this long (it stopped calling frame()) is shown anyway. A script that never calls
+                // frame() is shown as it draws, as QBasic's screen was. The time runs from the first
+                // drawing not yet shown, not from the last frame(): a script that waited a while for
+                // a key and then redraws mustn't have its clear() shown before the rest.
                 constexpr int64_t FramePacedNs = 100000000LL;
 
                 // On BMDS a window is drawn straight into its surface's buffers: one is held to draw
@@ -384,6 +389,7 @@ namespace angel {
                                 bool          _wakePending = false;
                                 bool          _presentRequested = false;
                                 int64_t       _lastFrameNs = 0; // the script's last frame() (0: none yet)
+                                int64_t       _unshownNs = 0;   // the first drawing not yet shown (0: none)
                                 bool          _quit = false;
                                 bool          _noDma = false;
                                 int64_t       _closeDeadlineNs = 0;
@@ -507,6 +513,8 @@ namespace angel {
 
                 void Window::end() {
                         ++_generation;
+                        if (_unshownNs == 0 && _current >= 0 && _buffers[_current].damage_count != 0)
+                                _unshownNs = monotonicNs();
                         pthread_mutex_unlock(&_mutex);
                         wake();
                         return;
@@ -755,6 +763,7 @@ namespace angel {
                                                                 _keys[u >> 3] &= uint8_t(~(1u << (u & 7)));
                                                 }
                                                 e.type = down ? KeyDown : KeyUp;
+                                                e.repeat = (s.flags & BMDS_KEY_REPEAT) != 0;
                                                 nameOf(usage, e.key, sizeof(e.key));
                                                 if (down && s.data[2] >= 32 && s.data[2] != 127)
                                                         utf8(s.data[2], e.text);
@@ -815,6 +824,7 @@ namespace angel {
                         const uint32_t generation = _generation;
                         if (_current < 0 || _buffers[_current].damage_count == 0) {
                                 _shown = generation; // drawn nothing that shows
+                                _unshownNs = 0;
                                 pthread_cond_broadcast(&_changed);
                                 pthread_mutex_unlock(&_mutex);
                                 return;
@@ -844,6 +854,7 @@ namespace angel {
                                 _current = next;
                         }
                         _shown = generation;
+                        _unshownNs = 0;
                         pthread_cond_broadcast(&_changed);
                         pthread_mutex_unlock(&_mutex);
                         // Paced on the display: the next present after this one's frame has begun.
@@ -862,10 +873,10 @@ namespace angel {
                                 const int64_t deadline = w->_closeDeadlineNs;
                                 // Still no buffer to draw on: try again soon.
                                 int timeout = w->_current < 0 ? 10 : -1;
-                                // Drawn, but paced by frame(): shown by itself if frame() stops coming.
+                                // Drawn, but paced by frame(): shown by itself if it stays unshown.
                                 if (w->_current >= 0 && w->_buffers[w->_current].damage_count != 0 &&
-                                    w->_lastFrameNs != 0 && !w->_presentRequested) {
-                                        const int64_t left = w->_lastFrameNs + FramePacedNs - monotonicNs();
+                                    w->_lastFrameNs != 0 && w->_unshownNs != 0 && !w->_presentRequested) {
+                                        const int64_t left = w->_unshownNs + FramePacedNs - monotonicNs();
                                         timeout = left <= 0 ? 0 : int(left / 1000000) + 1;
                                 }
                                 pthread_mutex_unlock(&w->_mutex);
@@ -894,8 +905,8 @@ namespace angel {
                                                 pthread_cond_broadcast(&w->_changed);
                                         }
                                 }
-                                const bool paced =
-                                        w->_lastFrameNs != 0 && monotonicNs() - w->_lastFrameNs < FramePacedNs;
+                                const bool paced = w->_lastFrameNs != 0 &&
+                                                   (w->_unshownNs == 0 || monotonicNs() - w->_unshownNs < FramePacedNs);
                                 const bool show = w->_presentRequested || !paced;
                                 w->_presentRequested = false;
                                 pthread_mutex_unlock(&w->_mutex);
@@ -1512,6 +1523,8 @@ namespace angel {
                       "Event::button");
                 check(engine->RegisterObjectProperty("Event", "const int wheel", asOFFSET(Event, wheel)),
                       "Event::wheel");
+                check(engine->RegisterObjectProperty("Event", "const bool repeat", asOFFSET(Event, repeat)),
+                      "Event::repeat");
 
                 check(engine->RegisterObjectType("Image", 0, asOBJ_REF), "Image");
                 check(engine->RegisterObjectType("Window", 0, asOBJ_REF), "Window");

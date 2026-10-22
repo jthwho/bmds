@@ -421,7 +421,9 @@ Plan: [`input.md`](input.md).
   fills and catch-up by the 2D-DMA, shown at `frame()`: 59 frames/s for a full 640 × 480
   redraw), colours, keys, the mouse and `Event`, `Game` in `Window.run()`, `setting()` and
   `notify()`; ellipses, polygons and flood fill in `libbmdsgame`; bounce, paint and snake
-  examples. Next: sound (step 5).
+  examples. Step 5 done (§12): `Sound` effects, `playMusic`, `tone` and `beep`, QBasic's
+  `play()` language on the synth (timed MIDI events, `MB` in the background), `say()`; a piano
+  example, snake with sounds. Next: the network (step 6).
 - [ ] On-device text editor.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.

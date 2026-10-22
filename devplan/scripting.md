@@ -1,8 +1,8 @@
 # Scripting: AngelScript, a Runtime with the Whole System, and an IDE
 
-Status: **steps 1-4 built** (2026-10-21): C++ in the SDK; `angel` in the ROM with its core,
-the text screen, files and other programs, graphics and input; the patches; the corpus and the
-API lock. As built and measured: §10 and §11. Next: step 5, sound.
+Status: **steps 1-5 built** (2026-10-21): C++ in the SDK; `angel` in the ROM with its core,
+the text screen, files and other programs, graphics and input, sound; the patches; the corpus
+and the API lock. As built and measured: §10 to §12. Next: step 6, the network.
 
 ## 1. Goal
 
@@ -288,13 +288,25 @@ table, so they can't disagree.
   `text`, `x`, `y`, `button`, `wheel`. `w.closed()` says the user closed it; a script that never
   asks (nor reads events, nor runs a game) ends when its window is closed. Gamepads come later,
   through controls (`controls.md`), so a script names actions rather than buttons.
-- **Sound:**
-  - `Sound s("boom.wav"); s.play(volume, pan)` (voices, looping);
-  - `Music::play("song.mid")` (MIDI through the synth, or audio files);
-  - `beep()` and `tone(hz, ms)`;
-  - `play("T120 O4 L8 CDEFGAB>C")`: QBasic's `PLAY` language on the synth, with an
-    instrument chosen by General MIDI number;
+- **Sound** (built, step 5):
+  - `Sound s("boom.wav"); s.play(volume, pan)`, `s.loop()`, `s.stop()`, `s.playing()`,
+    `s.length()`: effects loaded whole (WAV, MP3, Ogg Vorbis, FLAC) and mixed by libbmdsgame;
+  - `playMusic(path, loop, volume)` (MIDI through the synth, or audio files), `stopMusic()`,
+    `musicVolume()`: global functions, not `Music::play` (the same as the rest of the API);
+  - `tone(hz, ms, volume)` (a square wave, as the PC speaker's; waits for it, as QBasic's
+    SOUND did) and `beep()` (800 Hz for a quarter second, as QBasic's BEEP);
+  - `play("T120 O3 L8 CDEFGAB>C")`: QBasic's `PLAY` language (notes A-G with `#`, `+`, `-`,
+    lengths and dots, `O`, `<`, `>`, `N`, `L`, `T`, `P`, `MN`, `ML`, `MS`, `MF`, `MB`; `R` for a
+    pause as well), plus `I` (a General MIDI instrument; the start: 80, the square lead, the PC
+    speaker's sound) and `V` (volume). Octave 3 starts at middle C, as in GW-BASIC; the settings
+    carry over from one `play()` to the next. The notes go to `/dev/midi` with their times
+    (the kernel sends them then), and `play()` waits until they have played, or with `MB`
+    returns at once, the next `play()` starting after them; the script's end waits for them;
   - `say("Hello")` (speech, `speech.md`). Children like a computer that talks back.
+  - live notes (the user's ask, 2026-10-22): `noteOn(note, volume)` and `noteOff(note)` (MIDI
+    numbers, middle C 60), `instrument(program)`, `allNotesOff()`, sent at once on a channel of
+    their own (2; `play()`'s music is on 1), so a keyboard's note sounds from its key down to
+    its key up; `Event.repeat` tells a held key's repeats from its press.
 - **Files** (built, step 3):
   - `File(path, mode)` ("r", "w", "a"): `readLine`, `readAll`, `eof`, `write` and `writeLine`
     (any value, as `print`), `close`, `isOpen`;
@@ -368,7 +380,8 @@ table, so they can't disagree.
 4. **Graphics and input** (done 2026-10-21): `Window`, `Image`, colours, `Event`, `Game` and
    `run()`; `setting()` and `notify()`; ellipses, polygons and flood fill in `libbmdsgame`.
    Examples: a bouncing ball, a paint program, a snake game.
-5. **Sound:** `Sound`, `Music`, `tone`, `beep`, `play` (the music language, on the synth), `say`.
+5. **Sound** (done 2026-10-21): `Sound`, `playMusic`, `tone`, `beep`, `play` (the music
+   language, on the synth), `say`. A piano example; snake's sounds.
 6. **Network:** `Socket`, `Http`. Examples: a chat between two boards, fetching a page.
 7. **`CodeEdit` and the IDE:**
    - the widget, which also closes Phase 8's "on-device text editor" with a plain editor
@@ -529,3 +542,31 @@ calls). New system calls, if a binding needs one, follow the usual rules.
   `setting("clock/zone")`; an exception in `tick()` reported with its call stack.
 - **The window stays when the script ends**, until it is closed (the picture is there to be
   seen); `exit()` closes it at once.
+
+## 12. As built (step 5, 2026-10-21)
+
+- **`sound.cpp`:** the PLAY parser is portable (the host corpus checks what it refuses,
+  `sound.as`); on BMDS the notes are written to `/dev/midi` as timed events
+  (`BMDS_MIDI_EVENTS`, a program change where the instrument changes) and the call sleeps
+  until the last has played. The kernel holds 512 events an fd, so a long string's writes wait
+  for room. A string is checked whole before any of it is sent: a bad one plays nothing.
+- **The mixer** (libbmdsgame's, a real-time client of `/dev/dsp`) opens at the first
+  `Sound`, `tone`, `beep` or `playMusic`. A tone is a square wave made for it (a quarter of full
+  scale at volume 1, its ends faded over 3 ms against clicks), played as a sound, and freed
+  once the mixer has finished with it.
+- **Timed on the board:** four quarter notes at T120 in 2.02 s; `MB` returned in 1 ms and the
+  next foreground `play()` ended 2.02 s after it began (five eighths and three); `tone(440,
+  500)` and `beep()` 0.80 s; a quack's length 0.24 s, playing during it and not after;
+  looping and stopping; a MIDI file as music with its volume changed; `say()` 1.5 s. Heard by
+  nobody yet (no one at the board): the user's ears are the test that remains.
+- **The user's report: the piano flickered** on every key and mouse move. A window paced by
+  `frame()` was shown anyway once 0.1 s had passed since the last `frame()`; the piano waits
+  longer than that for each event, so its next redraw's `clear()` was shown alone. The time now
+  runs from the first drawing not yet shown. The piano also takes the mouse (a click, or a drag
+  across the keys) and redraws only when what it shows changes.
+- **The user's ask: note on and note off, separately** (`play()` sends whole notes with their
+  lengths). Added `noteOn`, `noteOff`, `instrument`, `allNotesOff` and `Event.repeat` (a held
+  key's `KeyDown` events repeat; the piano starts a note only on the first). The piano holds a
+  note from key down to key up, plays chords, and the mouse holds one while its button is down.
+  Watched with `midi monitor midi0`: note on on channel 2 at the press, note off 301 ms later
+  at the release; `play()`'s notes on channel 1 beside them.

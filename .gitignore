@@ -16,6 +16,7 @@ __pycache__/
 .idea/
 *.swp
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Local commit message draft
 COMMIT_MSG
