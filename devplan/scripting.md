@@ -711,10 +711,45 @@ firmware but the menus' code.
 - **Checked on the host:**
   - Serpents' five levels, printed as text.
   - Rooftops' hits and its win, by searching for a hitting throw.
-- **Left:**
-  - **A trap in top-level statements.** A global object declared there *without* an initializer
-    (`Game g;`) is constructed when the script is built, before the statements run, so its
-    constructor can't use globals set by statements above it (`Window w(...)`, an `Image@`).
-    The examples construct their game in `w.run(Game())`, which is safe. The lessons never
-    declare such a global, but a reader may. Either initialize them where they stand too, as
-    those with an initializer are, or say so in an error. Unscheduled.
+- **Fixed after (2026-10-22, the user's request): the top-level trap.** A global object declared
+  among the statements without an initializer (`Game g;`) was constructed when the script was
+  built, before any statement ran, so its constructor couldn't use what the statements above it
+  made (`Window w(...)`, an `Image@`). Every non-const global declared there is now initialized
+  where it stands (the top-level patch's parser marks all of them, not only those with an
+  initializer). `tests/scripts/toplevelglobals.as` checks it.
+
+## 16. Games and the CPU (2026-10-22, the user's report: a game pegged a core)
+
+**Measured on the board** (`top -T`, % of one core: `angel`'s two threads, then the window
+manager):
+
+| Script | Before | After |
+|---|---|---|
+| Snake (ticks 10 a second) | 63 + 9 | 8 + 1.4 |
+| Serpents, title screen (`bool tick()`) | 54 + 7 | 0.5 + 0.2 |
+| Rooftops, waiting for a throw | 78 + 4 | 0.4 + 0.2 |
+| Rooftops, a bomb flying (the skyline by the DMA) | — | 25 |
+| Star Catcher, lesson 12 (60 frames a second of motion) | 43 + 7 | 33 + 7.5 |
+| Bounce (its own loop, `frame()` each time) | — | 13 + 5.5 |
+| Piano (draws only when a key changes) | — | 0 + 0.2 |
+
+| Change | Where | What it saved |
+|---|---|---|
+| `run()` draws only after a tick or an event, and sleeps until the next tick or event otherwise | `windowRun()`, `Window::waitForEvent()` | Snake drew 58 frames a second for 10 moves |
+| A `bool tick()` may say nothing changed (false): no draw | `windowRun()` | Serpents' title screen 54% to 0.5%; Rooftops while typing |
+| Fills under 16 KB by the CPU, not the 2D-DMA | `Window::fill()` | a DMA job costs ~150 µs (`docs/platforms/esp32p4.md`); a 14 × 14 square was one |
+| The presenter woken only by the first drawing not yet shown (paced by `frame()`), not by every call | `Window::end()` | the presenter thread's 11% |
+| Text written straight into the pixels, not as a fill per run of bits | `sdk/game/text.c` | "Score: 12" 621 µs to 37 µs |
+| A shape's rows merge into an emptied damage list | `sdk/game/shapes.c` | each row's merge with the frame's 16 rectangles |
+| Large opaque images copied by the 2D-DMA from a registered slot (4, least recently used; registered again after a change) | `Window::drawImageFast()` | a 640 × 480 `image()` was 30 ms of CPU |
+
+- **The rule for scripts:** `draw()` runs after `tick()` or `event()`, so movement belongs in
+  `tick()`. A game that animates in `draw()` by the clock alone (`millis()`) and has no
+  `tick()` still draws every tick of the default 60 a second.
+- **A full-window `clear()`** is a 2D-DMA fill of 0.9 MB: ~7 ms of the DMA's time a frame, and
+  ~0.9 ms of the CPU's (the job). A game at 60 frames a second that clears each frame pays it.
+- **Images registered for the DMA** must be `bmds_mem_alloc()`'s: `Image(width, height)` is
+  allocated so on BMDS. A see-through image (`transparent()`) stays the CPU's: the 2D-DMA has
+  no key.
+- **Found on the way:** the ROM's `angel` didn't relink when `sdk/game` changed (the dist
+  sources' list lacked it, and its Makefile didn't depend on the SDK's libraries). Both fixed.

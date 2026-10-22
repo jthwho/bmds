@@ -2815,14 +2815,14 @@ bool asCParser::LooksLikeFuncDecl()
 	return looks;
 }
 
-// BMDS: a global variable declared among top-level statements with an initializer is
-// initialized at its place among them: a marker for each one, by its name's position.
+// BMDS: a global variable declared among top-level statements is initialized at its place
+// among them, with an initializer or without (an object's default constructor runs there
+// too, after the statements above it): a marker for each one, by its name's position.
 void asCParser::MarkTopLevelInits(asCScriptNode *decl)
 {
 	for( asCScriptNode *n = decl->firstChild ? decl->firstChild->next : 0; n; n = n->next )
 	{
-		if( n->nodeType != snIdentifier || n->next == 0 ||
-			(n->next->nodeType != snAssignment && n->next->nodeType != snArgList && n->next->nodeType != snInitList) )
+		if( n->nodeType != snIdentifier )
 			continue;
 
 		asCScriptNode *init = CreateNode(snGlobalInit);

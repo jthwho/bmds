@@ -4,7 +4,8 @@
 // Games are made of the same parts: things that move each moment (tick), a picture of how
 // things are (draw), and the player's keys and clicks (event). A class that is a Game has those
 // three methods, and w.run() calls them at the right times: tick() so many times a second,
-// draw() for each frame, event() for each key or click.
+// event() for each key or click, and draw() after them, when the picture may have changed.
+// (Between ticks the computer rests: nothing moves, so there's nothing new to draw.)
 //
 // Catch the falling stars with the basket (the arrow keys or the mouse). Miss three and the game
 // is over; Space plays again.

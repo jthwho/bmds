@@ -8,8 +8,11 @@ FLAGS := -O2 $(DEFINES) -I$(AS)/include
 
 vpath %.cpp $(AS)/source $(AS)/add_on/scriptarray
 
-angel: $(OBJECTS)
-	$(CXX) -o $@ $^
+# The SDK's libraries it links (libbmdsgame's drawing, libbmds): relinked when they change.
+SDK_LIBS := $(wildcard $(dir $(CXX))bmds-libc/lib/*.a)
+
+angel: $(OBJECTS) $(SDK_LIBS)
+	$(CXX) -o $@ $(OBJECTS)
 
 as_%.o: %.cpp
 	$(CXX) $(FLAGS) -w -c $< -o $@

@@ -176,8 +176,10 @@ class Serpents : Game {
         // Moves every eighth tick at level 1, faster each level (to every third).
         int stepTicks() const { return max(3, 9 - level); }
 
-        void tick() {
-                if (state != "playing" || ++ticks % stepTicks() != 0) return;
+        // Sixty times a second, but the serpents move only every few: false when nothing moved,
+        // so the picture isn't drawn again for nothing.
+        bool tick() {
+                if (state != "playing" || ++ticks % stepTicks() != 0) return false;
                 for (uint i = 0; i < players.length(); i++) players[i].turn();
                 // Where each head goes, then who hit what.
                 bool crashed = false;
@@ -207,7 +209,7 @@ class Serpents : Game {
                         } else {
                                 newRound("Ouch");
                         }
-                        return;
+                        return true;
                 }
                 for (uint i = 0; i < players.length(); i++) {
                         Serpent@ s = players[i];
@@ -222,11 +224,12 @@ class Serpents : Game {
                                         level++;
                                         play("MB T180 L16 O4 C E G O5 C");
                                         newLevel();
-                                        return;
+                                        return true;
                                 }
                                 placeFood();
                         }
                 }
+                return true;
         }
 
         void event(Event@ e) {

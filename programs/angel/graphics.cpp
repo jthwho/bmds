@@ -53,6 +53,8 @@ namespace angel {
 
                 // ---- Pictures: what Window and Image share
 
+                class Image;
+
                 class Picture {
                         public:
                                 virtual ~Picture() = default;
@@ -74,6 +76,14 @@ namespace angel {
                                         bmds_canvas_fill(c, r.x, r.y, int32_t(r.width), int32_t(r.height), pixel);
                                 }
                                 virtual void setClip(const bmds_rect_t *r) { bmds_canvas_set_clip(&canvas, r); }
+                                // Draws @p image at @p x, @p y by other means than the CPU (a window's
+                                // 2D-DMA). @return False if it can't: the caller copies it.
+                                virtual bool drawImageFast(Image &image, int x, int y) {
+                                        (void)image;
+                                        (void)x;
+                                        (void)y;
+                                        return false;
+                                }
                                 // A window the user closed ends a script that doesn't watch for it.
                                 virtual void checkClose() {}
 
@@ -105,13 +115,26 @@ namespace angel {
                                 ~Image() override {
 #ifdef ANGEL_BMDS
                                         if (_loaded.pixels != nullptr) bmds_game_image_free(&_loaded);
-#endif
+                                        bmds_mem_free(_own);
+#else
                                         free(_own);
+#endif
                                 }
 
-                                // A blank one (black), or nullptr (out of memory).
+                                // Drawn on: a copy the 2D-DMA was given is out of date.
+                                void end() override { ++generation; }
+
+                                // A blank one (black), or nullptr (out of memory). On BMDS from
+                                // bmds_mem_alloc(), so a window's 2D-DMA may copy from it.
                                 static Image *make(int width, int height) {
-                                        uint8_t *pixels = static_cast<uint8_t *>(calloc(size_t(width) * height, Bpp));
+                                        const size_t bytes = size_t(width) * height * Bpp;
+#ifdef ANGEL_BMDS
+                                        uint8_t *pixels = static_cast<uint8_t *>(
+                                                bmds_mem_alloc(uint32_t(bytes), BMDS_MEM_ALIGN, 0));
+                                        if (pixels != nullptr) memset(pixels, 0, bytes);
+#else
+                                        uint8_t *pixels = static_cast<uint8_t *>(calloc(bytes, 1));
+#endif
                                         if (pixels == nullptr) return nullptr;
                                         Image *i = new Image();
                                         i->_own = pixels;
@@ -138,6 +161,8 @@ namespace angel {
                                         return i;
                                 }
 #endif
+
+                                uint32_t generation = 0; // counts its changes
 
                         private:
                                 Image() = default;
@@ -309,6 +334,10 @@ namespace angel {
                 // paints whole (clear() brings nothing over). On the host a window is a picture.
                 constexpr uint32_t Buffers = 3;
 
+                // A 2D-DMA job costs ~150 µs whatever its size (docs/platforms/esp32p4.md): a fill
+                // smaller than this many bytes is the CPU's (a 74 x 74 square, at 3 bytes a pixel).
+                constexpr uint64_t DmaFillBytes = 16 * 1024;
+
                 class Window : public Picture {
                         public:
                                 ~Window() override;
@@ -353,6 +382,9 @@ namespace angel {
                                 bool isClosed() const { return _closed; }
                                 // At the script's end: shown until the user closes it.
                                 void waitUntilClosed();
+                                // Waits until an event is waiting, the window closes, or the monotonic
+                                // clock reaches @p deadlineNs (run()'s next tick), whichever is first.
+                                void waitForEvent(int64_t deadlineNs);
 
                                 bool running = false;
 
@@ -367,6 +399,8 @@ namespace angel {
                                 void         push(const RawEvent &e);
                                 void         catchUp(const bmds_rect_t *covered);
                                 bool dma(uint32_t source, uint32_t from, const bmds_rect_t *rects, uint32_t count);
+                                bool         drawImageFast(Image &image, int x, int y) override;
+                                int          registeredSlot(Image &image); // its slot for the 2D-DMA, or -1
 #else
                                 uint8_t *_picture = nullptr;
 #endif
@@ -392,6 +426,17 @@ namespace angel {
                                 int64_t       _unshownNs = 0;   // the first drawing not yet shown (0: none)
                                 bool          _quit = false;
                                 bool          _noDma = false;
+                                // Images registered for the 2D-DMA to copy from: each held, with its
+                                // generation as registered and when it was last drawn (to replace the
+                                // least recently used).
+                                struct DmaImage {
+                                                Image   *image = nullptr;
+                                                uint32_t generation = 0;
+                                                uint32_t used = 0;
+                                };
+                                DmaImage      _dmaImages[BMDS_SURFACE_IMAGES];
+                                uint32_t      _dmaClock = 0;
+                                bool          _noImageDma = false;
                                 int64_t       _closeDeadlineNs = 0;
                                 pthread_t     _thread{};
                                 bool          _threadStarted = false;
@@ -412,6 +457,8 @@ namespace angel {
                                 pthread_join(_thread, nullptr);
                         }
                         if (_fd >= 0) close(_fd);
+                        for (DmaImage &d : _dmaImages)
+                                if (d.image != nullptr) d.image->release();
                         if (_wakeRead >= 0) close(_wakeRead);
                         if (_wakeWrite >= 0) close(_wakeWrite);
 #else
@@ -513,10 +560,18 @@ namespace angel {
 
                 void Window::end() {
                         ++_generation;
-                        if (_unshownNs == 0 && _current >= 0 && _buffers[_current].damage_count != 0)
+                        // The presenter is woken to show it at once (a script that doesn't call
+                        // frame()), or, paced by frame(), only by the first drawing not yet shown, to
+                        // start its clock for showing it anyway: not by every call (a game's frame is
+                        // dozens of them).
+                        bool first = false;
+                        if (_unshownNs == 0 && _current >= 0 && _buffers[_current].damage_count != 0) {
                                 _unshownNs = monotonicNs();
+                                first = true;
+                        }
+                        const bool paced = _lastFrameNs != 0;
                         pthread_mutex_unlock(&_mutex);
-                        wake();
+                        if (!paced || first) wake();
                         return;
                 }
 
@@ -571,12 +626,88 @@ namespace angel {
                         const int64_t x1 = rx1 < cx1 ? rx1 : cx1, y1 = ry1 < cy1 ? ry1 : cy1;
                         if (x1 <= x0 || y1 <= y0) return;
                         const bmds_rect_t piece = {int32_t(x0), int32_t(y0), uint32_t(x1 - x0), uint32_t(y1 - y0)};
-                        if (dma(BMDS_BLIT_FILL, pixel, &piece, 1))
+                        if (uint64_t(piece.width) * piece.height * Bpp >= DmaFillBytes &&
+                            dma(BMDS_BLIT_FILL, pixel, &piece, 1))
                                 bmds_canvas_damage(c, &piece);
                         else
                                 bmds_canvas_fill(c, piece.x, piece.y, int32_t(piece.width), int32_t(piece.height),
                                                  pixel);
                         return;
+                }
+
+                // A large opaque image by the 2D-DMA: registered with the surface (its cache written
+                // back once, again only after it changes), then copied in one job. A full-window
+                // image by the CPU was ~30 ms (PSRAM to PSRAM); small ones and see-through ones stay
+                // the CPU's (the 2D-DMA has no key).
+                bool Window::drawImageFast(Image &image, int x, int y) {
+                        const bmds_canvas_t &from = image.canvas;
+                        if (_noDma || _noImageDma || image.keyed ||
+                            uint64_t(from.width) * from.height * Bpp < DmaFillBytes)
+                                return false;
+                        pthread_mutex_lock(&_mutex);
+                        const bmds_rect_t clip = canvas.clip;
+                        pthread_mutex_unlock(&_mutex);
+                        const int64_t x0 = x > clip.x ? x : clip.x, y0 = y > clip.y ? y : clip.y;
+                        const int64_t ix1 = int64_t(x) + from.width, iy1 = int64_t(y) + from.height;
+                        const int64_t cx1 = int64_t(clip.x) + clip.width, cy1 = int64_t(clip.y) + clip.height;
+                        const int64_t x1 = ix1 < cx1 ? ix1 : cx1, y1 = iy1 < cy1 ? iy1 : cy1;
+                        if (x1 <= x0 || y1 <= y0) return true; // nothing of it shows
+                        const int slot = registeredSlot(image);
+                        if (slot < 0) return false;
+                        const bmds_rect_t    r = {int32_t(x0), int32_t(y0), uint32_t(x1 - x0), uint32_t(y1 - y0)};
+                        bmds_canvas_t       *c = begin(&r);
+                        bmds_surface_piece_t piece = {r.x, r.y, r.width, r.height, int32_t(x0 - x), int32_t(y0 - y)};
+                        const bmds_surface_blit_t blit = {
+                                sizeof(blit), uint32_t(_current), BMDS_BLIT_IMAGE, uint32_t(slot), 1, &piece};
+                        const bool done =
+                                bmds_surface_control(_fd, BMDS_SURFACE_BLIT, const_cast<bmds_surface_blit_t *>(&blit),
+                                                     sizeof(blit)) == 0;
+                        if (done) {
+                                bmds_canvas_damage(c, &r);
+                        } else {
+                                _noImageDma = true;
+                                const bmds_game_image_t img = image.image();
+                                bmds_canvas_blit(c, x, y, &img, nullptr);
+                        }
+                        end();
+                        return true;
+                }
+
+                int Window::registeredSlot(Image &image) {
+                        int slot = -1;
+                        for (uint32_t i = 0; i < BMDS_SURFACE_IMAGES; ++i)
+                                if (_dmaImages[i].image == &image) slot = int(i);
+                        if (slot < 0) {
+                                // A free slot, else the least recently used.
+                                slot = 0;
+                                for (uint32_t i = 0; i < BMDS_SURFACE_IMAGES; ++i) {
+                                        if (_dmaImages[i].image == nullptr) {
+                                                slot = int(i);
+                                                break;
+                                        }
+                                        if (_dmaImages[i].used < _dmaImages[slot].used) slot = int(i);
+                                }
+                                DmaImage &d = _dmaImages[slot];
+                                if (d.image != nullptr) d.image->release();
+                                image.addRef();
+                                d.image = &image;
+                                d.generation = image.generation - 1; // registered below
+                        }
+                        DmaImage &d = _dmaImages[slot];
+                        d.used = ++_dmaClock;
+                        if (d.generation != image.generation) {
+                                const bmds_canvas_t       &from = image.canvas;
+                                const bmds_surface_image_t im = {
+                                        sizeof(im),           uint32_t(slot),        from.pixels,
+                                        uint32_t(from.width), uint32_t(from.height), uint32_t(from.stride)};
+                                if (bmds_surface_control(_fd, BMDS_SURFACE_IMAGE,
+                                                         const_cast<bmds_surface_image_t *>(&im), sizeof(im)) != 0) {
+                                        _noImageDma = true; // the kernel won't: the CPU from now on
+                                        return -1;
+                                }
+                                d.generation = image.generation;
+                        }
+                        return slot;
                 }
 
                 void Window::setClip(const bmds_rect_t *r) {
@@ -713,6 +844,34 @@ namespace angel {
                         uint32_t a, b;
                         if (!usagesOf(name, a, b)) return false;
                         return (_keys[a >> 3] & (1u << (a & 7))) != 0 || (_keys[b >> 3] & (1u << (b & 7))) != 0;
+                }
+
+                void Window::waitForEvent(int64_t deadlineNs) {
+#ifdef ANGEL_BMDS
+                        pthread_mutex_lock(&_mutex);
+                        // Waits of a tenth of a second at most, on the wall clock (the condition's):
+                        // a change of the time can't make one much longer.
+                        while (_count == 0 && !_closed) {
+                                const int64_t left = deadlineNs - monotonicNs();
+                                if (left <= 0) break;
+                                const int64_t   wait = left < 100000000LL ? left : 100000000LL;
+                                struct timespec until;
+                                clock_gettime(CLOCK_REALTIME, &until);
+                                const int64_t ns = int64_t(until.tv_nsec) + wait;
+                                until.tv_sec += time_t(ns / 1000000000LL);
+                                until.tv_nsec = long(ns % 1000000000LL);
+                                pthread_cond_timedwait(&_changed, &_mutex, &until);
+                        }
+                        pthread_mutex_unlock(&_mutex);
+#else
+                        // No events on the host: the time only.
+                        const int64_t left = deadlineNs - monotonicNs();
+                        if (left > 0) {
+                                struct timespec t = {time_t(left / 1000000000), long(left % 1000000000)};
+                                nanosleep(&t, nullptr);
+                        }
+#endif
+                        return;
                 }
 
                 void Window::waitUntilClosed() {
@@ -1088,6 +1247,7 @@ namespace angel {
                                         if (_i != nullptr) _i->release();
                                 }
                                 Image   *operator->() const { return _i; }
+                                Image   &operator*() const { return *_i; }
                                 explicit operator bool() const { return _i != nullptr; }
 
                         private:
@@ -1096,6 +1256,9 @@ namespace angel {
                 void drawImage(asIScriptGeneric *gen) {
                         ImageArg i(gen, 0);
                         if (!i) return;
+                        Picture *p = picture(gen);
+                        p->checkClose();
+                        if (p->drawImageFast(*i, argInt(gen, 1), argInt(gen, 2))) return;
                         const bmds_game_image_t img = i->image();
                         Drawing                 d(gen);
                         bmds_canvas_blit(d.canvas(), argInt(gen, 1), argInt(gen, 2), &img, nullptr);
@@ -1214,6 +1377,8 @@ namespace angel {
                 void imageOpaque(asIScriptGeneric *gen) {
                         picture(gen)->keyed = false;
                 }
+                // (Neither changes the pixels: a copy registered for the 2D-DMA stays good, and a
+                // keyed image is never copied by it.)
 
                 // ---- Window's own
 
@@ -1293,10 +1458,11 @@ namespace angel {
                 }
 
                 // Calls @p f of @p object (with @p arg, an Event, if not null) nested in the running
-                // script; an exception there is reported, and the script ends.
-                void callNested(asIScriptObject *object, asIScriptFunction *f, Event *arg) {
+                // script; an exception there is reported, and the script ends. @return What a bool
+                // function returned; true for any other.
+                bool callNested(asIScriptObject *object, asIScriptFunction *f, Event *arg) {
                         asIScriptContext *ctx = asGetActiveContext();
-                        if (ctx == nullptr || ctx->PushState() < 0) return;
+                        if (ctx == nullptr || ctx->PushState() < 0) return true;
                         int r = ctx->Prepare(f);
                         if (r >= 0) r = ctx->SetObject(object);
                         if (r >= 0 && arg != nullptr) r = ctx->SetArgObject(0, arg);
@@ -1307,10 +1473,12 @@ namespace angel {
                                 restoreTerminal();
                                 exit(1);
                         }
+                        const bool result = r != asEXECUTION_FINISHED || f->GetReturnTypeId() != asTYPEID_BOOL ||
+                                            ctx->GetReturnByte() != 0;
                         const asEContextState state = ctx->GetState();
                         ctx->PopState();
                         if (state == asEXECUTION_ABORTED) ctx->Abort();
-                        return;
+                        return result;
                 }
 
                 void windowRun(asIScriptGeneric *gen) {
@@ -1323,7 +1491,9 @@ namespace angel {
                         uint32_t hz = gen->GetArgDWord(1);
                         if (hz == 0 || hz > 1000) hz = 60;
                         asITypeInfo       *type = game->GetObjectType();
+                        // tick() may say whether the picture changed (bool): false, and draw() waits.
                         asIScriptFunction *tick = type->GetMethodByDecl("void tick()");
+                        if (tick == nullptr) tick = type->GetMethodByDecl("bool tick()");
                         asIScriptFunction *draw = type->GetMethodByDecl("void draw()");
                         asIScriptFunction *event = type->GetMethodByDecl("void event(Event@)");
                         // Closing the window ends run(); after it, as the script had it before.
@@ -1332,9 +1502,15 @@ namespace angel {
                         w->running = true;
                         const int64_t period = 1000000000LL / hz;
                         int64_t       due = monotonicNs();
+                        // Drawn only when the picture may have changed: after a tick or an event (and
+                        // at the start). Otherwise it sleeps until the next tick or event, rather than
+                        // drawing the same picture at the display's rate: a game ticking ten times a
+                        // second draws ten times a second.
+                        bool changed = true;
                         while (w->running && !w->isClosed()) {
                                 RawEvent e;
                                 while (w->running && w->next(e, false, false)) {
+                                        changed = true;
                                         if (event == nullptr) continue;
                                         Event *object = new Event(e);
                                         callNested(game, event, object);
@@ -1343,21 +1519,20 @@ namespace angel {
                                 const int64_t now = monotonicNs();
                                 int           ran = 0;
                                 while (w->running && now >= due && ran < MaxCatchUp) {
-                                        if (tick != nullptr) callNested(game, tick, nullptr);
+                                        if (tick == nullptr || callNested(game, tick, nullptr)) changed = true;
                                         due += period;
                                         ++ran;
                                 }
                                 if (now >= due) due = now + period; // too far behind: the rest dropped
-                                if (draw != nullptr && w->running) callNested(game, draw, nullptr);
-#ifndef ANGEL_BMDS
-                                // The host has no display to pace on: a tick's time.
-                                const int64_t left = due - monotonicNs();
-                                if (left > 0) {
-                                        struct timespec t = {time_t(left / 1000000000), long(left % 1000000000)};
-                                        nanosleep(&t, nullptr);
+                                if (!w->running) break;
+                                if (!changed) {
+                                        w->waitForEvent(due);
+                                        w->checkClose();
+                                        continue;
                                 }
-#endif
-                                w->frame();
+                                if (draw != nullptr) callNested(game, draw, nullptr);
+                                changed = false;
+                                w->frame(); // shown, and paced on the display
                         }
                         w->running = false;
                         if (!watched && !w->isClosed()) w->setCloseWatched(false);
@@ -1574,8 +1749,9 @@ namespace angel {
                        "Shows or hides the mouse pointer over the window.");
                 method(engine, "Window", "void run(Game@ game, uint ticksPerSecond = 60)", windowRun,
                        "Runs a game until the window closes or stop(): its event(Event@) for each event, tick() so "
-                       "many times a "
-                       "second, draw() each frame (each only if it has one).");
+                       "many times a second, and draw() after them (each only if it has one): the picture is drawn "
+                       "again only when a tick or an event may have changed it. A tick() declared bool returns "
+                       "false when nothing changed.");
                 method(engine, "Window", "void stop()", windowStop, "Ends run().");
                 return;
         }

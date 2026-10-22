@@ -17,7 +17,8 @@ Andreas Jonsson's scripting library, the language of `angel` (`programs/angel`,
   2. `bmds-top-level-statements.diff`: the define `AS_TOP_LEVEL_STATEMENTS`. The first section
      of a module may have statements outside functions; they are compiled, in order, into the
      global function `$top` (`AS_TOP_LEVEL_FUNCTION`), and a non-const global declared among
-     them with an initializer is initialized where it stands, when `$top` reaches it.
+     them is initialized where it stands, when `$top` reaches it: with an initializer or
+     without (an object's default constructor runs there, after the statements above it).
   3. `bmds-scriptarray.diff`: the add-on without the STL (strings with `snprintf`, a heapsort
      in place of `std::sort` and the quadratic sorts).
   4. `bmds-foreach-items.diff`: a fix. `foreach`'s item variables get a scope of their own

@@ -5,11 +5,13 @@
 // first to three hits wins.
 
 const int WIDTH = 640, HEIGHT = 480;
-const uint SKY = rgb(255, 0, 255); // the city's see-through colour: where there's no building
+const uint SKY = rgb(30, 30, 110); // the city's sky: where there's no building
 const float GRAVITY = 0.2;
 Window w("Rooftops", WIDTH, HEIGHT);
 
-// The city: an image, so a bomb can knock holes in it and the flight can ask what's there.
+// The city, sky and all: an image, so a bomb can knock holes in it and the flight can ask what's
+// there. Without a see-through colour it's copied to the window whole, by the computer's DMA
+// rather than its processor.
 Image@ city = Image(WIDTH, HEIGHT);
 
 class Thrower {
@@ -45,7 +47,6 @@ class Rooftops : Game {
         // A new skyline, the throwers on the second building from each side, a new wind.
         void newCity() {
                 city.clear(SKY);
-                city.transparent(SKY);
                 roofs.resize(WIDTH);
                 int x = 0;
                 int first = 0, last = 0;
@@ -82,9 +83,11 @@ class Rooftops : Game {
                 play("MB T200 L32 O3 C");
         }
 
-        void tick() {
+        // False when nothing moved (waiting for the angle and speed): the picture stays as it is.
+        bool tick() {
+                bool moved = explodeTime > 0;
                 if (explodeTime > 0) explodeTime--;
-                if (!flying) return;
+                if (!flying) return moved;
                 // A few small steps a tick, so a fast bomb can't jump over a thin wall.
                 for (int step = 0; step < 4 && flying; step++) {
                         vy += GRAVITY / 4;
@@ -95,7 +98,7 @@ class Rooftops : Game {
                                 flying = false;
                                 message = "Missed!";
                                 nextTurn();
-                                return;
+                                return true;
                         }
                         for (uint i = 0; i < players.length(); i++) {
                                 if (!players[i].hitBy(bx, by)) continue;
@@ -112,7 +115,7 @@ class Rooftops : Game {
                                         newCity();
                                         turn = 1 - scorer; // the one hit throws first
                                 }
-                                return;
+                                return true;
                         }
                         if (by >= 0 && city.pixel(int(bx), int(by)) != SKY) {
                                 flying = false;
@@ -120,9 +123,10 @@ class Rooftops : Game {
                                 play("MB T200 L32 O2 C");
                                 message = "";
                                 nextTurn();
-                                return;
+                                return true;
                         }
                 }
+                return true;
         }
 
         void explode(int x, int y, int radius) {
@@ -168,9 +172,8 @@ class Rooftops : Game {
         }
 
         void draw() {
-                w.clear(rgb(30, 30, 110));
-                w.fillCircle(WIDTH / 2, 50, 24, Color::Yellow); // the sun
                 w.image(city, 0, 0);
+                w.fillCircle(WIDTH / 2, 50, 24, Color::Yellow); // the sun, above any building
                 for (uint i = 0; i < players.length(); i++) players[i].draw(!flying && int(i) == turn && !over);
                 if (flying) w.fillCircle(int(bx), int(by), 4, Color::White);
                 if (explodeTime > 0) w.fillCircle(explodeX, explodeY, 40 - explodeTime, mix(Color::Yellow, Color::Red, explodeTime / 20.0));

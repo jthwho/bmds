@@ -88,7 +88,7 @@ def debug_checks(angel, scratch):
     send("vars\tg\t")
     check("debug: the globals", answer(events) == [["var", "total", "int", "0", "0"],
                                                    ["var", "b", "Ball", '{x: 1.5, hits: […], name: "a\\tb"}', "3"],
-                                                   ["var", "a", "int[]", "[]", "0"]])
+                                                   ["var", "a", "int[]", "(not set yet)", "0"]])  # line 12: not reached
     send("vars\tg\tb")
     check("debug: an object's members", answer(events) == [["var", "x", "float", "1.5", "0"],
                                                            ["var", "hits", "int[]", "[1, 2, 3]", "3"],

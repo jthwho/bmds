@@ -1,6 +1,6 @@
 #!/rom/bin/angel
 // Snake: steer with the arrow keys, eat the apples, don't hit the walls or yourself.
-// A game in Window.run(): tick() moves the snake ten times a second, draw() draws each frame.
+// A game in Window.run(): tick() moves the snake ten times a second, and draw() shows each move.
 // The sounds are play()'s notes, in the background ("MB") so the game goes on.
 
 const int CELL = 16;

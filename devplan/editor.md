@@ -544,8 +544,9 @@ aren't userspace ABI (built-in applications only), as the rest of `bmds_gui`.
 - **Behaviour of the line cues:**
   - Stepping out of a function stops at the caller's next cue. In a `for` loop, that can be the
     increment rather than the rest of the calling line.
-  - F11 at the start stops at the first statement with a cue. Global objects are already
-    initialized by then.
+  - F11 at the start stops at the first statement with a cue. Since the top-level fix
+    (`scripting.md` §15), a global declared among the statements is initialized where it
+    stands, so F10 steps over each one.
 - **Left:**
   - Showing a value when the pointer is over its name.
   - Conditional breakpoints and hit counts.

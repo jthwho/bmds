@@ -112,6 +112,7 @@ elseif(NOT BOOTLOADER_BUILD)
              ${BMDS_ROOT_DIR}/thirdparty/angelscript/source/* ${BMDS_ROOT_DIR}/thirdparty/angelscript/include/*
              ${BMDS_ROOT_DIR}/thirdparty/angelscript/add_on/*
              ${BMDS_ROOT_DIR}/sdk/crt/* ${BMDS_ROOT_DIR}/sdk/include/* ${BMDS_ROOT_DIR}/sdk/cmake/*
+             ${BMDS_ROOT_DIR}/sdk/game/*
              ${BMDS_ROOT_DIR}/sdk/ld/*)
         add_custom_command(OUTPUT ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
                                   ${BMDS_ROM_SSHFS}/bin/sshfs ${BMDS_ROM_COPYID}/bin/ssh-copy-id

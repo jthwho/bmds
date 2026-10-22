@@ -21,9 +21,13 @@ typedef struct {
                 uint32_t    count;
 } saved_damage_t;
 
-static void save_damage(const bmds_canvas_t *c, saved_damage_t *s) {
+/* The damage set aside, and the list emptied: each run's fill then merges into a list of a few
+   rectangles, not into all the frame's so far (a full list made a small circle's rows cost ~2 us
+   each). */
+static void save_damage(bmds_canvas_t *c, saved_damage_t *s) {
         memcpy(s->damage, c->damage, sizeof(s->damage));
         s->count = c->damage_count;
+        c->damage_count = 0;
         return;
 }
 

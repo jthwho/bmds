@@ -498,6 +498,34 @@ TEST_CASE("Game text: glyphs, widths, Latin-1, others as ?") {
         CHECK(t.damage() == "0,0 12x32;");
 }
 
+TEST_CASE("Game text: drawn straight into the pixels, as runs of fills drew it, clipped, in each format") {
+        // The reference: the glyphs' set bits as fills, as text was drawn before.
+        const auto reference = [](bmds_canvas_t *c, int32_t x, int32_t y, const char *text, uint32_t pixel,
+                                  int32_t scale) {
+                for (int32_t cx = x; *text != 0; ++text, cx += 8 * scale) {
+                        const unsigned char *g = bmds_game_font16[*text - 0x20];
+                        for (int32_t row = 0; row < 16; ++row)
+                                for (int32_t col = 0; col < 8; ++col)
+                                        if ((g[row] & (0x80 >> col)) != 0)
+                                                bmds_canvas_fill(c, cx + col * scale, y + row * scale, scale, scale,
+                                                                 pixel);
+                }
+        };
+        const uint32_t formats[] = {BMDS_PIXEL_L8, BMDS_PIXEL_RGB565, BMDS_PIXEL_BGR24};
+        const int32_t  places[][2] = {{0, 0}, {-5, 3}, {30, -9}, {50, 20}, {-200, 0}, {3, 50}};
+        for (uint32_t format : formats)
+                for (int32_t scale = 1; scale <= 3; ++scale)
+                        for (const auto &at : places) {
+                                Picture           got(64, 48, format), want(64, 48, format);
+                                const bmds_rect_t clip = {2, 1, 55, 40};
+                                bmds_canvas_set_clip(&got.canvas, &clip);
+                                bmds_canvas_set_clip(&want.canvas, &clip);
+                                bmds_canvas_text(&got.canvas, at[0], at[1], "Hi, 9!", 0x123456, scale);
+                                reference(&want.canvas, at[0], at[1], "Hi, 9!", 0x123456, scale);
+                                CHECK(got.pixels == want.pixels);
+                        }
+}
+
 TEST_CASE("Game images: BGRA32 converted in place, alpha and a colour as the key") {
         // B, G, R, A: red, half-transparent green, magenta (opaque), clear blue.
         const uint8_t         source[] = {0, 0, 255, 255, 0, 255, 0, 127, 255, 0, 255, 255, 255, 0, 0, 0};

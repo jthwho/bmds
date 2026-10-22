@@ -210,9 +210,9 @@
 // AS_TOP_LEVEL_STATEMENTS (BMDS)
 // The first script section of a module may have statements outside functions. They are
 // compiled, in order, into a global function named AS_TOP_LEVEL_FUNCTION ("$top"), which
-// the application calls. A non-const global variable declared with an initializer in
-// that section is then initialized where it stands, when $top reaches it, not by the
-// module's initialization. A section with no statements is compiled as before.
+// the application calls. A non-const global variable declared in that section, with an
+// initializer or without, is then initialized where it stands, when $top reaches it, not
+// by the module's initialization. A section with no statements is compiled as before.
 
 // AS_X86
 // Use assembler code for the x86 CPU family
