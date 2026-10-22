@@ -1,0 +1,60 @@
+// -*- C++ -*-
+/**
+ * @file      cmath
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * <cmath> for BMDS programs (sdk/README.md, "C++"): musl's <math.h>, its names in std.
+ */
+
+#ifndef BMDS_CXX_CMATH
+#define BMDS_CXX_CMATH
+
+#include <math.h>
+
+namespace std {
+
+        using ::acos;
+        using ::acosf;
+        using ::asin;
+        using ::asinf;
+        using ::atan;
+        using ::atan2;
+        using ::atan2f;
+        using ::atanf;
+        using ::ceil;
+        using ::ceilf;
+        using ::cos;
+        using ::cosf;
+        using ::exp;
+        using ::expf;
+        using ::fabs;
+        using ::fabsf;
+        using ::floor;
+        using ::floorf;
+        using ::fmod;
+        using ::fmodf;
+        using ::hypot;
+        using ::hypotf;
+        using ::log;
+        using ::log10;
+        using ::log10f;
+        using ::logf;
+        using ::pow;
+        using ::powf;
+        using ::round;
+        using ::roundf;
+        using ::sin;
+        using ::sinf;
+        using ::sqrt;
+        using ::sqrtf;
+        using ::tan;
+        using ::tanf;
+        using ::trunc;
+        using ::truncf;
+
+} // namespace std
+
+#endif

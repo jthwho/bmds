@@ -1,0 +1,42 @@
+// -*- C++ -*-
+/**
+ * @file      utility
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * <utility> for BMDS programs (sdk/README.md, "C++"): move, forward, swap, exchange.
+ */
+
+#ifndef BMDS_CXX_UTILITY
+#define BMDS_CXX_UTILITY
+
+#include <type_traits>
+
+namespace std {
+
+        template <typename T> constexpr remove_reference_t<T> &&move(T &&t) noexcept {
+                return static_cast<remove_reference_t<T> &&>(t);
+        }
+        template <typename T> constexpr T &&forward(remove_reference_t<T> &t) noexcept {
+                return static_cast<T &&>(t);
+        }
+        template <typename T> constexpr T &&forward(remove_reference_t<T> &&t) noexcept {
+                return static_cast<T &&>(t);
+        }
+        template <typename T> constexpr void swap(T &a, T &b) noexcept {
+                T t = move(a);
+                a = move(b);
+                b = move(t);
+                return;
+        }
+        template <typename T, typename U = T> constexpr T exchange(T &obj, U &&value) {
+                T old = move(obj);
+                obj = forward<U>(value);
+                return old;
+        }
+
+} // namespace std
+
+#endif

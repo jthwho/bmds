@@ -1,0 +1,10 @@
+# angel (programs/angel): the AngelScript runtime, scripts with the whole system as their API
+# (devplan/scripting.md); AngelScript itself from thirdparty/angelscript.
+name = "angel"
+version = "1"
+description = "Run AngelScript scripts: top-level statements, float literals, the system's API"
+license = "MIT AND Zlib"
+source_tree = "programs/angel"
+license_files = ["../../LICENSE"]
+# Bytes of stack: the script compiler recurses into nested expressions.
+stack = 65536

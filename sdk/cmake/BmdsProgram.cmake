@@ -30,12 +30,15 @@ if(NOT TARGET bmds_crt)
                         OUTPUT_VARIABLE BMDS_GCC_INCLUDE OUTPUT_STRIP_TRAILING_WHITESPACE)
         add_library(bmds_headers INTERFACE)
         target_compile_options(bmds_headers INTERFACE -nostdinc)
+        # C++ (sdk/README.md, "C++"): the SDK's freestanding headers before them (<new>,
+        # <type_traits>...): programs have no libstdc++.
+        target_include_directories(bmds_headers SYSTEM INTERFACE $<$<COMPILE_LANGUAGE:CXX>:${BMDS_SDK_DIR}/include/c++>)
         target_include_directories(bmds_headers SYSTEM INTERFACE ${BMDS_LIBC_INCLUDE} ${BMDS_GCC_INCLUDE})
         target_include_directories(bmds_headers INTERFACE ${BMDS_SDK_DIR}/include)
         # The startup code and the Linux system call layer musl runs on
         # (libbmds.a; _start is pulled in with -u).
         add_library(bmds_crt STATIC ${BMDS_SDK_DIR}/crt/start.c ${BMDS_SDK_DIR}/crt/linux.c ${BMDS_SDK_DIR}/crt/oss.c
-                                    ${BMDS_SDK_DIR}/crt/app.c
+                                    ${BMDS_SDK_DIR}/crt/app.c ${BMDS_SDK_DIR}/crt/cxx.c
                                     ${BMDS_SDK_DIR}/crt/vfork.S ${BMDS_SDK_DIR}/crt/syscall_cp.S)
         set_target_properties(bmds_crt PROPERTIES OUTPUT_NAME bmds ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
         target_link_libraries(bmds_crt PUBLIC bmds_headers)
@@ -58,7 +61,18 @@ if(NOT TARGET bmds_crt)
         add_custom_target(bmds_libs DEPENDS bmds_libc bmds_crt bmds_game bmds_benchlib)
         # bmds-cc: the same compiler and link for other build systems
         # (CC=.../bmds-cc make), once bmds_libs is built.
+        # bmds-c++ the same for C++: g++, the SDK's C++ headers, no exceptions or RTTI.
+        set(BMDS_CC_NAME bmds-cc)
+        set(BMDS_CC_DRIVER "${CMAKE_C_COMPILER}")
+        set(BMDS_CC_LANGUAGE_FLAGS "")
         configure_file(${CMAKE_CURRENT_LIST_DIR}/bmds-cc.in ${CMAKE_BINARY_DIR}/bmds-cc
+                       FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ
+                                        WORLD_EXECUTE @ONLY)
+        set(BMDS_CC_NAME bmds-c++)
+        get_filename_component(_bmds_cc_bin "${CMAKE_C_COMPILER}" DIRECTORY)
+        set(BMDS_CC_DRIVER "${_bmds_cc_bin}/riscv32-esp-elf-g++")
+        set(BMDS_CC_LANGUAGE_FLAGS "-std=gnu++20 -isystem ${BMDS_SDK_DIR}/include/c++ -fno-exceptions -fno-rtti")
+        configure_file(${CMAKE_CURRENT_LIST_DIR}/bmds-cc.in ${CMAKE_BINARY_DIR}/bmds-c++
                        FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ
                                         WORLD_EXECUTE @ONLY)
 endif()

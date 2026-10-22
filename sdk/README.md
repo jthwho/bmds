@@ -87,9 +87,8 @@ with `vfork`).
 
 ## What a program is
 
-- C (C99 or later; C++ without exceptions or RTTI, and without its
-  standard library for now: the toolchain's libstdc++ is built for newlib),
-  musl for the C library, `main(argc, argv, envp)`, an exit status.
+- C (C99 or later) or C++ (below), musl for the C library,
+  `main(argc, argv, envp)`, an exit status.
 - Built for every ESP32-P4 revision: `rv32imafc` with atomics, single
   float (`ilp32f`), Espressif's hardware loops and PIE SIMD, `medany`.
 - Linked at address 0 with its relocations kept (`--emit-relocs`); the
@@ -97,6 +96,23 @@ with `vfork`).
   does) is fine; a full `strip` removes what the loader needs.
 - `gp` belongs to the kernel: build with relaxation off (the toolchain
   file does) and never set it.
+
+## C++
+
+C++20 without exceptions or RTTI (`-fno-exceptions -fno-rtti`, set by the toolchain file and by
+`bmds-c++`), and without libstdc++: the toolchain's is built for newlib, not musl.
+
+- **Headers:** `include/c++/` has freestanding ones, searched first: `<new>` (placement new,
+  `std::nothrow`, `std::align_val_t`), `<type_traits>` (the common traits, from GCC's built-ins),
+  `<utility>` (`move`, `forward`, `swap`, `exchange`), and `<cstddef>`, `<cstdint>`, `<cstdlib>`,
+  `<cstring>`, `<cstdio>`, `<cmath>` (musl's names in `std`). Containers, strings and streams
+  aren't there: write your own, or use C's.
+- **The runtime** is libbmds's (`crt/cxx.c`): `operator new` and `delete` in all their forms
+  (a failing `new` ends the program with a message; `new (std::nothrow)` returns `nullptr`),
+  pure virtual calls, guards for static locals (thread-safe), `__dso_handle`. Static
+  constructors run before `main`, and destructors at `exit`.
+- **Building:** a CMake project enables `CXX` and lists `.cpp` files in `bmds_add_program`;
+  other build systems use `bmds-c++` as `CXX` (and to link). The example is `cxxdemo`.
 
 ## The C library
 

@@ -16,6 +16,7 @@ This document defines what "userspace" means in BMDS, the rules for evolving it,
 | **Runtime environment** | Memory regions a program may use, stack size guarantees, how the console/graphics/input are handed to the program, what happens at exit. |
 | **Shell interface** | Command names, options, exit codes, and machine-parsable output used by scripts. |
 | **On-disk formats** | Config files, directory conventions (e.g. where programs live), any file format BMDS writes that users or programs read. |
+| **Scripts** (`devplan/scripting.md`) | `angel`'s script API (every type, function, method, property and constant registered), its language (the AngelScript version, the engine settings, float literals and top-level statements), its command line, exit statuses and diagnostic format. Scripts are kept as source; bytecode isn't ABI. |
 
 Kernel internals — C++ classes, driver interfaces, internal headers under `components/` — are **not** userspace and may change freely.
 
@@ -34,6 +35,7 @@ Kernel internals — C++ classes, driver interfaces, internal headers under `com
 
 - Any change touching `sdk/` or the syscall table must state **"ABI:"** in the commit message with a one-line description of the change (e.g. `ABI: add bmds_gfx_blit (slot 42)`).
 - **ABI lock tests** verify syscall slot numbers, struct sizes, and field offsets. These tests are append-only: a failing ABI test means the change is wrong, not the test.
+- **The script API's lock** (`tests/scripts/api.lock`, checked against `angel --api` by the host tests) holds every declaration scripts see. Lines are never changed or removed; new API is appended to it. Upgrading AngelScript is an ABI change, taken only when the script corpus (`tests/scripts`) and the examples still compile and behave the same.
 - A small corpus of **compatibility test programs** built against older SDK versions is kept and run against new kernels (`tests/compat/v1/`, kept exactly as built; `tools/bmds-compat` runs it on a board, the host tests check it loads).
 
 ## Design Decisions

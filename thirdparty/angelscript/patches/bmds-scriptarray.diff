@@ -1,0 +1,190 @@
+diff -ruN a/add_on/scriptarray/scriptarray.cpp b/add_on/scriptarray/scriptarray.cpp
+--- a/add_on/scriptarray/scriptarray.cpp
++++ b/add_on/scriptarray/scriptarray.cpp
+@@ -3,15 +3,45 @@
+ #include <string.h>
+ #include <assert.h>
+ #include <stdio.h> // snprintf
+-#include <string>
+-#include <algorithm> // std::sort
+ 
+ #include "scriptarray.h"
+ 
+-using namespace std;
++// BMDS: altered from AngelScript 2.38.0's add-on: no STL (the strings built with snprintf,
++// std::sort and the quadratic sorts replaced by a heapsort).
+ 
+ BEGIN_AS_NAMESPACE
+ 
++// BMDS: sorts @p n elements in place in O(n log n): @p less(i, j) compares elements i and j,
++// @p swap(i, j) exchanges them (through CScriptArray::Swap, so the GC always sees every
++// reference).
++template <typename Less, typename Swap>
++static void HeapSort(asUINT n, Less less, Swap swap)
++{
++	if( n < 2 )
++		return;
++	auto sift = [&](asUINT root, asUINT size) {
++		for( ;; )
++		{
++			asUINT child = 2 * root + 1;
++			if( child >= size )
++				return;
++			if( child + 1 < size && less(child, child + 1) )
++				child++;
++			if( !less(root, child) )
++				return;
++			swap(root, child);
++			root = child;
++		}
++	};
++	for( asUINT i = n / 2; i-- > 0; )
++		sift(i, n);
++	for( asUINT last = n - 1; last > 0; last-- )
++	{
++		swap(0, last);
++		sift(0, last);
++	}
++}
++
+ // This macro is used to avoid warnings about unused variables.
+ // Usually where the variables are only used in debug mode.
+ #define UNUSED_VAR(x) (void)(x)
+@@ -405,7 +435,7 @@
+ CScriptArray::CScriptArray(asITypeInfo *ti, void *buf)
+ {
+ 	// The object type should be the template instance of the array
+-	assert( ti && string(ti->GetName()) == "array" );
++	assert( ti && strcmp(ti->GetName(), "array") == 0 );
+ 
+ 	refCount = 1;
+ 	gcFlag = false;
+@@ -498,7 +528,7 @@
+ CScriptArray::CScriptArray(asUINT length, asITypeInfo *ti)
+ {
+ 	// The object type should be the template instance of the array
+-	assert( ti && string(ti->GetName()) == "array" );
++	assert( ti && strcmp(ti->GetName(), "array") == 0 );
+ 
+ 	refCount = 1;
+ 	gcFlag = false;
+@@ -552,7 +582,7 @@
+ CScriptArray::CScriptArray(asUINT length, void *defVal, asITypeInfo *ti)
+ {
+ 	// The object type should be the template instance of the array
+-	assert( ti && string(ti->GetName()) == "array" );
++	assert( ti && strcmp(ti->GetName(), "array") == 0 );
+ 
+ 	refCount = 1;
+ 	gcFlag = false;
+@@ -601,8 +631,9 @@
+ 			// For objects that should work as handles we must use the opHndlAssign method
+ 			// TODO: Must support alternative syntaxes as well
+ 			// TODO: Move the lookup of the opHndlAssign method to Precache() so it is only done once
+-			string decl = string(subType->GetName()) + "& opHndlAssign(const " + string(subType->GetName()) + "&in)";
+-			asIScriptFunction* func = subType->GetMethodByDecl(decl.c_str());
++			char decl[256];
++			snprintf(decl, sizeof(decl), "%s& opHndlAssign(const %s&in)", subType->GetName(), subType->GetName());
++			asIScriptFunction* func = subType->GetMethodByDecl(decl);
+ 			if (func)
+ 			{
+ 				// TODO: Reuse active context if existing
+@@ -1574,7 +1605,9 @@
+ 				return false;
+ 			}
+ 		} customLess = {asc, cmpContext, cache ? cache->cmpFunc : 0};
+-		std::sort((void**)GetArrayItemPointer(start), (void**)GetArrayItemPointer(end), customLess);
++		HeapSort(end - start,
++			[&](asUINT i, asUINT j) { return customLess(*(void**)GetArrayItemPointer(start + i), *(void**)GetArrayItemPointer(start + j)); },
++			[&](asUINT i, asUINT j) { Swap(GetArrayItemPointer(start + i), GetArrayItemPointer(start + j)); });
+ 
+ 		// Clean up
+ 		if( cmpContext )
+@@ -1592,24 +1625,10 @@
+ 	}
+ 	else
+ 	{
+-		// TODO: Use std::sort for primitive types too
+-
+-		// Insertion sort
+-		asBYTE tmp[16];
+-		for( int i = start + 1; i < end; i++ )
+-		{
+-			Copy(tmp, GetArrayItemPointer(i));
+-
+-			int j = i - 1;
+-
+-			while( j >= start && Less(GetDataPointer(tmp), At(j), asc) )
+-			{
+-				Copy(GetArrayItemPointer(j + 1), GetArrayItemPointer(j));
+-				j--;
+-			}
+-
+-			Copy(GetArrayItemPointer(j + 1), tmp);
+-		}
++		// BMDS: a heapsort, not insertion sort
++		HeapSort(asUINT(end - start),
++			[&](asUINT i, asUINT j) { return Less(At(asUINT(start + i)), At(asUINT(start + j)), asc); },
++			[&](asUINT i, asUINT j) { Swap(GetArrayItemPointer(int(start + i)), GetArrayItemPointer(int(start + j))); });
+ 	}
+ }
+ 
+@@ -1656,28 +1675,25 @@
+ 	//       For example, the callback resizes the array in the middle of the sort
+ 	//       Possible solution: set a lock flag on the array, and prohibit modifications while the lock flag is set
+ 
+-	// Bubble sort
+-	// TODO: optimize: Use an efficient sort algorithm
+-	for (asUINT i = start; i+1 < end; i++)
+-	{
+-		asUINT best = i;
+-		for (asUINT j = i + 1; j < end; j++)
+-		{
++	// BMDS: a heapsort, not a quadratic one; a callback that doesn't finish stops the comparing.
++	// With Swap we guarantee that the array always sees all references
++	// if the GC calls the EnumReferences in the middle of the sorting
++	bool failed = false;
++	HeapSort(end - start,
++		[&](asUINT i, asUINT j) {
++			if (failed)
++				return false;
+ 			cmpContext->Prepare(func);
+-			cmpContext->SetArgAddress(0, At(j));
+-			cmpContext->SetArgAddress(1, At(best));
+-			int r = cmpContext->Execute();
+-			if (r != asEXECUTION_FINISHED)
+-				break;
+-			if (*(bool*)(cmpContext->GetAddressOfReturnValue()))
+-				best = j;
+-		}
+-
+-		// With Swap we guarantee that the array always sees all references
+-		// if the GC calls the EnumReferences in the middle of the sorting
+-		if( best != i )
+-			Swap(GetArrayItemPointer(i), GetArrayItemPointer(best));
+-	}
++			cmpContext->SetArgAddress(0, At(start + i));
++			cmpContext->SetArgAddress(1, At(start + j));
++			if (cmpContext->Execute() != asEXECUTION_FINISHED)
++			{
++				failed = true;
++				return false;
++			}
++			return *(bool*)(cmpContext->GetAddressOfReturnValue());
++		},
++		[&](asUINT i, asUINT j) { Swap(GetArrayItemPointer(start + i), GetArrayItemPointer(start + j)); });
+ 
+ 	if (cmpContext)
+ 	{
+@@ -1738,8 +1754,9 @@
+ 					// For objects that should work as handles we must use the opHndlAssign method
+ 					// TODO: Must support alternative syntaxes as well
+ 					// TODO: Move the lookup of the opHndlAssign method to Precache() so it is only done once
+-					string decl = string(subType->GetName()) + "& opHndlAssign(const " + string(subType->GetName()) + "&in)";
+-					asIScriptFunction *func = subType->GetMethodByDecl(decl.c_str());
++					char decl[256];
++					snprintf(decl, sizeof(decl), "%s& opHndlAssign(const %s&in)", subType->GetName(), subType->GetName());
++					asIScriptFunction *func = subType->GetMethodByDecl(decl);
+ 					if (func)
+ 					{
+ 						// TODO: Reuse active context if existing

@@ -1,0 +1,14 @@
+true
+false
+> first line
+> 42
+> [1, 2]
+5
+["b.txt", "notes.txt"]
+false
+bee
+["notes.txt"]
+Can't open 'DIR/nope.txt': No such file or directory
+File mode 'rw' isn't "r" (read), "w" (write) or "a" (append)
+The file was opened for writing, not reading
+true

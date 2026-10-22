@@ -1,0 +1,38 @@
+// -*- C++ -*-
+/**
+ * @file      cstring
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * <cstring> for BMDS programs (sdk/README.md, "C++"): musl's <string.h>, its names in std.
+ */
+
+#ifndef BMDS_CXX_CSTRING
+#define BMDS_CXX_CSTRING
+
+#include <string.h>
+
+namespace std {
+
+        using ::memchr;
+        using ::memcmp;
+        using ::memcpy;
+        using ::memmove;
+        using ::memset;
+        using ::strcat;
+        using ::strchr;
+        using ::strcmp;
+        using ::strcpy;
+        using ::strerror;
+        using ::strlen;
+        using ::strncat;
+        using ::strncmp;
+        using ::strncpy;
+        using ::strrchr;
+        using ::strstr;
+
+} // namespace std
+
+#endif

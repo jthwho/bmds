@@ -1,0 +1,13 @@
+start
+0
+Name? Hello, Ada
+greeting sees 'Ada' and count 0
+greeting sees 'Ada' and count 3
+4
+5
+["toplevel.as", "first", "second"]
+3
+local 2
+0
+1
+9

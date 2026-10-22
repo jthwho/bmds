@@ -1,0 +1,34 @@
+// -*- C++ -*-
+/**
+ * @file      cstdint
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * <cstdint> for BMDS programs (sdk/README.md, "C++"): musl's <stdint.h>, its names in std.
+ */
+
+#ifndef BMDS_CXX_CSTDINT
+#define BMDS_CXX_CSTDINT
+
+#include <stdint.h>
+
+namespace std {
+
+        using ::int16_t;
+        using ::int32_t;
+        using ::int64_t;
+        using ::int8_t;
+        using ::intmax_t;
+        using ::intptr_t;
+        using ::uint16_t;
+        using ::uint32_t;
+        using ::uint64_t;
+        using ::uint8_t;
+        using ::uintmax_t;
+        using ::uintptr_t;
+
+} // namespace std
+
+#endif

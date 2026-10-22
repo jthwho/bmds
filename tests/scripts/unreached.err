@@ -1,0 +1,4 @@
+unreached.as:9:18: error: Null pointer access
+  in string title(), unreached.as:9
+  called from the top level, unreached.as:5
+  note: 'name' has no value yet: a variable declared among the statements gets it when the script reaches its declaration

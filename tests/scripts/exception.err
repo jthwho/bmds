@@ -1,0 +1,4 @@
+exception.as:8:28: error: Divide by zero
+  in int divide(int, int), exception.as:8
+  called from int outer(int), exception.as:9
+  called from the top level, exception.as:11

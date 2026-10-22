@@ -273,6 +273,28 @@ else()
         message(STATUS "riscv32-esp-elf-gcc not found: the SDK examples are not built or tested")
 endif()
 
+# angel (programs/angel, devplan/scripting.md): the AngelScript runtime built for the host from
+# the same sources as on the board, with the generic calling convention as there
+# (AS_MAX_PORTABILITY); the script corpus (tests/scripts) and the script API's lock.
+file(GLOB BMDS_AS_SOURCES ${BMDS_ROOT}/thirdparty/angelscript/source/*.cpp)
+add_library(bmds_angelscript STATIC ${BMDS_AS_SOURCES} ${BMDS_ROOT}/thirdparty/angelscript/add_on/scriptarray/scriptarray.cpp)
+target_include_directories(bmds_angelscript PUBLIC ${BMDS_ROOT}/thirdparty/angelscript/include)
+target_compile_definitions(bmds_angelscript PUBLIC AS_MAX_PORTABILITY AS_FLOAT_LITERALS AS_TOP_LEVEL_STATEMENTS
+        AS_NO_EXCEPTIONS)
+# AngelScript as released compiles with warnings: not ours to fix.
+target_compile_options(bmds_angelscript PRIVATE -std=gnu++20 -fno-exceptions -fno-rtti -w)
+file(GLOB BMDS_ANGEL_SOURCES ${BMDS_ROOT}/programs/angel/*.cpp)
+add_executable(angel ${BMDS_ANGEL_SOURCES})
+target_link_libraries(angel PRIVATE bmds_angelscript pthread)
+bmds_target_options(angel)
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+        add_test(NAME angel_scripts COMMAND ${Python3_EXECUTABLE} ${BMDS_ROOT}/tests/scripts/run.py $<TARGET_FILE:angel>
+                 ${BMDS_ROOT}/tests/scripts)
+        add_test(NAME angel_api_lock COMMAND ${Python3_EXECUTABLE} ${BMDS_ROOT}/tests/scripts/apilock.py
+                 $<TARGET_FILE:angel> ${BMDS_ROOT}/tests/scripts/api.lock)
+endif()
+
 # The corpus's expectations, checked against real bash (when there is one).
 find_program(BASH_PROGRAM bash)
 find_package(Python3 COMPONENTS Interpreter)

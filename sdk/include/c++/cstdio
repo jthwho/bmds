@@ -1,0 +1,41 @@
+// -*- C++ -*-
+/**
+ * @file      cstdio
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * <cstdio> for BMDS programs (sdk/README.md, "C++"): musl's <stdio.h>, its names in std.
+ */
+
+#ifndef BMDS_CXX_CSTDIO
+#define BMDS_CXX_CSTDIO
+
+#include <stdio.h>
+
+namespace std {
+
+        using ::fclose;
+        using ::fflush;
+        using ::fgetc;
+        using ::fgets;
+        using ::FILE;
+        using ::fopen;
+        using ::fprintf;
+        using ::fputc;
+        using ::fputs;
+        using ::fread;
+        using ::fwrite;
+        using ::getchar;
+        using ::perror;
+        using ::printf;
+        using ::putchar;
+        using ::puts;
+        using ::snprintf;
+        using ::sprintf;
+        using ::vsnprintf;
+
+} // namespace std
+
+#endif

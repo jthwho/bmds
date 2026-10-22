@@ -189,7 +189,7 @@ def build_package(recipe, cc):
         "VERSION": recipe["version"],
     })
     if uses_sdk(recipe):
-        env.update({"CC": cc, "AR": find_tool("ar"), "STRIP": find_tool("strip"), "OBJCOPY": find_tool("objcopy")})
+        env.update({"CC": cc, "CXX": os.path.join(os.path.dirname(cc), "bmds-c++"), "AR": find_tool("ar"), "STRIP": find_tool("strip"), "OBJCOPY": find_tool("objcopy")})
     run(["bash", "-e", os.path.join(recipe["dir"], "build.sh")], cwd=build, env=env)
     # Programs as the loader needs them: symbols it doesn't use gone, relocations kept; bin/'s,
     # and every one in an application folder (apps/NAME.app, devplan/apps.md).

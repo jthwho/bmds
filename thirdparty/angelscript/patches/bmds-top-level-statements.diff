@@ -1,0 +1,518 @@
+diff -ruN a/source/as_builder.cpp b/source/as_builder.cpp
+--- a/source/as_builder.cpp
++++ b/source/as_builder.cpp
+@@ -660,6 +660,11 @@
+ 		{
+ 			parsers.PushLast(parser);
+ 
++#ifdef AS_TOP_LEVEL_STATEMENTS
++			// BMDS: statements outside functions in the first section only
++			parser->allowTopLevelStatements = n == 0;
++#endif
++
+ 			// Parse the script file
+ 			parser->ParseScript(scripts[n]);
+ 		}
+@@ -983,6 +988,10 @@
+ 				RegisterVirtualProperty(node, script, 0, false, true, ns);
+ 			else if( node->nodeType == snImport )
+ 				RegisterImportedFunction(module->GetNextImportedFunctionId(), node, script, ns);
++#ifdef AS_TOP_LEVEL_STATEMENTS
++			else if( asCParser::IsTopLevel(node) )
++				RegisterTopLevel(node, script, ns);
++#endif
+ 			else
+ 			{
+ 				// Unused script node
+@@ -2255,6 +2264,53 @@
+ 	return 0;
+ }
+ 
++#ifdef AS_TOP_LEVEL_STATEMENTS
++// BMDS: the statements outside functions, as the function AS_TOP_LEVEL_FUNCTION; the global
++// variables marked among them initialized there. Only markers (no statements): nothing changes.
++int asCBuilder::RegisterTopLevel(asCScriptNode *node, asCScriptCode *file, asSNameSpace *ns)
++{
++	bool hasStatements = false;
++	for( asCScriptNode *n = node->firstChild; n; n = n->next )
++		hasStatements |= n->nodeType == snTopLevelStatement;
++	if( !hasStatements )
++	{
++		node->Destroy(engine);
++		return 0;
++	}
++
++	for( asCScriptNode *n = node->firstChild; n; n = n->next )
++	{
++		if( n->nodeType != snGlobalInit ) continue;
++		sGlobalVariableDescription *gvar = GetTopLevelGlobal(file, n->tokenPos);
++		if( gvar )
++			gvar->initInPlace = true;
++	}
++
++	asCString name(AS_TOP_LEVEL_FUNCTION);
++	asCDataType returnType = asCDataType::CreatePrimitive(ttVoid, false);
++	asCArray<asCString> parameterNames;
++	asCArray<asCDataType> parameterTypes;
++	asCArray<asETypeModifiers> inOutFlags;
++	asCArray<asCString *> defaultArgs;
++	asSFunctionTraits funcTraits;
++	return RegisterScriptFunction(node, file, 0, false, true, ns, false, false, name, returnType, parameterNames,
++	                              parameterTypes, inOutFlags, defaultArgs, funcTraits, 0);
++}
++
++// BMDS: the global variable of @p file whose name is at @p pos
++sGlobalVariableDescription *asCBuilder::GetTopLevelGlobal(asCScriptCode *file, size_t pos)
++{
++	asCSymbolTableIterator<sGlobalVariableDescription> it = globVariables.List();
++	for( ; it; it++ )
++	{
++		sGlobalVariableDescription *gvar = *it;
++		if( gvar->script == file && gvar->declaredAtNode && gvar->declaredAtNode->tokenPos == pos )
++			return gvar;
++	}
++	return 0;
++}
++#endif
++
+ int asCBuilder::RegisterUsingNamespace(asCScriptNode *node, asCScriptCode *file, asSNameSpace *ns)
+ {
+ 	asCScriptNode* n = node->firstChild;
+@@ -2890,6 +2946,9 @@
+ 					}
+ 
+ 					gvar->property->SetInitFunc(initFunc);
++#ifdef AS_TOP_LEVEL_STATEMENTS
++					gvar->property->initInPlace = gvar->initInPlace;
++#endif
+ 
+ 					initFunc->ReleaseInternal();
+ 					initFunc = 0;
+diff -ruN a/source/as_builder.h b/source/as_builder.h
+--- a/source/as_builder.h
++++ b/source/as_builder.h
+@@ -83,6 +83,9 @@
+ 	bool               isPureConstant;
+ 	bool               isEnumValue;
+ 	asQWORD            constantValue;
++#ifdef AS_TOP_LEVEL_STATEMENTS
++	bool               initInPlace = false; // BMDS: initialized by the top-level function
++#endif
+ };
+ 
+ struct sPropertyInitializer
+@@ -223,6 +226,10 @@
+ 	int                RegisterVirtualProperty(asCScriptNode *node, asCScriptCode *file, asCObjectType *object = 0, bool isInterface = false, bool isGlobalFunction = false, asSNameSpace *ns = 0, bool isExistingShared = false);
+ 	int                RegisterImportedFunction(int funcID, asCScriptNode *node, asCScriptCode *file, asSNameSpace *ns);
+ 	int                RegisterGlobalVar(asCScriptNode *node, asCScriptCode *file, asSNameSpace *ns);
++#ifdef AS_TOP_LEVEL_STATEMENTS
++	int                RegisterTopLevel(asCScriptNode *node, asCScriptCode *file, asSNameSpace *ns);
++	sGlobalVariableDescription *GetTopLevelGlobal(asCScriptCode *file, size_t pos);
++#endif
+ 	int                RegisterUsingNamespace(asCScriptNode *node, asCScriptCode *file, asSNameSpace *ns);
+ 	int                RegisterClass(asCScriptNode *node, asCScriptCode *file, asSNameSpace *ns);
+ 	int                RegisterInterface(asCScriptNode *node, asCScriptCode *file, asSNameSpace *ns);
+diff -ruN a/source/as_compiler.cpp b/source/as_compiler.cpp
+--- a/source/as_compiler.cpp
++++ b/source/as_compiler.cpp
+@@ -785,7 +785,13 @@
+ 	// TODO: memory: We can parse the statement block one statement at a time, thus save even more memory
+ 	// TODO: optimize: For large functions, the parsing of the statement block can take a long time. Presumably because a lot of memory needs to be allocated
+ 	asCParser parser(builder);
++#ifdef AS_TOP_LEVEL_STATEMENTS
++	// BMDS: the top-level function's statements are parsed one by one from where they stand
++	int r = asCParser::IsTopLevel(blockBegin) ? parser.ParseTopLevel(script, blockBegin)
++	                                           : parser.ParseStatementBlock(script, blockBegin);
++#else
+ 	int r = parser.ParseStatementBlock(script, blockBegin);
++#endif
+ 	if( r < 0 ) return -1;
+ 	asCScriptNode *block = parser.GetScriptNode();
+ 
+@@ -4406,6 +4412,15 @@
+ 		CompileReturnStatement(statement, bc);
+ 		*hasReturn = true;
+ 	}
++#ifdef AS_TOP_LEVEL_STATEMENTS
++	else if (statement->nodeType == snGlobalInit)
++	{
++		// BMDS: a global variable declared among the top-level statements, initialized here
++		sGlobalVariableDescription *gvar = builder->GetTopLevelGlobal(script, statement->tokenPos);
++		if (gvar && gvar->property && gvar->property->GetInitFunc())
++			bc->Call(asBC_CALL, gvar->property->GetInitFunc()->GetId(), 0);
++	}
++#endif
+ 	else
+ 		asASSERT(false);
+ }
+diff -ruN a/source/as_config.h b/source/as_config.h
+--- a/source/as_config.h
++++ b/source/as_config.h
+@@ -203,6 +203,17 @@
+ // integer passed where f(float) and f(double) both exist goes to f(float), and an
+ // overload that would drop a real argument's fraction is the last chosen.
+ 
++#ifdef AS_TOP_LEVEL_STATEMENTS
++	#define AS_TOP_LEVEL_FUNCTION "$top"
++#endif
++
++// AS_TOP_LEVEL_STATEMENTS (BMDS)
++// The first script section of a module may have statements outside functions. They are
++// compiled, in order, into a global function named AS_TOP_LEVEL_FUNCTION ("$top"), which
++// the application calls. A non-const global variable declared with an initializer in
++// that section is then initialized where it stands, when $top reaches it, not by the
++// module's initialization. A section with no statements is compiled as before.
++
+ // AS_X86
+ // Use assembler code for the x86 CPU family
+ 
+diff -ruN a/source/as_globalproperty.cpp b/source/as_globalproperty.cpp
+--- a/source/as_globalproperty.cpp
++++ b/source/as_globalproperty.cpp
+@@ -44,6 +44,9 @@
+ 	realAddress     = 0; 
+ 	initFunc        = 0;
+ 	accessMask      = 0xFFFFFFFF;
++#ifdef AS_TOP_LEVEL_STATEMENTS
++	initInPlace     = false;
++#endif
+ 
+ 	refCount.set(1);
+ }
+diff -ruN a/source/as_module.cpp b/source/as_module.cpp
+--- a/source/as_module.cpp
++++ b/source/as_module.cpp
+@@ -371,6 +371,11 @@
+ 	{
+ 		asCGlobalProperty *desc = *it;
+ 		it++;
++#ifdef AS_TOP_LEVEL_STATEMENTS
++		// BMDS: initialized where it stands, by the top-level function
++		if( desc->initInPlace )
++			continue;
++#endif
+ 		if( desc->GetInitFunc() )
+ 		{
+ 			if( ctx == 0 )
+diff -ruN a/source/as_parser.cpp b/source/as_parser.cpp
+--- a/source/as_parser.cpp
++++ b/source/as_parser.cpp
+@@ -70,6 +70,10 @@
+ 	scriptNode            = 0;
+ 	checkValidTypes       = false;
+ 	isParsingAppInterface = false;
++#ifdef AS_TOP_LEVEL_STATEMENTS
++	allowTopLevelStatements = false;
++	topLevel                = 0;
++#endif
+ }
+ 
+ asCParser::~asCParser()
+@@ -93,6 +97,12 @@
+ 
+ 	scriptNode = 0;
+ 
++#ifdef AS_TOP_LEVEL_STATEMENTS
++	if( topLevel )
++		topLevel->Destroy(engine);
++	topLevel = 0;
++#endif
++
+ 	script = 0;
+ 
+ 	lastToken.pos = size_t(-1);
+@@ -2627,7 +2637,26 @@
+ 				if( IsVirtualPropertyDecl() )
+ 					node->AddChildLast(ParseVirtualPropertyDecl(false, false));
+ 				else if( IsVarDecl() )
++				{
++#ifdef AS_TOP_LEVEL_STATEMENTS
++					asCScriptNode *decl = ParseDeclaration(false, true);
++					node->AddChildLast(decl);
++					if( allowTopLevelStatements && !inBlock && t1.type != ttConst && !isSyntaxError )
++						MarkTopLevelInits(decl);
++#else
+ 					node->AddChildLast(ParseDeclaration(false, true));
++#endif
++				}
++#ifdef AS_TOP_LEVEL_STATEMENTS
++				// (IsFuncDecl doesn't always rewind when it fails: back to the start first)
++				else if( !inBlock && t1.type != ttConst && !IsFuncDecl(false) && (RewindTo(&tStart), !LooksLikeFuncDecl()) )
++				{
++					if( allowTopLevelStatements )
++						ParseTopLevelStatement();
++					else
++						Error(TXT_TOP_LEVEL_STATEMENT_ONLY_FIRST, &t1);
++				}
++#endif
+ 				else
+ 					node->AddChildLast(ParseFunction());
+ 			}
+@@ -2641,9 +2670,25 @@
+ 			else if( t1.type == ttUsing )
+ 				node->AddChildLast(ParseUsing());
+ 			else if( t1.type == ttEnd )
++			{
++#ifdef AS_TOP_LEVEL_STATEMENTS
++				// The statements outside functions, after the declarations
++				if( topLevel )
++				{
++					node->AddChildLast(topLevel);
++					topLevel = 0;
++				}
++#endif
+ 				return node;
++			}
+ 			else if( inBlock && t1.type == ttEndStatementBlock )
+ 				return node;
++#ifdef AS_TOP_LEVEL_STATEMENTS
++			else if( allowTopLevelStatements && !inBlock && tStart.pos == t1.pos )
++				ParseTopLevelStatement();
++			else if( !inBlock && tStart.pos == t1.pos )
++				Error(TXT_TOP_LEVEL_STATEMENT_ONLY_FIRST, &t1);
++#endif
+ 			else
+ 			{
+ 				asCString str;
+@@ -2684,6 +2729,165 @@
+ 	UNREACHABLE_RETURN;
+ }
+ 
++#ifdef AS_TOP_LEVEL_STATEMENTS
++// BMDS: a statement outside functions. It is parsed now for its extent and syntax, and kept
++// as its source range: the types it names may be declared further on, so the compiler parses
++// it again (ParseTopLevel) once they are known, as it does a function's body.
++void asCParser::ParseTopLevelStatement()
++{
++	sToken start;
++	GetToken(&start);
++	RewindTo(&start);
++
++	asCScriptNode *statement = ParseStatement();
++	if( statement )
++		statement->Destroy(engine);
++	if( isSyntaxError )
++		return;
++
++	asCScriptNode *n = CreateNode(snTopLevelStatement);
++	if( n == 0 ) return;
++	n->UpdateSourcePos(start.pos, sourcePos - start.pos);
++
++	if( topLevel == 0 )
++	{
++		topLevel = CreateNode(snStatementBlock);
++		if( topLevel == 0 )
++		{
++			n->Destroy(engine);
++			return;
++		}
++	}
++	topLevel->UpdateSourcePos(n->tokenPos, n->tokenLength);
++	topLevel->AddChildLast(n);
++}
++
++// BMDS: a type and a name, then '(': a function's declaration, if not a correct one (IsFuncDecl
++// failed), so the errors are the declaration's rather than a statement's
++bool asCParser::LooksLikeFuncDecl()
++{
++	sToken start;
++	GetToken(&start);
++	RewindTo(&start);
++
++	sToken t = start;
++	bool looks = false;
++	if( IsRealType(t.type) || t.type == ttIdentifier || t.type == ttAuto )
++	{
++		GetToken(&t);
++		for( ;; )
++		{
++			GetToken(&t);
++			if( t.type == ttScope )
++			{
++				GetToken(&t);
++				continue;
++			}
++			if( t.type == ttLessThan )
++			{
++				int depth = 1;
++				while( depth > 0 && t.type != ttEnd && t.type != ttEndStatement )
++				{
++					GetToken(&t);
++					if( t.type == ttLessThan ) depth++;
++					else if( t.type == ttGreaterThan ) depth--;
++					else if( t.type == ttBitShiftRight ) depth -= 2;
++					else if( t.type == ttBitShiftRightArith ) depth -= 3;
++				}
++				continue;
++			}
++			if( t.type == ttOpenBracket )
++			{
++				GetToken(&t);
++				continue;
++			}
++			if( t.type == ttHandle || t.type == ttAmp )
++				continue;
++			break;
++		}
++		if( t.type == ttIdentifier )
++		{
++			GetToken(&t);
++			looks = t.type == ttOpenParenthesis;
++		}
++	}
++	RewindTo(&start);
++	return looks;
++}
++
++// BMDS: a global variable declared among top-level statements with an initializer is
++// initialized at its place among them: a marker for each one, by its name's position.
++void asCParser::MarkTopLevelInits(asCScriptNode *decl)
++{
++	for( asCScriptNode *n = decl->firstChild ? decl->firstChild->next : 0; n; n = n->next )
++	{
++		if( n->nodeType != snIdentifier || n->next == 0 ||
++			(n->next->nodeType != snAssignment && n->next->nodeType != snArgList && n->next->nodeType != snInitList) )
++			continue;
++
++		asCScriptNode *init = CreateNode(snGlobalInit);
++		if( init == 0 ) return;
++		init->UpdateSourcePos(n->tokenPos, n->tokenLength);
++
++		if( topLevel == 0 )
++		{
++			topLevel = CreateNode(snStatementBlock);
++			if( topLevel == 0 )
++			{
++				init->Destroy(engine);
++				return;
++			}
++		}
++		topLevel->UpdateSourcePos(init->tokenPos, init->tokenLength);
++		topLevel->AddChildLast(init);
++	}
++}
++
++// BMDS: a block of only top-level statements and markers (the builder's top-level function)
++bool asCParser::IsTopLevel(asCScriptNode *block)
++{
++	return block && block->nodeType == snStatementBlock && block->firstChild &&
++		(block->firstChild->nodeType == snTopLevelStatement || block->firstChild->nodeType == snGlobalInit);
++}
++
++// BMDS: the top-level statements parsed again, now with the script's types known, into one
++// statement block (markers copied as they are)
++int asCParser::ParseTopLevel(asCScriptCode *in_script, asCScriptNode *in_topLevel)
++{
++	Reset();
++
++	checkValidTypes = true;
++	this->script = in_script;
++
++	scriptNode = CreateNode(snStatementBlock);
++	if( scriptNode == 0 ) return -1;
++	scriptNode->UpdateSourcePos(in_topLevel->tokenPos, in_topLevel->tokenLength);
++
++	for( asCScriptNode *n = in_topLevel->firstChild; n && !isSyntaxError; n = n->next )
++	{
++		if( n->nodeType == snGlobalInit )
++		{
++			asCScriptNode *init = CreateNode(snGlobalInit);
++			if( init == 0 ) return -1;
++			init->UpdateSourcePos(n->tokenPos, n->tokenLength);
++			scriptNode->AddChildLast(init);
++		}
++		else
++		{
++			SetPos(n->tokenPos);
++			asCScriptNode *statement = ParseStatement();
++			if( statement )
++				scriptNode->AddChildLast(statement);
++		}
++	}
++
++	if( isSyntaxError || errorWhileParsing )
++		return -1;
++
++	return 0;
++}
++#endif
++
+ // BNF:1: USING     ::= 'using' 'namespace' IDENTIFIER ('::' IDENTIFIER)* ';'
+ asCScriptNode *asCParser::ParseUsing()
+ {
+diff -ruN a/source/as_parser.h b/source/as_parser.h
+--- a/source/as_parser.h
++++ b/source/as_parser.h
+@@ -65,6 +65,14 @@
+ 	int ParseStatementBlock(asCScriptCode *script, asCScriptNode *block);
+ 	int ParseVarInit(asCScriptCode *script, asCScriptNode *init);
+ 	int ParseExpression(asCScriptCode *script);
++#ifdef AS_TOP_LEVEL_STATEMENTS
++	// BMDS: the top-level statements of a section, parsed again with the types known
++	int ParseTopLevel(asCScriptCode *script, asCScriptNode *topLevel);
++	static bool IsTopLevel(asCScriptNode *block);
++
++	// Set by the builder for the section that may have them
++	bool allowTopLevelStatements;
++#endif
+ #endif
+ 
+ 	asCScriptNode *GetScriptNode();
+@@ -138,6 +146,12 @@
+ 	bool IsVarDecl();
+ 	bool IsVirtualPropertyDecl();
+ 	bool IsFuncDecl(bool isMethod);
++#ifdef AS_TOP_LEVEL_STATEMENTS
++	bool LooksLikeFuncDecl();
++	void ParseTopLevelStatement();
++	void MarkTopLevelInits(asCScriptNode *decl);
++	asCScriptNode *topLevel;
++#endif
+ 	bool IsLambda();
+ 	bool IsFunctionCall(bool isTemplate);
+ 	bool IsTemplateTypeList(sToken startFrom, sToken *after = 0);
+diff -ruN a/source/as_property.h b/source/as_property.h
+--- a/source/as_property.h
++++ b/source/as_property.h
+@@ -99,6 +99,11 @@
+ 
+ 	asCScriptFunction *initFunc;
+ 
++#ifdef AS_TOP_LEVEL_STATEMENTS
++	// BMDS: initFunc is called by the top-level function, not the module's initialization
++	bool initInPlace;
++#endif
++
+ 	asDWORD accessMask;
+ 
+ 	// The global property structure is reference counted, so that the
+diff -ruN a/source/as_scriptnode.h b/source/as_scriptnode.h
+--- a/source/as_scriptnode.h
++++ b/source/as_scriptnode.h
+@@ -95,6 +95,12 @@
+ 	snNamedArgument,
+ 	snScope,
+ 	snTryCatch
++#ifdef AS_TOP_LEVEL_STATEMENTS
++	// BMDS: a statement outside functions (its source range, parsed again when compiled),
++	// and the place a global variable declared there is initialized
++	,snTopLevelStatement,
++	snGlobalInit
++#endif
+ };
+ 
+ struct sToken
+diff -ruN a/source/as_texts.h b/source/as_texts.h
+--- a/source/as_texts.h
++++ b/source/as_texts.h
+@@ -293,6 +293,10 @@
+ 
+ #define TXT_UNEXPECTED_END_OF_FILE             "Unexpected end of file"
+ #define TXT_UNEXPECTED_TOKEN_s                 "Unexpected token '%s'"
++#ifdef AS_TOP_LEVEL_STATEMENTS
++// BMDS
++#define TXT_TOP_LEVEL_STATEMENT_ONLY_FIRST     "Statements outside functions are allowed only in the script itself, not in a file it includes"
++#endif
+ #define TXT_UNEXPECTED_VAR_DECL                "Unexpected variable declaration"
+ #define TXT_UNINITIALIZED_GLOBAL_VAR_s         "Use of uninitialized global variable '%s'."
+ #define TXT_UNKNOWN_SCOPE_s                    "Unknown scope '%s'"

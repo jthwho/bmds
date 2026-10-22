@@ -1,0 +1,1 @@
+lib/statement.as:2:1: error: Statements outside functions are allowed only in the script itself, not in a file it includes

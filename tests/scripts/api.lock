@@ -1,0 +1,193 @@
+# The script API's lock (devplan/scripting.md §7; checked by apilock.py against angel --api).
+# Userspace ABI: append only. A line here is never changed or removed to make the check pass;
+# new API is appended (the one edit allowed).
+Console::Color::Black = 0
+Console::Color::Blue = 1
+Console::Color::Brown = 6
+Console::Color::Cyan = 3
+Console::Color::DarkGray = 8
+Console::Color::Green = 2
+Console::Color::LightBlue = 9
+Console::Color::LightCyan = 11
+Console::Color::LightGray = 7
+Console::Color::LightGreen = 10
+Console::Color::LightMagenta = 13
+Console::Color::LightRed = 12
+Console::Color::Magenta = 5
+Console::Color::Red = 4
+Console::Color::White = 15
+Console::Color::Yellow = 14
+File@ File(const string&in, const string&in = "r")
+T& T[]::opIndex(uint)
+T[]& T[]::opAssign(const T[]&in)
+T[]@ $list(int&in, int&in) { repeat T }
+T[]@ array(int&in)
+T[]@ array(int&in, uint)
+T[]@ array(int&in, uint, const T&in)
+bool File::eof()
+bool File::isOpen() const
+bool T[]::isEmpty() const
+bool T[]::opEquals(const T[]&in) const
+bool T[]::opForEnd(uint) const
+bool fileExists(const string&in)
+bool isDirectory(const string&in)
+bool string::contains(const string&in) const
+bool string::endsWith(const string&in) const
+bool string::isEmpty() const
+bool string::opEquals(const string&in) const
+bool string::startsWith(const string&in) const
+class File
+class array<T>
+const T& T[]::opForValue0(uint) const
+const T& T[]::opIndex(uint) const
+const float PI
+const string[] args
+const uint8& string::opIndex(uint) const
+double abs(double)
+double acos(double)
+double asin(double)
+double atan(double)
+double atan2(double, double)
+double ceil(double)
+double clamp(double, double, double)
+double cos(double)
+double exp(double)
+double floor(double)
+double log(double)
+double log10(double)
+double max(double, double)
+double min(double, double)
+double parseDouble(const string&in)
+double pow(double, double)
+double round(double)
+double sin(double)
+double sqrt(double)
+double tan(double)
+enum Console::Color
+float abs(float)
+float acos(float)
+float asin(float)
+float atan(float)
+float atan2(float, float)
+float ceil(float)
+float clamp(float, float, float)
+float cos(float)
+float exp(float)
+float floor(float)
+float log(float)
+float log10(float)
+float max(float, float)
+float min(float, float)
+float parseFloat(const string&in)
+float pow(float, float)
+float random()
+float round(float)
+float sin(float)
+float sqrt(float)
+float tan(float)
+funcdef bool T[]::less(const T&in, const T&in)
+int Console::height()
+int Console::width()
+int T[]::find(const T&in) const
+int T[]::find(uint, const T&in) const
+int T[]::findByRef(const T&in) const
+int T[]::findByRef(uint, const T&in) const
+int abs(int)
+int clamp(int, int, int)
+int max(int, int)
+int min(int, int)
+int random(int, int)
+int run(const string&in)
+int string::find(const string&in, int = 0) const
+int string::findLast(const string&in, int = -1) const
+int string::opCmp(const string&in) const
+int64 parseInt(const string&in, uint = 10)
+string Console::key()
+string Console::keyNow()
+string File::readAll()
+string File::readLine()
+string chr(uint)
+string currentDirectory()
+string env(const string&in)
+string formatFloat(double, uint)
+string getExceptionInfo()
+string input()
+string input(const string&in)
+string join(const string[]&in, const string&in)
+string output(const string&in)
+string readFile(const string&in)
+string string::opAdd(bool) const
+string string::opAdd(const string&in) const
+string string::opAdd(double) const
+string string::opAdd(float) const
+string string::opAdd(int64) const
+string string::opAdd(uint64) const
+string string::opAdd_r(bool) const
+string string::opAdd_r(double) const
+string string::opAdd_r(float) const
+string string::opAdd_r(int64) const
+string string::opAdd_r(uint64) const
+string string::replace(const string&in, const string&in) const
+string string::substr(int, int = -1) const
+string string::toLower() const
+string string::toUpper() const
+string string::trim() const
+string& string::opAddAssign(bool)
+string& string::opAddAssign(const string&in)
+string& string::opAddAssign(double)
+string& string::opAddAssign(float)
+string& string::opAddAssign(int64)
+string& string::opAddAssign(uint64)
+string& string::opAssign(const string&in)
+string::string()
+string::string(const string&in)
+string[]@ listDirectory(const string&in = ".")
+string[]@ string::split() const
+string[]@ string::split(const string&in) const
+uint T[]::length() const
+uint T[]::opForBegin() const
+uint T[]::opForNext(uint) const
+uint T[]::opForValue1(uint) const
+uint ord(const string&in)
+uint string::length() const
+uint64 millis()
+uint8& string::opIndex(uint)
+value string
+void Console::at(int, int)
+void Console::clear()
+void Console::color(int, int = -1)
+void Console::cursor(bool)
+void Console::reset()
+void File::close()
+void File::write(const ?&in)
+void File::writeLine(const ?&in)
+void T[]::insertAt(uint, const T&in)
+void T[]::insertAt(uint, const T[]&inout)
+void T[]::insertLast(const T&in)
+void T[]::removeAt(uint)
+void T[]::removeLast()
+void T[]::removeRange(uint, uint)
+void T[]::reserve(uint)
+void T[]::resize(uint)
+void T[]::reverse()
+void T[]::sort(T[]::less&in, uint = 0, uint = uint(-1))
+void T[]::sortAsc()
+void T[]::sortAsc(uint, uint)
+void T[]::sortDesc()
+void T[]::sortDesc(uint, uint)
+void appendFile(const string&in, const string&in)
+void assert(bool, const string&in = "")
+void changeDirectory(const string&in)
+void exit(int = 0)
+void makeDirectory(const string&in)
+void print(const ?&in)
+void println()
+void println(const ?&in)
+void randomSeed(uint)
+void removeFile(const string&in)
+void renameFile(const string&in, const string&in)
+void sleep(uint)
+void string::erase(uint, int = -1)
+void string::insert(uint, const string&in)
+void throw(const string&in)
+void writeFile(const string&in, const string&in)

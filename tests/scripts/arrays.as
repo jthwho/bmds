@@ -1,0 +1,40 @@
+// array<T>: the add-on's methods, sorting, foreach.
+// exit: 1
+int[] a = {5, 3, 9, 1};
+a.insertLast(7);
+println(a);
+a.sortAsc();
+println(a);
+a.sortDesc();
+println(a);
+a.removeAt(0);
+println(a);
+println(a.find(3));
+println(a.length());
+a.reverse();
+println(a);
+a.resize(2);
+println(a);
+string[] names = {"pear", "apple", "fig"};
+names.sortAsc();
+println(names);
+names.sort(function(a, b) { return a.length() < b.length(); });
+println(names);
+int total = 0;
+int[] three = {1, 2, 3};
+foreach (int v : three) total += v;
+println(total);
+class Score { int value; Score() { value = 0; } Score(int v) { value = v; } int opCmp(const Score &in o) const { return value - o.value; } }
+Score[] scores = {Score(30), Score(10), Score(20)};
+scores.sortAsc();
+for (uint i = 0; i < scores.length(); i++) print(scores[i].value + " ");
+println();
+int[] big;
+for (int i = 0; i < 2000; i++) big.insertLast((i * 7919) % 2000);
+big.sortAsc();
+bool sorted = true;
+for (uint i = 1; i < big.length(); i++) if (big[i - 1] > big[i]) sorted = false;
+println(sorted);
+int[] empty;
+println(empty.isEmpty());
+println(a[10]);

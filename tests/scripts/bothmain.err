@@ -1,0 +1,1 @@
+bothmain.as:4:1: error: a script with statements outside functions runs them; it can't have a main() as well

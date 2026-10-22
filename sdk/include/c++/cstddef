@@ -1,0 +1,25 @@
+// -*- C++ -*-
+/**
+ * @file      cstddef
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * <cstddef> for BMDS programs (sdk/README.md, "C++"): musl's <stddef.h>, its names in std.
+ */
+
+#ifndef BMDS_CXX_CSTDDEF
+#define BMDS_CXX_CSTDDEF
+
+#include <stddef.h>
+
+namespace std {
+
+        using ::max_align_t;
+        using ::ptrdiff_t;
+        using ::size_t;
+
+} // namespace std
+
+#endif

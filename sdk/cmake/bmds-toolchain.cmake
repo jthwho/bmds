@@ -38,7 +38,7 @@ set(BMDS_ARCH_FLAGS "-march=rv32imafc_zicsr_zifencei_zaamo_zalrsc_xesploop_xespv
 set(BMDS_C_FLAGS "${BMDS_ARCH_FLAGS} -mcmodel=medany -mno-relax -ffunction-sections -fdata-sections")
 
 set(CMAKE_C_FLAGS_INIT "${BMDS_C_FLAGS}")
-set(CMAKE_CXX_FLAGS_INIT "${BMDS_C_FLAGS} -fno-exceptions -fno-rtti")
+set(CMAKE_CXX_FLAGS_INIT "${BMDS_C_FLAGS} -std=gnu++20 -fno-exceptions -fno-rtti")
 set(CMAKE_ASM_FLAGS_INIT "${BMDS_ARCH_FLAGS} -mno-relax")
 
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)

@@ -1,0 +1,57 @@
+// -*- C++ -*-
+/**
+ * @file      new
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * <new> for BMDS programs (sdk/README.md, "C++"): placement new, std::nothrow and the
+ * alignment tag. Programs have no libstdc++; the operators themselves are libbmds's
+ * (crt/cxx.c). Without exceptions, a failing operator new ends the program.
+ */
+
+#ifndef BMDS_CXX_NEW
+#define BMDS_CXX_NEW
+
+#include <stddef.h>
+
+namespace std {
+
+        struct nothrow_t {
+                        explicit nothrow_t() = default;
+        };
+        extern const nothrow_t nothrow;
+
+        enum class align_val_t : size_t {
+        };
+
+} // namespace std
+
+void *operator new(size_t size);
+void *operator new[](size_t size);
+void *operator new(size_t size, const std::nothrow_t &) noexcept;
+void *operator new[](size_t size, const std::nothrow_t &) noexcept;
+void *operator new(size_t size, std::align_val_t align);
+void *operator new[](size_t size, std::align_val_t align);
+void  operator delete(void *p) noexcept;
+void  operator delete[](void *p) noexcept;
+void  operator delete(void *p, size_t size) noexcept;
+void  operator delete[](void *p, size_t size) noexcept;
+void  operator delete(void *p, const std::nothrow_t &) noexcept;
+void  operator delete[](void *p, const std::nothrow_t &) noexcept;
+void  operator delete(void *p, std::align_val_t align) noexcept;
+void  operator delete[](void *p, std::align_val_t align) noexcept;
+void  operator delete(void *p, size_t size, std::align_val_t align) noexcept;
+void  operator delete[](void *p, size_t size, std::align_val_t align) noexcept;
+
+inline void *operator new(size_t, void *p) noexcept {
+        return p;
+}
+inline void *operator new[](size_t, void *p) noexcept {
+        return p;
+}
+inline void operator delete(void *, void *) noexcept {}
+inline void operator delete[](void *, void *) noexcept {}
+
+#endif

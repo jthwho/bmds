@@ -32,10 +32,10 @@ Make `dist/<name>/` with:
   and installs into `$DESTDIR` (`bin/` for programs, links as real symbolic
   links). It gets `SRC` (the unpacked, patched source), `BUILD` (its working
   directory), `DESTDIR`, `PKGDIR` (this directory), `CC` (the SDK's `bmds-cc`,
-  static musl), `AR`, `STRIP`, `OBJCOPY`, `HOSTCC`, `BMDS_MAKE` (use it for the main
+  static musl), `CXX` (`bmds-c++`: C++ without exceptions, RTTI or libstdc++), `AR`, `STRIP`, `OBJCOPY`, `HOSTCC`, `BMDS_MAKE` (use it for the main
   build: it paces parallel jobs; it isn't called `MAKE`, which would replace
   make's own in recursive builds), `JOBS`, `BMDS_STACK`, `BMDS_DISPLAY`, `VERSION`, `ROOT`
-  (the repository; for its `tools/`). Without the SDK there is no `CC`, `AR`,
+  (the repository; for its `tools/`). Without the SDK there is no `CC`, `CXX`, `AR`,
   `STRIP` or `OBJCOPY`.
 - **`patches/*.patch`** (optional): applied in name order with `patch -p1`.
 - **Icons** (the `icons` and `icons-glyphs` packages): the desktop's themes,

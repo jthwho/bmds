@@ -2,7 +2,7 @@
 #   cmake -S sdk/examples -B build-sdk -DCMAKE_TOOLCHAIN_FILE=sdk/cmake/bmds-toolchain.cmake
 
 cmake_minimum_required(VERSION 3.16)
-project(bmds_examples C ASM)
+project(bmds_examples C CXX ASM)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/BmdsProgram.cmake)
 
@@ -18,6 +18,7 @@ bmds_add_program(speak SOURCES speak/speak.c)
 bmds_add_program(surfdemo SOURCES surfdemo/surfdemo.c DISPLAY)
 bmds_add_program(appinfo SOURCES appinfo/appinfo.c)
 bmds_add_program(bounce SOURCES bounce/bounce.c DISPLAY)
+bmds_add_program(cxxdemo SOURCES cxxdemo/cxxdemo.cpp)
 
 # Application folders (devplan/apps.md): copied into a card's apps/, each a command in /apps.
 bmds_add_app(surfdemo PROGRAM surfdemo DESKTOP surfdemo/app.desktop)

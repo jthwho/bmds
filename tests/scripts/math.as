@@ -1,0 +1,46 @@
+// Numbers: float literals, d for double, overloads that choose float, math.
+auto f = 1.5;
+auto d = 1.5d;
+auto e = 2e3;
+auto g = 2e3D;
+auto h = 1.5f;
+float x = 0.1;
+println(f);
+println(d);
+println(e);
+println(g);
+println(h);
+println(x * 3);
+println(sqrt(2));
+println(sqrt(2.0d));
+println(pow(2, 10));
+println(min(1, 2.5));
+println(max(3, 4));
+println(clamp(15, 0, 10));
+println(clamp(-0.5, 0, 1));
+println(abs(-3));
+println(abs(-2.5));
+println(floor(2.7));
+println(ceil(2.1));
+println(round(2.5));
+println(int(PI * 1000));
+println(sin(0));
+println(cos(0));
+println(atan2(1, 1) * 4);
+println(7 / 2);
+println(7 % 3);
+println(7.0 / 2);
+println(1 << 4);
+randomSeed(42);
+int a = random(1, 6);
+randomSeed(42);
+int b = random(1, 6);
+println(a == b);
+bool inRange = true;
+for (int i = 0; i < 1000; i++) {
+        int r = random(1, 6);
+        float u = random();
+        if (r < 1 || r > 6 || u < 0 || u >= 1) inRange = false;
+}
+println(inRange);
+println(random(5, 5));

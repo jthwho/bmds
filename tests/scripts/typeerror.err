@@ -1,0 +1,5 @@
+typeerror.as:4:9: error: Can't implicitly convert from 'const string' to 'int&'.
+typeerror.as:5:1: error: No matching signatures to 'sqrt(const string)'
+typeerror.as:5:1: note: Candidates are:
+typeerror.as:5:1: note: float sqrt(float)
+typeerror.as:5:1: note: double sqrt(double)

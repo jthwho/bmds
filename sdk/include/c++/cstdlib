@@ -1,0 +1,45 @@
+// -*- C++ -*-
+/**
+ * @file      cstdlib
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * <cstdlib> for BMDS programs (sdk/README.md, "C++"): musl's <stdlib.h>, its names in std.
+ */
+
+#ifndef BMDS_CXX_CSTDLIB
+#define BMDS_CXX_CSTDLIB
+
+#include <stdlib.h>
+
+namespace std {
+
+        using ::abort;
+        using ::abs;
+        using ::atexit;
+        using ::atoi;
+        using ::atol;
+        using ::bsearch;
+        using ::calloc;
+        using ::div;
+        using ::div_t;
+        using ::exit;
+        using ::free;
+        using ::getenv;
+        using ::labs;
+        using ::llabs;
+        using ::malloc;
+        using ::qsort;
+        using ::realloc;
+        using ::strtod;
+        using ::strtof;
+        using ::strtol;
+        using ::strtoll;
+        using ::strtoul;
+        using ::strtoull;
+
+} // namespace std
+
+#endif

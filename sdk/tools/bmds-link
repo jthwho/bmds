@@ -184,9 +184,9 @@ def sources_of(args):
 
 
 def binutil(gcc, name):
-    """The binutils program @p name beside @p gcc (riscv32-esp-elf-gcc: riscv32-esp-elf-NAME)."""
+    """The binutils program @p name beside @p gcc (riscv32-esp-elf-gcc or -g++: riscv32-esp-elf-NAME)."""
     base = os.path.basename(gcc)
-    prefix = base[:-3] if base.endswith("gcc") else ""
+    prefix = base[:-3] if base.endswith("gcc") or base.endswith("g++") else ""
     path = os.path.join(os.path.dirname(gcc), prefix + name)
     return path if os.path.exists(path) else (shutil.which(prefix + name) or prefix + name)
 
