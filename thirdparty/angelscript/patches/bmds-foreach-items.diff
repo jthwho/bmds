@@ -1,0 +1,39 @@
+--- a/source/as_compiler.cpp
++++ b/source/as_compiler.cpp
+@@ -5586,6 +5586,10 @@
+ 	bool hasReturn;
+ 	asCByteCode foreachBC(engine);
+ 
++	// BMDS: the items in a scope of their own inside the loop's (which break and continue stop
++	// at), so that break and continue destroy them, and the loop's end doesn't destroy them a
++	// second time after the last time round (a value type's destructor ran twice: a double free)
++	AddVariableScope(false, false);
+ 	asCArray<int> itemOffsets;
+ 	for (asUINT i = 0; i < itemCount; ++i)
+ 	{
+@@ -5640,17 +5644,16 @@
+ 
+ 	CompileStatement(node->lastChild, &hasReturn, &foreachBC);
+ 
+-	// Reversely destruct the items,
+-	// we'll re-initialize them in the next iteration
+-	for (asUINT i = itemOffsets.GetLength(); i != 0; --i)
++	// BMDS: the items' scope ends each time round: its variables destroyed in reverse (the items,
++	// and what a statement without braces declared in it, such as a nested foreach's range), to
++	// be made again the next time; their places are free for what follows the loop
++	for (int n = (int)variables->variables.GetLength() - 1; n >= 0; n--)
+ 	{
+-		int itemOffset = itemOffsets[i - 1];
+-		asCDataType& itemDt = itemDataTypes[i - 1];
+-		CallDestructor(itemDt, itemOffset, IsVariableOnHeap(itemOffset), &foreachBC);
+-
+-		// No need to deallocate here,
+-		// we'll deallocate them after the loop is done
++		sVariable* v = variables->variables[n];
++		CallDestructor(v->type, v->stackOffset, v->onHeap, &foreachBC);
++		DeallocateVariable(v->stackOffset);
+ 	}
++	RemoveVariableScope();
+ 
+ 	//-------------------------------
+ 	// Join the code pieces

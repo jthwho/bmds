@@ -67,8 +67,8 @@ namespace {
 EditWindow::EditWindow(GuiApplication &app, const Config &config, const Startup &startup)
     : GuiWindow(app, config), _startup(startup), _fileMenu(app), _editMenu(app), _viewMenu(app), _helpMenu(app),
       _endingsMenu(app), _languageMenu(app), _schemeMenu(app), _runMenu(app), _newMenu(app), _completionMenu(app),
-      _debugMenu(app), _examplesDialog(app, FileDialog::Mode::Open, "Examples"),
-      _openDialog(app, FileDialog::Mode::Open, "Open"), _saveDialog(app, FileDialog::Mode::Save, "Save As") {
+      _debugMenu(app), _guideMenu(app), _examplesMenu(app), _openDialog(app, FileDialog::Mode::Open, "Open"),
+      _saveDialog(app, FileDialog::Mode::Save, "Save As") {
         (void)_cwd.assign(startup.cwd);
         _startup.cwd = _cwd.view();
 }
@@ -190,12 +190,13 @@ Error EditWindow::buildMenus() {
         if (err.isOk())
                 err = _helpMenu.addItem("&Help on the Word", ChooseHelpWord, 0, "F1",
                                         theme.find(IconId::HelpContents, 16));
-        if (err.isOk()) err = _helpMenu.addItem("&Examples...", ChooseExamples);
+        if (err.isOk()) err = _helpMenu.addSubmenu("&Guide", _guideMenu);
+        if (err.isOk()) err = _helpMenu.addSubmenu("&Examples", _examplesMenu);
         if (err.isOk()) err = _helpMenu.addSeparator();
         if (err.isOk())
                 err = _helpMenu.addItem("&About", ChooseAbout, 0, StringView(), theme.find(IconId::HelpAbout, 16));
         for (Menu *m : {&_fileMenu, &_editMenu, &_viewMenu, &_helpMenu, &_endingsMenu, &_languageMenu, &_schemeMenu,
-                        &_runMenu, &_newMenu, &_debugMenu})
+                        &_runMenu, &_newMenu, &_debugMenu, &_guideMenu, &_examplesMenu})
                 m->setTriggered(chosen, this);
         _completionMenu.setTriggered(completionChosen, this);
         return err;
@@ -237,6 +238,11 @@ void EditWindow::aboutToShow(void *arg, MenuBar &, size_t index, Menu &menu) {
                 (void)menu.addItem("Toggle Co&mment", ChooseComment,
                                    on(writable && e->syntax() != nullptr && e->syntax()->lineComment != nullptr),
                                    "Ctrl+/");
+        } else if (index == 5) {
+                // The guide's lessons and the examples, as the folders have them now.
+                self->fillScriptMenu(self->_guideMenu, "editor/angel-guide", self->_guidePaths, ChooseGuide, true);
+                self->fillScriptMenu(self->_examplesMenu, "editor/angel-examples", self->_examplePaths, ChooseExample,
+                                     false);
         } else if (index == 4) {
                 // The debugger's: what can be done now.
                 const bool active = self->_debug != nullptr && self->_debug->isActive();
@@ -357,13 +363,6 @@ void EditWindow::choose(int item) {
                                 showPane(_pane != nullptr ? _pane->current() : 0);
                         }
                         break;
-                case ChooseExamples: {
-                        String folder(MemSpace::Psram);
-                        if (SysConf::get(StringView("editor/angel-examples"), folder).isOk())
-                                (void)_examplesDialog.setFolder(folder.view());
-                        (void)_examplesDialog.open();
-                        break;
-                }
                 case ChooseAbout:
                         (void)MessageBox::show(application(), MessageBox::Kind::Information, "About Edit",
                                                "Edit, the BMDS text editor.\n\nOne place for all text: plain files, "
@@ -420,6 +419,10 @@ void EditWindow::choose(int item) {
                                 e->setSyntax(n == 0 || n > all.size() ? nullptr : all[n - 1]);
                                 e->setBreakpointsEnabled(supportFor(*doc) != nullptr);
                                 showStatus();
+                        } else if (item >= ChooseGuide && size_t(item - ChooseGuide) < _guidePaths.size()) {
+                                open(_guidePaths[size_t(item - ChooseGuide)].view());
+                        } else if (item >= ChooseExample && size_t(item - ChooseExample) < _examplePaths.size()) {
+                                open(_examplePaths[size_t(item - ChooseExample)].view());
                         } else if (item >= ChooseTemplate && item < ChooseCompletion) {
                                 newFromTemplate(size_t(item - ChooseTemplate));
                         } else if (item >= ChooseScheme && size_t(item - ChooseScheme) < CodeEdit::schemes().size()) {

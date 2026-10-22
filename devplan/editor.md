@@ -551,3 +551,6 @@ aren't userspace ABI (built-in applications only), as the rest of `bmds_gui`.
   - Conditional breakpoints and hit counts.
   - Editing a value while stopped.
   - Breakpoints kept with the file between sessions.
+- **Later, with the guide** (`scripting.md` §14, §15): Help ▸ Guide and Help ▸ Examples are
+  submenus of the folders' scripts (`editor/angel-guide`, `editor/angel-examples`), not a file
+  dialog.

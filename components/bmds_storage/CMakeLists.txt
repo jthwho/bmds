@@ -102,7 +102,8 @@ elseif(NOT BOOTLOADER_BUILD)
         set(BMDS_ROM_SSHFS ${BMDS_ROM_DIST}/stage/sshfs)
         set(BMDS_ROM_COPYID ${BMDS_ROM_DIST}/stage/ssh-copy-id)
         set(BMDS_ROM_ANGEL ${BMDS_ROM_DIST}/stage/angel)
-        file(GLOB BMDS_ROM_ANGEL_EXAMPLES CONFIGURE_DEPENDS ${BMDS_ROOT_DIR}/programs/angel/examples/*)
+        file(GLOB BMDS_ROM_ANGEL_EXAMPLES CONFIGURE_DEPENDS ${BMDS_ROOT_DIR}/programs/angel/examples/*
+             ${BMDS_ROOT_DIR}/programs/angel/guide/*)
         file(GLOB_RECURSE BMDS_ROM_DIST_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT_DIR}/dist/dropbear/*
              ${BMDS_ROOT_DIR}/dist/sftp-server/* ${BMDS_ROOT_DIR}/programs/sftp-server/*
              ${BMDS_ROOT_DIR}/dist/sshfs/* ${BMDS_ROOT_DIR}/programs/sshfs/*
@@ -130,6 +131,7 @@ elseif(NOT BOOTLOADER_BUILD)
             --file share/licenses/dropbear/LICENSE=${BMDS_ROM_DROPBEAR}/share/licenses/dropbear/LICENSE
             --file bin/angel=${BMDS_ROM_ANGEL}/bin/angel
             --dir share/angel/examples=${BMDS_ROOT_DIR}/programs/angel/examples
+            --dir share/angel/guide=${BMDS_ROOT_DIR}/programs/angel/guide
             --file share/licenses/angelscript/LICENSE=${BMDS_ROM_ANGEL}/share/licenses/angel/angelscript.LICENSE)
         # IANA's leap-second list (devplan/network.md §31e): CLOCK_TAI and PTP's UTC offset; a newer one
         # on the card (clock/leapseconds) wins.

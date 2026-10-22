@@ -1,10 +1,11 @@
 # Scripting: AngelScript, a Runtime with the Whole System, and an IDE
 
-Status: **steps 1-8 built** (2026-10-22): C++ in the SDK; `angel` in the ROM with its core,
+Status: **steps 1-9 built** (2026-10-22): C++ in the SDK; `angel` in the ROM with its core,
 the text screen, files and other programs, graphics and input, sound, the network; the patches;
 the corpus and the API lock; the editor and the IDE (`editor.md`: `edit`, its AngelScript mode,
 `angel --serve` and `--report-fd`); the debugger (`angel --debug`, `editor.md` §17). As built
-and measured: §10 to §13, `editor.md` §14 to §16 and §19. Next: step 9, the guide and examples.
+and measured: §10 to §13, `editor.md` §14 to §16 and §19; the guide's fourteen lessons and the
+Serpents and Rooftops games (§14, §15).
 
 ## 1. Goal
 
@@ -410,7 +411,7 @@ one text editor. What follows is the IDE's list as first planned, kept for its i
 8. **The debugger** (done 2026-10-22, `editor.md` §17 and §19): breakpoints, stepping, the call
    stack and watching variables, through a line callback in `angel` with line cues on
    (`--debug`). It is controlled by the IDE over a pipe, its events on `--report-fd`'s.
-9. **The guide and examples:** a tutorial in steps, from `println("Hello")` to a game, and
+9. **The guide and examples** (done 2026-10-22, §14 and §15): a tutorial in steps, from `println("Hello")` to a game, and
    games of our own in the spirit of Nibbles and Gorillas, newly written. QBasic's own are
    Microsoft's.
 
@@ -617,3 +618,103 @@ calls). New system calls, if a binding needs one, follow the usual rules.
 - **Size:** `network.cpp` is 19 KB of text, musl's resolver (`getaddrinfo` and DNS) about
   10 KB more; `angel` is now 1,002 KB of text.
 
+
+## 14. Step 9: the guide and the examples (designed 2026-10-22)
+
+**The guide is lessons you run.**
+- **Form:** each lesson is a script in `/rom/share/angel/guide`. Its comments teach, its code is
+  the example, and it ends with "Try this" changes for the reader to make.
+- **Reading and running:** the reader opens a lesson in `edit` and presses F5. It runs where it
+  is, unchanged; once changed, Save As keeps the reader's copy in `~/scripts`.
+- **Why not a separate help viewer:** the text sits next to the code it explains, and the
+  editor, F1 and the debugger work on it.
+- **Order:** the lessons go in steps, from `println("Hello")` to a game. Each uses only what the
+  ones before it showed.
+  1. Hello: `println`, `print`, comments, strings.
+  2. Numbers: variables, `int` and `float`, arithmetic, `%`, the maths functions.
+  3. Asking: `input`, `parseInt`, `if` and `else`, comparisons.
+  4. Loops: `while`, `for`, `break`, a times table, `sleep`.
+  5. A guessing game: `random`, putting the first four together.
+  6. Functions: parameters, return values, using one many times.
+  7. Arrays: lists, `insertLast`, `length`, `foreach`, sorting.
+  8. Text: string methods (`split`, `find`, `replace`, `toUpper`), the text screen's colours
+     and places (`Console`).
+  9. Classes: fields, methods, constructors, a list of objects.
+  10. Drawing: `Window`, shapes, colours (`rgb`, `hsv`), text.
+  11. Animation: a loop with `frame()`, `keyDown`, moving a player, closing the window.
+  12. A game: `Game` with `tick()`, `draw()` and `event()`; a score, lives, sounds, starting
+      again.
+  13. Sound: `beep`, `tone`, `play`'s music, `say`, `noteOn`.
+  14. Files: saving and loading a high score.
+- **Lesson 1** also says how the guide works: F5, the next lesson, F1, Save As.
+- **Names:** `NN-name.as`, so they sort in order. The menu's text comes from the name:
+  `03-asking.as` shows as "3. Asking".
+
+**The editor's Help menu:**
+- **Guide** and **Examples** are submenus listing the files, read when the menu opens. A click
+  opens the file. `Examples` replaces the file dialog it had.
+- **Folders:** both are settings: `editor/angel-guide` (`/rom/share/angel/guide`) and the
+  existing `editor/angel-examples`.
+- **Menu text from file names:** an example's name is its file's (`snake.as` is "Snake"). A
+  lesson's number loses its leading zero, and dashes become spaces.
+
+**New games** (the plan's "in the spirit of Nibbles and Gorillas, newly written": the ideas,
+none of QBasic's code, names, levels or art):
+- **`serpents.as`:** one or two players (the arrows, and W A S D), each a serpent. It eats the
+  numbers 1 to 9 in turn, growing more for higher ones. Levels have walls, which change after a
+  9 is eaten. There are lives and a speed that rises.
+- **`rooftops.as`:** two throwers on a random skyline take turns, typing an angle and a speed,
+  and the throw flies under gravity and the wind.
+  - The city is an `Image`, so a hit knocks a round hole in a building, and the flight checks
+    the image's pixels.
+  - The first to three hits wins.
+
+**Testing:**
+- **`angel_examples`** (a host test) checks every example and lesson with `angel -c`. An API
+  change that breaks one fails the build's tests.
+- **Text lessons' output:** the lessons with only text output (1, 2, 6, 7, 9) run with no input,
+  and their output is compared with expected files. A lesson that reads input gets none, so
+  `input()` returns "" and the lesson must handle that.
+
+**Budget:** text in the ROM, about 60 KB for the lessons and the two games; nothing in the
+firmware but the menus' code.
+
+## 15. As built: step 9 (2026-10-22)
+
+- **The guide:** fourteen lessons in `programs/angel/guide`, in the ROM at
+  `/rom/share/angel/guide`, as §14 lists them. Each ends with three things to try. Lesson 1
+  says how the guide works.
+- **New examples:**
+  - `serpents.as`: one or two players, five wall layouts that come round again, numbers worth
+    more at higher levels, five lives.
+  - `rooftops.as`: the skyline is an `Image` with a see-through colour, so a bomb knocks round
+    holes in it, and the flight asks the image's pixels what it hit. It takes four small steps a
+    tick, so a fast bomb can't jump over a thin wall. The first to three hits wins.
+- **The editor:** Help ▸ Guide and Help ▸ Examples list the folders' scripts by name (lessons
+  as " 3. Asking"). The `editor/angel-guide` setting is new, and the Examples file dialog is gone.
+- **Tests:** `angel_examples` builds every example and lesson, and runs lessons 1, 2, 6, 7 and 9
+  against `tests/scripts/guide/*.out`. `tests/scripts/foreach.as` checks the foreach fix.
+- **Found by the lessons:**
+  - **`foreach` over a value type** (`string[]`) freed each item twice: AngelScript 2.38.0
+    destroyed the items after each time round and again at the loop's end. `continue` also
+    skipped their destruction.
+    - Fixed by `thirdparty/angelscript/patches/bmds-foreach-items.diff`, which gives the items
+      a scope of their own inside the loop's.
+    - Script objects didn't show it: their variables are on the heap, and freeing one clears it.
+  - **An array of a class needs a constructor without arguments.** Lesson 9 says why.
+  - **`foreach` items are read-only:** the array's `opForValue` is `const`. A loop that changes
+    the items uses an index.
+- **Tried on the board:**
+  - The Guide menu, lesson 12 run from the ROM to its game-over screen.
+  - Serpents' title, a game, and a life lost at the wall.
+  - Rooftops: a throw at 45 and 60 that knocked a hole in a building, and the turn passing over.
+- **Checked on the host:**
+  - Serpents' five levels, printed as text.
+  - Rooftops' hits and its win, by searching for a hitting throw.
+- **Left:**
+  - **A trap in top-level statements.** A global object declared there *without* an initializer
+    (`Game g;`) is constructed when the script is built, before the statements run, so its
+    constructor can't use globals set by statements above it (`Window w(...)`, an `Image@`).
+    The examples construct their game in `w.run(Game())`, which is safe. The lessons never
+    declare such a global, but a reader may. Either initialize them where they stand too, as
+    those with an initializer are, or say so in an error. Unscheduled.

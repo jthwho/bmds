@@ -413,7 +413,7 @@ Plan: [`input.md`](input.md).
 
 ## Phase 8 — Self-Hosting
 
-- [ ] Scripting for children and amateurs (`scripting.md`, planned 2026-10-21): AngelScript in
+- [x] Scripting for children and amateurs (`scripting.md`, planned 2026-10-21): AngelScript in
   `angel`, an ordinary program, with the whole system (text screen, graphics, input, sound,
   files, network) as a frozen script API, and an IDE in the spirit of QBasic (F5 runs, errors in
   place, F1 help). Steps: C++ in the SDK; the runtime's core; text screen and system; graphics
@@ -433,8 +433,9 @@ Plan: [`input.md`](input.md).
   Step 7 done (`editor.md`): `edit` and its AngelScript mode (checks as you type, F5 Run in an
   Output pane, Stop, F1 help, completion, templates), `angel --serve` and `--report-fd`. Step 8
   done (`editor.md` §17): the debugger, `angel --debug` and the IDE's Debug tab (breakpoints,
-  stepping, the call stack, variables and watches, stops on uncaught exceptions). Next: the
-  guide and examples (step 9).
+  stepping, the call stack, variables and watches, stops on uncaught exceptions). Step 9 done
+  (§14, §15): the guide's fourteen lessons (Help ▸ Guide in `edit`), the Serpents and Rooftops
+  games, and a fix for AngelScript's `foreach` over strings.
 - [x] On-device text editor (`editor.md`, 2026-10-22): `edit`, on `TextDocument`, `TextEdit` and
   `CodeEdit`, one application for plain text (nine languages coloured), the angel IDE, and later
   C and C++; `TerminalWidget` for its Output (`/bin/terminal` onto it later, step 4b). Then the

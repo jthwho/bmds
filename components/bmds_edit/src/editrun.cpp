@@ -6,7 +6,8 @@
  * See LICENSE file in the project root folder for license information.
  *
  * edit's language tools (devplan/editor.md §9): the pane (Output, Problems, Help, Debug), checks as
- * you type, Run and Stop (plain or debugged, §17), F1 help, completion, templates and the examples.
+ * you type, Run and Stop (plain or debugged, §17), F1 help, completion, templates, and the guide's
+ * lessons and the examples (scripting.md §14).
  */
 
 #include <cstdio>
@@ -14,6 +15,7 @@
 #include <bmds/memory.h>
 #include <bmds/pipe.h>
 #include <bmds/sysconf.h>
+#include <bmds/vfs.h>
 #include "editwindow.h"
 
 BMDS_NAMESPACE_BEGIN
@@ -22,6 +24,9 @@ namespace {
 
         BMDS_SYSCONF(editorExamples, "editor/angel-examples", Config::Type::String, "/rom/share/angel/examples",
                      "Where the text editor's Help > Examples looks for AngelScript examples", 0, 0, nullptr, nullptr)
+        BMDS_SYSCONF(editorGuide, "editor/angel-guide", Config::Type::String, "/rom/share/angel/guide",
+                     "Where the text editor's Help > Guide finds the AngelScript guide's lessons", 0, 0, nullptr,
+                     nullptr)
         BMDS_SYSCONF(editorScripts, "editor/scripts", Config::Type::String, "${HOME}/scripts",
                      "Where the text editor saves new scripts by default", 0, 0, nullptr, nullptr)
 
@@ -109,9 +114,6 @@ Error EditWindow::buildPane(Widget *parent) {
         Error err = buildDebugTab();
         if (err.isError()) return err;
         _pane->setVisible(false);
-        (void)_examplesDialog.addFilter("AngelScript", "*.as");
-        (void)_examplesDialog.addFilter("All files", "");
-        _examplesDialog.setFinished(examplesChosen, this);
         return Error::Ok;
 }
 
@@ -620,10 +622,52 @@ void EditWindow::newFromTemplate(size_t index) {
         return;
 }
 
-void EditWindow::examplesChosen(void *arg, FileDialog &dialog, int result) {
-        auto *self = static_cast<EditWindow *>(arg);
-        if (result != FileDialog::Accepted) return;
-        for (size_t i = 0; i < dialog.count(); ++i) self->open(dialog.path(i));
+// The .as files in @p setting's folder, sorted by name, as @p menu's items from @p first: an
+// example by its name (`snake.as` is "Snake"), a lesson by its number and name (`03-asking.as`
+// is "3. Asking").
+void EditWindow::fillScriptMenu(Menu &menu, StringView setting, List<String> &paths, int first, bool lessons) {
+        menu.clear();
+        paths.clear();
+        String raw(MemSpace::Psram), folder(MemSpace::Psram);
+        if (SysConf::get(setting, raw).isError() || SysConf::expand(raw.view(), folder).isError()) return;
+        auto [dir, err] = Vfs::openDirectory(folder.view(), Vfs::Context{});
+        List<String> names(MemSpace::Psram);
+        while (err.isOk()) {
+                auto [info, nerr] = dir.next();
+                if (nerr.isError()) break;
+                if (info.isDirectory() || !info.name.view().endsWith(".as")) continue;
+                // Sorted as they come in.
+                size_t at = 0;
+                while (at < names.size() && names[at].view() < info.name.view()) ++at;
+                (void)names.insert(at, std::move(info.name));
+        }
+        for (size_t i = 0; i < names.size() && i < Menu::MaxItems; ++i) {
+                StringView name = names[i].view();
+                name = name.left(name.size() - 3); // .as
+                String text(MemSpace::Psram);
+                if (lessons) {
+                        // The number without its zeros, then the rest.
+                        size_t   digits = 0;
+                        unsigned number = 0;
+                        while (digits < name.size() && name[digits] >= '0' && name[digits] <= '9')
+                                number = number * 10 + unsigned(name[digits++] - '0');
+                        if (digits > 0) {
+                                (void)text.appendf("%2u. ", number); // lined up: " 9." and "10."
+                                name = name.mid(digits);
+                                if (name.startsWith('-')) name = name.mid(1);
+                        }
+                }
+                const size_t start = text.size();
+                for (char c : name) (void)text.append(c == '-' || c == '_' ? ' ' : c);
+                if (text.size() > start && text[start] >= 'a' && text[start] <= 'z')
+                        text.data()[start] = char(text[start] - 'a' + 'A');
+                String path(MemSpace::Psram);
+                (void)path.appendf("%.*s/%.*s", int(folder.size()), folder.data(), int(names[i].size()),
+                                   names[i].data());
+                if (menu.addItem(text.view(), first + int(i)).isError()) break;
+                (void)paths.append(std::move(path));
+        }
+        if (paths.isEmpty()) (void)menu.addItem("(none found)", 0, MenuLayout::Disabled);
         return;
 }
 

@@ -20,6 +20,11 @@ Andreas Jonsson's scripting library, the language of `angel` (`programs/angel`,
      them with an initializer is initialized where it stands, when `$top` reaches it.
   3. `bmds-scriptarray.diff`: the add-on without the STL (strings with `snprintf`, a heapsort
      in place of `std::sort` and the quadratic sorts).
+  4. `bmds-foreach-items.diff`: a fix. `foreach`'s item variables get a scope of their own
+     inside the loop's, as a `for` body's variables have. Released, they lived in the loop's
+     scope: destroyed after each time round and then again at the loop's end (a value type such
+     as `string` freed twice), and not destroyed by `continue` (constructed over, leaked).
+     Found by the guide's lessons (`devplan/scripting.md` §14).
 
   Without the two defines, the library behaves exactly as released. Both are written to be
   offered upstream.

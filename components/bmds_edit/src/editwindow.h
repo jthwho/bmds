@@ -115,7 +115,6 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener, pr
                         ChoosePreviousProblem,
                         ChooseHelpWord,
                         ChooseComplete,
-                        ChooseExamples,
                         ChooseRunNoDebug,
                         ChooseContinue,
                         ChooseStepOver,
@@ -128,7 +127,9 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener, pr
                         ChooseClearWatches,
                         ChooseTemplate,                         // + the template's index
                         ChooseCompletion = ChooseTemplate + 16, // + the candidate's index
-                        ChooseAbout,
+                        ChooseGuide = ChooseCompletion + 32,    // + the lesson's index
+                        ChooseExample = ChooseGuide + 32,       // + the example's index
+                        ChooseAbout = ChooseExample + 32,
                 };
 
                 // What a question about unsaved changes leads to once answered.
@@ -152,7 +153,6 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener, pr
                 static void runEnded(void *arg, TerminalWidget &terminal, int status);
                 static void problemPicked(void *arg, TextEdit &edit);
                 static void completionChosen(void *arg, int item);
-                static void examplesChosen(void *arg, FileDialog &dialog, int result);
                 static void breakpointsChanged(void *arg, CodeEdit &edit);
                 static void varsExpanding(void *arg, TreeView &view, size_t row);
                 static void framePicked(void *arg, TextEdit &edit);
@@ -207,6 +207,8 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener, pr
                 void             helpAtCursor();
                 void             complete();
                 void             newFromTemplate(size_t index);
+                void             fillScriptMenu(Menu &menu, StringView setting, List<String> &paths, int first,
+                                                bool lessons); // the folder's scripts, by name
                 void             wordAtCursor(StringView &owner, StringView &word, TextRange &range);
                 String           declaredType(StringView owner);
                 // The debugger (editdebug.cpp)
@@ -263,7 +265,10 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener, pr
                 uint32_t                             _localsCount = 0;           // the last frame's variables
                 bool                                 _stackShowing = false; // filling the stack (not the user's click)
                 bool                                 _debugSplitPlaced = false; // the Debug tab's split set once
-                FileDialog      _examplesDialog;
+                Menu                                 _guideMenu;
+                Menu                                 _examplesMenu;
+                List<String>    _guidePaths{MemSpace::Psram};   // the Guide menu's files, in its order
+                List<String>    _examplePaths{MemSpace::Psram}; // the Examples menu's
                 AngelSupport   *_angel = nullptr;
                 int             _checkTimer = -1;
                 uint32_t        _nextId = 0;

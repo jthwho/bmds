@@ -301,6 +301,8 @@ if(Python3_Interpreter_FOUND)
                  $<TARGET_FILE:angel> ${BMDS_ROOT}/tests/scripts/api.lock)
         add_test(NAME angel_serve COMMAND ${Python3_EXECUTABLE} ${BMDS_ROOT}/tests/scripts/serve.py
                  $<TARGET_FILE:angel>)
+        add_test(NAME angel_examples COMMAND ${Python3_EXECUTABLE} ${BMDS_ROOT}/tests/scripts/examples.py
+                 $<TARGET_FILE:angel> ${BMDS_ROOT})
 endif()
 
 # The corpus's expectations, checked against real bash (when there is one).
