@@ -47,6 +47,7 @@ set(BMDS_CORE_SRCS
         src/pngfilter.cpp
         src/softjpeg.cpp
         src/tjpgd.c
+        src/guiprotocol.cpp
         src/inflate.cpp
         src/inireader.cpp
         src/jsonreader.cpp

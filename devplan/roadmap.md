@@ -445,7 +445,9 @@ Plan: [`input.md`](input.md).
   SSH, so applications can run remotely), with windows, widgets, menus, dialogs and a `Canvas`;
   windows resized, levels and an asked close for every application; angel's bindings to it (many
   windows, one loop, callbacks) and to the rest of the system (settings, notifications,
-  processes, pads, audio, the clipboard). Next: step 1, the protocol's spine.
+  processes, pads, audio, the clipboard). Step 1 done (§9): the protocol's spine (`gui_open`, the
+  service, `Window`, `Box`, `Label`, `Button`, `LineEdit`, `libbmdsgui`, `guidemo` on the board).
+  Next: step 2, the classes.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

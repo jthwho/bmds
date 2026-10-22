@@ -91,6 +91,7 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/game/canvas.c
         ${BMDS_ROOT}/sdk/game/shapes.c
         ${BMDS_ROOT}/sdk/game/text.c
+        ${BMDS_ROOT}/sdk/gui/gui.c
         ${BMDS_ROOT}/sdk/game/font16.c
         ${BMDS_ROOT}/sdk/game/convert.c
         ${BMDS_ROOT}/sdk/game/mix.c
@@ -137,6 +138,8 @@ add_executable(bmds_host_tests
         notifications.cpp
         synth.cpp
         pipe.cpp
+        streampair.cpp
+        guiprotocol.cpp
         process.cpp
         regex.cpp
         rom.cpp
@@ -236,6 +239,8 @@ if(Python3_Interpreter_FOUND)
         add_test(NAME rom_icon_names COMMAND ${Python3_EXECUTABLE} ${BMDS_MKROM} check ${BMDS_ICONS_LIST}
                  ${BMDS_ROOT}/flash ${BMDS_ROOT}/dist ${BMDS_ROOT}/rom)
 endif()
+# libbmdsgui's transport is a given fd on the host (devplan/guiprograms.md §8).
+set_source_files_properties(${BMDS_ROOT}/sdk/gui/gui.c PROPERTIES COMPILE_DEFINITIONS BMDS_GUI_HOST)
 target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_bench bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_speech bmds_input bmds_ui bmds_gui bmds_clipboard
         bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_settings bmds_panel bmds_imageview bmds_net bmds_lwip)
 bmds_target_options(bmds_host_tests)

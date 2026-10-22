@@ -31,4 +31,4 @@ exec "@Python3_EXECUTABLE@" "@BMDS_SDK_DIR@/tools/bmds-link" "$GCC" $ARCH $INC -
         -Wl,--emit-relocs -Wl,--no-relax -Wl,--gc-sections -Wl,-z,max-page-size=512 -Wl,-z,common-page-size=512 \
         -Wl,--no-warn-rwx-segments -Wl,--defsym=__bmds_stack_size=${BMDS_STACK:-0} \
         -Wl,--defsym=__bmds_program_flags=${BMDS_DISPLAY:-0} \
-        -lbmds "$@" -Wl,--start-group -lbmdsgame -lbmdsbench -lbmds -lc @BMDS_LIBGCC@ -Wl,--end-group
+        -lbmds "$@" -Wl,--start-group -lbmdsgame -lbmdsgui -lbmdsbench -lbmds -lc @BMDS_LIBGCC@ -Wl,--end-group

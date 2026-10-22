@@ -17,6 +17,7 @@ set(BMDS_KERNEL_PORTABLE_SRCS
         src/memorystream.cpp
         src/notifications.cpp
         src/pipe.cpp
+        src/streampair.cpp
         src/random.cpp
         src/stats.cpp
         src/taskowner.cpp

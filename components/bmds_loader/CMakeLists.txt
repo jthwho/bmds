@@ -36,6 +36,7 @@ if(COMMAND idf_component_register)
                                     src/statscalls.cpp
                                     src/controlscalls.cpp
                                     src/fscalls.cpp
+                                    src/guicalls.cpp
                                     src/surfacecalls.cpp
                                     src/syscalls.cpp
                                     src/systable.c

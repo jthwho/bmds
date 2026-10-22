@@ -1,6 +1,7 @@
 # GUI Programs: the Toolkit for Every Program, and Angel's Bindings to the Whole System
 
-Status: **design** (2026-10-22). Nothing built. The user agreed with the shape (2026-10-22): the
+Status: **step 1 built** (2026-10-22; §9): the protocol's spine, `gui_open`, the service, five
+classes, `libbmdsgui` and `guidemo` on the board. Next: step 2, the classes. The user agreed with the shape (2026-10-22): the
 toolkit as a service (P1), names (P2), and **a wire protocol in the spirit of X11's** between
 programs and the service (P8), so that applications can also run on another machine. This plan
 revises `gui.md` G1 and fills in `windows.md` §6 ("ABI (later)").
@@ -143,7 +144,7 @@ writes requests in batches. Building a window of 200 widgets is one `write()`.
   with no network stack. The kernel has no `socketpair` or Unix sockets, so this is a new kind of
   stream: two queues, one each way, of 16 KB each.
 - **Remotely:** TCP to the service's port on the board's loopback (P9, §4g).
-- **Which display:** the client library reads `BMDS_DISPLAY`, as X11's `DISPLAY`:
+- **Which display:** the client library reads `BMDS_GUI_DISPLAY`, as X11's `DISPLAY`:
   - unset, or `local`: `gui_open(0)`;
   - `HOST:PORT`: TCP, normally `localhost:PORT` through an SSH tunnel.
 - **The same bytes both ways:** a program can't tell, and needn't, whether it is local.
@@ -343,7 +344,7 @@ app.run();                                  // every window and timer until the 
 - **One loop:** `App.run()` waits on the GUI connection, every surface `Window`, the timers and
   the script's sockets together.
 - **Remote scripts:** `angel` built for Linux has the same bindings over TCP. With
-  `BMDS_DISPLAY=localhost:6400` and an SSH tunnel, a script edited on a PC runs there and shows
+  `BMDS_GUI_DISPLAY=localhost:6400` and an SSH tunnel, a script edited on a PC runs there and shows
   its windows on the board.
 - **Keeping it gentle for beginners:** `alert(text)`, `ask(question)` (yes or no),
   `askText(prompt)` and `chooseFile()` are one-line dialogs that wait for the answer.
@@ -398,7 +399,7 @@ cover what a script needs without them.
     `CLIPBOARD`, `SERVICES`, `SHELL`, `REMOTE-FILES`);
   - the settings `gui/shell-clients` and `gui/shell-remote`;
   - each class's name, parent, properties, methods and events, and what each means;
-  - the two system calls, `BMDS_DISPLAY`'s forms, and the TCP port's setting.
+  - the two system calls, `BMDS_GUI_DISPLAY`'s forms, and the TCP port's setting.
 
   All only grow: requests, tags, error codes, extensions, classes and names are appended.
 - **The SDK:** `bmds/gui.h` and `libbmdsgui` (§4a), portable.
@@ -415,7 +416,7 @@ cover what a script needs without them.
   - The setting `gui/listen` (`off` by default, or `loopback`) and the setting `gui/port`
     (6400) open a TCP listener on 127.0.0.1 only.
   - A program on a PC reaches it through Dropbear: `ssh -L 6400:localhost:6400 root@board`,
-    then `BMDS_DISPLAY=localhost:6400`. A program on another board does the same with
+    then `BMDS_GUI_DISPLAY=localhost:6400`. A program on another board does the same with
     `dbclient`.
 - **The cookie:**
   - A connection by TCP presents 32 random bytes kept in `~/.config/gui/cookie` on the board,
@@ -574,3 +575,105 @@ Each step ends tried on the board and with its measurements (§5's estimates rep
   do, and it is a setting.
 - **Compression on remote links:** run-length for canvases at first; `zlib` (the system has
   `inflate` already, `deflate` for PNGs) if a measured canvas over SSH needs it.
+
+## 8. Step 1 design: the protocol's spine (2026-10-22)
+
+**Pieces and where they live:**
+
+| Piece | Where | What |
+|---|---|---|
+| The protocol's constants and codec | `bmds_core`: `bmds/guiprotocol.h` (pure, host-tested) | opcodes, kinds, tags, error codes; a writer and a reader of messages and values over byte buffers |
+| The connection stream | `bmds_kernel`: `bmds/streampair.h` (host-tested) | two ends, each reading one ring and writing the other; readiness and hang-up as a pipe's; 16 KB each way, PSRAM |
+| `gui_open` | `bmds_loader`: `guicalls.cpp`, slot 124 | calls the opener the service registered at boot (`bmds/guiopener.h`: the toolkit depends on the loader, so the loader can't call it directly); the program gets its end |
+| The service | new component `bmds_guiservice` (`GuiService`, `GuiConnection`, the class tables) | boot stage `gui`: registers the opener. A connection is two threads: a reader (frames requests, queues them, wakes the loop) and the loop (`GuiApplication::exec()`: runs requests, writes answers and events) |
+| The client library | `sdk/gui/gui.c`, `bmds/gui.h` → `libbmdsgui.a`, linked by `bmds-cc` as `libbmdsgame` is | C99; the transport `gui_open()` on BMDS, any descriptor on a host (`bmds_gui_connect_fd`: the host tests' socketpair now, TCP at step 8) |
+| `guidemo` | `sdk/examples/guidemo.c` | a window: a label, a field, two buttons; the field's text shown in the label on Enter or a click |
+
+**The wire, as built at step 1** (§4a's, made exact; little-endian, 4-aligned):
+- **Setup:** the client's first message is `Hello` (opcode 0): `"BMDSGUI\0"`, `uint16 major`
+  (1), `uint16 minor` (0), `uint32` the authentication's name length, `uint32` its data's,
+  then both, padded. The answer is a reply to sequence 0:
+  - `uint32 status` (0 accepted; 1 bad version, 2 refused, 3 busy);
+  - `uint16 major`, `uint16 minor`, `uint32 idBase`, `uint32 idMask`, `uint32 maxMessage`;
+  - the extensions (a count, then each: its name, a string value, and its first opcode and
+    first event code);
+  - the display as a property list (`screen`, `workArea`: rect values), so more is appended
+    without changing the layout.
+
+  Requests after it are numbered from 1.
+- **Ids:** `idBase` is the connection's slot + 1 shifted left by 24; `idMask` is 0x00FFFFFF.
+- **Events listened to by default:** `clicked`, `accepted`, `closed`. `edited` (each change of
+  a field) only after `Listen`.
+- **Step 1's classes:**
+
+  | Class | Properties | Methods | Events |
+  |---|---|---|---|
+  | (all widgets) | `enabled`, `visible` | `setFocus` | — |
+  | `Window` | `title`, `width`, `height` (the client area at first) | `show`, `close` | `closed` (the window manager closed it; asked at step 2) |
+  | `Box` | `direction` (`across`, `down`), `spacing`, `margin` | — | — |
+  | `Label` | `text` | — | — |
+  | `Button` | `text` | `click` | `clicked` |
+  | `LineEdit` | `text`, `masked`, `maxLength` | `selectAll` | `accepted` (Enter, the text), `edited` (the text) |
+
+  A widget's parent is a `Window` (its column of children) or a `Box`. Children are placed in
+  the order made.
+- **Output:** the loop writes answers to the stream, waiting at most 10 s for room. A client that
+  reads nothing for that long is disconnected (step 1's form of §4a's 1 MB rule).
+- **Input:** the reader holds at most 256 KB of unread requests, then waits for the loop.
+
+## 9. As built: step 1 (2026-10-22)
+
+**What exists:**
+- **The protocol:** `bmds/guiprotocol.h` (the constants, a writer and a reader) and `sdk/gui/gui.c`
+  (the client) speak §8's bytes.
+  - The host tests check the codec's every tag both ways, and the lengths and bad values it
+    refuses.
+  - They also run the C client against a scripted service speaking through the C++ codec, on a
+    socketpair: setup, interned names, a batch, an error that comes later, an event queued while a
+    reply was awaited, a `Get` and a failed one, the service gone.
+- **The connection stream:** `StreamPair` in `bmds_kernel` (host-tested: both ways, the ends'
+  closes, more than a ring's worth).
+- **`gui_open`:** slot 124 in the table and the ABI lock. It asks the service through
+  `GuiOpener`, which the service sets at the boot stage `gui`.
+- **The service:** `bmds_guiservice`.
+  - **Atoms:** one table for every connection, made at boot (no global constructor).
+  - **A connection:** a loop thread running its `GuiApplication` (16 KB stack, PSRAM) and a reader
+    thread (4 KB), both kernel threads.
+  - **Objects:** kept in a list sorted by id. Removing one removes its children, then the
+    toolkit's side.
+  - **Layout:** after each round of requests, the touched windows' boxes are laid out again.
+- **The classes:** `Window` (a column of children, centred in the work area at its size or its
+  children's), `Box`, `Label`, `Button`, `LineEdit`, as §8's table.
+- **`libbmdsgui`:** linked into SDK programs by `bmds-cc` and `bmds_add_program`.
+- **`guidemo`:** in `sdk/examples`.
+
+**Measured:**
+- **Firmware:** `bmds_guiservice` 11.8 KB of flash.
+- **A program:** `libbmdsgui` adds 6.1 KB (text and data); `guidemo.elf` is 188 KB with musl, its
+  relocations and symbols (`programs.md` §20).
+- **Memory:** twelve connections opened and closed after the first six: internal RAM unchanged,
+  PSRAM within 9 KB, no trend. A connection's own cost is its two stacks (20 KB, PSRAM), its
+  stream (32 KB), its application and objects.
+- **Speed:** the window, six objects and their properties go as one batch before the first event
+  is waited for. It is on the screen as the program starts.
+
+**Tried on the board:**
+- `guidemo` from `/tmp`: its window drawn as a built-in application's.
+- A name typed and Enter: `accepted`, then a `Get` of the field and a `Set` of the label
+  ("Hello, Ada!" on the screen and on its stdout).
+- Alt+Q (the Quit button's mnemonic): `clicked`, and the program ended, its window gone.
+- The window's close button: `closed`, and the program ended.
+- `kill -9` of the program: its window went with its connection.
+
+**Found on the board:**
+- **`Thread::detach()` must not be called at a thread's start:** the thread can run before
+  `start()` has recorded its handle (an assertion, then a reset, on the first try). The loop now
+  waits for `start()` to finish (a semaphore) and detaches as it ends.
+- **The variable naming the display is `BMDS_GUI_DISPLAY`,** not `BMDS_DISPLAY` as §4a first said:
+  `bmds-cc` already uses `BMDS_DISPLAY` at build time, for programs that draw continuously.
+
+**Left for later steps:**
+- `Describe`, the other classes and the generated C wrappers (step 2).
+- The client's requests ignore `sync()`'s errors past their handler: a program that wants to
+  stop at an error checks in its handler.
+- Answers are written with a 10 s limit rather than §4a's 1 MB rule (§8).

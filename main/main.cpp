@@ -28,6 +28,7 @@
 #include <bmds/midi.h>
 #include <bmds/netmidi.h>
 #include <bmds/romdisk.h>
+#include <bmds/guiservice.h>
 #include <bmds/netmounts.h>
 #include <bmds/sshservice.h>
 #include <bmds/storage.h>
@@ -110,6 +111,7 @@ namespace {
                 {"input", bmds::Input::init},
                 {"pads", bmds::Pads::init},                // the gamepads' table; before USB attaches any
                 {"controls", bmds::ProgramControls::init}, // programs' actions, changed live
+                {"gui", bmds::GuiService::init},           // programs' windows (gui_open), while the window system runs
                 {"usb", bmds::UsbHost::init},
                 {"usbdev", startUsbDevice},          // usb/device/mode: the console port as a USB device
                 {"net", bmds::EthernetDevice::init}, // eth0 (devplan/network.md)

@@ -198,6 +198,7 @@ static inline int bmds_sys_has(uint32_t n) {
         121u /**< `int32_t surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size)`. */
 #define BMDS_SYS_CONTROLS 122u /**< `int32_t controls(uint32_t op, void *arg, uint32_t size)`. */
 #define BMDS_SYS_FS_SERVE 123u /**< `int32_t fs_serve(const bmds_fs_serve_t *config)`: the server fd. */
+#define BMDS_SYS_GUI_OPEN 124u /**< `int32_t gui_open(uint32_t display, uint32_t flags)`: a GUI connection fd. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -2004,6 +2005,7 @@ typedef int32_t (*bmds_sys_surface_present_fn)(int32_t fd, const bmds_surface_pr
 typedef int32_t (*bmds_sys_surface_control_fn)(int32_t fd, uint32_t op, void *arg, uint32_t size);
 typedef int32_t (*bmds_sys_controls_fn)(uint32_t op, void *arg, uint32_t size);
 typedef int32_t (*bmds_sys_fs_serve_fn)(const bmds_fs_serve_t *config);
+typedef int32_t (*bmds_sys_gui_open_fn)(uint32_t display, uint32_t flags);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -3296,6 +3298,20 @@ static inline int32_t bmds_controls(uint32_t op, void *arg, uint32_t size) {
 static inline int32_t bmds_fs_serve(const bmds_fs_serve_t *config) {
         if (!bmds_sys_has(BMDS_SYS_FS_SERVE)) return -BMDS_ENOSYS;
         return ((bmds_sys_fs_serve_fn)bmds_sys->slot[BMDS_SYS_FS_SERVE])(config);
+}
+
+/**
+ * @brief Opens a connection to display @p display's GUI service (devplan/guiprograms.md §4a):
+ *        an fd that reads and writes the GUI protocol, pollable. Programs use it through
+ *        `bmds/gui.h` (`bmds_gui_connect`), which speaks the protocol. @p flags:
+ *        `BMDS_O_CLOEXEC`. (Slot 124, appended 2026-10-22: check `bmds_sys_has()`.)
+ * @return The fd, or `-BMDS_EINVAL` (flags), `-BMDS_ENODEV` (no such display, or no window
+ *         system running), `-BMDS_EBUSY` (too many connections), `-BMDS_ENOMEM`, `-BMDS_EMFILE`,
+ *         `-BMDS_ENOSYS` (a system without it).
+ */
+static inline int32_t bmds_gui_open(uint32_t display, uint32_t flags) {
+        if (!bmds_sys_has(BMDS_SYS_GUI_OPEN)) return -BMDS_ENOSYS;
+        return ((bmds_sys_gui_open_fn)bmds_sys->slot[BMDS_SYS_GUI_OPEN])(display, flags);
 }
 
 /**
