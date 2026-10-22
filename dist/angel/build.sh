@@ -3,7 +3,7 @@
 # (devplan/scripting.md §4); the default is float.
 
 AS="$ROOT/thirdparty/angelscript"
-DEFINES="-DAS_TOP_LEVEL_STATEMENTS -DAS_NO_EXCEPTIONS -DANGEL_VERSION=\\\"$VERSION\\\""
+DEFINES="-DANGEL_BMDS -DAS_TOP_LEVEL_STATEMENTS -DAS_NO_EXCEPTIONS -DANGEL_VERSION=\\\"$VERSION\\\""
 case "${ANGEL_FLOAT_LITERALS:-float}" in
         float) DEFINES="$DEFINES -DAS_FLOAT_LITERALS" ;;
         double) ;;

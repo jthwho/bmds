@@ -199,6 +199,35 @@ void bmds_canvas_shade_image(bmds_canvas_t *canvas, int32_t x, int32_t y, const 
 void bmds_canvas_fill_blend(bmds_canvas_t *canvas, int32_t x, int32_t y, int32_t width, int32_t height, uint32_t rgb,
                             uint32_t alpha);
 
+/**
+ * @brief Draws an ellipse's outline, one pixel wide, centred on (@p cx, @p cy) with radii @p rx
+ *        across and @p ry down (a circle: both the same; 0 and 0: one pixel).
+ */
+void bmds_canvas_ellipse(bmds_canvas_t *canvas, int32_t cx, int32_t cy, int32_t rx, int32_t ry, uint32_t pixel);
+
+/** @brief Fills an ellipse, as bmds_canvas_ellipse() outlines it. */
+void bmds_canvas_fill_ellipse(bmds_canvas_t *canvas, int32_t cx, int32_t cy, int32_t rx, int32_t ry, uint32_t pixel);
+
+/**
+ * @brief Fills the polygon of @p points corners at @p xy (x0, y0, x1, y1...; closed from the last
+ *        to the first), even-odd: each pixel whose centre is inside.
+ * @return 0, or -1 (no memory for the crossings).
+ */
+int bmds_canvas_fill_polygon(bmds_canvas_t *canvas, const int32_t *xy, uint32_t points, uint32_t pixel);
+
+/**
+ * @brief Fills the area around (@p x, @p y) of the pixel value there, connected across and down
+ *        (QBasic's PAINT), inside the clip.
+ * @return 0, or -1 (no memory: the fill stopped part way).
+ */
+int bmds_canvas_flood_fill(bmds_canvas_t *canvas, int32_t x, int32_t y, uint32_t pixel);
+
+/** @brief Returns the pixel value at (@p x, @p y), or 0 outside the canvas. */
+uint32_t bmds_canvas_get(const bmds_canvas_t *canvas, int32_t x, int32_t y);
+
+/** @brief Returns a pixel value as 0xRRGGBB (bmds_canvas_pixel()'s inverse; L8: the index). */
+uint32_t bmds_canvas_rgb(const bmds_canvas_t *canvas, uint32_t pixel);
+
 /** @brief Adds @p rect (cut to the canvas) to the damage, as drawing does. */
 void bmds_canvas_damage(bmds_canvas_t *canvas, const bmds_rect_t *rect);
 

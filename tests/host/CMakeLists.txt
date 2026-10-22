@@ -89,6 +89,7 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/crt/oss.c
         game.cpp
         ${BMDS_ROOT}/sdk/game/canvas.c
+        ${BMDS_ROOT}/sdk/game/shapes.c
         ${BMDS_ROOT}/sdk/game/text.c
         ${BMDS_ROOT}/sdk/game/font16.c
         ${BMDS_ROOT}/sdk/game/convert.c
@@ -284,8 +285,11 @@ target_compile_definitions(bmds_angelscript PUBLIC AS_MAX_PORTABILITY AS_FLOAT_L
 # AngelScript as released compiles with warnings: not ours to fix.
 target_compile_options(bmds_angelscript PRIVATE -std=gnu++20 -fno-exceptions -fno-rtti -w)
 file(GLOB BMDS_ANGEL_SOURCES ${BMDS_ROOT}/programs/angel/*.cpp)
-add_executable(angel ${BMDS_ANGEL_SOURCES})
-target_link_libraries(angel PRIVATE bmds_angelscript pthread)
+# The drawing is libbmdsgame's; a window on the host is only its picture (no ANGEL_BMDS).
+add_executable(angel ${BMDS_ANGEL_SOURCES} ${BMDS_ROOT}/sdk/game/canvas.c ${BMDS_ROOT}/sdk/game/shapes.c
+        ${BMDS_ROOT}/sdk/game/text.c ${BMDS_ROOT}/sdk/game/font16.c)
+target_include_directories(angel PRIVATE ${BMDS_ROOT}/sdk/include)
+target_link_libraries(angel PRIVATE bmds_angelscript pthread m)
 bmds_target_options(angel)
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)

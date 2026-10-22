@@ -94,6 +94,13 @@ namespace angel {
         void registerConsole(asIScriptEngine *engine);
         void registerFiles(asIScriptEngine *engine);
         void registerSystem(asIScriptEngine *engine);
+        void registerGraphics(asIScriptEngine *engine);
+
+        // At the script's end: its open windows stay until the user closes them.
+        void waitForWindows();
+
+        // Reports a script exception (main.cpp): where, the calls that led there.
+        void reportException(asIScriptContext *ctx);
 
         // The arguments scripts see as `args` (before registerCore), and their array released
         // (before the engine is shut down: an object of the script's types kept past the

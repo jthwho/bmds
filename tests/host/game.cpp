@@ -146,6 +146,47 @@ TEST_CASE("Game canvas: outlines and lines") {
         CHECK(r.rows().substr(6, 5) == "#####");
 }
 
+TEST_CASE("Game canvas: ellipses, polygons, flood fills, pixels read back") {
+        Picture p(15, 11, BMDS_PIXEL_L8);
+        bmds_canvas_ellipse(&p.canvas, 7, 5, 5, 5, 1);
+        CHECK(p.rows() == ".....#####.....\n....#.....#....\n...#.......#...\n..#.........#..\n"
+                          "..#.........#..\n..#.........#..\n..#.........#..\n..#.........#..\n"
+                          "...#.......#...\n....#.....#....\n.....#####.....\n");
+        CHECK(p.damage() == "2,0 11x11;");
+        Picture f(15, 11, BMDS_PIXEL_RGB565);
+        bmds_canvas_fill_ellipse(&f.canvas, 7, 5, 5, 5, 0xffff);
+        CHECK(f.rows() == ".....#####.....\n....#######....\n...#########...\n..###########..\n"
+                          "..###########..\n..###########..\n..###########..\n..###########..\n"
+                          "...#########...\n....#######....\n.....#####.....\n");
+        Picture e(15, 11, BMDS_PIXEL_L8);
+        bmds_canvas_ellipse(&e.canvas, 7, 5, 7, 3, 1);
+        bmds_canvas_ellipse(&e.canvas, 7, 0, 0, 0, 1); // radius 0: one pixel
+        CHECK(e.rows() == ".......#.......\n...............\n....#######....\n.###.......###.\n"
+                          "#.............#\n#.............#\n#.............#\n.###.......###.\n"
+                          "....#######....\n...............\n...............\n");
+        Picture       t(15, 11, BMDS_PIXEL_BGR24);
+        const int32_t triangle[] = {7, 0, 14, 10, 0, 10};
+        CHECK(bmds_canvas_fill_polygon(&t.canvas, triangle, 3, 0xff0000) == 0);
+        CHECK(t.rows().substr(0, 32) == "...............\n......##.......\n");
+        CHECK(t.rows().substr(16 * 9, 16) == "##############.\n");
+        CHECK(t.damage() == "0,0 15x11;");
+        Picture g(15, 11, BMDS_PIXEL_L8);
+        bmds_canvas_rect(&g.canvas, 2, 2, 10, 7, 1);
+        bmds_canvas_line(&g.canvas, 2, 2, 11, 8, 1);
+        bmds_canvas_damage_clear(&g.canvas);
+        CHECK(bmds_canvas_flood_fill(&g.canvas, 9, 3, 1) == 0); // above the diagonal, inside the box
+        CHECK(g.rows() == "...............\n...............\n..##########...\n..##########...\n"
+                          "..#..#######...\n..#...######...\n..#.....####...\n..#......###...\n"
+                          "..##########...\n...............\n...............\n");
+        CHECK(g.damage() == "5,3 6x4;");
+        CHECK(bmds_canvas_flood_fill(&g.canvas, 9, 3, 1) == 0); // already that colour: nothing
+        CHECK(bmds_canvas_get(&f.canvas, 7, 5) == 0xffff);
+        CHECK(bmds_canvas_get(&f.canvas, 0, 0) == 0);
+        CHECK(bmds_canvas_get(&f.canvas, -1, 99) == 0);
+        CHECK(bmds_canvas_rgb(&f.canvas, 0xffff) == 0xffffff);
+        CHECK(bmds_canvas_rgb(&f.canvas, bmds_canvas_pixel(&f.canvas, 0x808080)) == 0x848284);
+}
+
 TEST_CASE("Game canvas: blits, a source rectangle, the key, clipping") {
         // A 4x2 sheet: two 2x2 sprites, 0 the key.
         const uint8_t     sheet[] = {1, 0, 3, 3, 0, 1, 3, 3};

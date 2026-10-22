@@ -1,8 +1,8 @@
 # Scripting: AngelScript, a Runtime with the Whole System, and an IDE
 
-Status: **steps 1-3 built** (2026-10-21): C++ in the SDK; `angel` in the ROM with its core,
-the text screen, files and other programs; the patches; the corpus and the API lock. As built
-and measured: §10. Next: step 4, graphics and input.
+Status: **steps 1-4 built** (2026-10-21): C++ in the SDK; `angel` in the ROM with its core,
+the text screen, files and other programs, graphics and input; the patches; the corpus and the
+API lock. As built and measured: §10 and §11. Next: step 5, sound.
 
 ## 1. Goal
 
@@ -258,27 +258,36 @@ table, so they can't disagree.
   (doesn't wait, like `INKEY$`), `width()`, `height()`. VT sequences, and raw mode on the
   terminal the script runs in while keys are read (`input()` and the script's end restore it).
   QBasic's text-mode games (`LOCATE`, `COLOR`, `INKEY$`) translate to these directly.
-- **Graphics** comes in two styles over one `Canvas` type.
-  - **Immediate (QBasic's way):**
-    - `Window w("Title", 640, 480);` then `w.line(...)`, `w.circle(...)`, `w.fill(...)`,
-      `w.text(...)`, `w.image(...)` appear as they are drawn. A thread of the runtime presents
-      the damage at the display's rate, under a lock the drawing calls take briefly.
-    - `w.key()`, `w.mouse()`, `w.waitClick()` and `w.closed()` read input.
-    - `w.frame()` waits for the next frame, for animation without tearing.
-  - **Game (`libbmdsgame`'s frame loop):** a script class implementing `Game`
-    (`void tick()`, `void draw(Canvas@ c)`, `void event(const Event &in e)`) is passed to
-    `run(game, width, height, ticksPerSecond)`. This is the fixed tick and drawing only what
-    changed, as Blocks and Lucky Duck do.
-  - **`Canvas`:**
-    - `clear`, `plot`, `line`, `rect`, `fill`, `circle`, `ellipse`, `polygon`, `text` (at a
-      scale), `blit`, `blitScaled`, `blitRotated`, `fillBlend`, `shade`, `clip`;
-    - `Color` (`Color::Red`, `rgb(r, g, b)`);
-    - `circle`, `ellipse` and `polygon` are new in `libbmdsgame`.
-  - **`Image`:** loaded from PNG, JPEG or BMP, from a sprite sheet (`image.part(x, y, w, h)`),
-    or made and drawn on as a canvas.
-- **Input:** `Event` covers keys (with text), mouse buttons, motion and the wheel, focus and
-  close. Keys are named constants (`Key::Left`, `Key::Space`). Gamepads come later, through
-  controls (`controls.md`), so a script names actions rather than buttons.
+- **Graphics** (built, step 4): `Window` and `Image`, drawn on with the same methods; there is
+  no separate `Canvas` type (as built: one fewer thing to learn).
+  - **Immediate (QBasic's way):** `Window w("Title", 640, 480);` then `w.line(...)`,
+    `w.fillCircle(...)`, `w.text(...)`, `w.image(...)` appear as they are drawn. Once a script
+    calls `w.frame()` (once round an animation's loop) the window is shown only by `frame()`
+    and while the script waits for input, so a frame is never shown half drawn; one that stops
+    calling it for a tenth of a second is shown as it draws again.
+  - **Game:** a script class implementing the interface `Game` with any of `void tick()`,
+    `void draw()`, `void event(Event@)` runs in `w.run(game, ticksPerSecond)`: events, ticks at
+    the rate (catching up five at most), a draw each frame, until the window closes or
+    `w.stop()`. As built it is a method of the window, not `run(game, width, height, ...)`.
+  - **Drawing:** `clear`, `plot`, `pixel` (the colour read back, exactly: pictures are 24-bit),
+    `line`, `rect`, `fillRect` (solid, or with an opacity), `circle`, `fillCircle`, `ellipse`,
+    `fillEllipse`, `polygon` and `fillPolygon` (`{x1, y1, x2, y2, ...}`), `floodFill` (PAINT),
+    `text` (any value, 8 × 16 letters times a scale), `image` (at a place, or stretched),
+    `imageRotated` (degrees and a scale), `clip`, `save` (PNG).
+  - **Colours** are `uint` 0xRRGGBB: `Color::Red` and 17 more, `rgb(r, g, b)`, `hsv(hue,
+    saturation, value)`, `mix(a, b, amount)`; `textWidth`, `textHeight`.
+  - **`Image`:** `Image(width, height)` blank, `Image(path)` from PNG, JPEG or BMP (transparent
+    where the file is), `part(x, y, w, h)` (a sprite from a sheet), `transparent(color)`,
+    `opaque()`.
+  - New in `libbmdsgame` (`shapes.c`): ellipses outlined and filled, filled polygons, flood
+    fill, reading pixels back.
+- **Input** (built, step 4): `w.key()` and `w.keyNow()` (as `Console`'s: the character typed,
+  or a name), `w.keyDown(name)` (held now: "a", "Space", "Left", "Shift"...), `mouseX()`,
+  `mouseY()`, `mouseDown(button)`, `mouseWheel()`, and `Event` (`waitEvent()`, `nextEvent()`):
+  `type` (`KeyDown`, `KeyUp`, `MouseMove`, `MouseDown`, `MouseUp`, `Wheel`, `Close`), `key`,
+  `text`, `x`, `y`, `button`, `wheel`. `w.closed()` says the user closed it; a script that never
+  asks (nor reads events, nor runs a game) ends when its window is closed. Gamepads come later,
+  through controls (`controls.md`), so a script names actions rather than buttons.
 - **Sound:**
   - `Sound s("boom.wav"); s.play(volume, pan)` (voices, looping);
   - `Music::play("song.mid")` (MIDI through the synth, or audio files);
@@ -302,8 +311,7 @@ table, so they can't disagree.
 - **System:**
   - built (step 3): `run(command)` (its output on the screen; the exit status) and
     `output(command)` (what it printed);
-  - later, with the board-only parts of step 4: `setting(key)` (read only) and
-    `notify(title, text)`.
+  - built (step 4): `setting(key)` (a setting's value, read only) and `notify(title, text)`.
 
 ### The IDE (working name *Workshop*)
 
@@ -357,11 +365,9 @@ table, so they can't disagree.
 3. **Text screen and system** (done 2026-10-21): `Console`, `File` and the file functions,
    `run` and `output`, and the first examples (`/rom/share/angel/examples`: a number-guessing
    game, a text adventure).
-4. **Graphics and input:**
-   - `Canvas`, `Image`, `Color`, `Event`;
-   - the immediate `Window` (with its presenting thread), and `Game` and `run()`;
-   - `circle`, `ellipse` and `polygon` in `libbmdsgame`.
-   - Examples: a bouncing ball, a paint program, a snake game.
+4. **Graphics and input** (done 2026-10-21): `Window`, `Image`, colours, `Event`, `Game` and
+   `run()`; `setting()` and `notify()`; ellipses, polygons and flood fill in `libbmdsgame`.
+   Examples: a bouncing ball, a paint program, a snake game.
 5. **Sound:** `Sound`, `Music`, `tone`, `beep`, `play` (the music language, on the synth), `say`.
 6. **Network:** `Socket`, `Http`. Examples: a chat between two boards, fetching a page.
 7. **`CodeEdit` and the IDE:**
@@ -491,3 +497,35 @@ calls). New system calls, if a binding needs one, follow the usual rules.
   Built on the PC: `angel` takes a minute with the build wrapper's jobs; nested in the
   firmware's build (one job) about three and a half, only when its sources change.
 - **The C++ example** costs about 1 KB over `hello` (the operators and guards).
+
+## 11. As built (step 4, 2026-10-21)
+
+- **A window draws straight into its surface's buffers** (three, 24-bit). One is held to draw
+  on; a thread of `angel`'s presents it and takes the next, and reads the window's events into a
+  queue (128). The next buffer is brought up to date from the newest shown by the 2D-DMA the
+  first time it is drawn on, less what that drawing paints whole, so `clear()` brings nothing
+  over. Solid fills (`clear`, `fillRect`) are the 2D-DMA's too; the rest is libbmdsgame's
+  drawing on the CPU. On the host a window is only its picture, so the corpus draws and reads
+  pixels back (`graphics.as`, `graphicserrors.as`).
+- **What changed on the way, measured on the board** (a 640 × 480 window):
+
+  | | full redraw a frame | a ball moved a frame |
+  |---|---|---|
+  | first: the script's own picture, copied to the buffers by the CPU | 12 frames/s | 59 |
+  | drawing in the buffers, fills and catch-up by the 2D-DMA | 45 | 60 |
+  | and shown only at `frame()` once the script calls it | 59 | 60 |
+
+  The CPU moves PSRAM at about 28 MB/s each way (`docs/platforms/esp32p4.md`), so the first
+  design spent 27 ms clearing the script's picture and as long again copying it. Showing a
+  buffer whenever something was drawn also showed frames half drawn: the snake's body was
+  missing from a screenshot (its head drawn, then the frame shown before the body).
+- **AngelScript gives an application function the reference of a handle argument** (`Image@`,
+  `Game@`): it must be released. Not doing so leaked every image drawn and the game passed to
+  `run()` (the module warned that it couldn't be freed).
+- **Tried on the board** (`win hid`, `win key`, `win pointer`, `win close`, `screenshot`): keys
+  with their names, typed text, `keyDown`, mouse motion, buttons and the wheel, Close; `run()`
+  at 60 ticks a second (120 in 2.0 s); snake played; paint strokes in two colours; QBasic-style
+  drawing shown without `frame()`, then `key()`; images loaded, cut, rotated and saved;
+  `setting("clock/zone")`; an exception in `tick()` reported with its call stack.
+- **The window stays when the script ends**, until it is closed (the picture is there to be
+  seen); `exit()` closes it at once.

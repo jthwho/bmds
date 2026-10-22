@@ -416,8 +416,12 @@ Plan: [`input.md`](input.md).
   Steps 1-3 done (§10): C++ programs (`bmds-c++`, freestanding headers, the runtime in libbmds);
   AngelScript 2.38.0 vendored with our patches (float literals, top-level statements);
   `angel` in `/rom/bin` with the core API, `Console`, files and `run`/`output`, two examples in
-  `/rom/share/angel/examples`; the script corpus and the API lock in the host tests. Next:
-  graphics and input (step 4).
+  `/rom/share/angel/examples`; the script corpus and the API lock in the host tests. Step 4
+  done (§11): `Window` and `Image` drawn on alike (24-bit, straight into the surface's buffers,
+  fills and catch-up by the 2D-DMA, shown at `frame()`: 59 frames/s for a full 640 × 480
+  redraw), colours, keys, the mouse and `Event`, `Game` in `Window.run()`, `setting()` and
+  `notify()`; ellipses, polygons and flood fill in `libbmdsgame`; bounce, paint and snake
+  examples. Next: sound (step 5).
 - [ ] On-device text editor.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.

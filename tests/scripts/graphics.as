@@ -1,0 +1,63 @@
+// Drawing on a window (on the host, only its picture) and on images; colours read back exactly.
+Window w("Test", 64, 48);
+println(w.width() + "x" + w.height());
+w.clear(Color::Navy);
+println(w.pixel(0, 0) == Color::Navy);
+println(w.pixel(-1, 0) == Color::Black); // outside: black
+w.plot(1, 1, Color::Red);
+println(w.pixel(1, 1) == Color::Red);
+w.line(0, 10, 63, 10, Color::Yellow);
+println(w.pixel(40, 10) == Color::Yellow);
+w.rect(2, 20, 10, 8, Color::White);
+println((w.pixel(2, 20) == Color::White) + " " + (w.pixel(5, 23) == Color::Navy));
+w.fillRect(20, 20, 8, 8, Color::Orange);
+println(w.pixel(27, 27) == Color::Orange);
+w.fillRect(20, 20, 8, 8, Color::White, 0.5);
+uint blended = w.pixel(24, 24); // half way, in 32 steps
+println(blended != Color::Orange && blended != Color::White && (blended >> 16) == 0xff);
+w.fillCircle(50, 30, 6, Color::Lime);
+w.circle(50, 30, 8, Color::Pink);
+println((w.pixel(50, 30) == Color::Lime) + " " + (w.pixel(58, 30) == Color::Pink) + " " + (w.pixel(57, 30) == Color::Navy));
+w.fillEllipse(10, 40, 6, 3, Color::Cyan);
+println(w.pixel(15, 40) == Color::Cyan);
+w.fillPolygon({30, 47, 40, 37, 50, 47}, Color::Purple);
+println(w.pixel(40, 45) == Color::Purple);
+w.polygon({0, 0, 5, 0, 5, 5}, Color::White);
+println(w.pixel(5, 3) == Color::White);
+w.rect(0, 30, 6, 6, Color::Red);
+w.floodFill(2, 32, Color::Green);
+println((w.pixel(2, 32) == Color::Green) + " " + (w.pixel(0, 30) == Color::Red));
+int width = w.text(0, 0, 42, Color::White);
+println(width + " " + textWidth(42) + " " + textWidth("abc", 2) + " " + textHeight(3));
+w.clip(0, 0, 10, 10);
+w.fillRect(0, 0, 64, 48, Color::Black);
+println((w.pixel(9, 9) == Color::Black) + " " + (w.pixel(10, 10) == Color::Black));
+w.clip();
+println(rgb(255, 128, 0) == Color::Orange);
+println(rgb(300, -5, 16) == 0xff0010);
+println(hsv(0, 1, 1) == Color::Red);
+println(hsv(240, 1, 1) == Color::Blue);
+println(hsv(480, 1, 1) == Color::Lime);
+println(mix(Color::Black, Color::White, 0) == Color::Black);
+
+Image sprite(4, 4);
+sprite.clear(Color::Magenta);
+sprite.fillRect(1, 1, 2, 2, Color::Yellow);
+sprite.transparent(Color::Magenta);
+w.clear(Color::Blue);
+w.image(sprite, 10, 10);
+println((w.pixel(10, 10) == Color::Blue) + " " + (w.pixel(11, 11) == Color::Yellow));
+w.image(sprite, 20, 20, 8, 8);
+println(w.pixel(23, 23) == Color::Yellow);
+sprite.opaque();
+w.image(sprite, 30, 30);
+println(w.pixel(30, 30) == Color::Magenta);
+Image@ part = sprite.part(1, 1, 2, 2);
+println(part.width() + "x" + part.height() + " " + (part.pixel(0, 0) == Color::Yellow));
+w.imageRotated(sprite, 40, 10, 90, 2);
+println(w.pixel(40, 10) == Color::Yellow);
+
+println(w.keyNow() == "" && !w.keyDown("a") && !w.mouseDown());
+println(w.nextEvent() is null);
+w.frame();
+println(w.closed());

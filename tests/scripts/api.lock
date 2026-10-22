@@ -191,3 +191,115 @@ void string::erase(uint, int = -1)
 void string::insert(uint, const string&in)
 void throw(const string&in)
 void writeFile(const string&in, const string&in)
+# Step 4 (2026-10-21): graphics and input, setting(), notify().
+Event::const EventType type
+Event::const int button
+Event::const int wheel
+Event::const int x
+Event::const int y
+Event::const string key
+Event::const string text
+Event@ Window::nextEvent()
+Event@ Window::waitEvent()
+EventType::Close = 6
+EventType::KeyDown = 0
+EventType::KeyUp = 1
+EventType::MouseDown = 3
+EventType::MouseMove = 2
+EventType::MouseUp = 4
+EventType::Wheel = 5
+Image@ Image(const string&in)
+Image@ Image(int, int)
+Image@ Image::part(int, int, int, int) const
+Window@ Window(const string&in = "Angel", int = 640, int = 480, bool = false)
+bool Window::closed()
+bool Window::keyDown(const string&in)
+bool Window::mouseDown(int = 1)
+class Event
+class Game
+class Image
+class Window
+const uint Color::Black
+const uint Color::Blue
+const uint Color::Brown
+const uint Color::Cyan
+const uint Color::DarkGray
+const uint Color::Gray
+const uint Color::Green
+const uint Color::LightGray
+const uint Color::Lime
+const uint Color::Magenta
+const uint Color::Navy
+const uint Color::Orange
+const uint Color::Pink
+const uint Color::Purple
+const uint Color::Red
+const uint Color::Sky
+const uint Color::White
+const uint Color::Yellow
+enum EventType
+int Image::height() const
+int Image::text(int, int, const ?&in, uint, int = 1)
+int Image::width() const
+int Window::height() const
+int Window::mouseWheel()
+int Window::mouseX()
+int Window::mouseY()
+int Window::text(int, int, const ?&in, uint, int = 1)
+int Window::width() const
+int textHeight(int = 1)
+int textWidth(const ?&in, int = 1)
+string Window::key()
+string Window::keyNow()
+string setting(const string&in)
+uint Image::pixel(int, int) const
+uint Window::pixel(int, int) const
+uint hsv(float, float, float)
+uint mix(uint, uint, float)
+uint rgb(int, int, int)
+void Image::circle(int, int, int, uint)
+void Image::clear(uint = Color::Black)
+void Image::clip()
+void Image::clip(int, int, int, int)
+void Image::ellipse(int, int, int, int, uint)
+void Image::fillCircle(int, int, int, uint)
+void Image::fillEllipse(int, int, int, int, uint)
+void Image::fillPolygon(const int[]&in, uint)
+void Image::fillRect(int, int, int, int, uint)
+void Image::fillRect(int, int, int, int, uint, float)
+void Image::floodFill(int, int, uint)
+void Image::image(Image@, int, int)
+void Image::image(Image@, int, int, int, int)
+void Image::imageRotated(Image@, int, int, float, float = 1)
+void Image::line(int, int, int, int, uint)
+void Image::opaque()
+void Image::plot(int, int, uint)
+void Image::polygon(const int[]&in, uint)
+void Image::rect(int, int, int, int, uint)
+void Image::save(const string&in)
+void Image::transparent(uint)
+void Window::circle(int, int, int, uint)
+void Window::clear(uint = Color::Black)
+void Window::clip()
+void Window::clip(int, int, int, int)
+void Window::ellipse(int, int, int, int, uint)
+void Window::fillCircle(int, int, int, uint)
+void Window::fillEllipse(int, int, int, int, uint)
+void Window::fillPolygon(const int[]&in, uint)
+void Window::fillRect(int, int, int, int, uint)
+void Window::fillRect(int, int, int, int, uint, float)
+void Window::floodFill(int, int, uint)
+void Window::frame()
+void Window::image(Image@, int, int)
+void Window::image(Image@, int, int, int, int)
+void Window::imageRotated(Image@, int, int, float, float = 1)
+void Window::line(int, int, int, int, uint)
+void Window::plot(int, int, uint)
+void Window::pointer(bool)
+void Window::polygon(const int[]&in, uint)
+void Window::rect(int, int, int, int, uint)
+void Window::run(Game@, uint = 60)
+void Window::save(const string&in)
+void Window::stop()
+void Window::title(const string&in)
+void notify(const string&in, const string&in)

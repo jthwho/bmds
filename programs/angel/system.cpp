@@ -17,6 +17,10 @@
 #include <sys/wait.h>
 #include "angel.h"
 
+#ifdef ANGEL_BMDS
+#include <bmds/sys.h>
+#endif
+
 namespace angel {
 
         namespace {
@@ -52,6 +56,41 @@ namespace angel {
                         new (gen->GetAddressOfReturnLocation()) String(text.data(), text.length());
                 }
 
+                // A setting's current value ("" if there's no such setting).
+                void setting(asIScriptGeneric *gen) {
+                        const String *key = static_cast<const String *>(gen->GetArgAddress(0));
+                        String       *value = new (gen->GetAddressOfReturnLocation()) String();
+#ifdef ANGEL_BMDS
+                        const int32_t id = bmds_sysconf_find(key->cStr());
+                        if (id < 0) return;
+                        char          text[BMDS_SYSCONF_VALUE_MAX + 1];
+                        const int32_t n = bmds_sysconf_get(id, BMDS_SYSCONF_FIELD_VALUE, text, sizeof(text));
+                        if (n >= 0) value->assign(text, size_t(n));
+#else
+                        (void)key;
+                        (void)value;
+#endif
+                }
+
+                // A notification (a balloon on the desktop).
+                void notify(asIScriptGeneric *gen) {
+                        const String *title = static_cast<const String *>(gen->GetArgAddress(0));
+                        const String *body = static_cast<const String *>(gen->GetArgAddress(1));
+#ifdef ANGEL_BMDS
+                        bmds_notification_t n{};
+                        n.size = sizeof(n);
+                        n.urgency = BMDS_NOTIFY_NORMAL;
+                        n.timeout_ms = BMDS_NOTIFY_DEFAULT_TIMEOUT;
+                        snprintf(n.title, sizeof(n.title), "%s", title->cStr());
+                        snprintf(n.body, sizeof(n.body), "%s", body->cStr());
+                        const int32_t r = bmds_notify_send(-1, &n);
+                        if (r < 0) raise("Can't notify: %s", strerror(-r));
+#else
+                        (void)title;
+                        (void)body;
+#endif
+                }
+
         } // namespace
 
         void registerSystem(asIScriptEngine *engine) {
@@ -59,6 +98,10 @@ namespace angel {
                     "Runs a shell command, its output on the screen; its exit status (0: it worked).");
                 def(engine, "string output(const string &in command)", output,
                     "Runs a shell command; what it printed.");
+                def(engine, "string setting(const string &in key)", setting,
+                    "A system setting's value (\"\" if there's no such setting).");
+                def(engine, "void notify(const string &in title, const string &in text)", notify,
+                    "Shows a notification on the desktop.");
                 return;
         }
 

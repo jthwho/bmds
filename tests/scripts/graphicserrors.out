@@ -1,0 +1,8 @@
+A window is 1 to 1280 pixels across and 1 to 720 down, not 2000 x 100
+An image is 1 to 4096 pixels each way, not 0 x 5
+640x480
+A polygon's points come in pairs (x, y), not 3 numbers
+No image (null)
+Loading pictures (picture.png) needs BMDS
+Saving pictures (x.png) needs BMDS
+ran 3 ticks

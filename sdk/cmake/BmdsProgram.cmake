@@ -49,7 +49,8 @@ if(NOT TARGET bmds_crt)
                                      ${BMDS_SDK_DIR}/game/font16.c ${BMDS_SDK_DIR}/game/loop.c
                                      ${BMDS_SDK_DIR}/game/convert.c ${BMDS_SDK_DIR}/game/image.c
                                      ${BMDS_SDK_DIR}/game/mix.c ${BMDS_SDK_DIR}/game/audio.c
-                                     ${BMDS_SDK_DIR}/game/smf.c ${BMDS_SDK_DIR}/game/midiout.c)
+                                     ${BMDS_SDK_DIR}/game/smf.c ${BMDS_SDK_DIR}/game/midiout.c
+                                     ${BMDS_SDK_DIR}/game/shapes.c)
         set_target_properties(bmds_game PROPERTIES OUTPUT_NAME bmdsgame ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
         target_link_libraries(bmds_game PUBLIC bmds_headers)
         target_compile_options(bmds_game PRIVATE -O2 -Wall -Wextra -Werror)

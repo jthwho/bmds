@@ -90,7 +90,7 @@ namespace {
                 return;
         }
 
-        void reportException(asIScriptContext *ctx) {
+        void reportExceptionHere(asIScriptContext *ctx) {
                 int         column = 0;
                 const char *section = nullptr;
                 const int   line = ctx->GetExceptionLineNumber(&column, &section);
@@ -103,8 +103,11 @@ namespace {
                         int         col = 0;
                         const char *file = nullptr;
                         const int   row = ctx->GetLineNumber(n, &col, &file);
-                        fprintf(stderr, "  %s %s, %s:%d\n", n == 0 ? "in" : "called from", where.data(),
-                                file != nullptr ? file : "?", row);
+                        if (file != nullptr)
+                                fprintf(stderr, "  %s %s, %s:%d\n", n == 0 ? "in" : "called from", where.data(), file,
+                                        row);
+                        else
+                                fprintf(stderr, "  %s %s\n", n == 0 ? "in" : "called from", where.data());
                 }
                 noteUnreachedGlobals(ctx);
                 return;
@@ -355,6 +358,7 @@ namespace {
                 angel::registerConsole(engine);
                 angel::registerFiles(engine);
                 angel::registerSystem(engine);
+                angel::registerGraphics(engine);
                 return engine;
         }
 
@@ -400,17 +404,25 @@ namespace {
                         if (entry->GetReturnTypeId() == asTYPEID_INT32) status = int(ctx->GetReturnDWord());
                 } else if (r == asEXECUTION_EXCEPTION) {
                         fflush(stdout);
-                        reportException(ctx);
+                        reportExceptionHere(ctx);
                         status = ExitFailure;
                 } else {
                         fprintf(stderr, "angel: the script stopped (%d)\n", r);
                         status = ExitFailure;
                 }
                 ctx->Release();
+                // Windows stay up, the picture to be seen, until closed.
+                fflush(stdout);
+                angel::waitForWindows();
                 return status;
         }
 
 } // namespace
+
+void angel::reportException(asIScriptContext *ctx) {
+        reportExceptionHere(ctx);
+        return;
+}
 
 int main(int argc, char **argv) {
         bool checkOnly = false;
