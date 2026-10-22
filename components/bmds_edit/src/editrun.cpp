@@ -262,9 +262,11 @@ void EditWindow::run() {
                 _status->setText(0, "It's running already (Shift+F5 stops it)");
                 return;
         }
-        // Saved first: what runs is the file. An untitled one is named first, then runs.
+        // Saved first: what runs is the file. An untitled one is named first, then runs, as is a
+        // read-only one changed (an unchanged one, a ROM example, runs where it is).
         const size_t index = size_t(doc - _docs);
-        if (doc->path.isEmpty() || doc->readOnly) {
+        const bool   modified = doc->edit->document().isModified();
+        if (doc->path.isEmpty() || (doc->readOnly && modified)) {
                 _runAfterSave = true;
                 if (doc->path.isEmpty()) {
                         // The scripts' folder (a setting, `${HOME}` and the like expanded), made if missing.
@@ -282,7 +284,7 @@ void EditWindow::run() {
                 }
                 return;
         }
-        if (doc->edit->document().isModified() && !save(index)) return;
+        if (modified && !save(index)) return;
         auto [pipe, perr] = Pipe::create();
         List<String> argv(MemSpace::Psram);
         Error        err = perr.isError() ? perr : support->runCommand(doc->path.view(), ReportFd, argv);
