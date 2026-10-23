@@ -28,6 +28,13 @@ void ListItemModel::clear() {
         return;
 }
 
+void ListItemModel::removeAt(size_t row) {
+        if (row >= _rows.size()) return;
+        _rows.removeAt(row);
+        if (_rows.isEmpty()) _texts.clear(); // its texts' bytes stay until then
+        return;
+}
+
 Error ListItemModel::add(StringView name, const Icon *small, const Icon *large, Span<const StringView> columnTexts) {
         Row   r;
         Error err = _rows.reserve(_rows.size() + 1);

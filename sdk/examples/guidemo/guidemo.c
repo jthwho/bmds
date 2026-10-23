@@ -31,11 +31,14 @@ enum {
         Clicked,
         Accepted,
         Closed,
+        Margin,
+        Spacing,
         Names
 };
 
-static const char *const names[Names] = {"Window",    "Box",    "Label", "Button",   "LineEdit", "title",    "text",
-                                         "direction", "across", "show",  "setFocus", "clicked",  "accepted", "closed"};
+static const char *const names[Names] = {"Window",   "Box",       "Label",  "Button", "LineEdit", "title",
+                                         "text",     "direction", "across", "show",   "setFocus", "clicked",
+                                         "accepted", "closed",    "margin", "spacing"};
 
 int main(void) {
         bmds_gui_t *gui = bmds_gui_connect(NULL);
@@ -52,8 +55,10 @@ int main(void) {
         const uint32_t row = bmds_gui_new_id(gui), hello = bmds_gui_new_id(gui), quit = bmds_gui_new_id(gui);
 
         // One batch: nothing waits until the first event.
-        const bmds_gui_prop_t title = {a[Title], bmds_gui_string("GUI demo")};
-        bmds_gui_create(gui, window, a[Window], 0, &title, 1);
+        // Plain widgets: the window pads them (a window is flush with its frame by default).
+        const bmds_gui_prop_t setup[] = {
+                {a[Title], bmds_gui_string("GUI demo")}, {a[Margin], bmds_gui_int(8)}, {a[Spacing], bmds_gui_int(4)}};
+        bmds_gui_create(gui, window, a[Window], 0, setup, 3);
         const bmds_gui_prop_t prompt = {a[Text], bmds_gui_string("What's your name?")};
         bmds_gui_create(gui, label, a[Label], window, &prompt, 1);
         bmds_gui_create(gui, field, a[LineEdit], window, NULL, 0);

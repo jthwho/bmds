@@ -60,7 +60,38 @@ namespace {
 GuiConnection::GuiConnection(FileHandle::Ptr end, uint8_t slot, uint32_t display)
     : _end(std::move(end)), _slot(slot), _display(display) {}
 
-GuiConnection::~GuiConnection() = default;
+GuiConnection::~GuiConnection() {
+        for (KeptIcon *k : _icons) {
+                Memory::free(k->pixels);
+                k->~KeptIcon();
+                Memory::free(k);
+        }
+}
+
+// Rows' icons by name: copied once and kept while the connection lasts (a theme's cache may drop
+// its own, and a view's rows hold the pointers).
+const Icon *GuiConnection::icon(StringView name, uint16_t side) {
+        for (KeptIcon *k : _icons)
+                if (k->side == side && k->name.view() == name) return &k->icon;
+        if (_icons.size() >= MaxIcons) return nullptr;
+        const Icon *found = _app->icons().find(name, side);
+        if (found == nullptr || !found->isValid()) return nullptr;
+        void *mem = Memory::alloc(MemSpace::Psram, sizeof(KeptIcon));
+        if (mem == nullptr) return nullptr;
+        auto        *k = ::new (mem) KeptIcon();
+        const size_t bytes = size_t(found->width) * found->height * sizeof(uint32_t);
+        k->pixels = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, bytes));
+        if (k->pixels == nullptr || k->name.assign(name).isError() || _icons.append(std::move(k)).isError()) {
+                Memory::free(k->pixels);
+                k->~KeptIcon();
+                Memory::free(k);
+                return nullptr;
+        }
+        std::memcpy(k->pixels, found->pixels, bytes);
+        k->side = side;
+        k->icon = Icon{found->width, found->height, k->pixels};
+        return &k->icon;
+}
 
 Error GuiConnection::start(FileHandle::Ptr end, uint8_t slot, uint32_t display, StringView program) {
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(GuiConnection));
@@ -441,6 +472,7 @@ void GuiConnection::create(GP::Reader &body) {
                         } else if (o->widget != nullptr) {
                                 if (parent != nullptr && parent->release != nullptr) parent->release(*parent, *o);
                                 o->widget->destroy();
+                                if (o->dispose != nullptr) o->dispose(*o);
                         }
                 }
                 o->~GuiObject();
@@ -745,6 +777,7 @@ void GuiConnection::remove(GuiObject *object) {
                 GuiObject *parent = object->parent != 0 ? find(object->parent) : nullptr;
                 if (parent != nullptr && parent->release != nullptr) parent->release(*parent, *object);
                 object->widget->destroy();
+                if (object->dispose != nullptr) object->dispose(*object);
                 touched(object->owner);
         }
         for (size_t i = 0; i < _objects.size(); ++i)

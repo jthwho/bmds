@@ -118,3 +118,67 @@ event ToolButton.clicked() on
 class StatusBar : Widget Concrete
 method StatusBar.addField(Int) -> Int
 method StatusBar.setField(Int, String) -> None
+
+# Step 2d (2026-10-22): views.
+class ItemView : Widget Abstract
+property ItemView.items List RW
+property ItemView.current Int RW
+property ItemView.multiSelect Bool RW
+method ItemView.addItem(String) -> None
+method ItemView.removeItem(Int) -> None
+method ItemView.clear() -> None
+method ItemView.setIcon(Int, String) -> None
+event ItemView.activated(Int) on
+event ItemView.currentChanged(Int) on
+class ListView : ItemView Concrete
+class DetailsView : ItemView Concrete
+property DetailsView.columns List RW
+method DetailsView.addRow(List) -> None
+method DetailsView.setColumnWidth(Int, Int) -> None
+method DetailsView.setSortIndicator(Int, Bool) -> None
+event DetailsView.sortAsked(Int) on
+class IconView : ItemView Concrete
+class TreeView : Widget Concrete
+property TreeView.current String RW
+method TreeView.addRoot(String) -> None
+method TreeView.setChildren(String, List) -> None
+method TreeView.setHasChildren(String, Bool) -> None
+method TreeView.expand(String) -> None
+method TreeView.collapse(String) -> None
+method TreeView.clear() -> None
+event TreeView.expanding(String) on
+event TreeView.activated(String) on
+event TreeView.currentChanged(String) on
+class TextEdit : Widget Concrete
+property TextEdit.text String RW
+property TextEdit.readOnly Bool RW
+property TextEdit.modified Bool RO
+property TextEdit.cursorLine Int RO
+property TextEdit.cursorColumn Int RO
+property TextEdit.selectedText String RO
+method TextEdit.markSaved() -> None
+method TextEdit.insert(String) -> None
+method TextEdit.goToLine(Int) -> None
+method TextEdit.selectAll() -> None
+method TextEdit.undo() -> None
+method TextEdit.redo() -> None
+method TextEdit.cut() -> None
+method TextEdit.copy() -> None
+method TextEdit.paste() -> None
+event TextEdit.changed() on
+event TextEdit.cursorMoved(Int, Int) off
+class CodeEdit : TextEdit Concrete
+property CodeEdit.syntax String RW
+property CodeEdit.lineNumbers Bool RW
+property CodeEdit.scheme String RW
+class Terminal : Widget Concrete
+property Terminal.columns Int RO
+property Terminal.rows Int RO
+method Terminal.write(String) -> None
+method Terminal.clear() -> None
+event Terminal.typed(String) on
+event Terminal.sized(Int, Int) on
+
+# 2026-10-22: a window's margin and spacing (its column flush by default).
+property Window.margin Int WO
+property Window.spacing Int WO

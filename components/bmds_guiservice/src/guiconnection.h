@@ -187,6 +187,11 @@ struct GuiObject {
                 GuiStatus (*adopt)(GuiObject &self, GuiObject &child) = nullptr; ///< A child made in it.
                 void (*release)(GuiObject &self, GuiObject &child) = nullptr;    ///< A child going.
                 void (*relayout)(GuiObject &self) = nullptr; ///< After a round of requests that changed it.
+                void (*dispose)(GuiObject &self) = nullptr;  ///< After its widget is destroyed: `data` freed.
+                void   *data = nullptr;                      ///< A class's own (a view's model).
+                int32_t told = -1;                           ///< A view's current row as last told.
+                bool    quiet = false;                       ///< A change the client made: not told back.
+                String  path{MemSpace::Psram};               ///< A tree's current path as last told.
                 ///@}
                 List<uint32_t>  listenOn{MemSpace::Psram};  ///< Events turned on (atoms).
                 List<uint32_t>  listenOff{MemSpace::Psram}; ///< And off.
@@ -216,6 +221,9 @@ class GuiConnection {
 
                 /** @brief A shown modal window owned by window @p ownerId, or null. */
                 ClientWindow *modalOver(uint32_t ownerId) const;
+
+                /** @brief Theme icon @p name of @p side pixels, a copy kept while the connection lasts, or null. */
+                const Icon *icon(StringView name, uint16_t side);
 
                 /** @brief Its object @p id, or null. */
                 GuiObject *find(uint32_t id) const;
@@ -278,6 +286,15 @@ class GuiConnection {
                 List<GuiObject *>    _objects{MemSpace::Psram}; // sorted by id
                 List<ClientWindow *> _dirty{MemSpace::Psram};
                 List<uint8_t>        _out{MemSpace::Psram}; // answers not yet written
+
+                struct KeptIcon {
+                                String    name{MemSpace::Psram};
+                                uint16_t  side = 0;
+                                Icon      icon;
+                                uint32_t *pixels = nullptr;
+                };
+                static constexpr size_t MaxIcons = 64;
+                List<KeptIcon *>        _icons{MemSpace::Psram};
 };
 
 /** @brief The class named @p name, or null. */

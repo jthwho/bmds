@@ -111,6 +111,9 @@ class ListItemModel : public ItemModel {
                 Error add(StringView name, const Icon *small, const Icon *large,
                           Span<const StringView> columnTexts = Span<const StringView>());
 
+                /** @brief Removes row @p row (its texts' bytes kept until the model is emptied). */
+                void removeAt(size_t row);
+
                 /** @brief Sets row @p row's icons. */
                 void setIcons(size_t row, const Icon *small, const Icon *large);
 

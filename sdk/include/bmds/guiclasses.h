@@ -523,6 +523,230 @@ static inline int bmds_status_bar_set_field(bmds_gui_t *gui, uint32_t id, int32_
         return bmds_gui_call_named(gui, id, "setField", args, 2, NULL);
 }
 
+/* ---- ItemView (of Widget) */
+static inline int bmds_item_view_set_items(bmds_gui_t *gui, uint32_t id, const char *const *value, uint32_t value_count) {
+        return bmds_gui_set_named(gui, id, "items", bmds_gui_strings(gui, value, value_count));
+}
+static inline int bmds_item_view_get_items(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "items", out);
+}
+static inline int bmds_item_view_set_current(bmds_gui_t *gui, uint32_t id, int32_t value) {
+        return bmds_gui_set_named(gui, id, "current", bmds_gui_int(value));
+}
+static inline int bmds_item_view_get_current(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "current", out);
+}
+static inline int bmds_item_view_set_multi_select(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "multiSelect", bmds_gui_bool(value));
+}
+static inline int bmds_item_view_get_multi_select(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "multiSelect", out);
+}
+static inline int bmds_item_view_add_item(bmds_gui_t *gui, uint32_t id, const char *a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0)};
+        return bmds_gui_call_named(gui, id, "addItem", args, 1, NULL);
+}
+static inline int bmds_item_view_remove_item(bmds_gui_t *gui, uint32_t id, int32_t a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0)};
+        return bmds_gui_call_named(gui, id, "removeItem", args, 1, NULL);
+}
+static inline int bmds_item_view_clear(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "clear", NULL, 0, NULL);
+}
+static inline int bmds_item_view_set_icon(bmds_gui_t *gui, uint32_t id, int32_t a0, const char *a1) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0), bmds_gui_string(a1)};
+        return bmds_gui_call_named(gui, id, "setIcon", args, 2, NULL);
+}
+#define BMDS_GUI_ITEM_VIEW_ACTIVATED "activated" /**< ItemView's event (Int). */
+#define BMDS_GUI_ITEM_VIEW_CURRENT_CHANGED "currentChanged" /**< ItemView's event (Int). */
+
+/* ---- ListView (of ItemView) */
+/** @brief A new ListView under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_list_view_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "ListView", parent);
+}
+
+/* ---- DetailsView (of ItemView) */
+/** @brief A new DetailsView under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_details_view_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "DetailsView", parent);
+}
+static inline int bmds_details_view_set_columns(bmds_gui_t *gui, uint32_t id, const char *const *value, uint32_t value_count) {
+        return bmds_gui_set_named(gui, id, "columns", bmds_gui_strings(gui, value, value_count));
+}
+static inline int bmds_details_view_get_columns(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "columns", out);
+}
+static inline int bmds_details_view_add_row(bmds_gui_t *gui, uint32_t id, const char *const *a0, uint32_t a0_count) {
+        const bmds_gui_value_t args[] = {bmds_gui_strings(gui, a0, a0_count)};
+        return bmds_gui_call_named(gui, id, "addRow", args, 1, NULL);
+}
+static inline int bmds_details_view_set_column_width(bmds_gui_t *gui, uint32_t id, int32_t a0, int32_t a1) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0), bmds_gui_int(a1)};
+        return bmds_gui_call_named(gui, id, "setColumnWidth", args, 2, NULL);
+}
+static inline int bmds_details_view_set_sort_indicator(bmds_gui_t *gui, uint32_t id, int32_t a0, int a1) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0), bmds_gui_bool(a1)};
+        return bmds_gui_call_named(gui, id, "setSortIndicator", args, 2, NULL);
+}
+#define BMDS_GUI_DETAILS_VIEW_SORT_ASKED "sortAsked" /**< DetailsView's event (Int). */
+
+/* ---- IconView (of ItemView) */
+/** @brief A new IconView under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_icon_view_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "IconView", parent);
+}
+
+/* ---- TreeView (of Widget) */
+/** @brief A new TreeView under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_tree_view_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "TreeView", parent);
+}
+static inline int bmds_tree_view_set_current(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "current", bmds_gui_string(value));
+}
+static inline int bmds_tree_view_get_current(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "current", out);
+}
+static inline int bmds_tree_view_add_root(bmds_gui_t *gui, uint32_t id, const char *a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0)};
+        return bmds_gui_call_named(gui, id, "addRoot", args, 1, NULL);
+}
+static inline int bmds_tree_view_set_children(bmds_gui_t *gui, uint32_t id, const char *a0, const char *const *a1, uint32_t a1_count) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0), bmds_gui_strings(gui, a1, a1_count)};
+        return bmds_gui_call_named(gui, id, "setChildren", args, 2, NULL);
+}
+static inline int bmds_tree_view_set_has_children(bmds_gui_t *gui, uint32_t id, const char *a0, int a1) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0), bmds_gui_bool(a1)};
+        return bmds_gui_call_named(gui, id, "setHasChildren", args, 2, NULL);
+}
+static inline int bmds_tree_view_expand(bmds_gui_t *gui, uint32_t id, const char *a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0)};
+        return bmds_gui_call_named(gui, id, "expand", args, 1, NULL);
+}
+static inline int bmds_tree_view_collapse(bmds_gui_t *gui, uint32_t id, const char *a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0)};
+        return bmds_gui_call_named(gui, id, "collapse", args, 1, NULL);
+}
+static inline int bmds_tree_view_clear(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "clear", NULL, 0, NULL);
+}
+#define BMDS_GUI_TREE_VIEW_EXPANDING "expanding" /**< TreeView's event (String). */
+#define BMDS_GUI_TREE_VIEW_ACTIVATED "activated" /**< TreeView's event (String). */
+#define BMDS_GUI_TREE_VIEW_CURRENT_CHANGED "currentChanged" /**< TreeView's event (String). */
+
+/* ---- TextEdit (of Widget) */
+/** @brief A new TextEdit under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_text_edit_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "TextEdit", parent);
+}
+static inline int bmds_text_edit_set_text(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "text", bmds_gui_string(value));
+}
+static inline int bmds_text_edit_get_text(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "text", out);
+}
+static inline int bmds_text_edit_set_read_only(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "readOnly", bmds_gui_bool(value));
+}
+static inline int bmds_text_edit_get_read_only(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "readOnly", out);
+}
+static inline int bmds_text_edit_get_modified(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "modified", out);
+}
+static inline int bmds_text_edit_get_cursor_line(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "cursorLine", out);
+}
+static inline int bmds_text_edit_get_cursor_column(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "cursorColumn", out);
+}
+static inline int bmds_text_edit_get_selected_text(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "selectedText", out);
+}
+static inline int bmds_text_edit_mark_saved(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "markSaved", NULL, 0, NULL);
+}
+static inline int bmds_text_edit_insert(bmds_gui_t *gui, uint32_t id, const char *a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0)};
+        return bmds_gui_call_named(gui, id, "insert", args, 1, NULL);
+}
+static inline int bmds_text_edit_go_to_line(bmds_gui_t *gui, uint32_t id, int32_t a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0)};
+        return bmds_gui_call_named(gui, id, "goToLine", args, 1, NULL);
+}
+static inline int bmds_text_edit_select_all(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "selectAll", NULL, 0, NULL);
+}
+static inline int bmds_text_edit_undo(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "undo", NULL, 0, NULL);
+}
+static inline int bmds_text_edit_redo(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "redo", NULL, 0, NULL);
+}
+static inline int bmds_text_edit_cut(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "cut", NULL, 0, NULL);
+}
+static inline int bmds_text_edit_copy(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "copy", NULL, 0, NULL);
+}
+static inline int bmds_text_edit_paste(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "paste", NULL, 0, NULL);
+}
+#define BMDS_GUI_TEXT_EDIT_CHANGED "changed" /**< TextEdit's event (no values). */
+#define BMDS_GUI_TEXT_EDIT_CURSOR_MOVED "cursorMoved" /**< TextEdit's event (Int, Int). */
+
+/* ---- CodeEdit (of TextEdit) */
+/** @brief A new CodeEdit under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_code_edit_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "CodeEdit", parent);
+}
+static inline int bmds_code_edit_set_syntax(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "syntax", bmds_gui_string(value));
+}
+static inline int bmds_code_edit_get_syntax(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "syntax", out);
+}
+static inline int bmds_code_edit_set_line_numbers(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "lineNumbers", bmds_gui_bool(value));
+}
+static inline int bmds_code_edit_get_line_numbers(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "lineNumbers", out);
+}
+static inline int bmds_code_edit_set_scheme(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "scheme", bmds_gui_string(value));
+}
+static inline int bmds_code_edit_get_scheme(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "scheme", out);
+}
+
+/* ---- Terminal (of Widget) */
+/** @brief A new Terminal under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_terminal_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "Terminal", parent);
+}
+static inline int bmds_terminal_get_columns(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "columns", out);
+}
+static inline int bmds_terminal_get_rows(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "rows", out);
+}
+static inline int bmds_terminal_write(bmds_gui_t *gui, uint32_t id, const char *a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0)};
+        return bmds_gui_call_named(gui, id, "write", args, 1, NULL);
+}
+static inline int bmds_terminal_clear(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "clear", NULL, 0, NULL);
+}
+#define BMDS_GUI_TERMINAL_TYPED "typed" /**< Terminal's event (String). */
+#define BMDS_GUI_TERMINAL_SIZED "sized" /**< Terminal's event (Int, Int). */
+static inline int bmds_window_set_margin(bmds_gui_t *gui, uint32_t id, int32_t value) {
+        return bmds_gui_set_named(gui, id, "margin", bmds_gui_int(value));
+}
+static inline int bmds_window_set_spacing(bmds_gui_t *gui, uint32_t id, int32_t value) {
+        return bmds_gui_set_named(gui, id, "spacing", bmds_gui_int(value));
+}
+
 #ifdef __cplusplus
 }
 #endif

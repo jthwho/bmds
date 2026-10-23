@@ -323,6 +323,10 @@ void TerminalWidget::fit() {
                 }
                 if (_pty != nullptr) _pty->setSize(Console::Size{columns, rows});
         }
+        if (columns == _columnsShown && rows == _rowsShown) return;
+        _columnsShown = columns;
+        _rowsShown = rows;
+        if (_sized != nullptr) _sized(_sizedArg, *this, columns, rows);
         return;
 }
 
@@ -425,16 +429,18 @@ bool TerminalWidget::keyPressed(const KeyEvent &event) {
                 scrollBy(event.usage == HidKey::PageUp ? rows - 1 : 1 - rows);
                 return true;
         }
-        if (!isRunning()) return false; // nothing to type to: the window's keys
+        const bool running = isRunning();
+        if (!running && _typed == nullptr) return false; // nothing to type to: the window's keys
         char   bytes[TerminalKeys::MaxBytes];
         size_t n = 0;
         {
                 Mutex::Locker lock(_lock, WaitForever);
                 n = TerminalKeys::encode(event, _screen.isApplicationCursorKeys(), bytes);
-                if (n > 0 && _pty != nullptr)
+                if (n > 0 && running && _pty != nullptr)
                         (void)_pty->write(ByteSpan(reinterpret_cast<const uint8_t *>(bytes), n), 0);
         }
         if (n == 0) return false;
+        if (!running) _typed(_typedArg, *this, StringView(bytes, n)); // its owner's program
         if (_offset != 0) scrollBy(-int(HistoryLines)); // typing returns to the bottom
         return true;
 }
@@ -442,7 +448,11 @@ bool TerminalWidget::keyPressed(const KeyEvent &event) {
 void TerminalWidget::pasted(void *arg, Error err, StringView type, StringView data) {
         (void)type;
         auto *self = static_cast<TerminalWidget *>(arg);
-        if (err.isError() || !self->isRunning()) return;
+        if (err.isError()) return;
+        if (!self->isRunning()) {
+                if (self->_typed != nullptr) self->_typed(self->_typedArg, *self, data);
+                return;
+        }
         Mutex::Locker lock(self->_lock, WaitForever);
         if (self->_pty != nullptr)
                 (void)self->_pty->write(ByteSpan(reinterpret_cast<const uint8_t *>(data.data()), data.size()), 0);

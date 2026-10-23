@@ -14,13 +14,21 @@
 #include <climits>
 #include <cstring>
 #include <new>
+#include <bmds/codeedit.h>
 #include <bmds/combobox.h>
+#include <bmds/detailsview.h>
 #include <bmds/formlayout.h>
 #include <bmds/furniture.h>
+#include <bmds/iconview.h>
+#include <bmds/itemmodel.h>
 #include <bmds/lineedit.h>
 #include <bmds/numberfield.h>
 #include <bmds/slider.h>
 #include <bmds/tabwidget.h>
+#include <bmds/terminalwidget.h>
+#include <bmds/textedit.h>
+#include <bmds/textsyntax.h>
+#include <bmds/treeview.h>
 #include <bmds/memory.h>
 #include <bmds/windowstack.h>
 #include "guiatoms.h"
@@ -40,7 +48,6 @@ namespace {
         constexpr GuiStatus BadAccess = GuiStatus(GuiProtocol::ErrorCode::BadAccess);
         constexpr GuiStatus NoMem = GuiStatus(GuiProtocol::ErrorCode::NoMem);
 
-        constexpr uint16_t WindowMargin = 8;
         constexpr uint16_t Spacing = 4;
         constexpr uint16_t DefaultWidth = 320; // a window with nothing in it yet
         constexpr uint16_t DefaultHeight = 200;
@@ -177,6 +184,20 @@ namespace {
         }
 
         // ---- Window (2b)
+
+        GuiStatus set_Window_margin(GuiObject &o, const Value &v) {
+                if (v.number < 0 || v.number > 256) return BadValue;
+                const uint16_t m = uint16_t(v.number);
+                o.window->column()->setMargins(m, m, m, m);
+                o.connection->touched(o.window);
+                return Ok;
+        }
+        GuiStatus set_Window_spacing(GuiObject &o, const Value &v) {
+                if (v.number < 0 || v.number > 256) return BadValue;
+                o.window->column()->setSpacing(uint16_t(v.number));
+                o.connection->touched(o.window);
+                return Ok;
+        }
 
         WindowManager &wmOf(GuiObject &o) {
                 return o.connection->application().windowManager();
@@ -1040,9 +1061,7 @@ namespace {
         }
         GuiStatus create_TabPage(GuiObject &o, GuiObject *parent) {
                 if (!isClassNamed(parent, "Tabs")) return BadMatch;
-                const GuiStatus s = create_Box(o, parent);
-                if (s == Ok) box(o)->setMargins(WindowMargin, WindowMargin, WindowMargin, WindowMargin);
-                return s;
+                return create_Box(o, parent); // a box, flush in the tabs' frame
         }
 
         // ---- ToolBar and its buttons
@@ -1117,6 +1136,527 @@ namespace {
                 const GuiStatus s = makeWidget<StatusBar>(o, parent);
                 if (s == Ok) o.relayout = statusRelayout;
                 return s;
+        }
+
+        // ---- Step 2d: views
+
+        // A list value's strings, at most @p max of them, into @p out. False: not a list of strings.
+        bool readStrings(const Value &v, StringView *out, size_t max, size_t &count) {
+                count = 0;
+                if (v.tag != Tag::List || (v.count != 0 && v.elements != Tag::String) || v.count > max) return false;
+                GuiProtocol::Reader items(v.items);
+                for (uint32_t i = 0; i < v.count; ++i) {
+                        Value item;
+                        if (!items.element(Tag::String, item)) return false;
+                        out[count++] = item.text;
+                }
+                return true;
+        }
+
+        // A list value of @p count strings, made in @p o's `items` (valid until its next).
+        template <typename F> Value makeStrings(GuiObject &o, size_t count, F text) {
+                o.items.clear();
+                GuiProtocol::Writer w(o.items);
+                for (size_t i = 0; i < count; ++i) w.element(Value::string(text(i)));
+                Value list;
+                list.tag = Tag::List;
+                list.elements = Tag::String;
+                list.count = w.ok() ? uint32_t(count) : 0;
+                list.items = w.ok() ? ByteSpan(o.items.data(), o.items.size()) : ByteSpan();
+                return list;
+        }
+
+        // ---- ItemView: rows in a model of the object's own
+
+        constexpr size_t MaxListItems = 1024; // a list set at once
+
+        ItemView *itemView(GuiObject &o) {
+                return static_cast<ItemView *>(o.widget);
+        }
+        ListItemModel *model(GuiObject &o) {
+                return static_cast<ListItemModel *>(o.data);
+        }
+        void disposeModel(GuiObject &o) {
+                if (o.data == nullptr) return;
+                model(o)->~ListItemModel();
+                Memory::free(o.data);
+                o.data = nullptr;
+                return;
+        }
+
+        // The model changed: the view counts again, its current row kept where it can be.
+        void refresh(GuiObject &o) {
+                const int cur = itemView(o)->current();
+                o.quiet = true;
+                itemView(o)->modelReset();
+                if (cur >= 0 && size_t(cur) < itemView(o)->count()) itemView(o)->selectOnly(cur);
+                o.quiet = false;
+                const int now = itemView(o)->current();
+                if (now != o.told) {
+                        o.told = now;
+                        const Value v = Value::integer(now);
+                        o.connection->emit(o, "currentChanged", Args(&v, 1));
+                }
+                o.connection->touched(o.owner);
+                return;
+        }
+
+        void viewActivated(void *arg, ItemView &, size_t row) {
+                const Value v = Value::integer(int32_t(row));
+                auto       &o = *static_cast<GuiObject *>(arg);
+                o.connection->emit(o, "activated", Args(&v, 1));
+                return;
+        }
+        void viewChanged(void *arg, ItemView &view) {
+                auto &o = *static_cast<GuiObject *>(arg);
+                if (o.quiet || view.current() == o.told) return;
+                o.told = view.current();
+                const Value v = Value::integer(o.told);
+                o.connection->emit(o, "currentChanged", Args(&v, 1));
+                return;
+        }
+
+        template <typename T> GuiStatus makeView(GuiObject &o, GuiObject *parent) {
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(ListItemModel));
+                if (mem == nullptr) return NoMem;
+                o.data = ::new (mem) ListItemModel();
+                const GuiStatus s = makeWidget<T>(o, parent);
+                if (s != Ok) {
+                        disposeModel(o);
+                        return s;
+                }
+                o.dispose = disposeModel;
+                o.step = 1; // many rows may be selected (multiSelect), as the toolkit's views
+                o.widget->setStretch(1);
+                itemView(o)->setModel(model(o));
+                itemView(o)->setActivated(viewActivated, &o);
+                itemView(o)->setChanged(viewChanged, &o);
+                return Ok;
+        }
+
+        GuiStatus set_ItemView_items(GuiObject &o, const Value &v) {
+                if (v.count > MaxListItems || (v.count != 0 && v.elements != Tag::String)) return BadValue;
+                model(o)->clear();
+                GuiProtocol::Reader items(v.items);
+                for (uint32_t i = 0; i < v.count; ++i) {
+                        Value item;
+                        if (!items.element(Tag::String, item)) return BadValue;
+                        if (model(o)->add(item.text, nullptr, nullptr).isError()) return NoMem;
+                }
+                refresh(o);
+                return Ok;
+        }
+        Value get_ItemView_items(GuiObject &o) {
+                return makeStrings(o, model(o)->count(), [&](size_t i) { return model(o)->text(i); });
+        }
+        GuiStatus set_ItemView_current(GuiObject &o, const Value &v) {
+                if (v.number < -1 || v.number >= int64_t(model(o)->count())) return BadValue;
+                o.quiet = true;
+                itemView(o)->selectOnly(int(v.number));
+                o.quiet = false;
+                o.told = itemView(o)->current();
+                return Ok;
+        }
+        Value get_ItemView_current(GuiObject &o) {
+                return Value::integer(itemView(o)->current());
+        }
+        GuiStatus set_ItemView_multiSelect(GuiObject &o, const Value &v) {
+                itemView(o)->setSingleSelection(v.number == 0);
+                o.step = v.number != 0 ? 1 : 0;
+                return Ok;
+        }
+        Value get_ItemView_multiSelect(GuiObject &o) {
+                return Value::boolean(o.step != 0);
+        }
+        GuiStatus call_ItemView_addItem(GuiObject &o, Args args, Value &) {
+                if (model(o)->add(args[0].text, nullptr, nullptr).isError()) return NoMem;
+                refresh(o);
+                return Ok;
+        }
+        GuiStatus call_ItemView_removeItem(GuiObject &o, Args args, Value &) {
+                if (args[0].number < 0 || args[0].number >= int64_t(model(o)->count())) return BadValue;
+                model(o)->removeAt(size_t(args[0].number));
+                refresh(o);
+                return Ok;
+        }
+        GuiStatus call_ItemView_clear(GuiObject &o, Args, Value &) {
+                model(o)->clear();
+                refresh(o);
+                return Ok;
+        }
+        // A row's icon by theme name, small and large (empty: none).
+        GuiStatus call_ItemView_setIcon(GuiObject &o, Args args, Value &) {
+                if (args[0].number < 0 || args[0].number >= int64_t(model(o)->count())) return BadValue;
+                const Icon *small = nullptr, *large = nullptr;
+                if (!args[1].text.isEmpty()) {
+                        small = o.connection->icon(args[1].text, 16);
+                        large = o.connection->icon(args[1].text, 32);
+                        if (small == nullptr && large == nullptr) return BadValue;
+                }
+                model(o)->setIcons(size_t(args[0].number), small, large);
+                itemView(o)->update();
+                return Ok;
+        }
+
+        // ---- ListView: a details view of one column, as wide as it is, without a header
+
+        class ListViewWidget final : public DetailsView {
+                public:
+                        explicit ListViewWidget(Widget *parent) : DetailsView(parent) {
+                                setHeaderVisible(false);
+                                setSingleSelection(true);
+                        }
+
+                protected:
+                        void resized() override {
+                                DetailsView::resized();
+                                const uint16_t w = uint16_t(viewport().width & ~3u);
+                                if (w != 0 && columnWidth(0) != w) setColumnWidth(0, w);
+                                return;
+                        }
+        };
+
+        GuiStatus create_ListView(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeView<ListViewWidget>(o, parent);
+                if (s == Ok) o.step = 0; // one row
+                return s;
+        }
+
+        // ---- DetailsView
+
+        DetailsView *details(GuiObject &o) {
+                return static_cast<DetailsView *>(o.widget);
+        }
+        GuiStatus set_DetailsView_columns(GuiObject &o, const Value &v) {
+                StringView titles[ListItemModel::MaxColumns];
+                size_t     count = 0;
+                if (!readStrings(v, titles, ListItemModel::MaxColumns, count) || count == 0) return BadValue;
+                uint16_t         widths[ListItemModel::MaxColumns];
+                ItemModel::Align aligns[ListItemModel::MaxColumns];
+                for (size_t i = 0; i < count; ++i) {
+                        widths[i] = i == 0 ? 200 : 100;
+                        aligns[i] = ItemModel::Align::Left;
+                }
+                model(o)->setColumns(Span<const StringView>(titles, count), Span<const uint16_t>(widths, count),
+                                     Span<const ItemModel::Align>(aligns, count));
+                refresh(o);
+                return Ok;
+        }
+        Value get_DetailsView_columns(GuiObject &o) {
+                return makeStrings(o, model(o)->columns(), [&](size_t i) { return model(o)->columnTitle(i); });
+        }
+        GuiStatus call_DetailsView_addRow(GuiObject &o, Args args, Value &) {
+                StringView texts[ListItemModel::MaxColumns];
+                size_t     count = 0;
+                if (!readStrings(args[0], texts, ListItemModel::MaxColumns, count) || count == 0) return BadValue;
+                if (model(o)->add(texts[0], nullptr, nullptr, Span<const StringView>(texts + 1, count - 1)).isError())
+                        return NoMem;
+                refresh(o);
+                return Ok;
+        }
+        GuiStatus call_DetailsView_setColumnWidth(GuiObject &o, Args args, Value &) {
+                if (args[0].number < 0 || args[0].number >= int64_t(model(o)->columns())) return BadValue;
+                if (args[1].number < 0 || args[1].number > 1280) return BadValue;
+                details(o)->setColumnWidth(size_t(args[0].number), uint16_t(args[1].number));
+                return Ok;
+        }
+        GuiStatus call_DetailsView_setSortIndicator(GuiObject &o, Args args, Value &) {
+                if (args[0].number < -1 || args[0].number >= int64_t(model(o)->columns())) return BadValue;
+                details(o)->setSortIndicator(int(args[0].number), args[1].number != 0);
+                return Ok;
+        }
+        void detailsSortAsked(void *arg, DetailsView &, size_t column) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const Value v = Value::integer(int32_t(column));
+                o.connection->emit(o, "sortAsked", Args(&v, 1));
+                return;
+        }
+        GuiStatus create_DetailsView(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeView<DetailsView>(o, parent);
+                if (s == Ok) details(o)->setSortAsked(detailsSortAsked, &o);
+                return s;
+        }
+
+        // ---- IconView
+
+        GuiStatus create_IconView(GuiObject &o, GuiObject *parent) {
+                return makeView<IconView>(o, parent);
+        }
+
+        // ---- TreeView: rows by path, children given when one is expanded
+
+        TreeView *tree(GuiObject &o) {
+                return static_cast<TreeView *>(o.widget);
+        }
+        int treeRow(GuiObject &o, StringView path) {
+                return tree(o)->rows().find(path);
+        }
+        void treeEmitPath(GuiObject &o, const char *event, size_t row) {
+                String path(MemSpace::Psram);
+                if (tree(o)->rows().pathOf(row, path).isError()) return;
+                const Value v = Value::string(path.view());
+                o.connection->emit(o, event, Args(&v, 1));
+                return;
+        }
+        void treeExpanding(void *arg, TreeView &, size_t row) {
+                treeEmitPath(*static_cast<GuiObject *>(arg), "expanding", row);
+                return;
+        }
+        void treeActivated(void *arg, ItemView &, size_t row) {
+                treeEmitPath(*static_cast<GuiObject *>(arg), "activated", row);
+                return;
+        }
+        void treeChanged(void *arg, ItemView &view) {
+                auto &o = *static_cast<GuiObject *>(arg);
+                if (o.quiet) return;
+                String path(MemSpace::Psram);
+                if (view.current() >= 0 && tree(o)->rows().pathOf(size_t(view.current()), path).isError()) return;
+                if (path.view() == o.path.view()) return;
+                (void)o.path.assign(path.view());
+                const Value v = Value::string(path.view());
+                o.connection->emit(o, "currentChanged", Args(&v, 1));
+                return;
+        }
+        GuiStatus set_TreeView_current(GuiObject &o, const Value &v) {
+                o.quiet = true;
+                const int row = v.text.isEmpty() ? -1 : tree(o)->selectPath(v.text);
+                if (v.text.isEmpty()) tree(o)->selectOnly(-1);
+                o.quiet = false;
+                if (row < 0 && !v.text.isEmpty()) return BadValue;
+                (void)o.path.assign(v.text);
+                return Ok;
+        }
+        Value get_TreeView_current(GuiObject &o) {
+                o.text.clear();
+                const int cur = tree(o)->current();
+                if (cur >= 0) (void)tree(o)->rows().pathOf(size_t(cur), o.text);
+                return Value::string(o.text.view());
+        }
+        GuiStatus call_TreeView_addRoot(GuiObject &o, Args args, Value &) {
+                if (args[0].text.isEmpty()) return BadValue;
+                if (tree(o)->addRoot(args[0].text).isError()) return NoMem;
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        GuiStatus call_TreeView_setChildren(GuiObject &o, Args args, Value &) {
+                const int row = treeRow(o, args[0].text);
+                if (row < 0) return BadValue;
+                StringView names[256];
+                size_t     count = 0;
+                if (!readStrings(args[1], names, 256, count)) return BadValue;
+                o.quiet = true;
+                const Error err = tree(o)->setChildren(size_t(row), Span<const StringView>(names, count));
+                o.quiet = false;
+                return err.isOk() ? Ok : NoMem;
+        }
+        GuiStatus call_TreeView_setHasChildren(GuiObject &o, Args args, Value &) {
+                const int row = treeRow(o, args[0].text);
+                if (row < 0) return BadValue;
+                tree(o)->setHasChildren(size_t(row), args[1].number != 0);
+                return Ok;
+        }
+        GuiStatus call_TreeView_expand(GuiObject &o, Args args, Value &) {
+                const int row = treeRow(o, args[0].text);
+                if (row < 0) return BadValue;
+                tree(o)->expand(size_t(row));
+                return Ok;
+        }
+        GuiStatus call_TreeView_collapse(GuiObject &o, Args args, Value &) {
+                const int row = treeRow(o, args[0].text);
+                if (row < 0) return BadValue;
+                tree(o)->collapse(size_t(row));
+                return Ok;
+        }
+        GuiStatus call_TreeView_clear(GuiObject &o, Args, Value &) {
+                o.quiet = true;
+                tree(o)->clear();
+                o.quiet = false;
+                o.path.clear();
+                return Ok;
+        }
+        GuiStatus create_TreeView(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<TreeView>(o, parent);
+                if (s != Ok) return s;
+                TreeView *t = tree(o);
+                t->setStretch(1);
+                t->setIcons(o.connection->icon("drive-harddisk", 16), o.connection->icon("folder", 16),
+                            o.connection->icon("folder-open", 16));
+                t->setExpanding(treeExpanding, &o);
+                t->setActivated(treeActivated, &o);
+                t->setChanged(treeChanged, &o);
+                return Ok;
+        }
+
+        // ---- TextEdit and CodeEdit
+
+        TextEdit *textEdit(GuiObject &o) {
+                return static_cast<TextEdit *>(o.widget);
+        }
+        void textChanged(void *arg, TextEdit &) {
+                auto &o = *static_cast<GuiObject *>(arg);
+                if (!o.quiet) o.connection->emit(o, "changed", Args());
+                return;
+        }
+        void textCursorMoved(void *arg, TextEdit &edit) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const auto &c = edit.selection().cursor;
+                const Value v[] = {Value::integer(int32_t(c.line)), Value::integer(int32_t(c.byte))};
+                o.connection->emit(o, "cursorMoved", Args(v, 2));
+                return;
+        }
+        GuiStatus set_TextEdit_text(GuiObject &o, const Value &v) {
+                o.quiet = true;
+                const Error err = textEdit(o)->setText(v.text);
+                o.quiet = false;
+                return err.isOk() ? Ok : NoMem;
+        }
+        Value get_TextEdit_text(GuiObject &o) {
+                o.text.clear();
+                (void)textEdit(o)->document().save(o.text);
+                return Value::string(o.text.view());
+        }
+        GuiStatus set_TextEdit_readOnly(GuiObject &o, const Value &v) {
+                textEdit(o)->setReadOnly(v.number != 0);
+                return Ok;
+        }
+        Value get_TextEdit_readOnly(GuiObject &o) {
+                return Value::boolean(textEdit(o)->isReadOnly());
+        }
+        Value get_TextEdit_modified(GuiObject &o) {
+                return Value::boolean(textEdit(o)->document().isModified());
+        }
+        Value get_TextEdit_cursorLine(GuiObject &o) {
+                return Value::integer(int32_t(textEdit(o)->selection().cursor.line));
+        }
+        Value get_TextEdit_cursorColumn(GuiObject &o) {
+                return Value::integer(int32_t(textEdit(o)->selection().cursor.byte));
+        }
+        Value get_TextEdit_selectedText(GuiObject &o) {
+                o.text.clear();
+                (void)textEdit(o)->selectedText(o.text);
+                return Value::string(o.text.view());
+        }
+        GuiStatus call_TextEdit_markSaved(GuiObject &o, Args, Value &) {
+                textEdit(o)->document().setSaved();
+                return Ok;
+        }
+        GuiStatus call_TextEdit_insert(GuiObject &o, Args args, Value &) {
+                if (textEdit(o)->isReadOnly()) return BadAccess;
+                textEdit(o)->insertText(args[0].text);
+                return Ok;
+        }
+        GuiStatus call_TextEdit_goToLine(GuiObject &o, Args args, Value &) {
+                if (args[0].number < 0) return BadValue;
+                textEdit(o)->goToLine(uint32_t(args[0].number));
+                return Ok;
+        }
+        GuiStatus call_TextEdit_selectAll(GuiObject &o, Args, Value &) {
+                textEdit(o)->selectAll();
+                return Ok;
+        }
+        GuiStatus call_TextEdit_undo(GuiObject &o, Args, Value &) {
+                textEdit(o)->undo();
+                return Ok;
+        }
+        GuiStatus call_TextEdit_redo(GuiObject &o, Args, Value &) {
+                textEdit(o)->redo();
+                return Ok;
+        }
+        GuiStatus call_TextEdit_cut(GuiObject &o, Args, Value &) {
+                textEdit(o)->cut();
+                return Ok;
+        }
+        GuiStatus call_TextEdit_copy(GuiObject &o, Args, Value &) {
+                textEdit(o)->copy();
+                return Ok;
+        }
+        GuiStatus call_TextEdit_paste(GuiObject &o, Args, Value &) {
+                textEdit(o)->paste();
+                return Ok;
+        }
+        template <typename T> GuiStatus makeTextEdit(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<T>(o, parent);
+                if (s != Ok) return s;
+                o.widget->setStretch(1);
+                textEdit(o)->setChanged(textChanged, &o);
+                textEdit(o)->setCursorMoved(textCursorMoved, &o);
+                return Ok;
+        }
+        GuiStatus create_TextEdit(GuiObject &o, GuiObject *parent) {
+                return makeTextEdit<TextEdit>(o, parent);
+        }
+
+        CodeEdit *codeEdit(GuiObject &o) {
+                return static_cast<CodeEdit *>(o.widget);
+        }
+        GuiStatus set_CodeEdit_syntax(GuiObject &o, const Value &v) {
+                const Syntax *syntax = v.text.isEmpty() ? nullptr : Syntax::find(v.text);
+                if (syntax == nullptr && !v.text.isEmpty()) return BadValue;
+                codeEdit(o)->setSyntax(syntax);
+                return Ok;
+        }
+        Value get_CodeEdit_syntax(GuiObject &o) {
+                const Syntax *syntax = codeEdit(o)->syntax();
+                return Value::string(syntax != nullptr ? StringView(syntax->id) : StringView());
+        }
+        GuiStatus set_CodeEdit_lineNumbers(GuiObject &o, const Value &v) {
+                codeEdit(o)->setLineNumbers(v.number != 0);
+                return Ok;
+        }
+        Value get_CodeEdit_lineNumbers(GuiObject &o) {
+                return Value::boolean(codeEdit(o)->hasLineNumbers());
+        }
+        GuiStatus set_CodeEdit_scheme(GuiObject &o, const Value &v) {
+                const CodeEdit::Scheme *scheme = CodeEdit::scheme(v.text);
+                if (scheme == nullptr) return BadValue;
+                codeEdit(o)->setScheme(*scheme);
+                return Ok;
+        }
+        Value get_CodeEdit_scheme(GuiObject &o) {
+                return Value::string(codeEdit(o)->currentScheme().id);
+        }
+        GuiStatus create_CodeEdit(GuiObject &o, GuiObject *parent) {
+                return makeTextEdit<CodeEdit>(o, parent);
+        }
+
+        // ---- Terminal: a screen the client feeds (its program's pty is its own), typing told back
+
+        TerminalWidget *terminal(GuiObject &o) {
+                return static_cast<TerminalWidget *>(o.widget);
+        }
+        void terminalTyped(void *arg, TerminalWidget &, StringView bytes) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const Value v = Value::string(bytes);
+                o.connection->emit(o, "typed", Args(&v, 1));
+                return;
+        }
+        void terminalSized(void *arg, TerminalWidget &, uint16_t columns, uint16_t rows) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const Value v[] = {Value::integer(columns), Value::integer(rows)};
+                o.connection->emit(o, "sized", Args(v, 2));
+                return;
+        }
+        Value get_Terminal_columns(GuiObject &o) {
+                return Value::integer(terminal(o)->columns());
+        }
+        Value get_Terminal_rows(GuiObject &o) {
+                return Value::integer(terminal(o)->rows());
+        }
+        GuiStatus call_Terminal_write(GuiObject &o, Args args, Value &) {
+                terminal(o)->show(args[0].text);
+                return Ok;
+        }
+        GuiStatus call_Terminal_clear(GuiObject &o, Args, Value &) {
+                terminal(o)->clear();
+                return Ok;
+        }
+        GuiStatus create_Terminal(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<TerminalWidget>(o, parent);
+                if (s != Ok) return s;
+                o.widget->setStretch(1);
+                terminal(o)->setTyped(terminalTyped, &o);
+                terminal(o)->setSized(terminalSized, &o);
+                return Ok;
         }
 
         // ---- The schema's tables, from classes.def
@@ -1232,12 +1772,10 @@ void GuiIcon::dropPrevious() {
 
 ClientWindow::ClientWindow(GuiApplication &app, const Config &config, GuiObject &object)
     : GuiWindow(app, config), _object(object) {
+        // Flush with the frame, as the built-in applications' columns: bars at the edges
+        // (`margin` and `spacing` pad plain widgets).
         _column = Widget::create<BoxLayout>(this, BoxLayout::Direction::Vertical);
-        if (_column != nullptr) {
-                _column->setMargins(WindowMargin, WindowMargin, WindowMargin, WindowMargin);
-                _column->setSpacing(Spacing);
-                setCentral(_column);
-        }
+        if (_column != nullptr) setCentral(_column);
 }
 
 ClientWindow::~ClientWindow() {

@@ -52,6 +52,16 @@ class TerminalWidget : public Widget {
                 /** @brief Told on the GUI loop's thread that the command ended, with its exit status. */
                 using Ended = void (*)(void *arg, TerminalWidget &terminal, int status);
 
+                /**
+                 * @brief Told what the user typed or pasted while no command of its own runs: the
+                 *        bytes a pty would have been given (its owner feeds a program's output
+                 *        back with `show()`: a GUI program's terminal, `devplan/guiprograms.md`).
+                 */
+                using Typed = void (*)(void *arg, TerminalWidget &terminal, StringView bytes);
+
+                /** @brief Told its size in character cells changed (on the GUI loop's thread). */
+                using Sized = void (*)(void *arg, TerminalWidget &terminal, uint16_t columns, uint16_t rows);
+
                 /** @brief A descriptor the command gets beyond 0, 1 and 2. */
                 struct ExtraFd {
                                 int             fd = 3;
@@ -85,6 +95,24 @@ class TerminalWidget : public Widget {
                 void clear();
                 /** @brief Shows @p text as if the program had written it (a note: "[ended with 1]"). */
                 void show(StringView text);
+                /** @brief Sets who is told of typing while no command runs (null: the window's keys). */
+                void setTyped(Typed fn, void *arg) {
+                        _typed = fn;
+                        _typedArg = arg;
+                        return;
+                }
+
+                /** @brief Sets who is told of its size in cells. */
+                void setSized(Sized fn, void *arg) {
+                        _sized = fn;
+                        _sizedArg = arg;
+                        return;
+                }
+
+                /** @brief Returns its size in character cells. */
+                uint16_t columns() const { return _columnsShown; }
+                uint16_t rows() const { return _rowsShown; }
+
                 /** @brief Sets who is told of the end. */
                 void setEnded(Ended fn, void *arg) {
                         _ended = fn;
@@ -153,6 +181,12 @@ class TerminalWidget : public Widget {
                 uint64_t               _pressUs = 0;
                 Ended                  _ended = nullptr;
                 void                  *_endedArg = nullptr;
+                Typed                  _typed = nullptr;
+                void                  *_typedArg = nullptr;
+                Sized                  _sized = nullptr;
+                void                  *_sizedArg = nullptr;
+                uint16_t               _columnsShown = 0; // as last told to _sized
+                uint16_t               _rowsShown = 0;
                 String                *_copy = nullptr; // collect()'s target
 };
 

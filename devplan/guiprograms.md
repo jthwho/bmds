@@ -845,3 +845,68 @@ Each step ends tried on the board and with its measurements (§5's estimates rep
   form row and a tool button, then added a side again, and was refused a third side and a
   non-page in tabs. Destroying the tabs took their pages, and the board stayed up.
 - **Size:** `bmds_guiservice` 25.1 KB of flash (17.0 KB after 2b).
+
+**2d, as built (2026-10-22):**
+- **`ItemView`** (abstract) is the list views' common part, each with a model of its own:
+  - `items` (column 0, a list read and set), `current` (-1: none), `multiSelect` (a list
+    view: off; the others: on, as the toolkit's views);
+  - `addItem`, `removeItem`, `clear`, and `setIcon(row, name)`, a theme icon by name, small and
+    large;
+  - events `activated(row)` and `currentChanged(row)`. A change the client made isn't told
+    back to it (the object's `quiet`); a row added or removed that moves the current one is.
+  - **`ListView`:** a details view of one column, as wide as the view, without a header.
+  - **`DetailsView`:** `columns` (their titles, six at most), `addRow(texts)`,
+    `setColumnWidth`, `setSortIndicator`; event `sortAsked(column)`. The client sorts and sets
+    the rows again.
+  - **`IconView`:** the flowing arrangement, 32-pixel icons.
+- **Rows' icons:** the connection keeps copies (`GuiConnection::icon()`, 64 at most) for its
+  life, since a model holds pointers and the theme's cache may drop its own. The toolkit's
+  `ListItemModel` gains `removeAt()`.
+- **`TreeView`** works by path, as the toolkit's does:
+  - `addRoot`, then `expanding(path)` asks for a row's children, which the client gives with
+    `setChildren(path, names)` (none: a leaf);
+  - also `setHasChildren`, `expand`, `collapse`, `clear`, `current` (a path) and the events
+    `activated(path)` and `currentChanged(path)`;
+  - its icons are the theme's drive and folders.
+- **`TextEdit`:**
+  - `text` (set unmodified; read as saved), `readOnly`, read-only `modified`, `cursorLine`,
+    `cursorColumn` (bytes) and `selectedText`;
+  - `markSaved`, `insert`, `goToLine`, `selectAll`, `undo`, `redo`, `cut`, `copy`, `paste`;
+  - events `changed` (On, no values: the client reads the text when it wants it) and
+    `cursorMoved(line, byte)` (Off).
+- **`CodeEdit`** adds `syntax` (a language's id: `Syntax::find`), `lineNumbers` and `scheme`.
+- **`Terminal` replaces the plan's `start(path, args)`/`ended`:**
+  - The client feeds it: `write(bytes)` shows a program's output, and the events
+    `typed(bytes)` (the keys and pastes, as a pty would get them) and `sized(columns, rows)`
+    go back.
+  - The program runs its own child on its own pseudo-terminal.
+  - Why:
+    - The toolkit's `TerminalWidget` must be owned by a process that waits for its command,
+      and the service's threads are not processes.
+    - Started by the service, a command would run as the service for any client, a remote
+      one too.
+    - X11's terminals are the same: xterm runs the shell on its side.
+  - **The toolkit's `TerminalWidget` gains a fed mode:** with no command of its own,
+    `setTyped()` gets the typing and `setSized()` its size in cells.
+- **Tried on the board with the gallery:**
+  - **Views:** `/rom` as a tree, its children read by the program as it opened, and the chosen
+    folder's entries in a details view with sizes and icons.
+  - **Text:** C coloured with line numbers; typing updated the cursor and modified label.
+  - **Terminal:** `/bin/sh` on the gallery's own pty (`openpty`, `vfork`, `setsid`,
+    `TIOCSCTTY`) ran commands with colours, and `stty size` followed the window (34 × 153
+    maximized, 11 × 49 restored).
+  - **Layouts:** a list view and an icon view; clicking and double-clicking showed
+    `currentChanged` and `activated`.
+  - Quitting hung up the shell, and both processes were gone.
+- **Size:** `bmds_guiservice` 33.7 KB of flash (25.1 KB after 2c).
+
+**A window's padding (2026-10-22, the user's report):** a program's window had an 8-pixel
+margin and 4-pixel spacing around its column, unlike the built-in applications. The file browser,
+Settings and Edit keep their column flush with the frame, so their menu, tool and status bars
+touch its edges and only their content areas pad themselves.
+- A client window's column is now flush by default.
+- New write-only `Window.margin` and `Window.spacing` pad plain widgets (guidemo's: 8 and 4).
+- A `TabPage` is a plain box (no margin of its own), and a page of plain widgets sets its
+  `margin` (the gallery's Windows page).
+- Checked on the board beside a folder window: the gallery's status bar and tool bar now sit as
+  the file browser's.
