@@ -1096,3 +1096,75 @@ touch its edges and only their content areas pad themselves.
   - The gallery's Paint tab draws with the mouse (each motion's dots, only the changed
     rectangle sent), its brush from the colour dialog. The picture stayed across tab switches.
 - **Size:** `bmds_guiservice` 46.6 KB of flash after 3a and 3b (42.0 KB after step 2).
+
+**3c, as built (2026-10-22):**
+- **The system call:** `gui_canvas_surface(conn, canvas, config)`, slot 125
+  (`bmds_gui_canvas_surface` in `bmds/sys.h`). It takes `bmds_surface_config_t`, as
+  `surface_open` does:
+  - `width` and `height` (both 0: the canvas's size now);
+  - `format`: RGB565 or BGR24 (the painter draws both at 1:1; L8 has no palette here);
+  - `buffers`: 2 or 3; `flags`: `BMDS_SURFACE_FAST` alone. The title and aspect are ignored.
+  - It answers an fd, close-on-exec, for the surface calls a game uses: buffer, acquire, present,
+    and `surface_control`'s `IMAGE`, `BLIT`, `WAIT` and `INFO`. A title, a palette or a pointer
+    mode is `EINVAL`, and the fd has no events: the canvas's come by the protocol.
+  - `libbmdsgui`'s `bmds_gui_canvas_surface_open(gui, canvas, config)` checks the extension, syncs
+    (so a canvas just made exists and is laid out), then calls it. `bmds_gui_has_extension()` is
+    new too.
+- **The surface interface is `SwapChain`** (`bmds_ui`, `bmds/swapchain.h`), a `Stream` the loader's
+  surface calls take through `Stream::swapChain()`:
+  - **Shared:** the buffers and their states (acquire, the newest presented, the one being read),
+    the image slots and the 2D-DMA's blits, frame waits. These moved out of `ProgramSurface`
+    unchanged.
+  - **The subclass's:** `present()` and `info()`, and optionally a palette, a title and a pointer
+    mode (`NotSupported` otherwise).
+  - `ProgramSurface` is one (its window, full screen and events stay its own). The service's
+    `CanvasSurface` is the other.
+- **How the loader reaches the service:** through `GuiOpener`, which now also takes a
+  `CanvasSurface` maker, so the loader still doesn't depend on the service.
+  - **Finding the connection:** the service keeps a registry of its connections by slot. Each
+    connection records its client's end of the stream pair, compared only, never used: the pair's
+    block lives as long as the service holds its own end.
+  - **The fd decides locality:** a stream that isn't a local client's end answers `ENOTTY`, so
+    remote connections can never have one.
+- **Running it on the connection's loop:** the call queues a job on the connection under the
+  registry's lock, posts to its loop, and waits.
+  - **Ordering:** the loop runs it after the requests it holds.
+  - **Ending connections:** a connection that ends refuses the jobs left, so the caller never
+    waits forever.
+- **`CanvasSurface`:** a counted `SwapChain`. The program's descriptor holds one reference and the
+  canvas another, so either may go first.
+  - **Presenting:** a present writes the buffer back from the cache, unites the damage, and posts
+    (once until it runs) to the loop. The loop invalidates that part of the canvas.
+  - **Painting:** the canvas paints the newest presented buffer at its top left with
+    `Painter::pixels565` (or `pixels`), white around it. The swap chain's reading state keeps
+    that buffer from being freed while it paints.
+  - **Replacing and closing:** a canvas given another surface detaches the old one, whose presents
+    then show nowhere (`INFO`'s `shown` is 0). With the fd closed, the canvas keeps the last
+    picture.
+- **The extension:** `Hello` names `CANVAS-SURFACE` (value "1", first opcode and event 0) on local
+  connections.
+  - The extensions' layout is name, value, opcode, event, as the wire of §8 says. The client
+    read no value before; nothing had sent an extension yet.
+  - The host test now sends one, checked by `bmds_gui_has_extension`.
+- **Measured on the board** (`guisurface`, a new example: a plasma drawn by the CPU into a canvas in
+  an ordinary window, a label beside it):
+  - **640 × 480, drawn and presented:** 26 ms a frame with every frame shown (none dropped).
+    Through PutPixels just sending a frame took 89 ms.
+  - **Presents alone:** 0.2 ms each.
+  - **Paced by the display** (`BMDS_SURFACE_WAIT`): 29 fps, of which drawing takes 19 ms and
+    presenting (the cache's write-back of 600 KB) 2.1 ms.
+  - **Maximized** (1272 × 646): it follows with a new surface on `resized`, at 14 fps; the CPU's
+    drawing is the limit.
+- **Tried:**
+  - guitest checks:
+    - the extension;
+    - a surface at the canvas's size: its info, its buffer's stride, ten frames of CPU and 2D-DMA
+      fills, no title or pointer mode;
+    - a second surface (32 × 16, BGR24, 3 buffers) replacing it, and presenting a buffer twice;
+    - the refusals: L8, half a size, too big, a label, no such object, a bad fd (`EBADF`), stdout
+      (`ENOTTY`);
+    - the canvas destroyed before the fd, and the fd closed before the canvas.
+  - Ten rounds of guitest and guisurface left internal RAM unchanged and PSRAM within 40 bytes,
+    once the connections had ended (each frees its surface a moment after its program exits).
+  - blittest and surfdemo still pass on `ProgramSurface`.
+- **Size:** `bmds_guiservice` 49.6 KB of flash (46.6 KB after 3b).

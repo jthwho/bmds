@@ -23,6 +23,7 @@ using bmds::Error;
 using bmds::KernelCall;
 using bmds::ProgramSurface;
 using bmds::Rect;
+using bmds::SwapChain;
 
 namespace {
 
@@ -60,9 +61,10 @@ namespace {
         constexpr uint32_t MaxDamage = 64; // rectangles a present takes (more: all of it)
         constexpr size_t   MaxTitle = 128; // bytes of a title read
 
-        int32_t surfaceOf(const bmds::FileHandle::Ptr &handle, ProgramSurface *&surface) {
+        // A program's surface, or a GUI canvas's (devplan/guiprograms.md §11 3c).
+        int32_t surfaceOf(const bmds::FileHandle::Ptr &handle, SwapChain *&surface) {
                 if (!handle) return -BMDS_EBADF;
-                surface = handle->stream().programSurface();
+                surface = handle->stream().swapChain();
                 return surface != nullptr ? 0 : -BMDS_ENOTTY;
         }
 
@@ -146,13 +148,13 @@ int32_t bmds_k_surface_open(const bmds_surface_config_t *config) {
 
 int32_t bmds_k_surface_buffer(int32_t fd, bmds_surface_buffer_t *info) {
         KernelCall      call;
-        ProgramSurface *surface = nullptr;
+        SwapChain      *surface = nullptr;
         int32_t         r = surfaceOf(call->handle(fd), surface);
         if (r < 0) return r;
         bmds_surface_buffer_t i;
         r = bmds::detail::copyIn(info, i);
         if (r < 0) return r;
-        uint8_t *pixels = i.index < ProgramSurface::MaxBuffers ? surface->buffer(uint8_t(i.index)) : nullptr;
+        uint8_t *pixels = i.index < SwapChain::MaxBuffers ? surface->buffer(uint8_t(i.index)) : nullptr;
         if (pixels == nullptr) return -BMDS_EINVAL;
         i.pixels = pixels;
         i.stride = uint32_t(surface->stride());
@@ -161,7 +163,7 @@ int32_t bmds_k_surface_buffer(int32_t fd, bmds_surface_buffer_t *info) {
 
 int32_t bmds_k_surface_acquire(int32_t fd, int32_t timeout_ms) {
         KernelCall      call;
-        ProgramSurface *surface = nullptr;
+        SwapChain      *surface = nullptr;
         const int32_t   r = surfaceOf(call->handle(fd), surface);
         if (r < 0) return r;
         auto [index, err] = timeout_ms == 0 ? surface->tryAcquire() : surface->acquire(timeoutOf(timeout_ms));
@@ -172,25 +174,24 @@ int32_t bmds_k_surface_acquire(int32_t fd, int32_t timeout_ms) {
 
 int32_t bmds_k_surface_present(int32_t fd, const bmds_surface_present_t *present) {
         KernelCall      call;
-        ProgramSurface *surface = nullptr;
+        SwapChain      *surface = nullptr;
         int32_t         r = surfaceOf(call->handle(fd), surface);
         if (r < 0) return r;
         bmds_surface_present_t p;
         r = bmds::detail::copyIn(present, p);
         if (r < 0) return r;
-        if (p.index >= ProgramSurface::MaxBuffers) return -BMDS_EINVAL;
+        if (p.index >= SwapChain::MaxBuffers) return -BMDS_EINVAL;
         // The damage, cut to the surface (more rectangles than kept: all of it).
         Rect   damage[MaxDamage];
         size_t n = 0;
         if (p.damage_count > 0 && p.damage_count <= MaxDamage) {
                 if (p.damage == nullptr) return -BMDS_EFAULT;
-                const auto &cfg = surface->config();
                 for (uint32_t i = 0; i < p.damage_count; ++i) {
                         const bmds_rect_t &d = p.damage[i];
                         const int64_t      x0 = d.x < 0 ? 0 : d.x, y0 = d.y < 0 ? 0 : d.y;
                         int64_t            x1 = int64_t(d.x) + d.width, y1 = int64_t(d.y) + d.height;
-                        if (x1 > cfg.width) x1 = cfg.width;
-                        if (y1 > cfg.height) y1 = cfg.height;
+                        if (x1 > surface->width()) x1 = surface->width();
+                        if (y1 > surface->height()) y1 = surface->height();
                         if (x1 <= x0 || y1 <= y0) continue;
                         damage[n++] = Rect{uint16_t(x0), uint16_t(y0), uint16_t(x1 - x0), uint16_t(y1 - y0)};
                 }
@@ -203,7 +204,7 @@ int32_t bmds_k_surface_present(int32_t fd, const bmds_surface_present_t *present
 
 int32_t bmds_k_surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size) {
         KernelCall      call;
-        ProgramSurface *surface = nullptr;
+        SwapChain      *surface = nullptr;
         int32_t         r = surfaceOf(call->handle(fd), surface);
         if (r < 0) return r;
         if (arg == nullptr) return -BMDS_EFAULT;
@@ -226,7 +227,7 @@ int32_t bmds_k_surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size
                         if (size < sizeof(uint32_t)) return -BMDS_EINVAL;
                         const uint32_t mode = *static_cast<const uint32_t *>(arg);
                         if (mode > BMDS_POINTER_RELATIVE) return -BMDS_EINVAL;
-                        return surface->setPointerMode(ProgramSurface::PointerMode(mode)).isOk() ? 0 : -BMDS_EINVAL;
+                        return surface->setPointerMode(SwapChain::PointerMode(mode)).isOk() ? 0 : -BMDS_EINVAL;
                 }
                 case BMDS_SURFACE_WAIT: {
                         bmds_surface_wait_t w;
@@ -238,7 +239,7 @@ int32_t bmds_k_surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size
                         return err.isOk() ? 0 : bmds::Process::errnoFor(err);
                 }
                 case BMDS_SURFACE_INFO: {
-                        const ProgramSurface::Info k = surface->info();
+                        const SwapChain::Info      k = surface->info();
                         bmds_surface_info_t        i = {};
                         i.size = sizeof(i);
                         i.full_screen = k.fullScreen ? 1 : 0;
@@ -262,7 +263,7 @@ int32_t bmds_k_surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size
                         r = bmds::detail::copyIn(static_cast<const bmds_surface_image_t *>(arg), im);
                         if (r < 0) return r;
                         if (im.slot >= BMDS_SURFACE_IMAGES) return -BMDS_EINVAL;
-                        ProgramSurface::Image k;
+                        SwapChain::Image k;
                         if (im.pixels != nullptr) {
                                 if (im.width == 0 || im.height == 0 || im.width > UINT16_MAX || im.height > UINT16_MAX)
                                         return -BMDS_EINVAL;
@@ -282,17 +283,17 @@ int32_t bmds_k_surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size
                         r = bmds::detail::copyIn(static_cast<const bmds_surface_blit_t *>(arg), bl);
                         if (r < 0) return r;
                         if (bl.count == 0 || bl.count > BMDS_SURFACE_BLIT_MAX || bl.source > BMDS_BLIT_FILL ||
-                            bl.buffer >= ProgramSurface::MaxBuffers)
+                            bl.buffer >= SwapChain::MaxBuffers)
                                 return -BMDS_EINVAL;
                         if (bl.pieces == nullptr) return -BMDS_EFAULT;
-                        static_assert(sizeof(bmds_surface_piece_t) == sizeof(ProgramSurface::Piece) &&
+                        static_assert(sizeof(bmds_surface_piece_t) == sizeof(SwapChain::Piece) &&
                                               offsetof(bmds_surface_piece_t, from_y) ==
-                                                      offsetof(ProgramSurface::Piece, fromY),
+                                                      offsetof(SwapChain::Piece, fromY),
                                       "a blit's pieces are the ABI's");
-                        const Error err = surface->blit(
-                                uint8_t(bl.buffer), ProgramSurface::BlitSource(bl.source), bl.from,
-                                bmds::Span<const ProgramSurface::Piece>(
-                                        reinterpret_cast<const ProgramSurface::Piece *>(bl.pieces), bl.count));
+                        const Error err =
+                                surface->blit(uint8_t(bl.buffer), SwapChain::BlitSource(bl.source), bl.from,
+                                              bmds::Span<const SwapChain::Piece>(
+                                                      reinterpret_cast<const SwapChain::Piece *>(bl.pieces), bl.count));
                         if (err == Error::Invalid) return -BMDS_EINVAL;
                         return err.isOk() ? 0 : bmds::Process::errnoFor(err);
                 }

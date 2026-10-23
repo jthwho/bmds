@@ -15,8 +15,11 @@
 
 #include <bmds/guiclasses.h>
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <bmds/sys.h>
 
 static int failures;
 
@@ -371,6 +374,117 @@ static void canvasTest(bmds_gui_t *gui, uint32_t window) {
         return;
 }
 
+// A canvas laid out at about 64 x 48 (its resized event waited for).
+static uint32_t sizedCanvas(bmds_gui_t *gui, uint32_t window, uint32_t *width, uint32_t *height) {
+        const uint32_t c = bmds_canvas_new(gui, window);
+        bmds_canvas_set_preferred_width(gui, c, 64);
+        bmds_canvas_set_preferred_height(gui, c, 48);
+        bmds_gui_event_t e;
+        int              sized = 0;
+        while (!sized && nextEvent(gui, &e, 1000) == 1)
+                sized = e.source == c && bmds_gui_event_is(gui, &e, BMDS_GUI_CANVAS_RESIZED) && e.count == 2 &&
+                        e.values[0].number > 0 && e.values[1].number > 0;
+        CHECK(sized);
+        bmds_gui_value_t v;
+        CHECK(bmds_canvas_get_width(gui, c, &v) == 0);
+        *width = (uint32_t)v.number;
+        CHECK(bmds_canvas_get_height(gui, c, &v) == 0);
+        *height = (uint32_t)v.number;
+        return c;
+}
+
+static int surfaceInfo(int fd, bmds_surface_info_t *info) {
+        memset(info, 0, sizeof(*info));
+        info->size = sizeof(*info);
+        return bmds_surface_control(fd, BMDS_SURFACE_INFO, info, sizeof(*info));
+}
+
+// One frame: a buffer taken, its top half filled by the CPU and its bottom by the 2D-DMA, presented.
+static int frame(int fd, uint32_t width, uint32_t height, uint16_t top, uint16_t bottom) {
+        const int32_t index = bmds_surface_acquire(fd, 1000);
+        if (index < 0) return index;
+        bmds_surface_buffer_t b = {sizeof(b), (uint32_t)index, NULL, 0};
+        int32_t               r = bmds_surface_buffer(fd, &b);
+        if (r < 0) return r;
+        for (uint32_t y = 0; y < height / 2; ++y) {
+                uint16_t *row = (uint16_t *)((uint8_t *)b.pixels + y * b.stride);
+                for (uint32_t x = 0; x < width; ++x) row[x] = top;
+        }
+        bmds_surface_piece_t piece = {0, (int32_t)(height / 2), width, height - height / 2, 0, 0};
+        bmds_surface_blit_t  bl = {sizeof(bl), (uint32_t)index, BMDS_BLIT_FILL, bottom, 1, &piece};
+        r = bmds_surface_control(fd, BMDS_SURFACE_BLIT, &bl, sizeof(bl));
+        if (r < 0) return r;
+        bmds_surface_present_t p = {sizeof(p), (uint32_t)index, NULL, 0};
+        r = bmds_surface_present(fd, &p);
+        return r < 0 ? r : 0;
+}
+
+// CANVAS-SURFACE: a canvas's swap chain, drawn and presented as a game's (local connections).
+static void canvasSurfaceTest(bmds_gui_t *gui, uint32_t window) {
+        CHECK(bmds_gui_has_extension(gui, "CANVAS-SURFACE") == 1);
+        uint32_t       width = 0, height = 0;
+        const uint32_t c = sizedCanvas(gui, window, &width, &height);
+        const int      fd = bmds_gui_canvas_surface_open(gui, c, NULL); // the canvas's size, RGB565
+        CHECK(fd >= 0);
+        bmds_surface_info_t info;
+        CHECK(surfaceInfo(fd, &info) == 0 && info.shown == 1 && info.picture_width == width &&
+              info.picture_height == height && info.presents == 0);
+        bmds_surface_buffer_t b = {sizeof(b), 0, NULL, 0};
+        CHECK(bmds_surface_buffer(fd, &b) == 0 && b.pixels != NULL && b.stride == width * 2);
+        for (int i = 0; i < 10; ++i) CHECK(frame(fd, width, height, (uint16_t)(0x001f << (i % 3)), 0x07e0) == 0);
+        CHECK(surfaceInfo(fd, &info) == 0 && info.presents == 10);
+        // A window's: no title, palette or pointer mode; no events.
+        CHECK(bmds_surface_control(fd, BMDS_SURFACE_TITLE, "x", 1) == -BMDS_EINVAL);
+        uint32_t mode = BMDS_POINTER_HIDDEN;
+        CHECK(bmds_surface_control(fd, BMDS_SURFACE_POINTER, &mode, sizeof(mode)) == -BMDS_EINVAL);
+
+        // Another, its size given, in BGR24 with 3 buffers: the canvas shows it instead.
+        bmds_surface_config_t config = {sizeof(config), 32, 16, BMDS_PIXEL_BGR24, 3, 0, 0, 0, NULL};
+        const int             fd2 = bmds_gui_canvas_surface_open(gui, c, &config);
+        CHECK(fd2 >= 0);
+        CHECK(surfaceInfo(fd2, &info) == 0 && info.shown == 1 && info.picture_width == 32 && info.picture_height == 16);
+        CHECK(surfaceInfo(fd, &info) == 0 && info.shown == 0); // replaced: presents still work
+        CHECK(frame(fd, width, height, 0xffff, 0) == 0);
+        const int32_t index = bmds_surface_acquire(fd2, 1000);
+        CHECK(index >= 0);
+        bmds_surface_present_t p = {sizeof(p), (uint32_t)index, NULL, 0};
+        CHECK(bmds_surface_present(fd2, &p) >= 0);
+        CHECK(bmds_surface_present(fd2, &p) == -BMDS_EINVAL); // presented already: not the program's
+
+        // Refused: a palette's format, half a size, too big, not a canvas, no such object.
+        config.format = BMDS_PIXEL_L8;
+        CHECK(bmds_gui_canvas_surface_open(gui, c, &config) == -1 && errno == EINVAL);
+        config.format = BMDS_PIXEL_RGB565;
+        config.width = 0;
+        CHECK(bmds_gui_canvas_surface_open(gui, c, &config) == -1 && errno == EINVAL);
+        config.width = 2000;
+        CHECK(bmds_gui_canvas_surface_open(gui, c, &config) == -1 && errno == EINVAL);
+        const uint32_t label = bmds_label_new(gui, window);
+        CHECK(bmds_gui_canvas_surface_open(gui, label, NULL) == -1 && errno == EINVAL);
+        CHECK(bmds_gui_canvas_surface_open(gui, (c & 0xff000000u) | 0xfffff0u, NULL) == -1 && errno == ENOENT);
+        CHECK(bmds_gui_canvas_surface(-1, c, NULL) == -BMDS_EBADF);
+        CHECK(bmds_gui_canvas_surface(1, c, NULL) == -BMDS_ENOTTY); // stdout: not a GUI connection
+        bmds_gui_destroy(gui, label);
+
+        // The canvas going first: the fd still presents, shown nowhere.
+        bmds_gui_destroy(gui, c);
+        CHECK(bmds_gui_sync(gui) == 0);
+        CHECK(surfaceInfo(fd2, &info) == 0 && info.shown == 0);
+        CHECK(frame(fd, width, height, 0, 0) == 0);
+        close(fd);
+        close(fd2);
+
+        // The fd going first: the canvas keeps the last picture until it goes.
+        const uint32_t c2 = sizedCanvas(gui, window, &width, &height);
+        const int      fd3 = bmds_gui_canvas_surface_open(gui, c2, NULL);
+        CHECK(fd3 >= 0 && frame(fd3, width, height, 0xf800, 0x001f) == 0);
+        close(fd3);
+        CHECK(bmds_gui_sync(gui) == 0);
+        bmds_gui_destroy(gui, c2);
+        EXPECT_NONE();
+        return;
+}
+
 // Many windows with children made and destroyed; the service answers throughout.
 static void many(bmds_gui_t *gui) {
         for (int i = 0; i < 100; ++i) {
@@ -404,6 +518,7 @@ int main(void) {
         containers(gui, window);
         images(gui, window);
         canvasTest(gui, window);
+        canvasSurfaceTest(gui, window);
         many(gui);
         bmds_gui_close(gui);
         if (failures != 0) {

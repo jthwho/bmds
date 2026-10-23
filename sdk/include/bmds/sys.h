@@ -199,6 +199,8 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_CONTROLS 122u /**< `int32_t controls(uint32_t op, void *arg, uint32_t size)`. */
 #define BMDS_SYS_FS_SERVE 123u /**< `int32_t fs_serve(const bmds_fs_serve_t *config)`: the server fd. */
 #define BMDS_SYS_GUI_OPEN 124u /**< `int32_t gui_open(uint32_t display, uint32_t flags)`: a GUI connection fd. */
+#define BMDS_SYS_GUI_CANVAS_SURFACE                                                                                    \
+        125u /**< `int32_t gui_canvas_surface(int32_t conn, uint32_t canvas, const bmds_surface_config_t *c)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -2006,6 +2008,7 @@ typedef int32_t (*bmds_sys_surface_control_fn)(int32_t fd, uint32_t op, void *ar
 typedef int32_t (*bmds_sys_controls_fn)(uint32_t op, void *arg, uint32_t size);
 typedef int32_t (*bmds_sys_fs_serve_fn)(const bmds_fs_serve_t *config);
 typedef int32_t (*bmds_sys_gui_open_fn)(uint32_t display, uint32_t flags);
+typedef int32_t (*bmds_sys_gui_canvas_surface_fn)(int32_t conn, uint32_t canvas, const bmds_surface_config_t *config);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -3312,6 +3315,31 @@ static inline int32_t bmds_fs_serve(const bmds_fs_serve_t *config) {
 static inline int32_t bmds_gui_open(uint32_t display, uint32_t flags) {
         if (!bmds_sys_has(BMDS_SYS_GUI_OPEN)) return -BMDS_ENOSYS;
         return ((bmds_sys_gui_open_fn)bmds_sys->slot[BMDS_SYS_GUI_OPEN])(display, flags);
+}
+
+/**
+ * @brief Gives canvas @p canvas of GUI connection @p conn a surface (the `CANVAS-SURFACE`
+ *        extension, devplan/guiprograms.md §11 3c): an fd for the surface calls a game uses
+ *        (`surface_buffer`, `surface_acquire`, `surface_present`, `surface_control`'s
+ *        `BMDS_SURFACE_IMAGE`, `BMDS_SURFACE_BLIT`, `BMDS_SURFACE_WAIT` and `BMDS_SURFACE_INFO`).
+ *        The canvas shows the newest presented buffer at its top left. Programs use it through
+ *        `bmds/gui.h` (`bmds_gui_canvas_surface_open`), which first makes sure the service has run
+ *        the requests sent before.
+ *
+ * @p config (null: the defaults) takes `width` and `height` (both 0: the canvas's size now),
+ * `format` (`BMDS_PIXEL_RGB565` or `BMDS_PIXEL_BGR24`), `buffers` (2 or 3) and `flags`
+ * (`BMDS_SURFACE_FAST` alone); its title and aspect are ignored. The fd has no events (the
+ * canvas's come by the protocol), palette, title or pointer mode. A canvas given another surface
+ * shows that one; the fd closed, the canvas keeps the last picture presented. Close-on-exec.
+ * (Slot 125, appended 2026-10-22: check `bmds_sys_has()`.)
+ * @return The fd, or `-BMDS_EBADF` (@p conn), `-BMDS_ENOTTY` (not a local GUI connection),
+ *         `-BMDS_ENOENT` (no such object), `-BMDS_EINVAL` (not a canvas, a field),
+ *         `-BMDS_EAGAIN` (the canvas has no size yet: its window not shown), `-BMDS_ENOMEM`,
+ *         `-BMDS_EMFILE`, `-BMDS_EFAULT`, `-BMDS_ENOSYS` (a system without it).
+ */
+static inline int32_t bmds_gui_canvas_surface(int32_t conn, uint32_t canvas, const bmds_surface_config_t *config) {
+        if (!bmds_sys_has(BMDS_SYS_GUI_CANVAS_SURFACE)) return -BMDS_ENOSYS;
+        return ((bmds_sys_gui_canvas_surface_fn)bmds_sys->slot[BMDS_SYS_GUI_CANVAS_SURFACE])(conn, canvas, config);
 }
 
 /**

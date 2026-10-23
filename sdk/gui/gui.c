@@ -789,6 +789,28 @@ int bmds_gui_sync(bmds_gui_t *g) {
         return answer(g, &m);
 }
 
+int bmds_gui_canvas_surface_open(bmds_gui_t *g, uint32_t canvas, const struct bmds_surface_config_t *config) {
+#ifdef BMDS_GUI_HOST
+        (void)g;
+        (void)canvas;
+        (void)config;
+        errno = ENOSYS;
+        return -1;
+#else
+        if (!bmds_gui_has_extension(g, "CANVAS-SURFACE")) {
+                errno = ENOTSUP; /* a remote connection */
+                return -1;
+        }
+        if (bmds_gui_sync(g) != 0) return -1; /* the canvas made (and laid out) first */
+        const int32_t fd = bmds_gui_canvas_surface(g->fd, canvas, config);
+        if (fd < 0) {
+                errno = -fd;
+                return -1;
+        }
+        return fd;
+#endif
+}
+
 /* ---- Events */
 
 static int decode_event(bmds_gui_t *g, message_t m, bmds_gui_event_t *out) {
@@ -830,18 +852,34 @@ int bmds_gui_next_event(bmds_gui_t *g, bmds_gui_event_t *out, int timeout_ms) {
         }
 }
 
-/* ---- The setup's display, values */
+/* ---- The setup's extensions and display, values */
+
+/* The setup's extensions read past (each: its name, its value, its first opcode and event code);
+ * the one named @p name found (1), or not (0). */
+static int read_extensions(reader_t *r, const char *name) {
+        for (int i = 0; i < 5; ++i) (void)get32(r); /* status, versions, ids, mask, largest */
+        const uint32_t extensions = get32(r);
+        const size_t   wanted = name != NULL ? strlen(name) : 0;
+        int            found = 0;
+        for (uint32_t i = 0; i < extensions && r->ok; ++i) {
+                const uint32_t n = get32(r);
+                const char    *s = (const char *)get_bytes(r, n);
+                (void)get_bytes(r, get32(r));
+                (void)get32(r);
+                (void)get32(r);
+                if (name != NULL && s != NULL && r->ok && n == wanted && memcmp(s, name, n) == 0) found = 1;
+        }
+        return found;
+}
+
+int bmds_gui_has_extension(const bmds_gui_t *g, const char *name) {
+        reader_t r = {g->setup + 12, g->setup_length - 12, 0, 1};
+        return read_extensions(&r, name);
+}
 
 int bmds_gui_display(const bmds_gui_t *g, const char *name, bmds_gui_value_t *out) {
         reader_t r = {g->setup + 12, g->setup_length - 12, 0, 1};
-        for (int i = 0; i < 5; ++i) (void)get32(&r); /* status, versions, ids, mask, largest */
-        const uint32_t extensions = get32(&r);
-        for (uint32_t i = 0; i < extensions && r.ok; ++i) {
-                const uint32_t n = get32(&r);
-                (void)get_bytes(&r, n);
-                (void)get32(&r);
-                (void)get32(&r);
-        }
+        (void)read_extensions(&r, NULL);
         const uint32_t count = get32(&r);
         const size_t   wanted = strlen(name);
         for (uint32_t i = 0; i < count && r.ok; ++i) {

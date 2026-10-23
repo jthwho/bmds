@@ -451,8 +451,9 @@ Plan: [`input.md`](input.md).
   `gui.lock`, `Describe`), windows and the asked close (Edit asks in place), controls and
   layouts, views (a terminal the program feeds), menus with shortcuts, dialogs and timers;
   `guigallery` uses every class, `sdk/tests/guitest.c` is the board test. Step 3 under way (§11):
-  3a, images (`PutImage`), and 3b, `Canvas` drawn through the protocol (`PutPixels`), done. Next:
-  3c, canvases as local surfaces.
+  3a, images (`PutImage`), 3b, `Canvas` drawn through the protocol (`PutPixels`), and 3c,
+  canvases as local surfaces (`gui_canvas_surface`, slot 125; `SwapChain` under the surface
+  calls), done. Next: 3d, the `CLIPBOARD` extension.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

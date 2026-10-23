@@ -14,6 +14,7 @@
 #include <bmds/config.h>
 #include <bmds/filehandle.h>
 #include <bmds/guiapplication.h>
+#include <bmds/guiopener.h>
 #include <bmds/guiprotocol.h>
 #include <bmds/guiwindow.h>
 #include <bmds/icontheme.h>
@@ -242,8 +243,24 @@ struct GuiObject {
  */
 class GuiConnection {
         public:
-                /** @brief Starts a connection on @p end (the service's end of the stream), as slot @p slot. */
-                static Error start(FileHandle::Ptr end, uint8_t slot, uint32_t display, StringView program);
+                /**
+                 * @brief Starts a connection on @p end (the service's end of the stream), as slot
+                 *        @p slot. @p clientEnd is the client's end (only compared: a local client's
+                 *        system calls name the connection by it).
+                 */
+                static Error start(FileHandle::Ptr end, Stream *clientEnd, uint8_t slot, uint32_t display,
+                                   StringView program);
+
+                /** @brief Makes the connections' registry (`GuiService::init()`, once at boot). */
+                static void initRegistry();
+
+                /**
+                 * @brief `gui_canvas_surface` (`GuiOpener::CanvasSurface`): canvas @p canvas of the
+                 *        connection whose client's end is @p clientEnd given a surface, by its loop,
+                 *        after the requests it holds. The caller's thread, blocking.
+                 */
+                static Result<FileHandle::Ptr> canvasSurface(Stream &clientEnd, uint32_t canvas,
+                                                             const GuiOpener::SurfaceConfig &config);
 
                 /** @brief Sends @p event of @p object with @p values, if the client listens to it. */
                 void emit(GuiObject &object, const char *event, Span<const GuiProtocol::Value> values);
@@ -269,13 +286,25 @@ class GuiConnection {
                 GuiApplication &application() { return *_app; }
 
         private:
-                GuiConnection(FileHandle::Ptr end, uint8_t slot, uint32_t display);
+                // A canvas surface asked for (canvasSurface()), on its caller's stack until `done`.
+                struct SurfaceJob {
+                                uint32_t                        canvas = 0;
+                                const GuiOpener::SurfaceConfig *config = nullptr;
+                                FileHandle::Ptr                 handle;
+                                Error                           err = Error::Ok;
+                                Semaphore                       done{1, 0};
+                                SurfaceJob                     *next = nullptr;
+                };
+
+                GuiConnection(FileHandle::Ptr end, Stream *clientEnd, uint8_t slot, uint32_t display);
                 ~GuiConnection();
 
                 static void loopMain(void *arg);
                 static void readerMain(void *arg);
                 static void drainDue(void *arg);
                 static void endDue(void *arg);
+                static void surfacesDue(void *arg);
+                void        closeSurfaces(); // out of the registry, the jobs left refused
 
                 void drain();
                 void handle(ByteSpan message);
@@ -305,6 +334,8 @@ class GuiConnection {
                 static constexpr uint32_t IdMask = 0x00ffffffu;
 
                 FileHandle::Ptr      _end;
+                Stream              *_clientEnd;             // compared only (the stream pair's block outlives us)
+                SurfaceJob          *_surfaceJobs = nullptr; // in order (the registry's lock)
                 uint8_t              _slot;
                 uint32_t             _display;
                 String               _program{MemSpace::Psram};
@@ -339,6 +370,13 @@ class GuiConnection {
  *        run-length (2). @return 0, or the error code.
  */
 GuiStatus guiPutPixels(GuiObject &object, int x, int y, int width, int height, uint32_t encoding, ByteSpan data);
+
+/**
+ * @brief Gives canvas @p object a surface (`CANVAS-SURFACE`) made as @p config says, replacing any
+ *        it had. @return The program's handle to it, or `Invalid` (not a canvas, the size),
+ *        `NotReady` (0 × 0 asked and the canvas has no size yet), `NoMem`.
+ */
+Result<FileHandle::Ptr> guiCanvasSurface(GuiObject &object, const GuiOpener::SurfaceConfig &config);
 
 /** @brief The class named @p name, or null. */
 const GuiClass *guiClass(StringView name);

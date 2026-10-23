@@ -37,7 +37,8 @@ namespace {
                 if (slot == GuiService::MaxConnections) return makeError<FileHandle::Ptr>(Error::Full);
                 auto [ends, err] = StreamPair::create();
                 if (err.isOk())
-                        err = GuiConnection::start(std::move(ends.second), uint8_t(slot), display, client.program);
+                        err = GuiConnection::start(std::move(ends.second), &ends.first->stream(), uint8_t(slot),
+                                                   display, client.program);
                 if (err.isError()) {
                         used[slot].store(false);
                         return makeError<FileHandle::Ptr>(err);
@@ -55,7 +56,8 @@ void GuiServicePriv::released(uint8_t slot) {
 Error GuiService::init() {
         const Error err = GuiAtoms::init();
         if (err.isError()) return err;
-        GuiOpener::set(open);
+        GuiConnection::initRegistry();
+        GuiOpener::set(open, GuiConnection::canvasSurface);
         return Error::Ok;
 }
 

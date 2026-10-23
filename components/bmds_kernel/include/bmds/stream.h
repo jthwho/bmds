@@ -28,6 +28,7 @@ class Socket;
 class SpeechFile;
 class SynthFile;
 class ProgramSurface;
+class SwapChain;
 class WaitList;
 namespace Notifications {
         class Listener;
@@ -196,6 +197,13 @@ class Stream {
                  *        `devplan/games.md` §11), or null (the default).
                  */
                 virtual ProgramSurface *programSurface() { return nullptr; }
+
+                /**
+                 * @brief Returns the swap chain behind this stream, which the surface calls take
+                 *        (a program surface's, a GUI canvas's: `devplan/guiprograms.md` §11), or
+                 *        null (the default).
+                 */
+                virtual SwapChain *swapChain() { return nullptr; }
 
                 /** @brief Returns this as a PTP clock (`/dev/ptp0`), or null. */
                 virtual PtpClock *ptpClock() { return nullptr; }

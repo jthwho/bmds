@@ -36,6 +36,7 @@
 #include <bmds/menubar.h>
 #include <bmds/messagebox.h>
 #include <bmds/windowstack.h>
+#include "canvassurface.h"
 #include "guiatoms.h"
 #include "guiconnection.h"
 
@@ -2467,12 +2468,44 @@ namespace {
                                 setFocusable(true);
                                 setStretch(1);
                         }
-                        ~CanvasWidget() override { Memory::free(_pixels); }
+                        ~CanvasWidget() override {
+                                if (_surface != nullptr) _surface->detach(); // not update(): its window may be going
+                                Memory::free(_pixels);
+                        }
 
                         GuiSize sizeHint() const override { return GuiSize{preferredWidth, preferredHeight}; }
 
+                        // Shows @p surface's presents (a reference taken; null: its own picture again).
+                        void setSurface(CanvasSurface *surface) {
+                                if (_surface != nullptr) _surface->detach();
+                                _surface = surface;
+                                if (_surface != nullptr)
+                                        _surface->attach(_object.connection->application(), surfaceChanged, this);
+                                update();
+                                return;
+                        }
+
                         void paint(Painter &painter) override {
                                 const Rect g = geometry();
+                                if (_surface != nullptr) {
+                                        // The newest present at the top left; around it (or without one), white.
+                                        const uint16_t w = _surface->width() < g.width ? _surface->width() : g.width;
+                                        const uint16_t h =
+                                                _surface->height() < g.height ? _surface->height() : g.height;
+                                        if (!_surface->paint(painter, g.x, g.y, g.width, g.height)) {
+                                                (void)painter.fill(g, 0xffffff);
+                                                return;
+                                        }
+                                        if (w < g.width)
+                                                (void)painter.fill(bmds::Rect{uint16_t(g.x + w), g.y,
+                                                                              uint16_t(g.width - w), g.height},
+                                                                   0xffffff);
+                                        if (h < g.height)
+                                                (void)painter.fill(
+                                                        bmds::Rect{g.x, uint16_t(g.y + h), w, uint16_t(g.height - h)},
+                                                        0xffffff);
+                                        return;
+                                }
                                 if (_pixels == nullptr || _width == 0 || _height == 0) {
                                         (void)painter.fill(g, 0xffffff);
                                         return;
@@ -2499,9 +2532,10 @@ namespace {
                         void changed(const Rect &r) {
                                 GuiWindow *w = window();
                                 const Rect g = geometry();
-                                if (w != nullptr && r.width != 0)
+                                const Rect in = r.intersected(Rect{0, 0, g.width, g.height});
+                                if (w != nullptr && !in.isEmpty())
                                         w->invalidate(
-                                                Rect{uint16_t(g.x + r.x), uint16_t(g.y + r.y), r.width, r.height});
+                                                Rect{uint16_t(g.x + in.x), uint16_t(g.y + in.y), in.width, in.height});
                                 return;
                         }
 
@@ -2563,6 +2597,10 @@ namespace {
                         }
 
                 private:
+                        static void surfaceChanged(void *arg, const bmds::Rect &r) {
+                                static_cast<CanvasWidget *>(arg)->changed(r);
+                                return;
+                        }
                         void mouse(const char *event, const WindowManager::MouseEvent &e, uint8_t buttons) {
                                 const Rect  g = geometry();
                                 const Value v[] = {Value::integer(e.x - g.x), Value::integer(e.y - g.y),
@@ -2594,7 +2632,8 @@ namespace {
                                 return 4;
                         }
 
-                        GuiObject &_object;
+                        GuiObject     &_object;
+                        CanvasSurface *_surface = nullptr; // a local client's (CANVAS-SURFACE): shown instead
                         uint16_t  *_pixels = nullptr; // RGB565, _width × _height
                         uint16_t   _width = 0;
                         uint16_t   _height = 0;
@@ -2706,6 +2745,25 @@ namespace {
         }
 
 } // namespace
+
+// ---- CANVAS-SURFACE: a canvas shows a local client's swap chain
+
+Result<FileHandle::Ptr> guiCanvasSurface(GuiObject &o, const GuiOpener::SurfaceConfig &config) {
+        if (!isClassNamed(&o, "Canvas")) return makeError<FileHandle::Ptr>(Error::Invalid);
+        CanvasWidget    &c = *canvas(o);
+        const bmds::Rect g = c.geometry();
+        uint16_t         w = config.width, h = config.height;
+        if (w == 0 && h == 0) {
+                w = g.width;
+                h = g.height;
+                if (w == 0 || h == 0) return makeError<FileHandle::Ptr>(Error::NotReady); // not laid out yet
+        }
+        auto [handle, err] = CanvasSurface::make(w, h, SwapChain::Format(config.format), config.buffers,
+                                                 config.fast ? MemSpace::InternalDma : MemSpace::PsramDma);
+        if (err.isError()) return makeError<FileHandle::Ptr>(err);
+        c.setSurface(CanvasSurface::of(*handle));
+        return makeResult(std::move(handle));
+}
 
 // ---- PutPixels: a canvas's pixels, raw RGB565 (1) or run-length (2: uint16 count, uint16 pixel)
 

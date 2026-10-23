@@ -181,6 +181,29 @@ int bmds_gui_listen(bmds_gui_t *gui, uint32_t id, const uint32_t *events, uint32
 /** @brief Waits until the service has done every request so far (their errors told). @return 0 or -1. */
 int bmds_gui_sync(bmds_gui_t *gui);
 
+/** @brief Returns 1 if the service named extension @p name at setup (`CANVAS-SURFACE`), else 0. */
+int bmds_gui_has_extension(const bmds_gui_t *gui, const char *name);
+
+struct bmds_surface_config_t;
+
+/**
+ * @brief Gives canvas @p canvas a surface (the `CANVAS-SURFACE` extension, local connections
+ *        only): an fd for the surface calls a game uses (`bmds/sys.h`'s `bmds_surface_buffer`,
+ *        `bmds_surface_acquire`, `bmds_surface_present`, and `bmds_surface_control`'s images,
+ *        blits, frame waits and info). The canvas shows the newest presented buffer at its top
+ *        left, at its own size; its events still come here. Waits for the service to run what
+ *        was sent before (`bmds_gui_sync`), so a canvas just made has its size.
+ *
+ * @p config is `bmds_surface_config_t` (NULL: the canvas's size, RGB565, 2 buffers): `width`
+ * and `height` (both 0: the canvas's size now), `format` (`BMDS_PIXEL_RGB565` or
+ * `BMDS_PIXEL_BGR24`), `buffers` (2 or 3), `flags` (`BMDS_SURFACE_FAST` or 0). On the canvas's
+ * `resized` event, a program wanting its new size asks again and closes the old fd.
+ * @return The fd (close-on-exec), or -1 with `errno`: `ENOTSUP` (a remote connection),
+ *         `ENOENT` (no such object), `EINVAL` (not a canvas, a field), `EAGAIN` (the canvas has
+ *         no size yet: its window not shown), `ENOMEM`, `ENOSYS`.
+ */
+int bmds_gui_canvas_surface_open(bmds_gui_t *gui, uint32_t canvas, const struct bmds_surface_config_t *config);
+
 /**
  * @brief The next event, waiting at most @p timeout_ms (-1: for ever; 0: not at all). Sends what
  *        is buffered first.

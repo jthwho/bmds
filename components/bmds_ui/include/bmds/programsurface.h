@@ -21,7 +21,7 @@
 #include <bmds/result.h>
 #include <bmds/semaphore.h>
 #include <bmds/span.h>
-#include <bmds/stream.h>
+#include <bmds/swapchain.h>
 #include <atomic>
 #include <bmds/stringview.h>
 #include <bmds/task.h>
@@ -57,15 +57,8 @@ class Surface;
  * @par Thread Safety
  * Thread-safe: the program's threads and the window manager's task.
  */
-class ProgramSurface final : public Stream {
+class ProgramSurface final : public SwapChain {
         public:
-                /** @brief Pixel formats: the ABI's `BMDS_PIXEL_...` values. */
-                enum class Format : uint8_t {
-                        Bgr24 = 0,  ///< B, G, R.
-                        Rgb565 = 3, ///< Little-endian, R in the top 5 bits.
-                        L8 = 5,     ///< An index into the palette of 256.
-                };
-
                 /** @brief `Config::flags`: the ABI's `BMDS_SURFACE_...` values. */
                 enum Flag : uint8_t {
                         FullScreen = 0x1, ///< Suggest full screen.
@@ -102,13 +95,6 @@ class ProgramSurface final : public Stream {
                 };
                 static_assert(sizeof(Event) == 32, "the ABI's record");
 
-                /** @brief Pointer modes (`setPointerMode()`): the ABI's. */
-                enum class PointerMode : uint8_t {
-                        Normal = 0,
-                        Hidden = 1,
-                        Relative = 2,
-                };
-
                 /** @brief What to open. */
                 struct Config {
                                 uint16_t   width = 0; ///< A multiple of 4.
@@ -121,27 +107,9 @@ class ProgramSurface final : public Stream {
                                 StringView title; ///< The window's (copied).
                 };
 
-                /** @brief Its state (`info()`). */
-                struct Info {
-                                bool     fullScreen = false;
-                                bool     active = false;
-                                bool     shown = false; ///< Has a window (or the screen).
-                                uint16_t scaleX16 = 16; ///< The scale across, in 16ths.
-                                uint16_t scaleY16 = 16; ///< Down.
-                                Rect     area;          ///< The picture on the screen.
-                                uint32_t frames = 0;    ///< The display's frames so far.
-                                uint32_t presents = 0;
-                                uint32_t dropped = 0; ///< Presents replaced before shown.
-                                uint16_t width = 0;   ///< The surface's own size (its buffers').
-                                uint16_t height = 0;
-                };
-
                 /** @brief A pointer event's x and y once the pointer has left the window (the ABI's
                  *         `BMDS_POINTER_GONE`). */
                 static constexpr int32_t PointerGone = -32768;
-
-                /** @brief Buffers at most. */
-                static constexpr uint8_t MaxBuffers = 3;
 
                 /** @brief The largest whole scale a window draws (`Pixels::repeat16()`'s). */
                 static constexpr uint16_t MaxScale = 8;
@@ -163,26 +131,6 @@ class ProgramSurface final : public Stream {
                  */
                 void setControls(ProgramControls *controls);
 
-                /** @brief Returns buffer @p index's first pixel, or null. */
-                uint8_t *buffer(uint8_t index) const { return index < _config.buffers ? _buffers[index] : nullptr; }
-
-                /** @brief Returns the bytes from a row to the next. */
-                size_t stride() const { return _stride; }
-
-                /**
-                 * @brief Takes a free buffer for the program to draw.
-                 * @return Its index, or `Timeout` (`WaitForever`: never), `Interrupted`.
-                 * @blocking
-                 */
-                Result<uint8_t> acquire(unsigned int timeoutMs);
-
-                /**
-                 * @brief Takes a free buffer if there is one.
-                 * @return Its index, or `WouldBlock`.
-                 * @nonblocking
-                 */
-                Result<uint8_t> tryAcquire();
-
                 /**
                  * @brief Shows buffer @p index (the program's, from `acquire()`), which differs
                  *        from the last present in @p damage only (empty: all of it; a palette
@@ -192,13 +140,13 @@ class ProgramSurface final : public Stream {
                  * @return The frame it will be shown in, or `Invalid` (not the program's).
                  * @nonblocking
                  */
-                Result<uint32_t> present(uint8_t index, Span<const Rect> damage);
+                Result<uint32_t> present(uint8_t index, Span<const Rect> damage) override;
 
                 /** @brief Sets @p count palette entries (0xRRGGBB) from @p first: from the next present. */
-                Error setPalette(size_t first, Span<const uint32_t> rgb);
+                Error setPalette(size_t first, Span<const uint32_t> rgb) override;
 
                 /** @brief Sets the window's title. */
-                Error setTitle(StringView title);
+                Error setTitle(StringView title) override;
 
                 /**
                  * @brief Gives the window icons, its program's (`gui.md` §4j): @p small (a PNG of
@@ -208,69 +156,15 @@ class ProgramSurface final : public Stream {
                  */
                 Error setIcons(ByteSpan small, ByteSpan large);
 
-                /** @brief A picture of the program's that `blit()` may copy from (`BMDS_SURFACE_IMAGE`). */
-                struct Image {
-                                const uint8_t *pixels = nullptr; ///< Null: none.
-                                uint16_t       width = 0;
-                                uint16_t       height = 0;
-                                uint32_t       stride = 0; ///< Bytes a row.
-                };
-
-                /** @brief Where a `blit()` takes its pixels. */
-                enum class BlitSource : uint8_t {
-                        Buffer, ///< Another of its buffers.
-                        Image,  ///< An image slot.
-                        Fill,   ///< One pixel value.
-                };
-
-                /** @brief A `blit()`'s rectangle: where in the buffer, and where in the source. */
-                struct Piece {
-                                int32_t  x = 0, y = 0;
-                                uint32_t width = 0, height = 0;
-                                int32_t  fromX = 0, fromY = 0;
-                };
-
-                static constexpr uint8_t MaxImages = 4;      ///< `BMDS_SURFACE_IMAGES`.
-                static constexpr size_t  MaxBlitPieces = 64; ///< `BMDS_SURFACE_BLIT_MAX`.
-
-                /**
-                 * @brief Puts @p image in slot @p slot (null pixels: empties it), in the surface's
-                 *        format, and writes it back from the CPU's cache. The caller has checked
-                 *        that it is the program's memory (`devplan/games.md` §25).
-                 * @return `Ok`, or `Invalid` (the slot, its size, its row, memory the 2D-DMA can't read).
-                 */
-                Error setImage(uint8_t slot, const Image &image);
-
-                /**
-                 * @brief Copies (or fills) @p pieces of buffer @p index, which the program holds,
-                 *        by the 2D-DMA in as few jobs as fit, and returns when they are written.
-                 *        The rows they cover are written back from the cache before and
-                 *        invalidated after, so what the program drew beside them stays.
-                 * @return `Ok`, `Invalid` (a buffer not held, the source the buffer itself, an empty
-                 *         slot, too many pieces), `NoMem`, `Timeout`, or the 2D-DMA's error.
-                 * @blocking
-                 */
-                Error blit(uint8_t index, BlitSource source, uint32_t from, Span<const Piece> pieces);
-
                 /**
                  * @brief Sets what the pointer does over it: the arrow, none, or none and held
                  *        still while the window is focused, motion coming as the events' deltas.
                  * @return `Ok`, `Invalid`, `InvalidState` (no window).
                  */
-                Error setPointerMode(PointerMode mode);
-
-                /**
-                 * @brief Waits until the display has begun frame @p frame (`Info::frames`).
-                 * @return `Ok`, `Timeout`, `Interrupted`.
-                 * @blocking
-                 */
-                Error waitFrame(uint32_t frame, unsigned int timeoutMs);
+                Error setPointerMode(PointerMode mode) override;
 
                 /** @brief Returns its state. */
-                Info info();
-
-                /** @brief Returns the display's frames so far (the scan's: every surface's). */
-                static uint32_t frames();
+                Info info() override;
 
                 // Stream
                 Result<size_t>  read(WritableByteSpan buf, unsigned int timeoutMs) override;
@@ -281,11 +175,6 @@ class ProgramSurface final : public Stream {
                 void            handleClosed(uint8_t mode) override;
 
         private:
-                enum class State : uint8_t {
-                        Free,
-                        Program,
-                        Latest
-                };
                 enum Ask : uint8_t {
                         None,
                         Enter,
@@ -348,8 +237,7 @@ class ProgramSurface final : public Stream {
                 Error  enterFullScreen();
                 Error  enterFullScreen(const VideoTiming &mode, bool own);
                 void   leaveFullScreen();
-                void   convert();             // the newest present into the scan surface
-                void   release(int8_t index); // done reading a presented buffer
+                void            convert(); // the newest present into the scan surface
 
                 static void redrawEntry(void *arg, Painter &painter);
                 static void keyEntry(void *arg, const KeyEvent &event);
@@ -383,10 +271,6 @@ class ProgramSurface final : public Stream {
                 uint8_t                        _under[WindowManager::UnderBytes];
                 std::atomic<ProgramControls *> _controls{nullptr};
                 char                           _appId[ProgramControls::MaxId] = {}; // its program's application
-                Image                          _images[MaxImages];                  // blit()'s sources (under _lock)
-                uint8_t       *_buffers[MaxBuffers] = {};
-                size_t         _stride = 0;
-                size_t         _bufferBytes = 0;
                 uint32_t      *_palette = nullptr; // 256 entries, 0xRRGGBB (L8)
                 Icon           _icon;              // the window's (setIcons()): its pixels ours
                 Icon           _largeIcon;
@@ -395,19 +279,11 @@ class ProgramSurface final : public Stream {
                 uint32_t         *_triple = nullptr;  // expandTriple()'s table: L8 full screen at 3 times (presenter's)
                 std::atomic<bool> _tripleStale{true}; // the palette changed since it was made
                 size_t         _stripBytes = 0;
-                std::atomic<bool> _blitting{false}; // holds a reference to the shared blitter (blit())
 
-                Mutex     _lock; // the buffers' states, the window's size
-                State     _states[MaxBuffers] = {};
-                int8_t    _latest = -1;  // the newest presented
-                int8_t    _reading = -1; // being drawn by the window manager
-                bool      _latestDrawn = false;
-                Semaphore _freed{1, 0};
-                uint16_t  _clientWidth = 0;
-                uint16_t  _clientHeight = 0;
-                bool      _active = false;
-                uint32_t  _presents = 0;
-                uint32_t  _dropped = 0;
+                // SwapChain's _lock: also the window's size, its focus, full screen's state.
+                uint16_t _clientWidth = 0;
+                uint16_t _clientHeight = 0;
+                bool     _active = false;
 
                 // The presenter task: switches, and full screen's conversion.
                 Task                 _task;

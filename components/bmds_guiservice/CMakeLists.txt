@@ -6,7 +6,8 @@
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 if(COMMAND idf_component_register)
-        idf_component_register(SRCS src/guiatoms.cpp
+        idf_component_register(SRCS src/canvassurface.cpp
+                                    src/guiatoms.cpp
                                     src/guiclasses.cpp
                                     src/guiconnection.cpp
                                     src/guiservice.cpp

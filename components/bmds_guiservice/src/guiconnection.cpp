@@ -13,6 +13,7 @@
 
 #include <cstring>
 #include <new>
+#include <bmds/guiservice.h>
 #include <bmds/memory.h>
 #include <bmds/system.h>
 #include "guiatoms.h"
@@ -39,6 +40,12 @@ namespace {
         constexpr uint32_t     MaxProperties = 256;       // in one Create or Set
         constexpr size_t       MaxObjects = 4096;
 
+        // The connections by slot, for local clients' system calls (canvasSurface()); its lock also
+        // each connection's surface jobs. Made at boot, never freed.
+        alignas(Mutex) uint8_t registryMemory[sizeof(Mutex)];
+        Mutex         *registryLock = nullptr;
+        GuiConnection *registry[GuiService::MaxConnections] = {};
+
         StringView fileName(StringView path) {
                 const size_t slash = path.lastIndexOf('/');
                 return slash == StringView::NPos ? path : path.mid(slash + 1);
@@ -58,8 +65,8 @@ namespace {
 
 } // namespace
 
-GuiConnection::GuiConnection(FileHandle::Ptr end, uint8_t slot, uint32_t display)
-    : _end(std::move(end)), _slot(slot), _display(display) {}
+GuiConnection::GuiConnection(FileHandle::Ptr end, Stream *clientEnd, uint8_t slot, uint32_t display)
+    : _end(std::move(end)), _clientEnd(clientEnd), _slot(slot), _display(display) {}
 
 GuiConnection::~GuiConnection() {
         for (KeptIcon *k : _icons) {
@@ -94,10 +101,11 @@ const Icon *GuiConnection::icon(StringView name, uint16_t side) {
         return &k->icon;
 }
 
-Error GuiConnection::start(FileHandle::Ptr end, uint8_t slot, uint32_t display, StringView program) {
+Error GuiConnection::start(FileHandle::Ptr end, Stream *clientEnd, uint8_t slot, uint32_t display, StringView program) {
+        if (slot >= GuiService::MaxConnections) return Error::Invalid;
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(GuiConnection));
         if (mem == nullptr) return Error::NoMem;
-        auto *self = ::new (mem) GuiConnection(std::move(end), slot, display);
+        auto *self = ::new (mem) GuiConnection(std::move(end), clientEnd, slot, display);
         (void)self->_program.assign(program);
         Thread::Config config;
         config.name = "gui.conn";
@@ -114,6 +122,82 @@ Error GuiConnection::start(FileHandle::Ptr end, uint8_t slot, uint32_t display, 
         return Error::Ok;
 }
 
+void GuiConnection::initRegistry() {
+        if (registryLock == nullptr) registryLock = ::new (registryMemory) Mutex();
+        return;
+}
+
+// ---- Canvas surfaces (CANVAS-SURFACE, devplan/guiprograms.md §11 3c)
+
+Result<FileHandle::Ptr> GuiConnection::canvasSurface(Stream &clientEnd, uint32_t canvas,
+                                                     const GuiOpener::SurfaceConfig &config) {
+        if (registryLock == nullptr) return makeError<FileHandle::Ptr>(Error::NotSupported);
+        SurfaceJob job;
+        job.canvas = canvas;
+        job.config = &config;
+        {
+                Mutex::Locker  locker(*registryLock, WaitForever);
+                GuiConnection *self = nullptr;
+                for (GuiConnection *c : registry)
+                        if (c != nullptr && c->_clientEnd == &clientEnd) self = c;
+                if (self == nullptr) return makeError<FileHandle::Ptr>(Error::NotSupported);
+                // After the jobs before it; the loop posted to when the list was empty.
+                SurfaceJob **tail = &self->_surfaceJobs;
+                while (*tail != nullptr) tail = &(*tail)->next;
+                *tail = &job;
+                if (tail == &self->_surfaceJobs && self->_app->post(surfacesDue, self).isError()) {
+                        self->_surfaceJobs = nullptr;
+                        return makeError<FileHandle::Ptr>(Error::Busy);
+                }
+        }
+        // The loop runs it, or refuses it as the connection ends (closeSurfaces()).
+        (void)job.done.acquire(WaitForever);
+        if (job.err.isError()) return makeError<FileHandle::Ptr>(job.err);
+        return makeResult(std::move(job.handle));
+}
+
+// The loop's: the surfaces asked for, made in order.
+void GuiConnection::surfacesDue(void *arg) {
+        auto       *self = static_cast<GuiConnection *>(arg);
+        SurfaceJob *jobs;
+        {
+                Mutex::Locker locker(*registryLock, WaitForever);
+                jobs = self->_surfaceJobs;
+                self->_surfaceJobs = nullptr;
+        }
+        while (jobs != nullptr) {
+                SurfaceJob *next = jobs->next; // done released, the job is gone
+                GuiObject  *o = self->find(jobs->canvas);
+                if (o == nullptr) {
+                        jobs->err = Error::NotExist;
+                } else {
+                        auto [handle, err] = guiCanvasSurface(*o, *jobs->config);
+                        jobs->err = err;
+                        jobs->handle = std::move(handle);
+                }
+                jobs->done.release();
+                jobs = next;
+        }
+        return;
+}
+
+void GuiConnection::closeSurfaces() {
+        SurfaceJob *jobs = nullptr;
+        if (registryLock != nullptr) {
+                Mutex::Locker locker(*registryLock, WaitForever);
+                if (registry[_slot] == this) registry[_slot] = nullptr;
+                jobs = _surfaceJobs;
+                _surfaceJobs = nullptr;
+        }
+        while (jobs != nullptr) {
+                SurfaceJob *next = jobs->next;
+                jobs->err = Error::NotSupported; // the connection is ending
+                jobs->done.release();
+                jobs = next;
+        }
+        return;
+}
+
 // The loop's thread: the application, the reader, the requests run; then everything let go.
 void GuiConnection::loopMain(void *arg) {
         auto *self = static_cast<GuiConnection *>(arg);
@@ -123,6 +207,10 @@ void GuiConnection::loopMain(void *arg) {
                 self->_app = ::new (mem) GuiApplication();
                 self->_app->setApplicationName(fileName(self->_program.view()));
                 if (self->_app->connect(self->_display).isOk()) {
+                        if (registryLock != nullptr) { // its system calls post to the app from here
+                                Mutex::Locker locker(*registryLock, WaitForever);
+                                registry[self->_slot] = self;
+                        }
                         Thread::Config config;
                         config.name = "gui.read";
                         config.stackBytes = ReaderStackBytes;
@@ -135,12 +223,14 @@ void GuiConnection::loopMain(void *arg) {
                                 self->_reader.join();
                         }
                 }
+                self->closeSurfaces(); // before the objects (and the app's posts) go
                 // The objects go, windows first closing as their objects do.
                 while (!self->_objects.isEmpty()) self->remove(self->_objects[self->_objects.size() - 1]);
                 self->_app->cancelPosts(self);
                 self->_app->~GuiApplication();
                 Memory::free(self->_app);
         }
+        self->closeSurfaces();
         const uint8_t slot = self->_slot;
         self->_end.reset(); // the client reads the end
         // It frees itself: detached last, from its own thread (detaching at once raced start()'s
@@ -307,7 +397,15 @@ void GuiConnection::hello(GP::Reader &body) {
         w.u32(idBase());
         w.u32(IdMask);
         w.u32(GP::MaxMessage);
-        w.u32(0); // extensions: none yet
+        // The extensions: a local client's canvases take surfaces (its first opcode and event
+        // code 0: it is a system call, not requests).
+        w.u32(_clientEnd != nullptr ? 1 : 0);
+        if (_clientEnd != nullptr) {
+                w.string("CANVAS-SURFACE");
+                w.string("1");
+                w.u32(0);
+                w.u32(0);
+        }
         // The display, as named values (more are appended).
         WindowManager &wm = _app->windowManager();
         const Rect     screen = wm.screen(), work = wm.workArea();

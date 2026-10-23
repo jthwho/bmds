@@ -188,7 +188,11 @@ TEST_CASE("GuiProtocol: the C client and a C++ service agree: setup, names, requ
                 w.u32(0x01000000); // the id base
                 w.u32(0x00ffffff); // the mask
                 w.u32(GP::MaxMessage);
-                w.u32(0); // no extensions
+                w.u32(1); // one extension: its name, value, first opcode and event code
+                w.string("CANVAS-SURFACE");
+                w.string("1");
+                w.u32(0);
+                w.u32(0);
                 w.u32(1); // the display: its screen
                 w.string("screen");
                 GP::Value screen;
@@ -275,6 +279,9 @@ TEST_CASE("GuiProtocol: the C client and a C++ service agree: setup, names, requ
         CHECK((screen.tag == BMDS_GUI_RECT && screen.width == 1280 && screen.height == 720));
         bmds_gui_value_t none;
         CHECK(bmds_gui_display(gui, "nothing", &none) == -1);
+        CHECK(bmds_gui_has_extension(gui, "CANVAS-SURFACE") == 1);
+        CHECK(bmds_gui_has_extension(gui, "CANVAS") == 0);
+        CHECK(bmds_gui_has_extension(gui, "CLIPBOARD") == 0);
 
         const char *wanted[] = {"Button", "text"};
         uint32_t    atoms[2];
