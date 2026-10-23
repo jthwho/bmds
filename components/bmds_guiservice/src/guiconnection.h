@@ -21,6 +21,7 @@
 #include <bmds/icontheme.h>
 #include <bmds/list.h>
 #include <bmds/mutex.h>
+#include <bmds/notifier.h>
 #include <bmds/semaphore.h>
 #include <bmds/string.h>
 #include <bmds/thread.h>
@@ -287,6 +288,12 @@ class GuiConnection {
 
                 GuiApplication &application() { return *_app; }
 
+                /** @brief Its objects, by id. */
+                Span<GuiObject *const> objects() const { return _objects.span(); }
+
+                /** @brief The connection's notifier (`Notification`), made the first time; null without the memory. */
+                Notifier *notifier();
+
                 uint32_t clipboardOwners[3] = {}; ///< The `Clipboard` object that copied onto each selection (0: none).
 
                 /** @brief A drop on one of its widgets whose data is being read (`dropTypes`). */
@@ -314,6 +321,8 @@ class GuiConnection {
                 GuiConnection(FileHandle::Ptr end, Stream *clientEnd, uint8_t slot, uint32_t display);
                 ~GuiConnection();
 
+                static void notifierTold(void *arg, Notifier &notifier, uint32_t id, Notifier::Event event,
+                                         uint32_t action);
                 static void loopMain(void *arg);
                 static void readerMain(void *arg);
                 static void drainDue(void *arg);
@@ -355,6 +364,7 @@ class GuiConnection {
                 uint32_t             _display;
                 String               _program{MemSpace::Psram};
                 GuiApplication      *_app = nullptr;
+                Notifier            *_notifier = nullptr; // made at the first notification shown
                 Thread               _loop;
                 Thread               _reader;
                 Mutex                _lock;                     // _pending
@@ -392,6 +402,9 @@ GuiStatus guiPutPixels(GuiObject &object, int x, int y, int width, int height, u
  *        `NotReady` (0 × 0 asked and the canvas has no size yet), `NoMem`.
  */
 Result<FileHandle::Ptr> guiCanvasSurface(GuiObject &object, const GuiOpener::SurfaceConfig &config);
+
+/** @brief Notification @p id of @p connection's notifier came to @p event (`activated`: @p action). */
+void guiNotificationTold(GuiConnection &connection, uint32_t id, Notifier::Event event, uint32_t action);
 
 /** @brief The class named @p name, or null. */
 const GuiClass *guiClass(StringView name);

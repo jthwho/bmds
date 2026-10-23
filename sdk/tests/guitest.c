@@ -630,6 +630,95 @@ static void dropTypesTest(bmds_gui_t *gui, uint32_t window) {
         return;
 }
 
+// A notification's fields read back, shown (silent, transient, briefly) until it expires, shown
+// again in place and closed.
+static void notificationTest(bmds_gui_t *gui) {
+        const uint32_t n = bmds_notification_new(gui, 0);
+        bmds_notification_set_title(gui, n, "guitest");
+        bmds_notification_set_body(gui, n, "A notification from guitest");
+        bmds_notification_set_urgency(gui, n, "low");
+        bmds_notification_set_timeout(gui, n, 300);
+        bmds_notification_set_silent(gui, n, 1);
+        bmds_notification_set_transient(gui, n, 1);
+        const char *const actions[] = {"One", "Two"};
+        bmds_notification_set_actions(gui, n, actions, 2);
+        bmds_gui_value_t v, item;
+        CHECK(bmds_notification_get_title(gui, n, &v) == 0 && v.length == 7 && memcmp(v.text, "guitest", 7) == 0);
+        CHECK(bmds_notification_get_urgency(gui, n, &v) == 0 && v.number == bmds_gui_atom(gui, "low"));
+        CHECK(bmds_notification_get_timeout(gui, n, &v) == 0 && v.number == 300);
+        CHECK(bmds_notification_get_actions(gui, n, &v) == 0 && v.count == 2 && bmds_gui_list_item(&v, 1, &item) == 0 &&
+              item.length == 3 && memcmp(item.text, "Two", 3) == 0);
+        CHECK(bmds_notification_get_silent(gui, n, &v) == 0 && v.number == 1);
+        EXPECT_NONE();
+        // Refused: four actions, a timeout under -1, an urgency that isn't one.
+        const char *const four[] = {"1", "2", "3", "4"};
+        bmds_notification_set_actions(gui, n, four, 4);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_notification_set_timeout(gui, n, -2);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_notification_set_urgency(gui, n, "loud");
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_notification_show(gui, n);
+        bmds_gui_event_t e;
+        CHECK(waitFor(gui, n, "expired", 5000, &e));
+        bmds_notification_set_body(gui, n, "Shown again in place");
+        bmds_notification_set_timeout(gui, n, -1);
+        bmds_notification_show(gui, n);
+        bmds_notification_close(gui, n);
+        bmds_notification_close(gui, n); // closed already: fine
+        bmds_gui_destroy(gui, n);
+        EXPECT_NONE();
+        return;
+}
+
+// A tray icon's fields read back, shown and hidden, its menu, its image (16 x 16 only), and the
+// application's four.
+static void trayTest(bmds_gui_t *gui) {
+        const uint32_t t = bmds_tray_icon_new(gui, 0);
+        bmds_tray_icon_set_icon(gui, t, "dialog-information");
+        bmds_tray_icon_set_tool_tip(gui, t, "guitest's tray icon");
+        bmds_tray_icon_set_category(gui, t, "system");
+        bmds_gui_value_t v;
+        CHECK(bmds_tray_icon_get_icon(gui, t, &v) == 0 && v.length == 18);
+        CHECK(bmds_tray_icon_get_category(gui, t, &v) == 0 && v.number == bmds_gui_atom(gui, "system"));
+        CHECK(bmds_tray_icon_get_visible(gui, t, &v) == 0 && v.number == 0);
+        bmds_tray_icon_set_visible(gui, t, 1);
+        CHECK(bmds_tray_icon_get_visible(gui, t, &v) == 0 && v.number == 1);
+        CHECK(bmds_tray_icon_get_available(gui, t, &v) == 0); // the panel's tray, if it has one
+        const uint32_t menu = bmds_menu_new(gui, t);
+        bmds_menu_item_set_text(gui, bmds_menu_item_new(gui, menu), "An item");
+        EXPECT_NONE();
+        bmds_tray_icon_set_category(gui, t, "elsewhere");
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        static uint32_t pixels[16 * 16], wide[32 * 16];
+        for (int i = 0; i < 16 * 16; ++i) pixels[i] = 0xff00a000u | (uint32_t)i;
+        const uint32_t image = bmds_gui_new(gui, "Image", 0), big = bmds_gui_new(gui, "Image", 0);
+        CHECK(bmds_gui_put_image(gui, image, 16, 16, pixels) == 0);
+        CHECK(bmds_gui_put_image(gui, big, 32, 16, wide) == 0);
+        bmds_tray_icon_set_icon_image(gui, t, image);
+        CHECK(bmds_tray_icon_get_icon_image(gui, t, &v) == 0 && v.number == image);
+        bmds_tray_icon_set_icon_image(gui, t, big);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_tray_icon_set_icon_image(gui, t, 0); // its name's again
+        CHECK(bmds_tray_icon_get_icon_image(gui, t, &v) == 0 && v.number == 0);
+        // The application's tray icons: four at most, shown.
+        uint32_t more[4];
+        for (int i = 0; i < 4; ++i) {
+                more[i] = bmds_tray_icon_new(gui, 0);
+                bmds_tray_icon_set_visible(gui, more[i], 1);
+        }
+        EXPECT(BMDS_GUI_BAD_ACCESS);
+        for (int i = 0; i < 4; ++i) bmds_gui_destroy(gui, more[i]);
+        bmds_tray_icon_set_visible(gui, t, 0);
+        bmds_gui_destroy(gui, t); // its menu with it
+        bmds_gui_destroy(gui, menu);
+        EXPECT(BMDS_GUI_BAD_ID);
+        bmds_gui_destroy(gui, image);
+        bmds_gui_destroy(gui, big);
+        EXPECT_NONE();
+        return;
+}
+
 // Many windows with children made and destroyed; the service answers throughout.
 static void many(bmds_gui_t *gui) {
         for (int i = 0; i < 100; ++i) {
@@ -666,6 +755,8 @@ int main(void) {
         canvasSurfaceTest(gui, window);
         clipboardTest(gui);
         dropTypesTest(gui, window);
+        notificationTest(gui);
+        trayTest(gui);
         many(gui);
         bmds_gui_close(gui);
         if (failures != 0) {

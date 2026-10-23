@@ -1,7 +1,8 @@
 # GUI Programs: the Toolkit for Every Program, and Angel's Bindings to the Whole System
 
-Status: **step 1 built** (2026-10-22; §9): the protocol's spine, `gui_open`, the service, five
-classes, `libbmdsgui` and `guidemo` on the board. Next: step 2, the classes. The user agreed with the shape (2026-10-22): the
+Status: **steps 1-3 built** (2026-10-22; §9-§11): the protocol, the classes, pictures and the
+clipboard. **Step 4 under way** (§12): 4a built (notifications and tray icons); next 4b,
+`SERVICES`. The user agreed with the shape (2026-10-22): the
 toolkit as a service (P1), names (P2), and **a wire protocol in the spirit of X11's** between
 programs and the service (P8), so that applications can also run on another machine. This plan
 revises `gui.md` G1 and fills in `windows.md` §6 ("ABI (later)").
@@ -1253,3 +1254,129 @@ touch its edges and only their content areas pad themselves.
   - The service 42.0 KB → 53.9 KB of flash.
   - Next: step 4 (§6), between programs and the shell (`Notification`, `TrayIcon`, `SERVICES`,
     `SHELL`, a panel in C).
+
+## 12. Step 4 design: between programs and the shell (2026-10-23)
+
+**Classes again, as step 3's were.** `Notification`, `TrayIcon`, `Services` and `Shell` are
+classes in `classes.def`, with no opcodes of their own. `Hello` names `SERVICES` (value "1") on
+every connection, and `SHELL` (value "1") on connections the setting allows.
+
+**Built in four parts, each tried on the board:**
+- **4a, `Notification` and `TrayIcon`** (P13): the toolkit's `Notifier` and `TrayIcon`, run for
+  the client by its connection's application, as a built-in application's.
+  - **`Notification`** (no parent): one notification, shown again in place.
+    - Properties (RW): `title`, `body`, `icon` (a theme name), `app` (empty: the program's
+      name), `urgency` (`low`, `normal`, `critical`), `timeout` (ms; 0 the setting's, -1 until
+      dismissed), `actions` (a list of up to 3 labels), `silent`, `transient`.
+    - `show()` posts it; showing it again replaces what it showed, in place. `close()` takes it
+      away.
+    - Events: `activated(action)` (0 its body, 1 to 3 a button), `dismissed`, `expired`.
+    - Its object destroyed: the notification stays (as `Notifier`'s), its events go nowhere.
+    - One `Notifier` a connection, made at the first `show()` (one listener of the system's 32),
+      its events routed to the object by the notification's id.
+    - Not taken from `bmds_notification_t`: the click targets (open a path, launch an entry).
+      The client gets `activated` and does it itself.
+  - **`TrayIcon`** (no parent):
+    - Properties: `icon` (a theme name), `iconImage` (an `Image`, 16 × 16), `toolTip`,
+      `category` (`application`, `communications`, `system`, `hardware`), `visible` (RW: shown
+      in the tray, or kept hidden), `menu` (a `Menu` object, opened at the icon on a right
+      click), `available` (RO: a tray is there).
+    - Events: `activated(reason)` (`trigger`, `doubleClick`, `middleClick`, `context`),
+      `scrolled(notches)`, `availabilityChanged(available)`.
+    - Up to 4 a connection (`GuiApplication::MaxTrayIcons`).
+- **4b, `SERVICES`** (P14, §4h): the window manager's service bus for clients, as the
+  `Services` class (no parent; one is enough, several are allowed).
+  - `register(name)` (`BadAccess` if another has it), `unregister(name)`, `send(name, bytes)`
+    (`BadName` if nobody has it, `BadAccess` if its queue is full), `has(name)` (Bool).
+  - Event `message(name, bytes)`: one to a name this object registered.
+  - `watch(name)` and `unwatch(name)`, with the event `changed(name, present)`. The window manager
+    tells only that something changed, so the service keeps each watched name's last state and
+    tells only real changes.
+  - Messages are the window manager's (4 KB at most, the queue's limit). A name registered by
+    one connection is the connection's, released when its object or the connection goes.
+  - Names: reverse-domain or the application's id; the system's are short words (`tray`,
+    `files`).
+- **4c, `SHELL`** (P15, §4i), privileged: the `Shell` class (no parent) can be made only by a
+  connection allowed it, others get `BadAccess`.
+  - **Who may:** the setting `gui/shell-clients` (Paths, empty by default), the programs' paths
+    as they were run. No program in the system uses it yet: the built-in panel is linked in.
+    Remote connections arrive at step 8, with `gui/shell-remote`.
+  - **The window list, by events:** while the client listens, `windowChanged(window, title,
+    state)` is told for each application window (normal and above levels), at once and whenever
+    one opens or changes. `state` is a list of names (`focused`, `minimized`, `maximized`,
+    `shaded`, `above`, `icon`), so later states are new names, not new tags. `windowClosed(window)`
+    is told when one goes.
+    - The service compares a snapshot taken at each change of the window manager's list, its
+      icons included (a checksum of the 16 × 16 pixels).
+    - `window` is the window manager's number, a separate space from the client's ids.
+  - **Acting on windows:** `act(window, action)`: `raise`, `minimize`, `maximize`, `restore`,
+    `close` (asked, as the user's close is: a new `WindowManager::requestClose()`), `shade`,
+    `unshade`. `showWindowMenu(window, x, y)` opens its menu at a screen point.
+  - **Icons:** `copyIcon(window, image)` puts a window's icon into one of the client's `Image`s
+    (false: it has none), to show on a button with `iconImage`.
+  - **Its own windows:** `Window.level` (`normal`, `desktop`, `panel`; set before `show()`) and
+    `Window.reserve` (a panel's strip, in pixels). The desktop and panel levels need a `Shell`
+    object, else `BadAccess`. Panel and desktop windows never take the focus from a press.
+  - **The screen:** `workArea` (RO) and the event `workAreaChanged(rect)`.
+  - **Keys:** `grabKey(usage, modifiers)` and the event `keyGrabbed(usage, modifiers)` (a
+    modifier alone is a tap, as the Windows key). `Exists` from the window manager is
+    `BadAccess`. They are released with the connection.
+  - **Launch feedback:** `programStarting(pid)` shows the starting pointer until a window of the
+    program's session opens, as the panel does.
+  - **Not at this step:** the desktop menu (the system's own, made from settings by
+    `desktopmenu.cpp`; a client's would need the system's put back when it goes), the palette
+    (a setting: any program allowed to set it can), and screen capture (`screenshot` does it).
+    Each is appended when something needs it.
+- **4d, a panel in C** (`sdk/examples/guipanel`): the test that nothing is missing.
+  - A window at the panel level reserving a strip at the edge the built-in panel doesn't use
+    (`panel/edge`).
+  - A start menu of the programs in a folder, a button for each application window (its icon
+    and title: a click raises or minimizes it, a right click opens its window menu), a clock.
+  - The Windows key on a chord the built-in panel doesn't hold.
+  - A tray when the `tray` service is free (`-t`, with the built-in panel's tray off). That needs
+    the tray's messages in C: the SDK gets `bmds/tray.h` beside `TrayProtocol`, the same structs.
+  - Whatever it finds missing is added to the classes, and recorded here.
+- **Budget:** each part some KB of the service's flash. Per connection: a `Notifier` (a few
+  hundred bytes) once used, tray icons as the toolkit's, a watched name a few bytes, the shell's
+  snapshot about 80 bytes a window.
+
+**4a, as built (2026-10-23):**
+- **`Notification`** as designed: one notification a object, shown again in place (`replaces`),
+  through one `Notifier` a connection made at the first `show()`. Its events find the object by
+  the notification's id. A `show()` whose notification went meanwhile (dismissed, cleared) posts a
+  new one, as `TrayIcon::showMessage` does.
+  - Texts are cut on a character's boundary at `Notification`'s sizes (title 63 bytes, body 255,
+    a button's label 23). `timeout` is -1 to an hour; more than 3 actions is `BadValue`.
+  - `NoMem` without the memory; the system's 32 listeners all in use is `BadAccess`.
+- **`TrayIcon`** as designed, but for its menu: there is no `menu` property. **A `Menu` made
+  under a `TrayIcon` is its menu** (the newest, if several), opened at the icon on a right click
+  before `activated(context)` is told. So a program with only a tray icon needs no window to hold
+  one.
+  - `iconImage` copies the `Image`'s pixels (16 × 16, else `BadValue`); 0 goes back to `icon`'s
+    name. A fifth icon shown is `BadAccess`.
+  - The toolkit's `TrayIcon` gained `category()`.
+- **Programs' names:** the connection's application is named after the program's file without
+  `.elf` (`guigallery`, was `guigallery.elf`), as the notification centre and `clip list` show.
+- **Tried:**
+  - guitest checks:
+    - a notification's fields read back, and its refusals (4 actions, a timeout under -1, an
+      urgency that isn't one);
+    - shown silent and transient for 300 ms until `expired` is told, then shown again in place
+      and closed (twice: fine);
+    - a tray icon's fields, shown and hidden, a menu under it, a 16 × 16 image and a 32 × 16 one
+      (`BadValue`), the application's four icons (a fifth is `BadAccess`), and the menu destroyed
+      with its icon.
+  - The gallery's Desktop tab, by hand:
+    - Notify showed the balloon with Raise and Dismiss. Raise told `activated(1)`, and the
+      notification was shown again in place (the same id). The close box told `dismissed`, and one
+      left alone `expired`.
+    - The tray icon came and went with its check box. A left click told `trigger`, the wheel
+      `scrolled(1)`, a right click opened the program's menu at the icon and told `context`, and
+      the menu's Notify item worked. The gallery killed, its icon left the tray.
+  - Once, a balloon that had already expired stayed in two screenshots until the pointer moved
+    away. That didn't happen again in later tries (with and without buttons), so it is noted, not
+    fixed.
+  - Twenty guitest runs: memory unchanged over the last ten (internal RAM and PSRAM to the byte);
+    the swings before were caches.
+- **Size:** `bmds_guiservice` 56.4 KB of flash (53.9 KB after 3e). The toolkit's `Notifier` and
+  `TrayIcon` were linked already (the panel and the media player use them).

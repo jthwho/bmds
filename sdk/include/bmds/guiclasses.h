@@ -1051,6 +1051,117 @@ static inline int bmds_widget_get_drop_types(bmds_gui_t *gui, uint32_t id, bmds_
 }
 #define BMDS_GUI_WIDGET_DROPPED "dropped" /**< Widget's event (String, Bytes, Int, Int). */
 
+/* ---- Notification */
+/** @brief A new Notification under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_notification_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "Notification", parent);
+}
+static inline int bmds_notification_set_title(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "title", bmds_gui_string(value));
+}
+static inline int bmds_notification_get_title(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "title", out);
+}
+static inline int bmds_notification_set_body(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "body", bmds_gui_string(value));
+}
+static inline int bmds_notification_get_body(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "body", out);
+}
+static inline int bmds_notification_set_icon(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "icon", bmds_gui_string(value));
+}
+static inline int bmds_notification_get_icon(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "icon", out);
+}
+static inline int bmds_notification_set_app(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "app", bmds_gui_string(value));
+}
+static inline int bmds_notification_get_app(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "app", out);
+}
+static inline int bmds_notification_set_urgency(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "urgency", bmds_gui_atom_value(bmds_gui_atom(gui, value)));
+}
+static inline int bmds_notification_get_urgency(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "urgency", out);
+}
+static inline int bmds_notification_set_timeout(bmds_gui_t *gui, uint32_t id, int32_t value) {
+        return bmds_gui_set_named(gui, id, "timeout", bmds_gui_int(value));
+}
+static inline int bmds_notification_get_timeout(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "timeout", out);
+}
+static inline int bmds_notification_set_actions(bmds_gui_t *gui, uint32_t id, const char *const *value, uint32_t value_count) {
+        return bmds_gui_set_named(gui, id, "actions", bmds_gui_strings(gui, value, value_count));
+}
+static inline int bmds_notification_get_actions(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "actions", out);
+}
+static inline int bmds_notification_set_silent(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "silent", bmds_gui_bool(value));
+}
+static inline int bmds_notification_get_silent(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "silent", out);
+}
+static inline int bmds_notification_set_transient(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "transient", bmds_gui_bool(value));
+}
+static inline int bmds_notification_get_transient(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "transient", out);
+}
+static inline int bmds_notification_show(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "show", NULL, 0, NULL);
+}
+static inline int bmds_notification_close(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "close", NULL, 0, NULL);
+}
+#define BMDS_GUI_NOTIFICATION_ACTIVATED "activated" /**< Notification's event (Int). */
+#define BMDS_GUI_NOTIFICATION_DISMISSED "dismissed" /**< Notification's event (no values). */
+#define BMDS_GUI_NOTIFICATION_EXPIRED "expired" /**< Notification's event (no values). */
+
+/* ---- TrayIcon */
+/** @brief A new TrayIcon under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_tray_icon_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "TrayIcon", parent);
+}
+static inline int bmds_tray_icon_set_icon(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "icon", bmds_gui_string(value));
+}
+static inline int bmds_tray_icon_get_icon(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "icon", out);
+}
+static inline int bmds_tray_icon_set_icon_image(bmds_gui_t *gui, uint32_t id, uint32_t value) {
+        return bmds_gui_set_named(gui, id, "iconImage", bmds_gui_id(value));
+}
+static inline int bmds_tray_icon_get_icon_image(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "iconImage", out);
+}
+static inline int bmds_tray_icon_set_tool_tip(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "toolTip", bmds_gui_string(value));
+}
+static inline int bmds_tray_icon_get_tool_tip(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "toolTip", out);
+}
+static inline int bmds_tray_icon_set_category(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "category", bmds_gui_atom_value(bmds_gui_atom(gui, value)));
+}
+static inline int bmds_tray_icon_get_category(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "category", out);
+}
+static inline int bmds_tray_icon_set_visible(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "visible", bmds_gui_bool(value));
+}
+static inline int bmds_tray_icon_get_visible(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "visible", out);
+}
+static inline int bmds_tray_icon_get_available(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "available", out);
+}
+#define BMDS_GUI_TRAY_ICON_ACTIVATED "activated" /**< TrayIcon's event (Atom). */
+#define BMDS_GUI_TRAY_ICON_SCROLLED "scrolled" /**< TrayIcon's event (Int). */
+#define BMDS_GUI_TRAY_ICON_AVAILABILITY_CHANGED "availabilityChanged" /**< TrayIcon's event (Bool). */
+
 #ifdef __cplusplus
 }
 #endif

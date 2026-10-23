@@ -36,6 +36,7 @@
 #include <bmds/menubar.h>
 #include <bmds/guiclipboard.h>
 #include <bmds/messagebox.h>
+#include <bmds/trayicon.h>
 #include <bmds/windowstack.h>
 #include "canvassurface.h"
 #include "guiatoms.h"
@@ -1893,11 +1894,15 @@ namespace {
                 if (x < 0 || y < 0 || x > 4095 || y > 4095) return BadValue;
                 return toolkitMenu(o).popup(Rect{uint16_t(x), uint16_t(y), 1, 1}).isOk() ? Ok : BadAccess;
         }
+        void trayMenuMade(GuiObject &tray, GuiObject &menu);
+
         GuiStatus create_Menu(GuiObject &o, GuiObject *parent) {
-                // Under a window (a popup), a menu bar, or a menu (a submenu).
+                // Under a window (a popup), a tray icon (its menu), a menu bar, or a menu (a submenu).
                 if (parent == nullptr) return BadMatch;
                 const bool inBar = isClassNamed(parent, "MenuBar");
-                if (parent->window == nullptr && !inBar && !isMenu(parent)) return BadMatch;
+                const bool inTray = isClassNamed(parent, "TrayIcon");
+                const bool popup = parent->window != nullptr || inTray;
+                if (!popup && !inBar && !isMenu(parent)) return BadMatch;
                 MenuData *d = makeData<MenuData>(o);
                 if (d == nullptr) return NoMem;
                 void *mem = Memory::alloc(MemSpace::Psram, sizeof(Menu));
@@ -1906,7 +1911,7 @@ namespace {
                         return NoMem;
                 }
                 d->menu = ::new (mem) Menu(o.connection->application());
-                if (parent->window == nullptr && parent->entries.append(o.id).isError()) {
+                if (!popup && parent->entries.append(o.id).isError()) {
                         disposeMenu(o);
                         return NoMem;
                 }
@@ -1914,7 +1919,8 @@ namespace {
                 o.dispose = disposeMenu;
                 o.release = menuRelease;
                 o.owner = parent->window != nullptr ? parent->window : parent->owner;
-                if (parent->window == nullptr) {
+                if (inTray) trayMenuMade(*parent, o);
+                if (!popup) {
                         parent->dirty = true;
                         o.connection->touched(o.owner);
                 }
@@ -2927,6 +2933,284 @@ namespace {
                 return makeStrings(o, n, [&](size_t i) { return types[i]; });
         }
 
+        // ---- Step 4a: Notification, one notification shown (again in place) through the
+        // connection's notifier
+
+        struct NotificationData {
+                        bmds::Notification n;
+                        uint32_t           id = 0; // as last shown (0: never)
+        };
+        bmds::Notification &note(GuiObject &o) {
+                return dataOf<NotificationData>(o)->n;
+        }
+        // @p text into @p out, cut on a character's boundary.
+        template <size_t N> void putText(char (&out)[N], StringView text) {
+                TrayProtocol::copy(out, text);
+                return;
+        }
+        GuiStatus set_Notification_title(GuiObject &o, const Value &v) {
+                putText(note(o).title, v.text);
+                return Ok;
+        }
+        Value get_Notification_title(GuiObject &o) {
+                return Value::string(TrayProtocol::view(note(o).title));
+        }
+        GuiStatus set_Notification_body(GuiObject &o, const Value &v) {
+                putText(note(o).body, v.text);
+                return Ok;
+        }
+        Value get_Notification_body(GuiObject &o) {
+                return Value::string(TrayProtocol::view(note(o).body));
+        }
+        GuiStatus set_Notification_icon(GuiObject &o, const Value &v) {
+                putText(note(o).icon, v.text);
+                return Ok;
+        }
+        Value get_Notification_icon(GuiObject &o) {
+                return Value::string(TrayProtocol::view(note(o).icon));
+        }
+        GuiStatus set_Notification_app(GuiObject &o, const Value &v) {
+                putText(note(o).app, v.text);
+                return Ok;
+        }
+        Value get_Notification_app(GuiObject &o) {
+                return Value::string(TrayProtocol::view(note(o).app));
+        }
+        GuiStatus set_Notification_urgency(GuiObject &o, const Value &v) {
+                const StringView name = atomName(v);
+                note(o).urgency = name == StringView("low")        ? bmds::Notification::Urgency::Low
+                                  : name == StringView("critical") ? bmds::Notification::Urgency::Critical
+                                                                   : bmds::Notification::Urgency::Normal;
+                return Ok;
+        }
+        Value get_Notification_urgency(GuiObject &o) {
+                using Urgency = bmds::Notification::Urgency;
+                const Urgency u = note(o).urgency;
+                const char   *name = u == Urgency::Low ? "low" : u == Urgency::Critical ? "critical" : "normal";
+                return Value::atom(GuiAtoms::intern(StringView(name)));
+        }
+        GuiStatus set_Notification_timeout(GuiObject &o, const Value &v) {
+                if (v.number < bmds::Notification::NoTimeout || v.number > 3600000) return BadValue;
+                note(o).timeoutMs = int32_t(v.number);
+                return Ok;
+        }
+        Value get_Notification_timeout(GuiObject &o) {
+                return Value::integer(note(o).timeoutMs);
+        }
+        GuiStatus set_Notification_actions(GuiObject &o, const Value &v) {
+                StringView labels[bmds::Notification::MaxActions];
+                size_t     count = 0;
+                if (!readStrings(v, labels, bmds::Notification::MaxActions, count)) return BadValue;
+                bmds::Notification &n = note(o);
+                for (size_t i = 0; i < bmds::Notification::MaxActions; ++i)
+                        putText(n.actions[i], i < count ? labels[i] : StringView());
+                n.actionCount = uint8_t(count);
+                return Ok;
+        }
+        Value get_Notification_actions(GuiObject &o) {
+                const bmds::Notification &n = note(o);
+                return makeStrings(o, n.actionCount, [&](size_t i) { return TrayProtocol::view(n.actions[i]); });
+        }
+        GuiStatus setNoteFlag(GuiObject &o, uint8_t flag, bool on) {
+                bmds::Notification &n = note(o);
+                n.flags = uint8_t(on ? n.flags | flag : n.flags & ~flag);
+                return Ok;
+        }
+        GuiStatus set_Notification_silent(GuiObject &o, const Value &v) {
+                return setNoteFlag(o, bmds::Notification::Silent, v.number != 0);
+        }
+        Value get_Notification_silent(GuiObject &o) {
+                return Value::boolean((note(o).flags & bmds::Notification::Silent) != 0);
+        }
+        GuiStatus set_Notification_transient(GuiObject &o, const Value &v) {
+                return setNoteFlag(o, bmds::Notification::Transient, v.number != 0);
+        }
+        Value get_Notification_transient(GuiObject &o) {
+                return Value::boolean((note(o).flags & bmds::Notification::Transient) != 0);
+        }
+        GuiStatus call_Notification_show(GuiObject &o, Args, Value &) {
+                Notifier *notifier = o.connection->notifier();
+                if (notifier == nullptr) return NoMem;
+                NotificationData *d = dataOf<NotificationData>(o);
+                d->n.replaces = d->id; // in place: the one it showed
+                Result<uint32_t> id = notifier->show(d->n);
+                if (id.isError() && d->n.replaces != 0) { // that one went meanwhile: a new one
+                        d->n.replaces = 0;
+                        id = notifier->show(d->n);
+                }
+                if (id.isError()) return id.error() == Error::NoMem ? NoMem : BadAccess; // the listeners all in use
+                d->id = id.value();
+                return Ok;
+        }
+        GuiStatus call_Notification_close(GuiObject &o, Args, Value &) {
+                NotificationData *d = dataOf<NotificationData>(o);
+                Notifier         *notifier = o.connection->notifier();
+                if (d->id != 0 && notifier != nullptr) (void)notifier->close(d->id); // gone already: fine
+                d->id = 0;
+                return Ok;
+        }
+        void disposeNotification(GuiObject &o) {
+                freeData<NotificationData>(o); // the notification stays
+                return;
+        }
+        GuiStatus create_Notification(GuiObject &o, GuiObject *parent) {
+                (void)parent;
+                if (makeData<NotificationData>(o) == nullptr) return NoMem;
+                o.dispose = disposeNotification;
+                return Ok;
+        }
+        void notificationTold(GuiConnection &c, uint32_t id, Notifier::Event event, uint32_t action) {
+                for (GuiObject *o : c.objects()) {
+                        if (!isClassNamed(o, "Notification") || dataOf<NotificationData>(*o)->id != id) continue;
+                        if (event == Notifier::Event::Activated) {
+                                const Value v = Value::integer(int32_t(action));
+                                c.emit(*o, "activated", Args(&v, 1));
+                        } else {
+                                emitNone(*o, event == Notifier::Event::Dismissed ? "dismissed" : "expired");
+                        }
+                        return;
+                }
+                return;
+        }
+
+        // ---- Step 4a: TrayIcon, the toolkit's (the tray's messages through the window manager's
+        // services); a Menu made under it opens at the icon on a right click
+
+        struct TrayData {
+                        TrayIcon *icon = nullptr;
+                        String    name{MemSpace::Psram}; // its theme icon's
+                        String    toolTip{MemSpace::Psram};
+                        uint32_t  menu = 0; // its menu's id (0: none)
+        };
+        TrayIcon &tray(GuiObject &o) {
+                return *dataOf<TrayData>(o)->icon;
+        }
+        void trayMenuMade(GuiObject &trayObject, GuiObject &menu) {
+                dataOf<TrayData>(trayObject)->menu = menu.id; // the newest
+                return;
+        }
+        void trayRelease(GuiObject &self, GuiObject &child) {
+                if (dataOf<TrayData>(self)->menu == child.id) dataOf<TrayData>(self)->menu = 0;
+                return;
+        }
+        void trayActivated(void *arg, TrayIcon &icon, TrayIcon::Reason reason) {
+                auto &o = *static_cast<GuiObject *>(arg);
+                if (reason == TrayIcon::Reason::Context) {
+                        GuiObject *menu = o.connection->find(dataOf<TrayData>(o)->menu);
+                        if (menu != nullptr) {
+                                buildMenu(*menu);
+                                (void)toolkitMenu(*menu).popup(icon.geometry());
+                        }
+                }
+                const char *name = reason == TrayIcon::Reason::DoubleClick   ? "doubleClick"
+                                   : reason == TrayIcon::Reason::MiddleClick ? "middleClick"
+                                   : reason == TrayIcon::Reason::Context     ? "context"
+                                                                             : "trigger";
+                const Value v = Value::atom(GuiAtoms::intern(StringView(name)));
+                o.connection->emit(o, "activated", Args(&v, 1));
+                return;
+        }
+        void trayScrolled(void *arg, TrayIcon &, int notches) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const Value v = Value::integer(notches);
+                o.connection->emit(o, "scrolled", Args(&v, 1));
+                return;
+        }
+        void trayAvailability(void *arg, TrayIcon &, bool available) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const Value v = Value::boolean(available);
+                o.connection->emit(o, "availabilityChanged", Args(&v, 1));
+                return;
+        }
+        GuiStatus set_TrayIcon_icon(GuiObject &o, const Value &v) {
+                if (dataOf<TrayData>(o)->name.assign(v.text).isError()) return NoMem;
+                o.imageId = 0; // a name replaces an image
+                tray(o).setIcon(v.text);
+                return Ok;
+        }
+        Value get_TrayIcon_icon(GuiObject &o) {
+                return Value::string(dataOf<TrayData>(o)->name.view());
+        }
+        GuiStatus set_TrayIcon_iconImage(GuiObject &o, const Value &v) {
+                GuiStatus s = Ok;
+                GuiImage *image = imageOf(o, uint32_t(v.number), s);
+                if (s != Ok) return s;
+                if (image == nullptr) { // back to its name's
+                        o.imageId = 0;
+                        tray(o).setIcon(dataOf<TrayData>(o)->name.view());
+                        return Ok;
+                }
+                // The pixels copied; BadValue: not 16 × 16.
+                const Error err = tray(o).setIcon(image->icon);
+                if (err.isError()) return err == Error::NoMem ? NoMem : BadValue;
+                o.imageId = uint32_t(v.number);
+                return Ok;
+        }
+        Value get_TrayIcon_iconImage(GuiObject &o) {
+                return Value::id(o.imageId);
+        }
+        GuiStatus set_TrayIcon_toolTip(GuiObject &o, const Value &v) {
+                if (dataOf<TrayData>(o)->toolTip.assign(v.text).isError()) return NoMem;
+                tray(o).setToolTip(v.text);
+                return Ok;
+        }
+        Value get_TrayIcon_toolTip(GuiObject &o) {
+                return Value::string(dataOf<TrayData>(o)->toolTip.view());
+        }
+        constexpr const char *TrayCategories[] = {"application", "communications", "system", "hardware"};
+
+        GuiStatus set_TrayIcon_category(GuiObject &o, const Value &v) {
+                const StringView name = atomName(v);
+                for (uint32_t i = 0; i < 4; ++i)
+                        if (name == StringView(TrayCategories[i])) tray(o).setCategory(TrayIcon::Category(i));
+                return Ok;
+        }
+        Value get_TrayIcon_category(GuiObject &o) {
+                const uint32_t i = uint32_t(tray(o).category());
+                return Value::atom(GuiAtoms::intern(StringView(TrayCategories[i < 4 ? i : 0])));
+        }
+        GuiStatus set_TrayIcon_visible(GuiObject &o, const Value &v) {
+                if (v.number == 0) {
+                        tray(o).hide();
+                        return Ok;
+                }
+                const Error err = tray(o).show();
+                if (err.isError()) return err == Error::NoMem ? NoMem : BadAccess; // the application's 4 in use
+                return Ok;
+        }
+        Value get_TrayIcon_visible(GuiObject &o) {
+                return Value::boolean(tray(o).isVisible());
+        }
+        Value get_TrayIcon_available(GuiObject &o) {
+                return Value::boolean(tray(o).isSystemTrayAvailable());
+        }
+        void disposeTrayIcon(GuiObject &o) {
+                TrayData *d = dataOf<TrayData>(o);
+                if (d != nullptr && d->icon != nullptr) {
+                        d->icon->~TrayIcon(); // out of the tray
+                        Memory::free(d->icon);
+                }
+                freeData<TrayData>(o);
+                return;
+        }
+        GuiStatus create_TrayIcon(GuiObject &o, GuiObject *parent) {
+                (void)parent;
+                TrayData *d = makeData<TrayData>(o);
+                if (d == nullptr) return NoMem;
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(TrayIcon));
+                if (mem == nullptr) {
+                        freeData<TrayData>(o);
+                        return NoMem;
+                }
+                d->icon = ::new (mem) TrayIcon(o.connection->application());
+                d->icon->setActivated(trayActivated, &o);
+                d->icon->setScrolled(trayScrolled, &o);
+                d->icon->setAvailabilityChanged(trayAvailability, &o);
+                o.dispose = disposeTrayIcon;
+                o.release = trayRelease;
+                return Ok;
+        }
+
         // ---- The schema's tables, from classes.def
 
         template <typename... T> constexpr uint8_t countOf(T...) {
@@ -3244,6 +3528,11 @@ void ClientWindow::updateBlock() {
 }
 
 // ---- Lookups
+
+void guiNotificationTold(GuiConnection &connection, uint32_t id, Notifier::Event event, uint32_t action) {
+        notificationTold(connection, id, event, action);
+        return;
+}
 
 const GuiClass *guiClass(StringView name) {
         for (const GuiClass &c : Classes)

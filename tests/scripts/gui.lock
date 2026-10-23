@@ -269,3 +269,31 @@ event Clipboard.pasteFailed(Atom, String, Atom) on
 # Step 3e (2026-10-22): drops onto any widget
 property Widget.dropTypes List RW
 event Widget.dropped(String, Bytes, Int, Int) on
+# Step 4a (2026-10-23): notifications and tray icons
+class Notification : None Concrete
+property Notification.title String RW
+property Notification.body String RW
+property Notification.icon String RW
+property Notification.app String RW
+property Notification.urgency Atom RW
+values Notification.urgency low normal critical
+property Notification.timeout Int RW
+property Notification.actions List RW
+property Notification.silent Bool RW
+property Notification.transient Bool RW
+method Notification.show() -> None
+method Notification.close() -> None
+event Notification.activated(Int) on
+event Notification.dismissed() on
+event Notification.expired() on
+class TrayIcon : None Concrete
+property TrayIcon.icon String RW
+property TrayIcon.iconImage Id RW
+property TrayIcon.toolTip String RW
+property TrayIcon.category Atom RW
+values TrayIcon.category application communications system hardware
+property TrayIcon.visible Bool RW
+property TrayIcon.available Bool RO
+event TrayIcon.activated(Atom) on
+event TrayIcon.scrolled(Int) on
+event TrayIcon.availabilityChanged(Bool) on

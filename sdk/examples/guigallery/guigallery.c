@@ -21,6 +21,8 @@
  * colour dialog's colour is the brush's. Clipboard: a field's text copied, or offered and answered
  * only when another program asks (as plain text, or as HTML in bold), and pasted back; what
  * happens is shown below (CLIPBOARD); a label below takes drops of files or text (`dropTypes`).
+ * Desktop: a notification with two buttons, and a tray icon with a menu; what became of them shows
+ * below.
  */
 
 #include <bmds/guiclasses.h>
@@ -51,6 +53,7 @@ typedef struct Gallery {
                 uint32_t    timer, timerButton, ticks;
                 uint32_t    canvas, clearButton;
                 uint32_t    clipboard, clipEdit, clipCopy, clipOffer, clipPaste, clipState, dropTarget;
+                uint32_t    notifyButton, note, trayCheck, tray, trayShow, trayNotify, deskState;
                 uint16_t   *picture; // the canvas's, as drawn here (RGB565)
                 int         pictureWidth, pictureHeight, lastX, lastY, drawing;
                 uint16_t    brush;
@@ -324,9 +327,58 @@ static int clipboardEvent(Gallery *g, const bmds_gui_event_t *e) {
         return 1;
 }
 
+// The Desktop tab's events: a notification shown, the tray icon shown or hidden, and what became
+// of each.
+static int desktopEvent(Gallery *g, const bmds_gui_event_t *e) {
+        bmds_gui_t *gui = g->gui;
+        char        text[96];
+        if ((e->source == g->notifyButton && bmds_gui_event_is(gui, e, BMDS_GUI_BUTTON_CLICKED)) ||
+            (e->source == g->trayNotify && bmds_gui_event_is(gui, e, BMDS_GUI_MENU_ITEM_CHOSEN))) {
+                bmds_notification_show(gui, g->note); // again: in place of the last
+                bmds_label_set_text(gui, g->deskState, "Notification shown.");
+                return 1;
+        }
+        if (e->source == g->trayCheck && bmds_gui_event_is(gui, e, BMDS_GUI_CHECK_BOX_TOGGLED) && e->count == 1) {
+                bmds_tray_icon_set_visible(gui, g->tray, (int)e->values[0].number);
+                return 1;
+        }
+        if (e->source == g->trayShow && bmds_gui_event_is(gui, e, BMDS_GUI_MENU_ITEM_CHOSEN)) {
+                bmds_window_raise(gui, g->window);
+                return 1;
+        }
+        if (e->source == g->note) {
+                if (bmds_gui_event_is(gui, e, BMDS_GUI_NOTIFICATION_ACTIVATED) && e->count == 1)
+                        snprintf(text, sizeof(text), "Notification clicked (%s).",
+                                 e->values[0].number == 0   ? "its body"
+                                 : e->values[0].number == 1 ? "Raise"
+                                                            : "Dismiss");
+                else
+                        snprintf(text, sizeof(text), "Notification %s.",
+                                 bmds_gui_event_is(gui, e, BMDS_GUI_NOTIFICATION_DISMISSED) ? "dismissed" : "expired");
+                if (bmds_gui_event_is(gui, e, BMDS_GUI_NOTIFICATION_ACTIVATED) && e->values[0].number == 1)
+                        bmds_window_raise(gui, g->window);
+                bmds_label_set_text(gui, g->deskState, text);
+                return 1;
+        }
+        if (e->source != g->tray) return 0;
+        if (bmds_gui_event_is(gui, e, BMDS_GUI_TRAY_ICON_ACTIVATED) && e->count == 1) {
+                const char *why = bmds_gui_atom_name(gui, (uint32_t)e->values[0].number);
+                snprintf(text, sizeof(text), "Tray icon: %s.", why != NULL ? why : "?");
+        } else if (bmds_gui_event_is(gui, e, BMDS_GUI_TRAY_ICON_SCROLLED) && e->count == 1) {
+                snprintf(text, sizeof(text), "Tray icon: the wheel, %d.", (int)e->values[0].number);
+        } else if (bmds_gui_event_is(gui, e, BMDS_GUI_TRAY_ICON_AVAILABILITY_CHANGED) && e->count == 1) {
+                snprintf(text, sizeof(text), "The tray %s.", e->values[0].number ? "came" : "went");
+        } else {
+                return 1;
+        }
+        bmds_label_set_text(gui, g->deskState, text);
+        return 1;
+}
+
 static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
         bmds_gui_t *gui = g->gui;
         if (clipboardEvent(g, e)) return 1;
+        if (desktopEvent(g, e)) return 1;
         if (e->source == g->files && bmds_gui_event_is(gui, e, BMDS_GUI_DETAILS_VIEW_SORT_ASKED) && e->count == 1) {
                 // The same column again turns the order round.
                 const int column = (int)e->values[0].number;
@@ -775,6 +827,33 @@ int main(void) {
         static const char *const dropTypes[] = {"text/uri-list", "text"};
         bmds_widget_set_drop_types(gui, g.dropTarget, dropTypes, 2);
         bmds_gui_new(gui, "Spacer", clipPage);
+
+        // Desktop: a notification and a tray icon, shown by the panel
+        const uint32_t deskPage = bmds_tab_page_new(gui, g.tabs);
+        bmds_tab_page_set_title(gui, deskPage, "Desktop");
+        g.note = bmds_notification_new(gui, 0);
+        bmds_notification_set_title(gui, g.note, "Widget Gallery");
+        bmds_notification_set_body(gui, g.note, "A notification from a program, with two buttons.");
+        bmds_notification_set_icon(gui, g.note, "dialog-information");
+        static const char *const noteActions[] = {"Raise", "Dismiss"};
+        bmds_notification_set_actions(gui, g.note, noteActions, 2);
+        const uint32_t deskRow = bmds_gui_new(gui, "Box", deskPage);
+        bmds_box_set_direction(gui, deskRow, "across");
+        g.notifyButton = bmds_button_new(gui, deskRow);
+        bmds_button_set_text(gui, g.notifyButton, "&Notify");
+        g.tray = bmds_tray_icon_new(gui, 0);
+        bmds_tray_icon_set_icon(gui, g.tray, "dialog-information");
+        bmds_tray_icon_set_tool_tip(gui, g.tray, "Widget Gallery's tray icon");
+        const uint32_t trayMenu = bmds_menu_new(gui, g.tray);
+        g.trayShow = bmds_menu_item_new(gui, trayMenu);
+        bmds_menu_item_set_text(gui, g.trayShow, "&Show the gallery");
+        g.trayNotify = bmds_menu_item_new(gui, trayMenu);
+        bmds_menu_item_set_text(gui, g.trayNotify, "&Notify");
+        g.trayCheck = bmds_check_box_new(gui, deskPage);
+        bmds_check_box_set_text(gui, g.trayCheck, "A &tray icon (right click: its menu)");
+        g.deskState = bmds_label_new(gui, deskPage);
+        bmds_label_set_text(gui, g.deskState, "What became of them shows here.");
+        bmds_gui_new(gui, "Spacer", deskPage);
 
         // Terminal: a shell on our own pty
         const uint32_t termPage = bmds_tab_page_new(gui, g.tabs);

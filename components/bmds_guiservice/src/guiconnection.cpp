@@ -46,9 +46,11 @@ namespace {
         Mutex         *registryLock = nullptr;
         GuiConnection *registry[GuiService::MaxConnections] = {};
 
-        StringView fileName(StringView path) {
-                const size_t slash = path.lastIndexOf('/');
-                return slash == StringView::NPos ? path : path.mid(slash + 1);
+        // The program's name as people see it: its file's, without `.elf` (notifications, `clip list`).
+        StringView programName(StringView path) {
+                const size_t     slash = path.lastIndexOf('/');
+                const StringView name = slash == StringView::NPos ? path : path.mid(slash + 1);
+                return name.endsWith(StringView(".elf")) && name.size() > 4 ? name.left(name.size() - 4) : name;
         }
 
         // A property and its value from a request (its text points into the request).
@@ -206,7 +208,7 @@ void GuiConnection::loopMain(void *arg) {
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(GuiApplication));
         if (mem != nullptr) {
                 self->_app = ::new (mem) GuiApplication();
-                self->_app->setApplicationName(fileName(self->_program.view()));
+                self->_app->setApplicationName(programName(self->_program.view()));
                 if (self->_app->connect(self->_display).isOk()) {
                         if (registryLock != nullptr) { // its system calls post to the app from here
                                 Mutex::Locker locker(*registryLock, WaitForever);
@@ -227,6 +229,11 @@ void GuiConnection::loopMain(void *arg) {
                 self->closeSurfaces(); // before the objects (and the app's posts) go
                 // The objects go, windows first closing as their objects do.
                 while (!self->_objects.isEmpty()) self->remove(self->_objects[self->_objects.size() - 1]);
+                if (self->_notifier != nullptr) { // its notifications stay
+                        self->_notifier->~Notifier();
+                        Memory::free(self->_notifier);
+                        self->_notifier = nullptr;
+                }
                 self->_app->cancelPosts(self);
                 self->_app->~GuiApplication();
                 Memory::free(self->_app);
@@ -922,6 +929,20 @@ ClientWindow *GuiConnection::modalOver(uint32_t ownerId) const {
                 if (o->window != nullptr && o->window->ownerId == ownerId && o->window->modal && o->window->isShown())
                         return o->window;
         return nullptr;
+}
+
+Notifier *GuiConnection::notifier() {
+        if (_notifier != nullptr) return _notifier;
+        void *mem = Memory::alloc(MemSpace::Psram, sizeof(Notifier));
+        if (mem == nullptr) return nullptr;
+        _notifier = ::new (mem) Notifier(*_app);
+        _notifier->setTold(notifierTold, this);
+        return _notifier;
+}
+
+void GuiConnection::notifierTold(void *arg, Notifier &, uint32_t id, Notifier::Event event, uint32_t action) {
+        guiNotificationTold(*static_cast<GuiConnection *>(arg), id, event, action);
+        return;
 }
 
 GuiObject *GuiConnection::find(uint32_t id) const {

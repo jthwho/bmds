@@ -78,6 +78,9 @@ class TrayIcon {
                 /** @brief Sets where the tray puts it (`Application` by default). */
                 void setCategory(Category category);
 
+                /** @brief Returns where the tray puts it. */
+                Category category() const { return _category; }
+
                 /** @brief Opens @p menu (not owned; null: none) on a right click, at the icon. */
                 void setContextMenu(Menu *menu) { _menu = menu; }
 
