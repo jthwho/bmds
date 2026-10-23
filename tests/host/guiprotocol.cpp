@@ -21,6 +21,7 @@
 #include <thread>
 #include <vector>
 #include <bmds/gui.h>
+#include <bmds/guiclasses.h> // compiles as C++ too
 #include <bmds/guiprotocol.h>
 #include <bmds/list.h>
 

@@ -848,8 +848,20 @@ void EditWindow::answered(void *arg, MessageBox::Answer answer) {
         return;
 }
 
-// The window manager closed the window (its close button): with nothing unsaved, that's the
-// end; otherwise it opens again to ask.
+// The user asked to close it: with something unsaved, the questions first (in place).
+void EditWindow::closeRequested() {
+        for (size_t i = 0; i < _count; ++i) {
+                if (_docs[i].edit->document().isModified()) {
+                        quit();
+                        return;
+                }
+        }
+        GuiWindow::closeRequested();
+        return;
+}
+
+// The window manager closed the window (not asked: its owner going): with nothing unsaved,
+// that's the end; otherwise it opens again to ask.
 void EditWindow::closedByManager() {
         GuiWindow::closedByManager();
         bool modified = false;

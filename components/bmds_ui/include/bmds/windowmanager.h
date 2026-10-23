@@ -133,6 +133,14 @@ class WindowManager {
                 using ClosedAt = void (*)(void *arg, const Placement &placement);
 
                 /**
+                 * @brief Told that the user asked to close the window (its close box, its menu's
+                 *        Close, Alt+F4), on the window manager's task, locked: the window stays
+                 *        until its owner closes it (`devplan/guiprograms.md` P5). Without one, the
+                 *        window manager closes it.
+                 */
+                using CloseRequest = void (*)(void *arg);
+
+                /**
                  * @brief Takes a key typed while the window has the focus (on the
                  *        window manager's task, locked: it must not call it).
                  */
@@ -414,6 +422,7 @@ class WindowManager {
                                 FullScreen fullScreen = nullptr; ///< May be null: Alt+Enter does nothing to it.
                                 Pad        pad = nullptr;        ///< May be null: pads' events dropped.
                                 Drop       drop = nullptr;       ///< May be null: drags show they can't drop.
+                                CloseRequest closeRequested = nullptr; ///< May be null: the user's close closes it.
                 };
 
                 /** @brief A window, as `list()` reports it. */
@@ -737,6 +746,13 @@ class WindowManager {
                  */
                 Error setWindowItem(uint8_t id, StringView label, WindowItemChosen fn, void *arg);
 
+                /**
+                 * @brief Keeps window @p id's client area at least @p width × @p height when the
+                 *        user resizes it (0: no minimum but the frame's).
+                 * @return `Ok`, `NotFound`.
+                 */
+                Error setMinimumSize(uint8_t id, uint16_t width, uint16_t height);
+
                 /** @brief The arrow pointer's picture and colours, for drawing it elsewhere. */
                 struct CursorPicture {
                                 uint8_t            width = 0;
@@ -948,6 +964,9 @@ class WindowManager {
                  */
                 bool isMinimized(uint8_t id);
 
+                /** @brief Returns true if window @p id is rolled up to its title bar (`shade()`). */
+                bool isShaded(uint8_t id);
+
                 /** @brief Returns window @p id's outer rectangle (screen coordinates; minimized too). */
                 Result<Rect> rect(uint8_t id);
 
@@ -1009,6 +1028,9 @@ class WindowManager {
                                 ClosedAt    closedAt = nullptr;
                                 FullScreen  fullScreen = nullptr;
                                 Drop             drop = nullptr;
+                                CloseRequest     closeRequested = nullptr;
+                                uint16_t         minWidth = 0; // the client area's, a resize by hand's floor
+                                uint16_t         minHeight = 0;
                 };
 
                 struct Client {
@@ -1124,6 +1146,7 @@ class WindowManager {
                 void            dndEnd(DropAction done);            // the source told after the round
                 void            dndClosed(uint8_t id);              // a window gone
                 Placement       placementLocked(uint8_t id);        // its normal rectangle, maximized or not
+                void            requestCloseLocked(uint8_t id);     // the user's close: asked, or done
                 Pointer         dndShape() const;
                 void            dndRetire(); // the image and its under out of use
                 void            dndFree();   // and freed, once nothing drawn holds them

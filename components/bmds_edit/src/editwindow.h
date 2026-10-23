@@ -64,6 +64,7 @@ class EditWindow final : public GuiWindow, private LanguageSupport::Listener, pr
                 bool keyFirst(const KeyEvent &event) override;
                 bool keyUnused(const KeyEvent &event) override;
                 void closedByManager() override;
+                void closeRequested() override;
 
         private:
                 struct Document {

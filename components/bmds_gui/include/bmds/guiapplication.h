@@ -274,6 +274,7 @@ class GuiApplication {
                                         Pad,       ///< A gamepad's, while it has the keys: `pad`.
                                         Drop,      ///< A drag over it (`drop`).
                                         DragEnded, ///< Its drag ended: `drop.drag`, `width` the `DropAction` done.
+                                        CloseRequested, ///< The user asked to close it (`GuiWindow::closeRequested()`).
                                 };
                                 Type                      type = Type::Post;
                                 uint8_t                   slot = 0; ///< The window's (its generation in `generation`).

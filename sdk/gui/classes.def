@@ -1,0 +1,82 @@
+/*
+ * classes.def: the GUI service's classes (devplan/guiprograms.md §4b, §10), the one source of
+ * the class ABI. The service includes it to bind each name to its code; tools/guigen.py reads it
+ * to write bmds/guiclasses.h (the C wrappers) and the lock's lines (tests/scripts/gui.lock).
+ * Userspace ABI once shipped: lines are appended, never changed or removed.
+ *
+ * GUI_CLASS(Class, Parent, Concrete|Abstract)
+ * GUI_PROP(Class, name, Tag, RW|RO|WO)
+ * GUI_VALUES(Class, property, names...)      an Atom property's names
+ * GUI_METHOD(Class, name, ResultTag, ArgTags...)
+ * GUI_EVENT(Class, name, On|Off, ValueTags...)   On: sent unless the client turns it off
+ *
+ * Tags: None Int Long Bool String Atom Id Rect Color List (a list of strings, as a property or
+ * an argument). One entry a line.
+ */
+
+/* ---- Every widget's */
+GUI_CLASS(Widget, None, Abstract)
+GUI_PROP(Widget, enabled, Bool, RW)
+GUI_PROP(Widget, visible, Bool, RW)
+GUI_METHOD(Widget, setFocus, None)
+
+/* ---- Windows */
+GUI_CLASS(Window, None, Concrete)
+GUI_PROP(Window, title, String, RW)
+GUI_PROP(Window, width, Int, RW)
+GUI_PROP(Window, height, Int, RW)
+GUI_METHOD(Window, show, None)
+GUI_METHOD(Window, close, None)
+GUI_EVENT(Window, closed, On)
+
+/* ---- Layouts */
+GUI_CLASS(Box, Widget, Concrete)
+GUI_PROP(Box, direction, Atom, RW)
+GUI_VALUES(Box, direction, across, down)
+GUI_PROP(Box, spacing, Int, WO)
+GUI_PROP(Box, margin, Int, WO)
+
+/* ---- Controls */
+GUI_CLASS(Label, Widget, Concrete)
+GUI_PROP(Label, text, String, RW)
+
+GUI_CLASS(Button, Widget, Concrete)
+GUI_PROP(Button, text, String, RW)
+GUI_METHOD(Button, click, None)
+GUI_EVENT(Button, clicked, On)
+
+GUI_CLASS(LineEdit, Widget, Concrete)
+GUI_PROP(LineEdit, text, String, RW)
+GUI_PROP(LineEdit, masked, Bool, WO)
+GUI_PROP(LineEdit, maxLength, Int, WO)
+GUI_METHOD(LineEdit, selectAll, None)
+GUI_EVENT(LineEdit, accepted, On, String)
+GUI_EVENT(LineEdit, edited, Off, String)
+
+/* ---- Step 2b (2026-10-22): windows */
+GUI_PROP(Window, minWidth, Int, RW)
+GUI_PROP(Window, minHeight, Int, RW)
+GUI_PROP(Window, placement, String, RW)
+GUI_PROP(Window, icon, String, RW)
+GUI_PROP(Window, pointer, Atom, RW)
+GUI_VALUES(Window, pointer, arrow, horizontal, vertical, diagonalDown, diagonalUp, text, none, starting)
+GUI_PROP(Window, frame, Bool, RW)
+GUI_PROP(Window, titleBar, Bool, RW)
+GUI_PROP(Window, buttons, Bool, RW)
+GUI_PROP(Window, resizable, Bool, RW)
+GUI_PROP(Window, above, Bool, RW)
+GUI_PROP(Window, shaded, Bool, RW)
+GUI_PROP(Window, minimized, Bool, RO)
+GUI_PROP(Window, maximized, Bool, RO)
+GUI_PROP(Window, active, Bool, RO)
+GUI_PROP(Window, owner, Id, RW)
+GUI_PROP(Window, modal, Bool, RW)
+GUI_PROP(Window, windowMenuItem, String, RW)
+GUI_METHOD(Window, minimize, None)
+GUI_METHOD(Window, maximize, None)
+GUI_METHOD(Window, restore, None)
+GUI_METHOD(Window, raise, None)
+GUI_EVENT(Window, resized, On, Int, Int)
+GUI_EVENT(Window, activated, Off, Bool)
+GUI_EVENT(Window, closeRequested, Off)
+GUI_EVENT(Window, windowMenuChosen, On)

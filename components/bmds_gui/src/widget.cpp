@@ -709,6 +709,14 @@ GuiSize BoxLayout::sizeHint() const {
         return size;
 }
 
+void BoxLayout::setDirection(Direction direction) {
+        if (direction == _direction) return;
+        _direction = direction;
+        relayout();
+        update();
+        return;
+}
+
 void BoxLayout::relayout() {
         const Rect      &g = geometry();
         const Rect       r = g.width > _margins[0] + _margins[2] && g.height > _margins[1] + _margins[3]

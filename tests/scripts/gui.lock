@@ -1,0 +1,60 @@
+# The GUI classes' lock (devplan/guiprograms.md §10): every line must stay as it is (userspace ABI:
+# append only). A line the schema has that the lock doesn't is new ABI: append it here.
+# Step 1 and 2a (2026-10-22): the first classes.
+class Widget : None Abstract
+property Widget.enabled Bool RW
+property Widget.visible Bool RW
+method Widget.setFocus() -> None
+class Window : None Concrete
+property Window.title String RW
+property Window.width Int RW
+property Window.height Int RW
+method Window.show() -> None
+method Window.close() -> None
+event Window.closed() on
+class Box : Widget Concrete
+property Box.direction Atom RW
+values Box.direction across down
+property Box.spacing Int WO
+property Box.margin Int WO
+class Label : Widget Concrete
+property Label.text String RW
+class Button : Widget Concrete
+property Button.text String RW
+method Button.click() -> None
+event Button.clicked() on
+class LineEdit : Widget Concrete
+property LineEdit.text String RW
+property LineEdit.masked Bool WO
+property LineEdit.maxLength Int WO
+method LineEdit.selectAll() -> None
+event LineEdit.accepted(String) on
+event LineEdit.edited(String) off
+
+# Step 2b (2026-10-22): windows.
+property Window.minWidth Int RW
+property Window.minHeight Int RW
+property Window.placement String RW
+property Window.icon String RW
+property Window.pointer Atom RW
+values Window.pointer arrow horizontal vertical diagonalDown diagonalUp text none starting
+property Window.frame Bool RW
+property Window.titleBar Bool RW
+property Window.buttons Bool RW
+property Window.resizable Bool RW
+property Window.above Bool RW
+property Window.shaded Bool RW
+property Window.minimized Bool RO
+property Window.maximized Bool RO
+property Window.active Bool RO
+property Window.owner Id RW
+property Window.modal Bool RW
+property Window.windowMenuItem String RW
+method Window.minimize() -> None
+method Window.maximize() -> None
+method Window.restore() -> None
+method Window.raise() -> None
+event Window.resized(Int, Int) on
+event Window.activated(Bool) off
+event Window.closeRequested() off
+event Window.windowMenuChosen() on

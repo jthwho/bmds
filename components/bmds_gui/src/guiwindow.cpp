@@ -75,6 +75,7 @@ Error GuiWindow::show(const Rect &rect) {
         c.client = _app.client();
         c.reference = _config.reference ? referenceEntry : nullptr;
         c.activated = activatedEntry;
+        c.closeRequested = closeRequestedEntry;
         c.focusOnPress = _config.focusOnPress;
         WindowManager &wm = _app.windowManager();
         // Its events from now on; anything queued for an earlier opening dropped.
@@ -88,6 +89,11 @@ Error GuiWindow::show(const Rect &rect) {
         _id.store(id, std::memory_order_release);
         if (_icon != nullptr) (void)wm.setIcon(id, _icon);
         if (_largeIcon != nullptr) (void)wm.setLargeIcon(id, _largeIcon);
+        if (_minWidth != 0 || _minHeight != 0) (void)wm.setMinimumSize(id, _minWidth, _minHeight);
+        if (_forcedPointer != WindowManager::Pointer::Arrow) {
+                _pointer = _forcedPointer;
+                (void)wm.setPointer(id, _forcedPointer);
+        }
         auto [client, cerr] = wm.clientRect(id);
         _screen = cerr.isOk() ? client : Rect();
         _dirty.clear();
@@ -266,6 +272,35 @@ void GuiWindow::setLargeIcon(const Icon *icon) {
         return;
 }
 
+Error GuiWindow::setDecorations(uint8_t decorations) {
+        if (!WindowFrame::isValid(decorations)) return Error::Invalid;
+        const uint8_t id = this->id();
+        if (id != 0) {
+                const Error err = _app.windowManager().setDecorations(id, decorations);
+                if (err.isError()) return err;
+        }
+        _config.decorations = decorations;
+        return Error::Ok;
+}
+
+void GuiWindow::setPointer(WindowManager::Pointer shape) {
+        _forcedPointer = shape;
+        const uint8_t id = this->id();
+        if (id == 0) return;
+        // Arrow: the widget under the pointer says again at its next move.
+        _pointer = shape;
+        (void)_app.windowManager().setPointer(id, shape);
+        return;
+}
+
+void GuiWindow::setMinimumSize(uint16_t width, uint16_t height) {
+        _minWidth = width;
+        _minHeight = height;
+        const uint8_t id = this->id();
+        if (id != 0) (void)_app.windowManager().setMinimumSize(id, width, height);
+        return;
+}
+
 void GuiWindow::setTitle(StringView title) {
         const size_t n = title.size() < WindowManager::MaxTitle ? title.size() : WindowManager::MaxTitle;
         std::memcpy(_title, title.data(), n);
@@ -395,6 +430,13 @@ void GuiWindow::activatedEntry(void *arg, bool active) {
         GuiApplication::Event e;
         e.type = Type::Activated;
         e.width = active ? 1 : 0;
+        static_cast<GuiWindow *>(arg)->queue(e);
+        return;
+}
+
+void GuiWindow::closeRequestedEntry(void *arg) {
+        GuiApplication::Event e;
+        e.type = Type::CloseRequested;
         static_cast<GuiWindow *>(arg)->queue(e);
         return;
 }
@@ -558,6 +600,9 @@ void GuiWindow::handle(const GuiApplication::Event &event) {
                                 closedByManager();
                         }
                         break;
+                case Type::CloseRequested:
+                        if (isShown()) closeRequested();
+                        break;
                 default: break;
         }
         return;
@@ -588,6 +633,12 @@ void GuiWindow::key(const KeyEvent &event) {
             _menuBar->isVisible())
                 used = _menuBar->openFirst();
         if (!used) (void)keyUnused(event);
+        return;
+}
+
+void GuiWindow::closeRequested() {
+        close();
+        closedByManager();
         return;
 }
 
@@ -675,7 +726,8 @@ WindowManager::Pointer GuiWindow::pointerAt(int x, int y) const {
 }
 
 void GuiWindow::pointerOver(Widget *widget, int x, int y) {
-        const WindowManager::Pointer shape = widget->pointerAt(x, y);
+        const WindowManager::Pointer shape =
+                _forcedPointer != WindowManager::Pointer::Arrow ? _forcedPointer : widget->pointerAt(x, y);
         if (shape == _pointer || !isShown()) return;
         _pointer = shape;
         (void)_app.windowManager().setPointer(id(), shape);

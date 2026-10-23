@@ -20,6 +20,7 @@ bmds_add_program(appinfo SOURCES appinfo/appinfo.c)
 bmds_add_program(bounce SOURCES bounce/bounce.c DISPLAY)
 bmds_add_program(cxxdemo SOURCES cxxdemo/cxxdemo.cpp)
 bmds_add_program(guidemo SOURCES guidemo/guidemo.c)
+bmds_add_program(guigallery SOURCES guigallery/guigallery.c)
 
 # Application folders (devplan/apps.md): copied into a card's apps/, each a command in /apps.
 bmds_add_app(surfdemo PROGRAM surfdemo DESKTOP surfdemo/app.desktop)

@@ -189,6 +189,36 @@ int bmds_gui_display(const bmds_gui_t *gui, const char *name, bmds_gui_value_t *
 /** @brief Reads element @p index of list @p list (of `list->elements`). @return 0, or -1 (`ERANGE`). */
 int bmds_gui_list_item(const bmds_gui_value_t *list, uint32_t index, bmds_gui_value_t *out);
 
+/**
+ * @brief Makes an object of class @p cls (its name) under @p parent: a new id, created.
+ * @return The id, or 0 with `errno` (no ids left, the connection broke, a name).
+ */
+uint32_t bmds_gui_new(bmds_gui_t *gui, const char *cls, uint32_t parent);
+
+/** @brief Sets @p id's property @p name (its name, interned once) to @p value. @return 0 or -1. */
+int bmds_gui_set_named(bmds_gui_t *gui, uint32_t id, const char *name, bmds_gui_value_t value);
+
+/** @brief Reads @p id's property @p name into @p out (valid until the next call). @return 0 or -1. */
+int bmds_gui_get_named(bmds_gui_t *gui, uint32_t id, const char *name, bmds_gui_value_t *out);
+
+/** @brief Calls @p id's method @p name (its name) as `bmds_gui_call`. @return 0 or -1. */
+int bmds_gui_call_named(bmds_gui_t *gui, uint32_t id, const char *name, const bmds_gui_value_t *args, uint32_t count,
+                        bmds_gui_value_t *result);
+
+/** @brief Returns true if @p event is the one named @p name (`clicked`). */
+int bmds_gui_event_is(bmds_gui_t *gui, const bmds_gui_event_t *event, const char *name);
+
+/**
+ * @brief A list of @p count strings as a value: encoded into the connection's scratch, valid
+ *        until the next call that takes a list.
+ */
+bmds_gui_value_t bmds_gui_strings(bmds_gui_t *gui, const char *const *items, uint32_t count);
+
+/** @brief Values to pass: a 64-bit integer, a rectangle, a colour (0xRRGGBB). */
+bmds_gui_value_t bmds_gui_long(int64_t v);
+bmds_gui_value_t bmds_gui_rect(int32_t x, int32_t y, uint32_t width, uint32_t height);
+bmds_gui_value_t bmds_gui_color(uint32_t rgb);
+
 /** @brief Values to pass: an integer, a boolean, a string (NUL-terminated), an atom, an id. */
 bmds_gui_value_t bmds_gui_int(int32_t v);
 bmds_gui_value_t bmds_gui_bool(int v);

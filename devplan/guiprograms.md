@@ -677,3 +677,129 @@ Each step ends tried on the board and with its measurements (§5's estimates rep
 - The client's requests ignore `sync()`'s errors past their handler: a program that wants to
   stop at an error checks in its handler.
 - Answers are written with a 10 s limit rather than §4a's 1 MB rule (§8).
+
+## 10. Step 2 design: the classes (2026-10-22)
+
+**Built in six parts, each tried on the board:**
+- **2a, the schema:** every class, property, method and event in one declarative file,
+  `sdk/gui/classes.def` (X-macros). It is the single source of the class ABI:
+  - **The service** includes it for the names, the types, the access and the signatures. It binds
+    each entry to a function named after it (`set_Label_text`, `call_Window_show`,
+    `create_Button`), so a missing implementation is a compile error.
+  - **`tools/guigen.py`** reads it to write the C wrappers, `sdk/include/bmds/guiclasses.h`, and
+    the lock's lines.
+  - **`tests/scripts/gui.lock`** is the class ABI's lock, as `api.lock` is the scripts'. Every line
+    must stay; new ones are appended. A host test runs the generator and checks the lock and that
+    `guiclasses.h` is current.
+  - **`Describe`** answers from the same tables. The connection checks a method's arguments
+    against the schema (count and tags) before the class's code runs.
+- **2b, windows:**
+  - the `resized` event, and `minWidth` and `minHeight`;
+  - the operations of §4c: `minimize`, `maximize`, `restore`, `raise`, `fullScreen`, `above`,
+    `shaded`, `decorations` (`frame`, `titleBar`, `buttons` booleans), `icon` (a theme icon's
+    name), the pointer's shape, `windowMenuItem` and its event;
+  - `placement` (`WindowPlacement`'s text) read and set;
+  - `owner` and `modal`: a window with an owner is centred on it, and while a modal one is shown
+    its owner's widgets are disabled (the window manager has no owner relation: §7).
+- **2b, the asked close (P5):**
+  - The window manager's three user closes (the close box, the window menu's Close, Alt+F4) call
+    the window's `closeRequested` callback if it has one, and close it otherwise, as today.
+  - `GuiWindow` passes it to a virtual `closeRequested()`, by default `close()` then
+    `closedByManager()`, so built-in applications behave as before. Edit overrides it and asks
+    without closing, which replaces its reopen-to-ask.
+  - For programs, opt in (X11's `WM_DELETE_WINDOW`): a window whose client listens to
+    `closeRequested` is asked; one that doesn't is closed and told `closed`.
+- **2c, controls and layouts:** `CheckBox`, `NumberField`, `Slider`, `ComboBox`, `ProgressBar`,
+  `Form` (rows of a label and a widget), `Splitter`, `Tabs`, `StatusBar`, `ToolBar`, `Spacer`.
+  `RadioButton` waits for the toolkit's check box to draw one.
+- **2d, views:**
+  - `ListView` (rows of text, icons by theme name), `DetailsView` (columns), `TreeView` (paths,
+    children given when expanded), `IconView`;
+  - `TextEdit` and `CodeEdit` (`text`, `syntax` by id, `readOnly`, `modified`, `cursor`, events
+    `changed` and `cursorMoved`);
+  - `TerminalWidget` (`start(path, args)`, the `ended` event with the status).
+  - Items are set by methods (`setItems`, `addItem`, `removeItem`, `clear`) with a `current`
+    property, and the events `activated` and `currentChanged`.
+- **2e, menus, dialogs and timers:**
+  - `MenuBar`, `Menu` and `MenuItem` (`text`, `shortcut`, `checked`, `enabled`, `chosen`);
+    `Menu.popup(x, y)`;
+  - `MessageBox` (`kind`, `title`, `text`, `buttons`; event `answered`);
+  - `FileDialog` (`mode`, `title`, `folder`, `fileName`, `addFilter`, `open()`; event `finished`
+    with the paths);
+  - `ColorDialog` (`color`; `finished`);
+  - `Timer` (`interval`, `repeat`, `start`, `stop`; `timeout`).
+- **2f, the gallery:** `sdk/examples/guigallery`, every class in one window with menus and
+  dialogs, tried on the board; `guidemo` stays the small one.
+
+**2a, as built (2026-10-22):**
+- **The schema's lines:** `GUI_CLASS(C, Parent, Concrete|Abstract)`,
+  `GUI_PROP(C, name, Tag, RW|RO|WO)`, `GUI_VALUES(C, prop, names...)`,
+  `GUI_METHOD(C, name, Result, ArgTags...)` and `GUI_EVENT(C, name, On|Off, ValueTags...)`. On
+  means sent unless the client turns the event off.
+- **The service** builds flat `constexpr` tables from them, one `#include` each with its own
+  macros. A parent is kept as its name ("None": none).
+- **`guigen.py`:**
+  - writes `bmds_<class>_new`, `_set_<prop>`, `_get_<prop>`, `bmds_<class>_<method>` and
+    `BMDS_GUI_<CLASS>_<EVENT>` names, over the new `bmds_gui_new`, `bmds_gui_set_named`,
+    `bmds_gui_get_named` and `bmds_gui_call_named`, which intern each name once;
+  - checks that parents come first, that tags are known and that no name is made twice;
+  - marks the header `clang-format off`, so formatting the tree can't make it stale.
+- **`Describe`'s reply:**
+  - the parent's atom (0: none) and a creatable flag;
+  - the properties: atom, tag, and flags (readable 1, writable 2);
+  - the methods: atom, result tag, then the argument count and tags;
+  - the events: atom, default, then the value count and tags.
+- **A box's direction** can be changed at any time: `BoxLayout::setDirection()` is new. Step 1's
+  read-before-create special case is gone, since the wrappers create first and set after.
+
+**2b, as built (2026-10-22):**
+- **The window manager:**
+  - `WindowConfig::closeRequested`: the close box, the window menu's Close and Alt+F4 call it
+    when it is set (`requestCloseLocked`), and close the window otherwise.
+  - `setMinimumSize()`: an interactive resize stops at the client area's floor (its width
+    rounded up to whole 4-pixel columns).
+  - `isShaded()`.
+- **`GuiWindow`:**
+  - always passes the asked close on as the event `CloseRequested`, to the virtual
+    `closeRequested()`. Its default is `close()` then `closedByManager()`, so built-in
+    applications behave as before;
+  - Edit overrides it: with unsaved work it asks in place (`quit()`), and the window stays
+    where it was, maximized or not;
+  - new: `setDecorations()`, `setPointer()` (a shape over the whole client area that sets the
+    widgets' own aside: a busy window), `setMinimumSize()`.
+- **`Window`'s properties:**
+  - `minWidth` and `minHeight`, which also floor the first size;
+  - `placement` (`X Y W H [maximized]`: where it opens, or moves to while shown);
+  - `icon` (a theme name; the 16 × 16 icon is copied, since the theme's cache may drop its own);
+  - `pointer` (`arrow` … `starting`);
+  - `frame`, `titleBar`, `buttons` and `resizable`, kept as set. Shown, the buttons need the
+    title bar and resizing needs the border;
+  - `above` and `shaded`;
+  - read-only `minimized`, `maximized` and `active`;
+  - `owner`, `modal` and `windowMenuItem`.
+- **`Window`'s methods:** `minimize`, `maximize`, `restore`, `raise`.
+- **`Window`'s events:**
+  - `resized(width, height)` (On), also sent once when the window is first shown;
+  - `activated(Bool)` (Off);
+  - `closeRequested` (Off: the client opts in, as X11's `WM_DELETE_WINDOW`; without it the
+    window closes and `closed` follows);
+  - `windowMenuChosen` (On).
+- **Owners and modality:**
+  - A window with an owner opens centred on it.
+  - A shown modal window disables its owner's column (a count, so several can stack).
+  - An owner activated while blocked passes activation on to its modal window. The window
+    manager has no owner relation (§7), so this keeps the box above its owner.
+- **`fullScreen` is left out.** The window manager's full screen means a program owning the
+  display (games, `setFullScreen`). For a toolkit window it would only cover the work area, so
+  it waits until the window manager can cover the panel too.
+- **Tried on the board with `sdk/examples/guigallery`, 2b's part:**
+  - maximize and restore, with `resized` updating a label;
+  - a resize by hand stopped at the minimum;
+  - the busy pointer;
+  - About from a button and from the window menu's own item;
+  - Alt+F4 asking through the program's own modal "Quit?" box: the owner was blocked, and
+    clicking it brought the box back up;
+  - quitting, which printed the placement;
+  - Edit's close: asked in place, Cancel kept it, No closed it, and an unmodified file closed
+    at once.
+- **Size:** `bmds_guiservice` 17.0 KB of flash after 2a and 2b (11.8 KB at step 1).

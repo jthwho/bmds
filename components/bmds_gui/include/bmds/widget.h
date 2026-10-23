@@ -614,6 +614,12 @@ class BoxLayout : public Widget {
 
                 BoxLayout(Widget *parent, Direction direction);
 
+                /** @brief Lays its children out in @p direction from now on. */
+                void setDirection(Direction direction);
+
+                /** @brief Returns the direction it lays its children out in. */
+                Direction direction() const { return _direction; }
+
                 /** @brief Sets the gap between children (a multiple of 4 across). */
                 void setSpacing(uint16_t spacing);
 

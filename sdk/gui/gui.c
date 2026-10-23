@@ -72,6 +72,8 @@ struct bmds_gui {
                 uint32_t          setup_length;
                 bmds_gui_error_fn on_error;
                 void             *error_arg;
+                uint8_t          *scratch; /* bmds_gui_strings()'s */
+                size_t            scratch_capacity;
 };
 
 /* ---- Writing */
@@ -499,6 +501,7 @@ void bmds_gui_close(bmds_gui_t *g) {
         free(g->in);
         free(g->current);
         free(g->setup);
+        free(g->scratch);
         free(g);
         return;
 }
@@ -786,4 +789,76 @@ bmds_gui_value_t bmds_gui_atom_value(uint32_t atom) {
 
 bmds_gui_value_t bmds_gui_id(uint32_t id) {
         return number_value(BMDS_GUI_ID, id);
+}
+
+bmds_gui_value_t bmds_gui_long(int64_t v) {
+        return number_value(BMDS_GUI_LONG, v);
+}
+
+bmds_gui_value_t bmds_gui_rect(int32_t x, int32_t y, uint32_t width, uint32_t height) {
+        bmds_gui_value_t r = number_value(BMDS_GUI_RECT, 0);
+        r.x = x;
+        r.y = y;
+        r.width = width;
+        r.height = height;
+        return r;
+}
+
+bmds_gui_value_t bmds_gui_color(uint32_t rgb) {
+        return number_value(BMDS_GUI_COLOR, rgb & 0xffffffu);
+}
+
+bmds_gui_value_t bmds_gui_strings(bmds_gui_t *g, const char *const *items, uint32_t count) {
+        bmds_gui_value_t r = number_value(BMDS_GUI_LIST, 0);
+        r.elements = BMDS_GUI_STRING;
+        size_t bytes = 0;
+        for (uint32_t i = 0; i < count; ++i) bytes += 4 + ((strlen(items[i]) + 3) & ~(size_t)3);
+        if (reserve(&g->scratch, &g->scratch_capacity, bytes + 1) != 0) return number_value(BMDS_GUI_NONE, 0);
+        size_t at = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+                const size_t n = strlen(items[i]);
+                g->scratch[at] = (uint8_t)n;
+                g->scratch[at + 1] = (uint8_t)(n >> 8);
+                g->scratch[at + 2] = (uint8_t)(n >> 16);
+                g->scratch[at + 3] = (uint8_t)(n >> 24);
+                memcpy(g->scratch + at + 4, items[i], n);
+                memset(g->scratch + at + 4 + n, 0, ((n + 3) & ~(size_t)3) - n);
+                at += 4 + ((n + 3) & ~(size_t)3);
+        }
+        r.count = count;
+        r.items = g->scratch;
+        r.items_size = (uint32_t)at;
+        return r;
+}
+
+uint32_t bmds_gui_new(bmds_gui_t *g, const char *cls, uint32_t parent) {
+        const uint32_t atom = bmds_gui_atom(g, cls);
+        const uint32_t id = atom != 0 ? bmds_gui_new_id(g) : 0;
+        if (id == 0) {
+                if (atom != 0) errno = ENOSPC;
+                return 0;
+        }
+        return bmds_gui_create(g, id, atom, parent, NULL, 0) == 0 ? id : 0;
+}
+
+int bmds_gui_set_named(bmds_gui_t *g, uint32_t id, const char *name, bmds_gui_value_t value) {
+        const uint32_t        atom = bmds_gui_atom(g, name);
+        const bmds_gui_prop_t prop = {atom, value};
+        return atom != 0 ? bmds_gui_set(g, id, &prop, 1) : -1;
+}
+
+int bmds_gui_get_named(bmds_gui_t *g, uint32_t id, const char *name, bmds_gui_value_t *out) {
+        const uint32_t atom = bmds_gui_atom(g, name);
+        return atom != 0 ? bmds_gui_get(g, id, &atom, 1, out) : -1;
+}
+
+int bmds_gui_call_named(bmds_gui_t *g, uint32_t id, const char *name, const bmds_gui_value_t *args, uint32_t count,
+                        bmds_gui_value_t *result) {
+        const uint32_t atom = bmds_gui_atom(g, name);
+        return atom != 0 ? bmds_gui_call(g, id, atom, args, count, result) : -1;
+}
+
+int bmds_gui_event_is(bmds_gui_t *g, const bmds_gui_event_t *e, const char *name) {
+        const uint32_t atom = cached(g, name);
+        return atom != 0 ? e->name == atom : e->name == bmds_gui_atom(g, name);
 }

@@ -318,3 +318,6 @@ if(BASH_PROGRAM AND Python3_Interpreter_FOUND)
                  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_LIST_DIR}/corpus/check_bash.py
                          ${CMAKE_CURRENT_LIST_DIR}/corpus)
 endif()
+
+# The GUI classes' lock and their generated C wrappers (devplan/guiprograms.md §10).
+add_test(NAME gui_lock COMMAND ${Python3_EXECUTABLE} ${BMDS_ROOT}/tests/scripts/guilock.py ${BMDS_ROOT})

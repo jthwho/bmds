@@ -852,8 +852,21 @@ void WindowManager::pressedMoved(uint16_t x, uint16_t y) {
 void WindowManager::sizeTo(uint16_t x, uint16_t y) {
         const Window &w = _windows[_sizeId - 1];
         const Rect    area = WindowStack::isApplication(_stack.levelOf(_sizeId)) ? _workArea : _stack.screen();
-        const Rect    to = WindowFrame::resizedRect(_sizeStart, _sizeEdges, int(x) - _sizeX, int(y) - _sizeY,
-                                                    w.decorations, w.widthStep, w.heightStep, area);
+        Rect to = WindowFrame::resizedRect(_sizeStart, _sizeEdges, int(x) - _sizeX, int(y) - _sizeY, w.decorations,
+                                           w.widthStep, w.heightStep, area);
+        // Not under the window's own minimum: the moving edge stops there.
+        const uint16_t minOuterW = uint16_t((WindowFrame::outerWidth(w.minWidth, w.decorations) + 3) & ~3); // columns
+        const uint16_t minOuterH = WindowFrame::outerHeight(w.minHeight, w.decorations);
+        if (w.minWidth != 0 && to.width < minOuterW) {
+                if ((_sizeEdges & WindowFrame::LeftEdge) != 0)
+                        to.x = uint16_t(_sizeStart.x + _sizeStart.width - minOuterW);
+                to.width = minOuterW;
+        }
+        if (w.minHeight != 0 && to.height < minOuterH) {
+                if ((_sizeEdges & WindowFrame::TopEdge) != 0)
+                        to.y = uint16_t(_sizeStart.y + _sizeStart.height - minOuterH);
+                to.height = minOuterH;
+        }
         (void)outlineLocked(_sizeId, to);
         return;
 }
@@ -895,7 +908,7 @@ WindowManager::Pointer WindowManager::frameShapeAt(uint16_t x, uint16_t y) const
 void WindowManager::act(uint8_t id, WindowFrame::Part part) {
         using Part = WindowFrame::Part;
         if (part == Part::Close) {
-                (void)closeLocked(id);
+                requestCloseLocked(id);
         } else if (part == Part::Minimize) {
                 (void)minimizeLocked(id);
         } else if (part == Part::Maximize) {
@@ -2146,6 +2159,7 @@ Result<uint8_t> WindowManager::openLocked(const WindowConfig &config) {
         w.focusOnPress = config.focusOnPress;
         w.activated = config.activated;
         w.closedAt = config.closedAt;
+        w.closeRequested = config.closeRequested;
         if (w.focusable && !keysLevel) _focusId = id;
         if (keysLevel && _focusId == id) _focusId = 0; // a closed window's number, reused: not focused
         if (WindowStack::isApplication(config.level)) _listChanged = true;
@@ -2635,7 +2649,7 @@ void WindowManager::menuChoose(int item) {
                         break;
                 }
                 case MenuChoice::Shade: (void)shadeLocked(id, !_windows[id - 1].shaded); break;
-                case MenuChoice::Close: (void)closeLocked(id); break;
+                case MenuChoice::Close: requestCloseLocked(id); break;
                 case MenuChoice::Desktop:
                 case MenuChoice::Program:
                 case MenuChoice::Window:
@@ -2967,7 +2981,7 @@ bool WindowManager::shortcut(const KeyEvent &event) {
         }
         const uint8_t focus = focusId();
         if (event.usage == UsageF4 && focus != 0) {
-                if ((_windows[focus - 1].decorations & WindowFrame::CloseButton) != 0) (void)closeLocked(focus);
+                if ((_windows[focus - 1].decorations & WindowFrame::CloseButton) != 0) requestCloseLocked(focus);
                 return true;
         }
         if (event.usage == HidKey::Space && focus != 0 && WindowStack::isApplication(_stack.levelOf(focus))) {
@@ -3819,6 +3833,11 @@ Result<List<WindowManager::Info>> WindowManager::windows() {
         return makeResult(std::move(out));
 }
 
+bool WindowManager::isShaded(uint8_t id) {
+        Mutex::Locker lock(_lock, WaitForever);
+        return id != 0 && id <= _windows.size() && _stack.rectOf(id).isOk() && _windows[id - 1].shaded;
+}
+
 bool WindowManager::isMinimized(uint8_t id) {
         // A round draws: as at its start (nothing changes during one), if kept; else waited for.
         if (_lock.tryLock().isError()) {
@@ -3835,6 +3854,27 @@ bool WindowManager::isMinimized(uint8_t id) {
 Result<Rect> WindowManager::rect(uint8_t id) {
         Mutex::Locker lock(_lock, WaitForever);
         return _stack.rectOf(id);
+}
+
+// The user asked to close window @p id: its owner is told if it asks to be (it closes it then),
+// else it closes now.
+void WindowManager::requestCloseLocked(uint8_t id) {
+        if (id == 0 || id > _windows.size()) return;
+        const Window &w = _windows[id - 1];
+        if (w.closeRequested != nullptr) {
+                w.closeRequested(w.arg);
+                return;
+        }
+        (void)closeLocked(id);
+        return;
+}
+
+Error WindowManager::setMinimumSize(uint8_t id, uint16_t width, uint16_t height) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (id == 0 || id > _windows.size() || _stack.rectOf(id).isError()) return Error::NotFound;
+        _windows[id - 1].minWidth = width;
+        _windows[id - 1].minHeight = height;
+        return Error::Ok;
 }
 
 Result<WindowManager::Placement> WindowManager::placement(uint8_t id) {

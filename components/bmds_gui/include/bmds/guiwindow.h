@@ -144,6 +144,31 @@ class GuiWindow : public Widget {
                 void setLargeIcon(const Icon *icon);
 
                 /**
+                 * @brief Sets its frame (`WindowFrame`'s flags), shown or not: shown, its outer
+                 *        rectangle stays and its client area changes.
+                 * @return `Ok`, `Invalid` (not decorations, or too small a window for them).
+                 */
+                Error setDecorations(uint8_t decorations);
+
+                /** @brief Returns its frame (`WindowFrame`'s flags). */
+                uint8_t decorations() const { return _config.decorations; }
+
+                /**
+                 * @brief Sets the pointer's shape over all of its client area, its widgets'
+                 *        own set aside (a busy window's); `Arrow`: theirs again.
+                 */
+                void setPointer(WindowManager::Pointer shape);
+
+                /** @brief Returns the shape set with `setPointer()`. */
+                WindowManager::Pointer pointer() const { return _forcedPointer; }
+
+                /**
+                 * @brief Keeps its client area at least @p width × @p height when the user
+                 *        resizes it (0: no minimum but the frame's), shown or not.
+                 */
+                void setMinimumSize(uint16_t width, uint16_t height);
+
+                /**
                  * @brief Sets the widget keys go to (null: none); both are redrawn, the old one
                  *        told `focusOut()`, then the new one `focusIn()` and its parents
                  *        `childFocused()`.
@@ -231,6 +256,13 @@ class GuiWindow : public Widget {
                 virtual void closedByManager();
 
                 /**
+                 * @brief The user asked to close it (its close box, its window menu's Close,
+                 *        Alt+F4): by default it closes (`closedByManager()` follows). Override to
+                 *        ask first (unsaved work) and call `close()` when it should go.
+                 */
+                virtual void closeRequested();
+
+                /**
                  * @brief Draws what its client area should show into @p pixels (B, G,
                  *        R; `win check`, a test aid), when the config says it can.
                  *        On the caller's task, the window manager locked.
@@ -281,6 +313,7 @@ class GuiWindow : public Widget {
                 static void keyEntry(void *arg, const KeyEvent &event);
                 static void padEntry(void *arg, const PadEvent &event);
                 static void activatedEntry(void *arg, bool active);
+                static void closeRequestedEntry(void *arg);
                 bool        activateMnemonic(uint32_t key);
                 void        key(const KeyEvent &event);
                 static void resizedEntry(void *arg, uint16_t width, uint16_t height);
@@ -326,6 +359,9 @@ class GuiWindow : public Widget {
                 MenuBar               *_menuBar = nullptr;
                 WindowManager::Pointer _pointer = WindowManager::Pointer::Arrow; // the shape set
                 bool                   _pointerInside = false; // pointerEntered() told, pointerLeft() not yet
+                WindowManager::Pointer _forcedPointer = WindowManager::Pointer::Arrow; // setPointer()'s
+                uint16_t               _minWidth = 0;                                  // setMinimumSize()'s
+                uint16_t               _minHeight = 0;
                 bool                 _active = false;
 };
 

@@ -447,7 +447,9 @@ Plan: [`input.md`](input.md).
   windows, one loop, callbacks) and to the rest of the system (settings, notifications,
   processes, pads, audio, the clipboard). Step 1 done (§9): the protocol's spine (`gui_open`, the
   service, `Window`, `Box`, `Label`, `Button`, `LineEdit`, `libbmdsgui`, `guidemo` on the board).
-  Next: step 2, the classes.
+  Step 2 under way (§10): 2a, the schema (`sdk/gui/classes.def`, `tools/guigen.py`, `gui.lock`,
+  `Describe`), and 2b, windows and the asked close (Edit asks in place), done. Next: 2c, the
+  controls and layouts.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

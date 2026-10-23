@@ -22,6 +22,7 @@
 #include <bmds/string.h>
 #include <bmds/thread.h>
 #include <bmds/widget.h>
+#include <bmds/windowplacement.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -31,37 +32,55 @@ struct GuiObject;
 /** @brief 0, or a `GuiProtocol::ErrorCode`: what a class's code answers. */
 using GuiStatus = uint16_t;
 
-/** @brief A property of a class (`devplan/guiprograms.md` §4b). */
+/** @brief The schema's entries (`sdk/gui/classes.def`, guiclasses.cpp): what a class has. */
+using GuiSetter = GuiStatus (*)(GuiObject &object, const GuiProtocol::Value &value);
+using GuiGetter = GuiProtocol::Value (*)(GuiObject &object); ///< Its text stays valid until the next change.
+using GuiCaller = GuiStatus (*)(GuiObject &object, Span<const GuiProtocol::Value> args, GuiProtocol::Value &result);
+using GuiCreator = GuiStatus (*)(GuiObject &object, GuiObject *parent);
+
+/** @brief The most arguments a method takes, or values an event carries. */
+constexpr size_t GuiMaxArgs = 6;
+
+/** @brief A class. */
+struct GuiClass {
+                const char *name;
+                const char *parent; ///< "None": none.
+                GuiCreator  create; ///< Null: it can't be made (a base).
+};
+
+/** @brief A property. */
 struct GuiProperty {
+                const char      *cls;
                 const char      *name;
                 GuiProtocol::Tag tag;
-                GuiStatus (*set)(GuiObject &object, const GuiProtocol::Value &value); ///< Null: read-only.
-                GuiProtocol::Value (*get)(
-                        GuiObject &object); ///< Null: write-only. Its text stays valid until the next change.
+                GuiSetter        set; ///< Null: read-only.
+                GuiGetter        get; ///< Null: write-only.
 };
 
-/** @brief A method: its arguments read from @p args (@p count of them), its result into @p result. */
+/** @brief A method: its result's tag and its arguments' (checked before it runs). */
 struct GuiMethod {
-                const char *name;
-                GuiStatus (*call)(GuiObject &object, GuiProtocol::Reader &args, uint32_t count,
-                                  GuiProtocol::Value &result);
+                const char      *cls;
+                const char      *name;
+                GuiProtocol::Tag result;
+                GuiProtocol::Tag args[GuiMaxArgs];
+                uint8_t          count;
+                GuiCaller        call;
 };
 
-/** @brief An event a class sends. */
+/** @brief An event. */
 struct GuiEvent {
-                const char *name;
-                bool        byDefault; ///< Sent unless the client turns it off (`Listen`).
+                const char      *cls;
+                const char      *name;
+                bool             byDefault; ///< Sent unless the client turns it off (`Listen`).
+                GuiProtocol::Tag values[GuiMaxArgs];
+                uint8_t          count;
 };
 
-/** @brief A class: its parent, its names, and how an object of it is made. */
-struct GuiClass {
-                const char             *name;
-                const GuiClass         *parent;
-                Span<const GuiProperty> properties;
-                Span<const GuiMethod>   methods;
-                Span<const GuiEvent>    events;
-                /** @brief Makes the toolkit's side under @p parent (null: none). Null: the class can't be made (a base). */
-                GuiStatus (*create)(GuiObject &object, GuiObject *parent);
+/** @brief An Atom property's names ("across, down"). */
+struct GuiValues {
+                const char *cls;
+                const char *property;
+                const char *names;
 };
 
 /** @brief A window made by a client: a column for its children; its close told. */
@@ -72,12 +91,41 @@ class ClientWindow final : public GuiWindow {
 
                 BoxLayout *column() const { return _column; }
 
+                /** @brief Its icon: theme icon @p name's 16 × 16, copied (empty: none). @return False if none. */
+                bool       setIconNamed(StringView name);
+                StringView iconName() const { return _iconName.view(); }
+
+                /** @brief Its window menu's own item (empty: none). */
+                void       setMenuItem(StringView label);
+                StringView menuItem() const { return _menuItem.view(); }
+
+                /** @brief Blocks its owner's widgets while it is shown and modal, or not (after a change). */
+                void updateBlock();
+
+                WindowPlacement placementWanted; ///< Set before it is shown: where (empty rectangle: centred).
+                uint32_t        ownerId = 0;     ///< The window it belongs to (0: none).
+                bool            modal = false;
+                bool            above = false;
+
         protected:
                 void closedByManager() override;
+                void closeRequested() override;
+                void resized() override;
+                void activeChanged() override;
 
         private:
+                static void menuItemChosen(void *arg); // the window manager's task
+                static void menuItemPosted(void *arg); // the loop's
+
                 GuiObject &_object;
                 BoxLayout *_column = nullptr;
+                uint32_t  *_iconPixels = nullptr; // its icon's copy (a theme's may be dropped from the cache)
+                Icon       _icon;
+                String     _iconName{MemSpace::Psram};
+                String     _menuItem{MemSpace::Psram};
+                uint16_t   _toldWidth = 0; // the size last sent with `resized`
+                uint16_t   _toldHeight = 0;
+                bool       _blocking = false; // its owner's widgets are disabled for it
 };
 
 /** @brief An object a client made, by its id. */
@@ -92,7 +140,11 @@ struct GuiObject {
                 ClientWindow   *owner = nullptr;     ///< The window it is in (itself, for a window), or null.
                 uint16_t        width = 0;           ///< A window's client area at first (0: its children's size).
                 uint16_t        height = 0;
-                bool            across = false; ///< A box's direction (read from `Create` before it is made).
+                uint8_t         blocked = 0; ///< A window's: modal windows shown over it (its widgets disabled).
+                uint8_t  frameWanted = WindowFrame::Standard; ///< A window's frame as set (`WindowFrame`'s flags).
+                uint16_t minWidth = 0;                        ///< A window's least client area.
+                uint16_t minHeight = 0;
+                String   text{MemSpace::Psram};             ///< A getter's made text (valid until the next).
                 List<uint32_t>  listenOn{MemSpace::Psram};  ///< Events turned on (atoms).
                 List<uint32_t>  listenOff{MemSpace::Psram}; ///< And off.
 };
@@ -115,6 +167,15 @@ class GuiConnection {
 
                 /** @brief Sends @p event of @p object with @p values, if the client listens to it. */
                 void emit(GuiObject &object, const char *event, Span<const GuiProtocol::Value> values);
+
+                /** @brief True if the client listens to @p object's @p event. */
+                bool listens(const GuiObject &object, const char *event) const;
+
+                /** @brief A shown modal window owned by window @p ownerId, or null. */
+                ClientWindow *modalOver(uint32_t ownerId) const;
+
+                /** @brief Its object @p id, or null. */
+                GuiObject *find(uint32_t id) const;
 
                 /** @brief The window @p object is in changed: laid out again after this round of requests. */
                 void touched(ClientWindow *window);
@@ -141,13 +202,13 @@ class GuiConnection {
                 void get(GuiProtocol::Reader &body);
                 void call(GuiProtocol::Reader &body, uint16_t flags);
                 void listen(GuiProtocol::Reader &body);
+                void describe(GuiProtocol::Reader &body);
                 void sync();
                 void layOut();
                 void fail(GuiProtocol::ErrorCode code, uint32_t bad);
                 void send();
                 void stop();
 
-                GuiObject *find(uint32_t id) const;
                 Error      add(GuiObject *object);
                 void       remove(GuiObject *object); // with its children, the toolkit's side too
                 bool       ownsId(uint32_t id) const { return (id & ~IdMask) == idBase(); }
@@ -176,8 +237,11 @@ class GuiConnection {
                 List<uint8_t>        _out{MemSpace::Psram}; // answers not yet written
 };
 
-/** @brief The classes (guiclasses.cpp): by name. */
+/** @brief The class named @p name, or null. */
 const GuiClass *guiClass(StringView name);
+
+/** @brief @p cls's parent class, or null. */
+const GuiClass *guiParent(const GuiClass *cls);
 
 /** @brief The property named @p atom of @p cls or its parents, or null. */
 const GuiProperty *guiProperty(const GuiClass *cls, uint32_t atom);
@@ -187,5 +251,13 @@ const GuiMethod *guiMethod(const GuiClass *cls, uint32_t atom);
 
 /** @brief The event named @p atom of @p cls or its parents, or null. */
 const GuiEvent *guiEvent(const GuiClass *cls, uint32_t atom);
+
+/** @brief True if @p atom is one of @p property's names (or it has no list of names). */
+bool guiAllowed(const GuiProperty &property, uint32_t atom);
+
+/** @brief The schema's tables, whole (`Describe`). */
+Span<const GuiProperty> guiProperties();
+Span<const GuiMethod>   guiMethods();
+Span<const GuiEvent>    guiEvents();
 
 BMDS_NAMESPACE_END

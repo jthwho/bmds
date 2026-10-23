@@ -227,6 +227,7 @@ void GuiConnection::handle(ByteSpan message) {
                 case Opcode::Get: get(body); break;
                 case Opcode::Call: call(body, flags); break;
                 case Opcode::Listen: listen(body); break;
+                case Opcode::Describe: describe(body); break;
                 case Opcode::Sync: sync(); break;
                 default: fail(ErrorCode::BadRequest, opcode); break;
         }
@@ -370,7 +371,8 @@ static bool readAssignments(GP::Reader &body, const GuiClass *cls, List<Assignme
                         bad = a.atom;
                         return false;
                 }
-                if (!fits(a.property->tag, a.value)) {
+                if (!fits(a.property->tag, a.value) ||
+                    (a.value.tag == Tag::Atom && !guiAllowed(*a.property, uint32_t(a.value.number)))) {
                         code = ErrorCode::BadValue;
                         bad = a.atom;
                         return false;
@@ -430,10 +432,6 @@ void GuiConnection::create(GP::Reader &body) {
         o->parent = parentId;
         o->cls = cls;
         o->connection = this;
-        // What the toolkit needs before it makes the widget (a box's direction).
-        for (const Assignment &a : props)
-                if (StringView(a.property->name) == "direction")
-                        o->across = GuiAtoms::name(uint32_t(a.value.number)) == "across";
         const GuiStatus made = cls->create(*o, parent);
         if (made != 0 || add(o).isError()) {
                 if (made == 0) { // made, but not recorded: let go again
@@ -538,8 +536,19 @@ void GuiConnection::call(GP::Reader &body, uint16_t flags) {
                 fail(ErrorCode::BadName, methodAtom);
                 return;
         }
+        // The arguments, as the schema has them.
+        if (count != m->count) {
+                fail(ErrorCode::BadValue, methodAtom);
+                return;
+        }
+        Value args[GuiMaxArgs];
+        for (uint32_t i = 0; i < count; ++i)
+                if (!body.value(args[i]) || args[i].tag != m->args[i]) {
+                        fail(body.ok() ? ErrorCode::BadValue : ErrorCode::BadLength, methodAtom);
+                        return;
+                }
         Value           result;
-        const GuiStatus s = m->call(*o, body, count, result);
+        const GuiStatus s = m->call(*o, Span<const Value>(args, count), result);
         if (s != 0) {
                 fail(ErrorCode(s), methodAtom);
                 return;
@@ -588,6 +597,59 @@ void GuiConnection::listen(GP::Reader &body) {
         return;
 }
 
+// A class's table: its parent, then its own properties, methods and events (a parent's are the
+// parent's: `Describe` it too).
+void GuiConnection::describe(GP::Reader &body) {
+        const uint32_t  atom = body.u32();
+        const GuiClass *cls = body.ok() ? guiClass(GuiAtoms::name(atom)) : nullptr;
+        if (cls == nullptr) {
+                fail(ErrorCode::BadClass, atom);
+                return;
+        }
+        const auto mine = [&](const char *c) {
+                return std::strcmp(c, cls->name) == 0;
+        };
+        const auto name = [](const char *n) {
+                return GuiAtoms::intern(StringView(n));
+        };
+        const GuiClass *parent = guiParent(cls);
+        GP::Writer      w(_out);
+        w.beginAnswer(GP::Kind::Reply, uint16_t(Opcode::Describe), _sequence);
+        w.u32(parent != nullptr ? name(parent->name) : 0);
+        w.u32(cls->create != nullptr ? 1 : 0); // can be made
+        uint32_t n = 0;
+        for (const GuiProperty &p : guiProperties()) n += mine(p.cls) ? 1 : 0;
+        w.u32(n);
+        for (const GuiProperty &p : guiProperties()) {
+                if (!mine(p.cls)) continue;
+                w.u32(name(p.name));
+                w.u32(uint32_t(p.tag));
+                w.u32((p.get != nullptr ? 1u : 0u) | (p.set != nullptr ? 2u : 0u)); // readable, writable
+        }
+        n = 0;
+        for (const GuiMethod &m : guiMethods()) n += mine(m.cls) ? 1 : 0;
+        w.u32(n);
+        for (const GuiMethod &m : guiMethods()) {
+                if (!mine(m.cls)) continue;
+                w.u32(name(m.name));
+                w.u32(uint32_t(m.result));
+                w.u32(m.count);
+                for (uint8_t i = 0; i < m.count; ++i) w.u32(uint32_t(m.args[i]));
+        }
+        n = 0;
+        for (const GuiEvent &e : guiEvents()) n += mine(e.cls) ? 1 : 0;
+        w.u32(n);
+        for (const GuiEvent &e : guiEvents()) {
+                if (!mine(e.cls)) continue;
+                w.u32(name(e.name));
+                w.u32(e.byDefault ? 1 : 0);
+                w.u32(e.count);
+                for (uint8_t i = 0; i < e.count; ++i) w.u32(uint32_t(e.values[i]));
+        }
+        w.end();
+        return;
+}
+
 void GuiConnection::sync() {
         GP::Writer w(_out);
         w.beginAnswer(GP::Kind::Reply, uint16_t(Opcode::Sync), _sequence);
@@ -597,14 +659,19 @@ void GuiConnection::sync() {
 
 // ---- Events and answers
 
-void GuiConnection::emit(GuiObject &object, const char *event, Span<const Value> values) {
+bool GuiConnection::listens(const GuiObject &object, const char *event) const {
         const uint32_t  atom = GuiAtoms::intern(event);
         const GuiEvent *e = guiEvent(object.cls, atom);
-        if (e == nullptr || _stopping.load(std::memory_order_acquire)) return;
+        if (e == nullptr) return false;
         bool on = e->byDefault;
         for (uint32_t a : object.listenOff) on = on && a != atom;
         for (uint32_t a : object.listenOn) on = on || a == atom;
-        if (!on) return;
+        return on;
+}
+
+void GuiConnection::emit(GuiObject &object, const char *event, Span<const Value> values) {
+        if (_stopping.load(std::memory_order_acquire) || !listens(object, event)) return;
+        const uint32_t atom = GuiAtoms::intern(event);
         GP::Writer w(_out);
         w.beginAnswer(GP::Kind::Event, 0, _sequence);
         w.u32(object.id);
@@ -635,6 +702,13 @@ void GuiConnection::send() {
 }
 
 // ---- Objects
+
+ClientWindow *GuiConnection::modalOver(uint32_t ownerId) const {
+        for (GuiObject *o : _objects)
+                if (o->window != nullptr && o->window->ownerId == ownerId && o->window->modal && o->window->isShown())
+                        return o->window;
+        return nullptr;
+}
 
 GuiObject *GuiConnection::find(uint32_t id) const {
         size_t low = 0, high = _objects.size();
