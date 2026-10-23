@@ -910,3 +910,51 @@ touch its edges and only their content areas pad themselves.
   `margin` (the gallery's Windows page).
 - Checked on the board beside a folder window: the gallery's status bar and tool bar now sit as
   the file browser's.
+
+**2e, as built (2026-10-22):**
+- **Menus:**
+  - `MenuBar` (a window's own: it is made in a window, and F10 opens it), `Menu` (`title`,
+    `addSeparator`, `popup(x, y)` in its window's client area) and `MenuItem` (`text`,
+    `shortcut`, `checked`, `enabled`, `icon` by theme name; event `chosen`).
+  - A menu is made in a window (a popup), a menu bar, or a menu (a submenu).
+  - **A menu object keeps its entries in order** (items, separators as 0, submenus). It builds
+    the toolkit's menu again only when something changed, just before it opens (a bar's
+    `AboutToShow`, `popup`), its submenus first. A bar builds its titles again in the layout
+    pass.
+  - **A child going** clears the toolkit's menu or bar at once, before it is freed (the
+    `release` hook, now called for every object with a parent, not only widgets).
+  - **Shortcuts are keys:** the text ("Ctrl+Shift+S", "F5", "Del", "PgUp"...) is parsed into a
+    HID usage and modifiers. A key no widget used (`ClientWindow::keyUnused`) chooses the
+    window's enabled item with that shortcut.
+  - **New in the toolkit:** `MenuBar::setTitle()` and `MenuBar::clear()`.
+- **`MessageBox`:** `kind`, `title`, `text`, `buttons` (atoms), `open`; event
+  `answered(Atom: ok, cancel, yes, no)`.
+  - The toolkit's message box freed itself, unreachable once shown. It gains `open()`, which
+    returns the box, and `abandon()`, which closes and frees it without telling an answer.
+    `show()` wraps `open()`.
+  - An unanswered box goes with its object, or with the connection.
+- **`FileDialog`** (`mode`, `title`, `folder`, `fileName`, `addFilter`, `open`; event
+  `finished(Bool, List paths)`) and **`ColorDialog`** (`title`, `color`, `open`; events
+  `finished(Bool, Color)` and `changed(Color)`, Off). Their toolkit dialogs take their mode
+  and title in the constructor, so the object keeps what was set and makes the dialog at
+  `open`; it is freed with the object.
+- **`Timer`:** `interval` (10 ms at least), `repeat`, read-only `active`, `start`, `stop`;
+  event `timeout`. It uses the connection's application's timers, which its widgets share (16).
+- **Dialogs aren't owned** by a program window yet: they are above-level windows centred in the
+  work area, as the toolkit's are for built-in applications. Ownership of the toolkit's dialogs
+  waits for the window manager's owner relation (§7).
+- **Tried on the board with the gallery** (a menu bar, and a Dialogs tab):
+  - **File ▸ Open:** the file dialog with the program's filters returned the path typed.
+  - **Shortcuts:** Ctrl+O opened it and Escape cancelled; F1 opened About.
+  - **View ▸ Status bar:** toggled its check and the bar.
+  - **The message box** answered `yes`.
+  - **The colour dialog** opened with the program's colour and returned the swatch chosen.
+  - **The popup menu** opened at its place, and its items were chosen.
+  - **The timer** counted seconds and stopped.
+  - **Killed with a box open and the timer running:** the box went with the connection.
+    Internal RAM came back exactly over six such runs.
+- **Found while checking for leaks, not the GUI service's:** each shell on a pty that ends by
+  hang-up leaves its loader `Running` record (about 850 bytes); in the gallery's case a 16 KB
+  `Pipe` too. The built-in terminal shows it as well (`win term`, then closed: one
+  `Running` a time, by `mem mark` / `mem new`). To be followed up in the loader.
+- **Size:** `bmds_guiservice` 41.9 KB of flash (33.7 KB after 2d).

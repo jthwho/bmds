@@ -13,6 +13,7 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/guiwindow.h>
+#include <bmds/result.h>
 #include <bmds/stringview.h>
 #include <bmds/widget.h>
 
@@ -78,6 +79,17 @@ class MessageBox final : public GuiWindow {
                  */
                 static Error show(GuiApplication &app, Kind kind, StringView title, StringView text, Buttons buttons,
                                   Done fn, void *arg);
+
+                /**
+                 * @brief As `show()`, the box returned: it frees itself once answered (@p fn told
+                 *        first), or its owner lets it go unanswered with `abandon()`.
+                 * @return The box, or as `show()`.
+                 */
+                static Result<MessageBox *> open(GuiApplication &app, Kind kind, StringView title, StringView text,
+                                                 Buttons buttons, Done fn, void *arg);
+
+                /** @brief Closes and frees it without telling an answer (none told yet: else nothing). */
+                void abandon();
 
                 bool keyPressed(const KeyEvent &event) override;
                 void paint(Painter &painter) override;

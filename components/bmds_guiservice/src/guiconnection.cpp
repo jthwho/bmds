@@ -469,9 +469,9 @@ void GuiConnection::create(GP::Reader &body) {
                         if (o->window != nullptr) {
                                 o->window->~ClientWindow();
                                 Memory::free(o->window);
-                        } else if (o->widget != nullptr) {
+                        } else {
                                 if (parent != nullptr && parent->release != nullptr) parent->release(*parent, *o);
-                                o->widget->destroy();
+                                if (o->widget != nullptr) o->widget->destroy();
                                 if (o->dispose != nullptr) o->dispose(*o);
                         }
                 }
@@ -736,6 +736,18 @@ void GuiConnection::send() {
 
 // ---- Objects
 
+// A menu item of @p window whose shortcut is @p event: chosen. False: none.
+bool GuiConnection::shortcut(ClientWindow *window, const KeyEvent &event) {
+        if (event.action == KeyEvent::Action::Release) return false;
+        const uint8_t mods = uint8_t((event.hasCtrl() ? 1 : 0) | (event.hasShift() ? 2 : 0) | (event.hasAlt() ? 4 : 0));
+        for (GuiObject *o : _objects) {
+                if (o->owner != window || o->keyUsage == 0 || o->keyUsage != event.usage || o->keyMods != mods)
+                        continue;
+                if (o->chosen != nullptr && o->chosen(*o)) return true;
+        }
+        return false;
+}
+
 ClientWindow *GuiConnection::modalOver(uint32_t ownerId) const {
         for (GuiObject *o : _objects)
                 if (o->window != nullptr && o->window->ownerId == ownerId && o->window->modal && o->window->isShown())
@@ -773,11 +785,12 @@ void GuiConnection::remove(GuiObject *object) {
                         }
                 object->window->~ClientWindow();
                 Memory::free(object->window);
-        } else if (object->widget != nullptr) {
+        } else {
+                // Its parent lets go of it first (a tab, a splitter's side, a menu's entry).
                 GuiObject *parent = object->parent != 0 ? find(object->parent) : nullptr;
                 if (parent != nullptr && parent->release != nullptr) parent->release(*parent, *object);
-                object->widget->destroy();
-                if (object->dispose != nullptr) object->dispose(*object);
+                if (object->widget != nullptr) object->widget->destroy();
+                if (object->dispose != nullptr) object->dispose(*object); // a menu, a dialog, a timer
                 touched(object->owner);
         }
         for (size_t i = 0; i < _objects.size(); ++i)

@@ -142,6 +142,7 @@ class ClientWindow final : public GuiWindow {
                 void closeRequested() override;
                 void resized() override;
                 void activeChanged() override;
+                bool keyUnused(const KeyEvent &event) override;
 
         private:
                 static void menuItemChosen(void *arg); // the window manager's task
@@ -191,6 +192,11 @@ struct GuiObject {
                 void   *data = nullptr;                      ///< A class's own (a view's model).
                 int32_t told = -1;                           ///< A view's current row as last told.
                 bool    quiet = false;                       ///< A change the client made: not told back.
+                List<uint32_t> entries{MemSpace::Psram};     ///< A menu's or a menu bar's, in order (0: a separator).
+                bool           dirty = false;                ///< Its toolkit side is to be built again.
+                uint8_t        keyUsage = 0;                 ///< A menu item's shortcut (HID usage; 0: none).
+                uint8_t        keyMods = 0;                  ///< And its modifiers: Ctrl 1, Shift 2, Alt 4.
+                bool (*chosen)(GuiObject &self) = nullptr;   ///< Its shortcut was typed. @return True if it acted.
                 String  path{MemSpace::Psram};               ///< A tree's current path as last told.
                 ///@}
                 List<uint32_t>  listenOn{MemSpace::Psram};  ///< Events turned on (atoms).
@@ -218,6 +224,9 @@ class GuiConnection {
 
                 /** @brief True if the client listens to @p object's @p event. */
                 bool listens(const GuiObject &object, const char *event) const;
+
+                /** @brief Chooses the menu item of @p window whose shortcut @p event is. @return True if one was. */
+                bool shortcut(ClientWindow *window, const KeyEvent &event);
 
                 /** @brief A shown modal window owned by window @p ownerId, or null. */
                 ClientWindow *modalOver(uint32_t ownerId) const;

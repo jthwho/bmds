@@ -747,6 +747,191 @@ static inline int bmds_window_set_spacing(bmds_gui_t *gui, uint32_t id, int32_t 
         return bmds_gui_set_named(gui, id, "spacing", bmds_gui_int(value));
 }
 
+/* ---- MenuBar (of Widget) */
+/** @brief A new MenuBar under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_menu_bar_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "MenuBar", parent);
+}
+
+/* ---- Menu */
+/** @brief A new Menu under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_menu_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "Menu", parent);
+}
+static inline int bmds_menu_set_title(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "title", bmds_gui_string(value));
+}
+static inline int bmds_menu_get_title(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "title", out);
+}
+static inline int bmds_menu_add_separator(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "addSeparator", NULL, 0, NULL);
+}
+static inline int bmds_menu_popup(bmds_gui_t *gui, uint32_t id, int32_t a0, int32_t a1) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0), bmds_gui_int(a1)};
+        return bmds_gui_call_named(gui, id, "popup", args, 2, NULL);
+}
+
+/* ---- MenuItem */
+/** @brief A new MenuItem under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_menu_item_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "MenuItem", parent);
+}
+static inline int bmds_menu_item_set_text(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "text", bmds_gui_string(value));
+}
+static inline int bmds_menu_item_get_text(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "text", out);
+}
+static inline int bmds_menu_item_set_shortcut(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "shortcut", bmds_gui_string(value));
+}
+static inline int bmds_menu_item_get_shortcut(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "shortcut", out);
+}
+static inline int bmds_menu_item_set_checked(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "checked", bmds_gui_bool(value));
+}
+static inline int bmds_menu_item_get_checked(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "checked", out);
+}
+static inline int bmds_menu_item_set_enabled(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "enabled", bmds_gui_bool(value));
+}
+static inline int bmds_menu_item_get_enabled(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "enabled", out);
+}
+static inline int bmds_menu_item_set_icon(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "icon", bmds_gui_string(value));
+}
+static inline int bmds_menu_item_get_icon(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "icon", out);
+}
+#define BMDS_GUI_MENU_ITEM_CHOSEN "chosen" /**< MenuItem's event (no values). */
+
+/* ---- MessageBox */
+/** @brief A new MessageBox under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_message_box_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "MessageBox", parent);
+}
+static inline int bmds_message_box_set_kind(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "kind", bmds_gui_atom_value(bmds_gui_atom(gui, value)));
+}
+static inline int bmds_message_box_get_kind(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "kind", out);
+}
+static inline int bmds_message_box_set_title(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "title", bmds_gui_string(value));
+}
+static inline int bmds_message_box_get_title(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "title", out);
+}
+static inline int bmds_message_box_set_text(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "text", bmds_gui_string(value));
+}
+static inline int bmds_message_box_get_text(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "text", out);
+}
+static inline int bmds_message_box_set_buttons(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "buttons", bmds_gui_atom_value(bmds_gui_atom(gui, value)));
+}
+static inline int bmds_message_box_get_buttons(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "buttons", out);
+}
+static inline int bmds_message_box_open(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "open", NULL, 0, NULL);
+}
+#define BMDS_GUI_MESSAGE_BOX_ANSWERED "answered" /**< MessageBox's event (Atom). */
+
+/* ---- FileDialog */
+/** @brief A new FileDialog under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_file_dialog_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "FileDialog", parent);
+}
+static inline int bmds_file_dialog_set_mode(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "mode", bmds_gui_atom_value(bmds_gui_atom(gui, value)));
+}
+static inline int bmds_file_dialog_get_mode(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "mode", out);
+}
+static inline int bmds_file_dialog_set_title(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "title", bmds_gui_string(value));
+}
+static inline int bmds_file_dialog_get_title(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "title", out);
+}
+static inline int bmds_file_dialog_set_folder(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "folder", bmds_gui_string(value));
+}
+static inline int bmds_file_dialog_get_folder(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "folder", out);
+}
+static inline int bmds_file_dialog_set_file_name(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "fileName", bmds_gui_string(value));
+}
+static inline int bmds_file_dialog_get_file_name(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "fileName", out);
+}
+static inline int bmds_file_dialog_add_filter(bmds_gui_t *gui, uint32_t id, const char *a0, const char *a1) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0), bmds_gui_string(a1)};
+        return bmds_gui_call_named(gui, id, "addFilter", args, 2, NULL);
+}
+static inline int bmds_file_dialog_open(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "open", NULL, 0, NULL);
+}
+#define BMDS_GUI_FILE_DIALOG_FINISHED "finished" /**< FileDialog's event (Bool, List). */
+
+/* ---- ColorDialog */
+/** @brief A new ColorDialog under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_color_dialog_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "ColorDialog", parent);
+}
+static inline int bmds_color_dialog_set_title(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "title", bmds_gui_string(value));
+}
+static inline int bmds_color_dialog_get_title(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "title", out);
+}
+static inline int bmds_color_dialog_set_color(bmds_gui_t *gui, uint32_t id, uint32_t value) {
+        return bmds_gui_set_named(gui, id, "color", bmds_gui_color(value));
+}
+static inline int bmds_color_dialog_get_color(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "color", out);
+}
+static inline int bmds_color_dialog_open(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "open", NULL, 0, NULL);
+}
+#define BMDS_GUI_COLOR_DIALOG_FINISHED "finished" /**< ColorDialog's event (Bool, Color). */
+#define BMDS_GUI_COLOR_DIALOG_CHANGED "changed" /**< ColorDialog's event (Color). */
+
+/* ---- Timer */
+/** @brief A new Timer under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_timer_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "Timer", parent);
+}
+static inline int bmds_timer_set_interval(bmds_gui_t *gui, uint32_t id, int32_t value) {
+        return bmds_gui_set_named(gui, id, "interval", bmds_gui_int(value));
+}
+static inline int bmds_timer_get_interval(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "interval", out);
+}
+static inline int bmds_timer_set_repeat(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "repeat", bmds_gui_bool(value));
+}
+static inline int bmds_timer_get_repeat(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "repeat", out);
+}
+static inline int bmds_timer_get_active(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "active", out);
+}
+static inline int bmds_timer_start(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "start", NULL, 0, NULL);
+}
+static inline int bmds_timer_stop(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "stop", NULL, 0, NULL);
+}
+#define BMDS_GUI_TIMER_TIMEOUT "timeout" /**< Timer's event (no values). */
+
 #ifdef __cplusplus
 }
 #endif

@@ -182,3 +182,48 @@ event Terminal.sized(Int, Int) on
 # 2026-10-22: a window's margin and spacing (its column flush by default).
 property Window.margin Int WO
 property Window.spacing Int WO
+
+# Step 2e (2026-10-22): menus, dialogs, timers.
+class MenuBar : Widget Concrete
+class Menu : None Concrete
+property Menu.title String RW
+method Menu.addSeparator() -> None
+method Menu.popup(Int, Int) -> None
+class MenuItem : None Concrete
+property MenuItem.text String RW
+property MenuItem.shortcut String RW
+property MenuItem.checked Bool RW
+property MenuItem.enabled Bool RW
+property MenuItem.icon String RW
+event MenuItem.chosen() on
+class MessageBox : None Concrete
+property MessageBox.kind Atom RW
+values MessageBox.kind information warning error question
+property MessageBox.title String RW
+property MessageBox.text String RW
+property MessageBox.buttons Atom RW
+values MessageBox.buttons ok okCancel yesNo yesNoCancel
+method MessageBox.open() -> None
+event MessageBox.answered(Atom) on
+class FileDialog : None Concrete
+property FileDialog.mode Atom RW
+values FileDialog.mode open openMany save folder
+property FileDialog.title String RW
+property FileDialog.folder String RW
+property FileDialog.fileName String RW
+method FileDialog.addFilter(String, String) -> None
+method FileDialog.open() -> None
+event FileDialog.finished(Bool, List) on
+class ColorDialog : None Concrete
+property ColorDialog.title String RW
+property ColorDialog.color Color RW
+method ColorDialog.open() -> None
+event ColorDialog.finished(Bool, Color) on
+event ColorDialog.changed(Color) off
+class Timer : None Concrete
+property Timer.interval Int RW
+property Timer.repeat Bool RW
+property Timer.active Bool RO
+method Timer.start() -> None
+method Timer.stop() -> None
+event Timer.timeout() on

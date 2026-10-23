@@ -13,6 +13,9 @@
  * splitter between a list view and an icon view. Views: the folders as a tree (children read as
  * a folder opens) and the chosen one's entries in a details view. Text: a code editor, its cursor and state shown. Terminal: a shell
  * on the program's own pseudo-terminal, its output written to the widget, the typing sent back.
+ * Menus: File (Open and Save As through the file dialog, Quit), View (the status bar, a checked
+ * item), Help (About), their shortcuts as keys. Dialogs: a message box, the colour dialog, a popup
+ * menu, and a timer counting seconds.
  */
 
 #include <bmds/guiclasses.h>
@@ -38,6 +41,10 @@ typedef struct Gallery {
                 uint32_t    status, toolAbout, toolQuit, tabs;
                 uint32_t    check, number, slider, progress, combo;
                 uint32_t    tree, files, code, codeState, term;
+                uint32_t    open, saveAs, quitItem, statusItem, aboutItem, fileDialog, saving;
+                uint32_t    ask, answer, colorButton, colorDialog, popupButton, popup, popupItems[3];
+                uint32_t    timer, timerButton, ticks;
+                int         statusShown, seconds;
                 int         master; // the shell's pty (-1: none)
                 pid_t       shell;
                 uint32_t    dialog, dialogOk, dialogNo; // the open About or Quit box (0: none)
@@ -190,6 +197,90 @@ static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
                 }
                 return 1;
         }
+        if (bmds_gui_event_is(gui, e, BMDS_GUI_MENU_ITEM_CHOSEN) && (e->source == g->open || e->source == g->saveAs)) {
+                g->saving = e->source == g->saveAs;
+                bmds_file_dialog_set_mode(gui, g->fileDialog, g->saving ? "save" : "open");
+                bmds_file_dialog_set_title(gui, g->fileDialog, g->saving ? "Save as" : "Open");
+                bmds_file_dialog_set_file_name(gui, g->fileDialog, g->saving ? "notes.txt" : "");
+                bmds_file_dialog_open(gui, g->fileDialog);
+                return 1;
+        }
+        if (e->source == g->fileDialog && e->count == 2) {
+                char             text[160];
+                bmds_gui_value_t path = {0};
+                if (e->values[0].number != 0 && bmds_gui_list_item(&e->values[1], 0, &path) == 0)
+                        snprintf(text, sizeof(text), "%s: %.*s", g->saving ? "Save as" : "Open", (int)path.length,
+                                 path.text);
+                else
+                        snprintf(text, sizeof(text), "%s: cancelled", g->saving ? "Save as" : "Open");
+                bmds_status_bar_set_field(gui, g->status, 0, text);
+                return 1;
+        }
+        if (e->source == g->statusItem) {
+                g->statusShown = !g->statusShown;
+                bmds_menu_item_set_checked(gui, g->statusItem, g->statusShown);
+                bmds_widget_set_visible(gui, g->status, g->statusShown);
+                return 1;
+        }
+        if (e->source == g->ask) {
+                const uint32_t box = bmds_gui_new(gui, "MessageBox", 0);
+                bmds_message_box_set_kind(gui, box, "question");
+                bmds_message_box_set_title(gui, box, "A question");
+                bmds_message_box_set_text(gui, box, "Do you like the gallery?");
+                bmds_message_box_set_buttons(gui, box, "yesNoCancel");
+                bmds_message_box_open(gui, box);
+                return 1;
+        }
+        if (bmds_gui_event_is(gui, e, BMDS_GUI_MESSAGE_BOX_ANSWERED) && e->count == 1) {
+                char text[64];
+                snprintf(text, sizeof(text), "The answer: %s", bmds_gui_atom_name(gui, (uint32_t)e->values[0].number));
+                bmds_label_set_text(gui, g->answer, text);
+                bmds_gui_destroy(gui, e->source); // answered: done with it
+                return 1;
+        }
+        if (e->source == g->colorButton) {
+                bmds_color_dialog_open(gui, g->colorDialog);
+                return 1;
+        }
+        if (e->source == g->colorDialog && e->count == 2) {
+                char text[64];
+                snprintf(text, sizeof(text),
+                         e->values[0].number != 0 ? "The colour: #%06x" : "Colour: cancelled (#%06x)",
+                         (unsigned)e->values[1].number);
+                bmds_label_set_text(gui, g->answer, text);
+                return 1;
+        }
+        if (e->source == g->popupButton) {
+                bmds_menu_popup(gui, g->popup, 120, 160);
+                return 1;
+        }
+        for (int i = 0; i < 3; ++i) {
+                if (e->source != g->popupItems[i]) continue;
+                bmds_gui_value_t text;
+                if (bmds_menu_item_get_text(gui, e->source, &text) == 0) {
+                        char shown[64];
+                        snprintf(shown, sizeof(shown), "Popup: %.*s", (int)text.length, text.text);
+                        bmds_label_set_text(gui, g->answer, shown);
+                }
+                return 1;
+        }
+        if (e->source == g->timerButton) {
+                bmds_gui_value_t active;
+                if (bmds_timer_get_active(gui, g->timer, &active) == 0 && active.number != 0) {
+                        bmds_timer_stop(gui, g->timer);
+                        bmds_button_set_text(gui, g->timerButton, "Start the &timer");
+                } else {
+                        bmds_timer_start(gui, g->timer);
+                        bmds_button_set_text(gui, g->timerButton, "Stop the &timer");
+                }
+                return 1;
+        }
+        if (e->source == g->timer) {
+                char text[32];
+                snprintf(text, sizeof(text), "%d s", ++g->seconds);
+                bmds_label_set_text(gui, g->ticks, text);
+                return 1;
+        }
         if (e->source == g->term) {
                 if (bmds_gui_event_is(gui, e, BMDS_GUI_TERMINAL_TYPED) && g->master >= 0 && e->count == 1)
                         (void)write(g->master, e->values[0].text, e->values[0].length);
@@ -245,6 +336,36 @@ int main(void) {
         bmds_gui_listen(gui, g.window, &closeRequested, 1, 1);
 
         // A tool bar, the tabs (stretching), a status bar.
+        // The menu bar first: the window's top edge
+        const uint32_t bar = bmds_menu_bar_new(gui, g.window);
+        const uint32_t file = bmds_menu_new(gui, bar);
+        bmds_menu_set_title(gui, file, "&File");
+        g.open = bmds_menu_item_new(gui, file);
+        bmds_menu_item_set_text(gui, g.open, "&Open...");
+        bmds_menu_item_set_shortcut(gui, g.open, "Ctrl+O");
+        bmds_menu_item_set_icon(gui, g.open, "document-open");
+        g.saveAs = bmds_menu_item_new(gui, file);
+        bmds_menu_item_set_text(gui, g.saveAs, "Save &As...");
+        bmds_menu_item_set_icon(gui, g.saveAs, "document-save-as");
+        bmds_menu_add_separator(gui, file);
+        g.quitItem = bmds_menu_item_new(gui, file);
+        bmds_menu_item_set_text(gui, g.quitItem, "&Quit");
+        bmds_menu_item_set_shortcut(gui, g.quitItem, "Ctrl+Q");
+        const uint32_t view = bmds_menu_new(gui, bar);
+        bmds_menu_set_title(gui, view, "&View");
+        g.statusItem = bmds_menu_item_new(gui, view);
+        bmds_menu_item_set_text(gui, g.statusItem, "&Status bar");
+        bmds_menu_item_set_checked(gui, g.statusItem, 1);
+        g.statusShown = 1;
+        const uint32_t help = bmds_menu_new(gui, bar);
+        bmds_menu_set_title(gui, help, "&Help");
+        g.aboutItem = bmds_menu_item_new(gui, help);
+        bmds_menu_item_set_text(gui, g.aboutItem, "&About GUI gallery");
+        bmds_menu_item_set_shortcut(gui, g.aboutItem, "F1");
+        g.fileDialog = bmds_gui_new(gui, "FileDialog", 0);
+        bmds_file_dialog_add_filter(gui, g.fileDialog, "Text files", "*.txt *.md");
+        bmds_file_dialog_add_filter(gui, g.fileDialog, "All files", "*");
+
         const uint32_t tools = bmds_tool_bar_new(gui, g.window);
         g.toolAbout = bmds_tool_button_new(gui, tools);
         bmds_tool_button_set_icon(gui, g.toolAbout, "help-about");
@@ -333,6 +454,38 @@ int main(void) {
         }
         bmds_splitter_set_position(gui, split, 140);
 
+        // Dialogs: a message box, the colour dialog, a popup menu, a timer
+        const uint32_t dialogs = bmds_tab_page_new(gui, g.tabs);
+        bmds_tab_page_set_title(gui, dialogs, "Dialogs");
+        bmds_box_set_margin(gui, dialogs, 8);
+        const uint32_t row1 = bmds_gui_new(gui, "Box", dialogs);
+        bmds_box_set_direction(gui, row1, "across");
+        g.ask = bmds_button_new(gui, row1);
+        bmds_button_set_text(gui, g.ask, "&Message box...");
+        g.colorButton = bmds_button_new(gui, row1);
+        bmds_button_set_text(gui, g.colorButton, "&Colour...");
+        g.popupButton = bmds_button_new(gui, row1);
+        bmds_button_set_text(gui, g.popupButton, "&Popup menu");
+        g.answer = bmds_label_new(gui, dialogs);
+        bmds_label_set_text(gui, g.answer, "No answer yet");
+        const uint32_t row2 = bmds_gui_new(gui, "Box", dialogs);
+        bmds_box_set_direction(gui, row2, "across");
+        g.timerButton = bmds_button_new(gui, row2);
+        bmds_button_set_text(gui, g.timerButton, "Start the &timer");
+        g.ticks = bmds_label_new(gui, row2);
+        bmds_label_set_text(gui, g.ticks, "0 s");
+        g.timer = bmds_gui_new(gui, "Timer", 0);
+        bmds_timer_set_interval(gui, g.timer, 1000);
+        g.colorDialog = bmds_gui_new(gui, "ColorDialog", 0);
+        bmds_color_dialog_set_title(gui, g.colorDialog, "Pick a colour");
+        bmds_color_dialog_set_color(gui, g.colorDialog, 0x3a6ea5);
+        g.popup = bmds_menu_new(gui, g.window);
+        static const char *const choices[] = {"&Apple", "&Banana", "&Cherry"};
+        for (int i = 0; i < 3; ++i) {
+                g.popupItems[i] = bmds_menu_item_new(gui, g.popup);
+                bmds_menu_item_set_text(gui, g.popupItems[i], choices[i]);
+        }
+
         // Views: a tree of folders beside a details view of the chosen one's entries
         const uint32_t views = bmds_tab_page_new(gui, g.tabs);
         bmds_tab_page_set_title(gui, views, "Views");
@@ -400,11 +553,13 @@ int main(void) {
                         done = 1;
                 } else if ((e.source == g.window && bmds_gui_event_is(gui, &e, BMDS_GUI_WINDOW_CLOSE_REQUESTED)) ||
                            ((e.source == g.quit || e.source == g.toolQuit) &&
-                            bmds_gui_event_is(gui, &e, BMDS_GUI_BUTTON_CLICKED))) {
+                            bmds_gui_event_is(gui, &e, BMDS_GUI_BUTTON_CLICKED)) ||
+                           e.source == g.quitItem) {
                         if (g.dialog == 0) openBox(&g, "Quit?", "Quit the gallery?", 1);
                 } else if (((e.source == g.about || e.source == g.toolAbout) &&
                             bmds_gui_event_is(gui, &e, BMDS_GUI_BUTTON_CLICKED)) ||
-                           (e.source == g.window && bmds_gui_event_is(gui, &e, BMDS_GUI_WINDOW_WINDOW_MENU_CHOSEN))) {
+                           (e.source == g.window && bmds_gui_event_is(gui, &e, BMDS_GUI_WINDOW_WINDOW_MENU_CHOSEN)) ||
+                           e.source == g.aboutItem) {
                         if (g.dialog == 0) openBox(&g, "About", "The GUI service's classes, a part at a time.", 0);
                 } else if (e.source == g.slider && bmds_gui_event_is(gui, &e, BMDS_GUI_SLIDER_CHANGED)) {
                         bmds_progress_bar_set_value(gui, g.progress, e.values[0].number);

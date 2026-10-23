@@ -15,8 +15,10 @@
 #include <cstring>
 #include <new>
 #include <bmds/codeedit.h>
+#include <bmds/colordialog.h>
 #include <bmds/combobox.h>
 #include <bmds/detailsview.h>
+#include <bmds/filedialog.h>
 #include <bmds/formlayout.h>
 #include <bmds/furniture.h>
 #include <bmds/iconview.h>
@@ -30,6 +32,9 @@
 #include <bmds/textsyntax.h>
 #include <bmds/treeview.h>
 #include <bmds/memory.h>
+#include <bmds/menu.h>
+#include <bmds/menubar.h>
+#include <bmds/messagebox.h>
 #include <bmds/windowstack.h>
 #include "guiatoms.h"
 #include "guiconnection.h"
@@ -1659,6 +1664,675 @@ namespace {
                 return Ok;
         }
 
+        // ---- Step 2e: menus, dialogs, timers
+
+        // A class's own data (`GuiObject::data`), made with the object and freed with it.
+        template <typename T> T *dataOf(GuiObject &o) {
+                return static_cast<T *>(o.data);
+        }
+        template <typename T> T *makeData(GuiObject &o) {
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(T));
+                if (mem == nullptr) return nullptr;
+                T *d = ::new (mem) T();
+                o.data = d;
+                return d;
+        }
+        template <typename T> void freeData(GuiObject &o) {
+                if (o.data == nullptr) return;
+                dataOf<T>(o)->~T();
+                Memory::free(o.data);
+                o.data = nullptr;
+                return;
+        }
+        Value colorValue(uint32_t rgb) {
+                Value v = Value::integer(0);
+                v.tag = Tag::Color;
+                v.number = rgb & 0xffffff;
+                return v;
+        }
+        void removeEntry(GuiObject &o, uint32_t id) {
+                for (size_t i = o.entries.size(); i-- > 0;)
+                        if (o.entries[i] == id) o.entries.removeAt(i);
+                return;
+        }
+
+        // A shortcut's text ("Ctrl+Shift+S", "F5", "Del") as a HID usage and modifiers (Ctrl 1, Shift 2,
+        // Alt 4). False: not one.
+        bool parseShortcut(StringView text, uint8_t &usage, uint8_t &mods) {
+                usage = 0;
+                mods = 0;
+                struct Named {
+                                const char *name;
+                                uint8_t     usage;
+                };
+                static constexpr Named Keys[] = {
+                        {"Enter", 0x28},    {"Return", 0x28}, {"Esc", 0x29},    {"Escape", 0x29}, {"Backspace", 0x2a},
+                        {"Tab", 0x2b},      {"Space", 0x2c},  {"Minus", 0x2d},  {"-", 0x2d},      {"=", 0x2e},
+                        {"Plus", 0x2e},     {"+", 0x2e},      {"Insert", 0x49}, {"Ins", 0x49},    {"Home", 0x4a},
+                        {"PageUp", 0x4b},   {"PgUp", 0x4b},   {"Delete", 0x4c}, {"Del", 0x4c},    {"End", 0x4d},
+                        {"PageDown", 0x4e}, {"PgDn", 0x4e},   {"Right", 0x4f},  {"Left", 0x50},   {"Down", 0x51},
+                        {"Up", 0x52},
+                };
+                while (!text.isEmpty()) {
+                        size_t plus = text.indexOf('+');
+                        if (plus == 0 && text.size() == 1) plus = StringView::NPos; // "+" itself, the last
+                        const StringView part = (plus == StringView::NPos ? text : text.left(plus)).trimmed();
+                        text = plus == StringView::NPos ? StringView() : text.mid(plus + 1);
+                        if (!text.isEmpty()) {
+                                // A modifier.
+                                if (part == "Ctrl" || part == "Control")
+                                        mods |= 1;
+                                else if (part == "Shift")
+                                        mods |= 2;
+                                else if (part == "Alt")
+                                        mods |= 4;
+                                else
+                                        return false;
+                                continue;
+                        }
+                        if (part.size() == 1 && part[0] >= 'A' && part[0] <= 'Z')
+                                usage = uint8_t(0x04 + part[0] - 'A');
+                        else if (part.size() == 1 && part[0] >= 'a' && part[0] <= 'z')
+                                usage = uint8_t(0x04 + part[0] - 'a');
+                        else if (part.size() == 1 && part[0] >= '1' && part[0] <= '9')
+                                usage = uint8_t(0x1e + part[0] - '1');
+                        else if (part == "0")
+                                usage = 0x27;
+                        else if (part.size() >= 2 && part.size() <= 3 && part[0] == 'F') {
+                                int n = 0;
+                                for (size_t i = 1; i < part.size(); ++i) {
+                                        if (part[i] < '0' || part[i] > '9') return false;
+                                        n = n * 10 + (part[i] - '0');
+                                }
+                                if (n < 1 || n > 12) return false;
+                                usage = uint8_t(0x3a + n - 1);
+                        } else {
+                                for (const Named &k : Keys)
+                                        if (part == k.name) usage = k.usage;
+                        }
+                }
+                return usage != 0;
+        }
+
+        // ---- Menus: a menu keeps its entries (items, separators, submenus) and builds the toolkit's
+        // menu again before it opens; a menu bar builds its titles again after a round of requests.
+
+        struct MenuData {
+                        Menu  *menu = nullptr;
+                        String title{MemSpace::Psram};
+        };
+        struct ItemData {
+                        String text{MemSpace::Psram};
+                        String shortcut{MemSpace::Psram};
+                        String icon{MemSpace::Psram};
+                        bool   checked = false;
+                        bool   enabled = true;
+        };
+
+        bool isMenu(const GuiObject *o) {
+                return isClassNamed(o, "Menu");
+        }
+        Menu &toolkitMenu(GuiObject &o) {
+                return *dataOf<MenuData>(o)->menu;
+        }
+
+        // Menu @p o's toolkit menu built again if it changed, its submenus first.
+        void buildMenu(GuiObject &o) {
+                for (uint32_t id : o.entries) {
+                        GuiObject *child = id != 0 ? o.connection->find(id) : nullptr;
+                        if (isMenu(child)) buildMenu(*child);
+                }
+                if (!o.dirty) return;
+                o.dirty = false;
+                Menu &menu = toolkitMenu(o);
+                menu.clear();
+                for (size_t i = 0; i < o.entries.size(); ++i) {
+                        const uint32_t id = o.entries[i];
+                        GuiObject     *child = id != 0 ? o.connection->find(id) : nullptr;
+                        if (id == 0) {
+                                (void)menu.addSeparator();
+                        } else if (isMenu(child)) {
+                                (void)menu.addSubmenu(dataOf<MenuData>(*child)->title.view(), toolkitMenu(*child));
+                        } else if (child != nullptr) {
+                                const ItemData *item = dataOf<ItemData>(*child);
+                                const uint8_t   flags = uint8_t((item->enabled ? 0 : MenuLayout::Disabled) |
+                                                                (item->checked ? MenuLayout::Checked : 0));
+                                const Icon     *icon =
+                                        item->icon.isEmpty() ? nullptr : o.connection->icon(item->icon.view(), 16);
+                                (void)menu.addItem(item->text.view(), int(i), flags, item->shortcut.view(), icon);
+                        }
+                }
+                return;
+        }
+
+        // Its parent (a menu, a menu bar) built again.
+        void parentChanged(GuiObject &o) {
+                GuiObject *parent = o.connection->find(o.parent);
+                if (parent == nullptr) return;
+                parent->dirty = true;
+                o.connection->touched(parent->owner);
+                return;
+        }
+
+        void menuTriggered(void *arg, int item) {
+                auto &o = *static_cast<GuiObject *>(arg);
+                if (item < 0 || size_t(item) >= o.entries.size()) return;
+                GuiObject *child = o.connection->find(o.entries[size_t(item)]);
+                if (child != nullptr && child->chosen != nullptr) (void)child->chosen(*child);
+                return;
+        }
+        // A child going: the toolkit's menu lets go of it at once (a submenu is freed next).
+        void menuRelease(GuiObject &self, GuiObject &child) {
+                removeEntry(self, child.id);
+                toolkitMenu(self).clear();
+                self.dirty = true;
+                return;
+        }
+        void disposeMenu(GuiObject &o) {
+                MenuData *d = dataOf<MenuData>(o);
+                if (d != nullptr && d->menu != nullptr) {
+                        d->menu->~Menu();
+                        Memory::free(d->menu);
+                }
+                freeData<MenuData>(o);
+                return;
+        }
+
+        GuiStatus set_Menu_title(GuiObject &o, const Value &v) {
+                if (dataOf<MenuData>(o)->title.assign(v.text).isError()) return NoMem;
+                parentChanged(o);
+                return Ok;
+        }
+        Value get_Menu_title(GuiObject &o) {
+                return Value::string(dataOf<MenuData>(o)->title.view());
+        }
+        GuiStatus call_Menu_addSeparator(GuiObject &o, Args, Value &) {
+                if (o.entries.append(0u).isError()) return NoMem;
+                o.dirty = true;
+                return Ok;
+        }
+        // A popup menu at (@p x, @p y) of its window's client area.
+        GuiStatus call_Menu_popup(GuiObject &o, Args args, Value &) {
+                GuiObject *parent = o.connection->find(o.parent);
+                if (parent == nullptr || parent->window == nullptr) return BadMatch;
+                if (!parent->window->isShown()) return BadAccess;
+                buildMenu(o);
+                const Rect r = parent->window->screenRect();
+                const int  x = int(r.x) + int(args[0].number), y = int(r.y) + int(args[1].number);
+                if (x < 0 || y < 0 || x > 4095 || y > 4095) return BadValue;
+                return toolkitMenu(o).popup(Rect{uint16_t(x), uint16_t(y), 1, 1}).isOk() ? Ok : BadAccess;
+        }
+        GuiStatus create_Menu(GuiObject &o, GuiObject *parent) {
+                // Under a window (a popup), a menu bar, or a menu (a submenu).
+                if (parent == nullptr) return BadMatch;
+                const bool inBar = isClassNamed(parent, "MenuBar");
+                if (parent->window == nullptr && !inBar && !isMenu(parent)) return BadMatch;
+                MenuData *d = makeData<MenuData>(o);
+                if (d == nullptr) return NoMem;
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(Menu));
+                if (mem == nullptr) {
+                        freeData<MenuData>(o);
+                        return NoMem;
+                }
+                d->menu = ::new (mem) Menu(o.connection->application());
+                if (parent->window == nullptr && parent->entries.append(o.id).isError()) {
+                        disposeMenu(o);
+                        return NoMem;
+                }
+                d->menu->setTriggered(menuTriggered, &o);
+                o.dispose = disposeMenu;
+                o.release = menuRelease;
+                o.owner = parent->window != nullptr ? parent->window : parent->owner;
+                if (parent->window == nullptr) {
+                        parent->dirty = true;
+                        o.connection->touched(o.owner);
+                }
+                return Ok;
+        }
+
+        // ---- MenuItem
+
+        bool itemChosen(GuiObject &o) {
+                if (!dataOf<ItemData>(o)->enabled) return false;
+                emitNone(o, "chosen");
+                return true;
+        }
+        GuiStatus set_MenuItem_text(GuiObject &o, const Value &v) {
+                if (dataOf<ItemData>(o)->text.assign(v.text).isError()) return NoMem;
+                parentChanged(o);
+                return Ok;
+        }
+        Value get_MenuItem_text(GuiObject &o) {
+                return Value::string(dataOf<ItemData>(o)->text.view());
+        }
+        GuiStatus set_MenuItem_shortcut(GuiObject &o, const Value &v) {
+                uint8_t usage = 0, mods = 0;
+                if (!v.text.isEmpty() && !parseShortcut(v.text, usage, mods)) return BadValue;
+                if (dataOf<ItemData>(o)->shortcut.assign(v.text).isError()) return NoMem;
+                o.keyUsage = usage;
+                o.keyMods = mods;
+                parentChanged(o);
+                return Ok;
+        }
+        Value get_MenuItem_shortcut(GuiObject &o) {
+                return Value::string(dataOf<ItemData>(o)->shortcut.view());
+        }
+        GuiStatus set_MenuItem_checked(GuiObject &o, const Value &v) {
+                dataOf<ItemData>(o)->checked = v.number != 0;
+                parentChanged(o);
+                return Ok;
+        }
+        Value get_MenuItem_checked(GuiObject &o) {
+                return Value::boolean(dataOf<ItemData>(o)->checked);
+        }
+        GuiStatus set_MenuItem_enabled(GuiObject &o, const Value &v) {
+                dataOf<ItemData>(o)->enabled = v.number != 0;
+                parentChanged(o);
+                return Ok;
+        }
+        Value get_MenuItem_enabled(GuiObject &o) {
+                return Value::boolean(dataOf<ItemData>(o)->enabled);
+        }
+        GuiStatus set_MenuItem_icon(GuiObject &o, const Value &v) {
+                if (!v.text.isEmpty() && o.connection->icon(v.text, 16) == nullptr) return BadValue;
+                if (dataOf<ItemData>(o)->icon.assign(v.text).isError()) return NoMem;
+                parentChanged(o);
+                return Ok;
+        }
+        Value get_MenuItem_icon(GuiObject &o) {
+                return Value::string(dataOf<ItemData>(o)->icon.view());
+        }
+        GuiStatus create_MenuItem(GuiObject &o, GuiObject *parent) {
+                if (!isMenu(parent)) return BadMatch;
+                if (makeData<ItemData>(o) == nullptr) return NoMem;
+                if (parent->entries.append(o.id).isError()) {
+                        freeData<ItemData>(o);
+                        return NoMem;
+                }
+                o.dispose = freeData<ItemData>;
+                o.chosen = itemChosen;
+                o.owner = parent->owner;
+                parent->dirty = true;
+                return Ok;
+        }
+
+        // ---- MenuBar: a window's, its menus as titles
+
+        MenuBar *menuBar(GuiObject &o) {
+                return static_cast<MenuBar *>(o.widget);
+        }
+        void barRelayout(GuiObject &o) {
+                if (!o.dirty) return;
+                o.dirty = false;
+                menuBar(o)->clear();
+                for (uint32_t id : o.entries) {
+                        GuiObject *child = o.connection->find(id);
+                        if (isMenu(child))
+                                (void)menuBar(o)->addMenu(dataOf<MenuData>(*child)->title.view(), toolkitMenu(*child));
+                }
+                return;
+        }
+        void barRelease(GuiObject &self, GuiObject &child) {
+                removeEntry(self, child.id);
+                menuBar(self)->clear(); // before the menu is freed
+                self.dirty = true;
+                self.connection->touched(self.owner);
+                return;
+        }
+        void barAboutToShow(void *arg, MenuBar &, size_t index, Menu &) {
+                auto &o = *static_cast<GuiObject *>(arg);
+                if (index < o.entries.size()) {
+                        GuiObject *child = o.connection->find(o.entries[index]);
+                        if (isMenu(child)) buildMenu(*child);
+                }
+                return;
+        }
+        void disposeBar(GuiObject &o) {
+                if (o.owner != nullptr && o.owner->menuBar() == static_cast<MenuBar *>(o.widget))
+                        o.owner->setMenuBar(nullptr);
+                return;
+        }
+        GuiStatus create_MenuBar(GuiObject &o, GuiObject *parent) {
+                if (parent == nullptr || parent->window == nullptr) return BadMatch; // a window's own
+                const GuiStatus s = makeWidget<MenuBar>(o, parent);
+                if (s != Ok) return s;
+                menuBar(o)->setAboutToShow(barAboutToShow, &o);
+                parent->window->setMenuBar(menuBar(o)); // F10 opens it
+                o.relayout = barRelayout;
+                o.release = barRelease;
+                o.dispose = disposeBar;
+                return Ok;
+        }
+
+        // ---- MessageBox: the toolkit's, opened by `open`; answered or let go with the object
+
+        constexpr const char *KindNames[] = {"information", "warning", "error", "question"};
+        constexpr const char *ButtonsNames[] = {"ok", "okCancel", "yesNo", "yesNoCancel"};
+        constexpr const char *AnswerNames[] = {"ok", "cancel", "yes", "no"};
+
+        struct BoxData {
+                        MessageBox *box = nullptr;
+                        uint8_t     kind = 0;
+                        uint8_t     buttons = 0;
+                        String      title{MemSpace::Psram};
+                        String      text{MemSpace::Psram};
+        };
+        template <size_t N> int nameIndex(const char *const (&names)[N], const Value &v) {
+                const StringView name = atomName(v);
+                for (size_t i = 0; i < N; ++i)
+                        if (name == names[i]) return int(i);
+                return -1;
+        }
+        GuiStatus set_MessageBox_kind(GuiObject &o, const Value &v) {
+                const int i = nameIndex(KindNames, v);
+                if (i < 0) return BadValue;
+                dataOf<BoxData>(o)->kind = uint8_t(i);
+                return Ok;
+        }
+        Value get_MessageBox_kind(GuiObject &o) {
+                return Value::atom(GuiAtoms::intern(KindNames[dataOf<BoxData>(o)->kind]));
+        }
+        GuiStatus set_MessageBox_title(GuiObject &o, const Value &v) {
+                return dataOf<BoxData>(o)->title.assign(v.text).isOk() ? Ok : NoMem;
+        }
+        Value get_MessageBox_title(GuiObject &o) {
+                return Value::string(dataOf<BoxData>(o)->title.view());
+        }
+        GuiStatus set_MessageBox_text(GuiObject &o, const Value &v) {
+                return dataOf<BoxData>(o)->text.assign(v.text).isOk() ? Ok : NoMem;
+        }
+        Value get_MessageBox_text(GuiObject &o) {
+                return Value::string(dataOf<BoxData>(o)->text.view());
+        }
+        GuiStatus set_MessageBox_buttons(GuiObject &o, const Value &v) {
+                const int i = nameIndex(ButtonsNames, v);
+                if (i < 0) return BadValue;
+                dataOf<BoxData>(o)->buttons = uint8_t(i);
+                return Ok;
+        }
+        Value get_MessageBox_buttons(GuiObject &o) {
+                return Value::atom(GuiAtoms::intern(ButtonsNames[dataOf<BoxData>(o)->buttons]));
+        }
+        void boxAnswered(void *arg, MessageBox::Answer answer) {
+                auto &o = *static_cast<GuiObject *>(arg);
+                dataOf<BoxData>(o)->box = nullptr; // it frees itself
+                const size_t i = size_t(answer);
+                const Value  v = Value::atom(GuiAtoms::intern(i < 4 ? AnswerNames[i] : "cancel"));
+                o.connection->emit(o, "answered", Args(&v, 1));
+                return;
+        }
+        GuiStatus call_MessageBox_open(GuiObject &o, Args, Value &) {
+                BoxData *d = dataOf<BoxData>(o);
+                if (d->box != nullptr) {
+                        d->box->activate();
+                        return Ok;
+                }
+                auto [box, err] =
+                        MessageBox::open(o.connection->application(), MessageBox::Kind(d->kind), d->title.view(),
+                                         d->text.view(), MessageBox::Buttons(d->buttons), boxAnswered, &o);
+                if (err.isError()) return NoMem;
+                d->box = box;
+                return Ok;
+        }
+        void disposeBox(GuiObject &o) {
+                BoxData *d = dataOf<BoxData>(o);
+                if (d != nullptr && d->box != nullptr) d->box->abandon();
+                freeData<BoxData>(o);
+                return;
+        }
+        GuiStatus create_MessageBox(GuiObject &o, GuiObject *parent) {
+                (void)parent;
+                if (makeData<BoxData>(o) == nullptr) return NoMem;
+                o.dispose = disposeBox;
+                return Ok;
+        }
+
+        // ---- FileDialog: made at `open` from what was set
+
+        constexpr const char *ModeNames[] = {"open", "openMany", "save", "folder"};
+
+        struct FileData {
+                        FileDialog *dialog = nullptr;
+                        uint8_t     mode = 0;
+                        String      title{MemSpace::Psram};
+                        String      folder{MemSpace::Psram};
+                        String      fileName{MemSpace::Psram};
+                        String      filters{MemSpace::Psram}; // "name\npatterns\n" each
+        };
+        void dropFileDialog(FileData *d) {
+                if (d->dialog == nullptr) return;
+                d->dialog->~FileDialog();
+                Memory::free(d->dialog);
+                d->dialog = nullptr;
+                return;
+        }
+        GuiStatus set_FileDialog_mode(GuiObject &o, const Value &v) {
+                const int i = nameIndex(ModeNames, v);
+                if (i < 0) return BadValue;
+                dataOf<FileData>(o)->mode = uint8_t(i);
+                return Ok;
+        }
+        Value get_FileDialog_mode(GuiObject &o) {
+                return Value::atom(GuiAtoms::intern(ModeNames[dataOf<FileData>(o)->mode]));
+        }
+        GuiStatus set_FileDialog_title(GuiObject &o, const Value &v) {
+                return dataOf<FileData>(o)->title.assign(v.text).isOk() ? Ok : NoMem;
+        }
+        Value get_FileDialog_title(GuiObject &o) {
+                return Value::string(dataOf<FileData>(o)->title.view());
+        }
+        GuiStatus set_FileDialog_folder(GuiObject &o, const Value &v) {
+                return dataOf<FileData>(o)->folder.assign(v.text).isOk() ? Ok : NoMem;
+        }
+        Value get_FileDialog_folder(GuiObject &o) {
+                return Value::string(dataOf<FileData>(o)->folder.view());
+        }
+        GuiStatus set_FileDialog_fileName(GuiObject &o, const Value &v) {
+                return dataOf<FileData>(o)->fileName.assign(v.text).isOk() ? Ok : NoMem;
+        }
+        Value get_FileDialog_fileName(GuiObject &o) {
+                return Value::string(dataOf<FileData>(o)->fileName.view());
+        }
+        GuiStatus call_FileDialog_addFilter(GuiObject &o, Args args, Value &) {
+                if (args[0].text.indexOf('\n') != StringView::NPos || args[1].text.indexOf('\n') != StringView::NPos)
+                        return BadValue;
+                String &f = dataOf<FileData>(o)->filters;
+                if (f.append(args[0].text).isError() || f.append("\n").isError() || f.append(args[1].text).isError() ||
+                    f.append("\n").isError())
+                        return NoMem;
+                return Ok;
+        }
+        void fileFinished(void *arg, FileDialog &dialog, int result) {
+                auto     &o = *static_cast<GuiObject *>(arg);
+                FileData *d = dataOf<FileData>(o);
+                (void)d->folder.assign(dialog.folder());
+                const bool  accepted = result == FileDialog::Accepted;
+                const Value v[] = {Value::boolean(accepted), makeStrings(o, accepted ? dialog.count() : 0,
+                                                                         [&](size_t i) { return dialog.path(i); })};
+                o.connection->emit(o, "finished", Args(v, 2));
+                return;
+        }
+        GuiStatus call_FileDialog_open(GuiObject &o, Args, Value &) {
+                FileData *d = dataOf<FileData>(o);
+                if (d->dialog != nullptr && d->dialog->isShown()) {
+                        d->dialog->activate();
+                        return Ok;
+                }
+                dropFileDialog(d); // made again: its mode and title are its constructor's
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(FileDialog));
+                if (mem == nullptr) return NoMem;
+                d->dialog =
+                        ::new (mem) FileDialog(o.connection->application(), FileDialog::Mode(d->mode), d->title.view());
+                StringView rest = d->filters.view();
+                while (!rest.isEmpty()) {
+                        const size_t     a = rest.indexOf('\n');
+                        const StringView name = rest.left(a);
+                        rest = rest.mid(a + 1);
+                        const size_t     b = rest.indexOf('\n');
+                        const StringView patterns = rest.left(b);
+                        rest = rest.mid(b + 1);
+                        (void)d->dialog->addFilter(name, patterns);
+                }
+                if (!d->folder.isEmpty()) (void)d->dialog->setFolder(d->folder.view());
+                if (!d->fileName.isEmpty()) (void)d->dialog->setFileName(d->fileName.view());
+                d->dialog->setFinished(fileFinished, &o);
+                if (d->dialog->open().isError()) {
+                        dropFileDialog(d);
+                        return NoMem;
+                }
+                return Ok;
+        }
+        void disposeFileDialog(GuiObject &o) {
+                if (o.data != nullptr) dropFileDialog(dataOf<FileData>(o));
+                freeData<FileData>(o);
+                return;
+        }
+        GuiStatus create_FileDialog(GuiObject &o, GuiObject *parent) {
+                (void)parent;
+                if (makeData<FileData>(o) == nullptr) return NoMem;
+                o.dispose = disposeFileDialog;
+                return Ok;
+        }
+
+        // ---- ColorDialog
+
+        struct ColorData {
+                        ColorDialog *dialog = nullptr;
+                        String       title{MemSpace::Psram};
+                        uint32_t     color = 0;
+        };
+        void dropColorDialog(ColorData *d) {
+                if (d->dialog == nullptr) return;
+                d->dialog->~ColorDialog();
+                Memory::free(d->dialog);
+                d->dialog = nullptr;
+                return;
+        }
+        GuiStatus set_ColorDialog_title(GuiObject &o, const Value &v) {
+                return dataOf<ColorData>(o)->title.assign(v.text).isOk() ? Ok : NoMem;
+        }
+        Value get_ColorDialog_title(GuiObject &o) {
+                return Value::string(dataOf<ColorData>(o)->title.view());
+        }
+        GuiStatus set_ColorDialog_color(GuiObject &o, const Value &v) {
+                dataOf<ColorData>(o)->color = uint32_t(v.number) & 0xffffff;
+                return Ok;
+        }
+        Value get_ColorDialog_color(GuiObject &o) {
+                return colorValue(dataOf<ColorData>(o)->color);
+        }
+        void colorChanged(void *arg, ColorDialog &, uint32_t rgb) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const Value v = colorValue(rgb);
+                o.connection->emit(o, "changed", Args(&v, 1));
+                return;
+        }
+        void colorFinished(void *arg, Dialog &dialog, int result) {
+                auto      &o = *static_cast<GuiObject *>(arg);
+                ColorData *d = dataOf<ColorData>(o);
+                const bool accepted = result == ColorDialog::Accepted;
+                if (accepted) d->color = static_cast<ColorDialog &>(dialog).color();
+                const Value v[] = {Value::boolean(accepted), colorValue(d->color)};
+                o.connection->emit(o, "finished", Args(v, 2));
+                return;
+        }
+        GuiStatus call_ColorDialog_open(GuiObject &o, Args, Value &) {
+                ColorData *d = dataOf<ColorData>(o);
+                if (d->dialog != nullptr && d->dialog->isShown()) {
+                        d->dialog->activate();
+                        return Ok;
+                }
+                dropColorDialog(d);
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(ColorDialog));
+                if (mem == nullptr) return NoMem;
+                d->dialog = ::new (mem) ColorDialog(o.connection->application(), d->title.view());
+                d->dialog->setChanged(colorChanged, &o);
+                d->dialog->setFinished(colorFinished, &o);
+                if (d->dialog->open(d->color).isError()) {
+                        dropColorDialog(d);
+                        return NoMem;
+                }
+                return Ok;
+        }
+        void disposeColorDialog(GuiObject &o) {
+                if (o.data != nullptr) dropColorDialog(dataOf<ColorData>(o));
+                freeData<ColorData>(o);
+                return;
+        }
+        GuiStatus create_ColorDialog(GuiObject &o, GuiObject *parent) {
+                (void)parent;
+                if (makeData<ColorData>(o) == nullptr) return NoMem;
+                o.dispose = disposeColorDialog;
+                return Ok;
+        }
+
+        // ---- Timer: the connection's application's timers (shared with its widgets')
+
+        constexpr uint32_t MinIntervalMs = 10;
+
+        struct TimerData {
+                        int      id = -1;
+                        uint32_t interval = 1000;
+                        bool     repeat = true;
+        };
+        void timerFired(void *arg) {
+                auto      &o = *static_cast<GuiObject *>(arg);
+                TimerData *d = dataOf<TimerData>(o);
+                if (!d->repeat) d->id = -1; // a one-shot is over
+                emitNone(o, "timeout");
+                return;
+        }
+        void timerStop(GuiObject &o) {
+                TimerData *d = dataOf<TimerData>(o);
+                if (d->id >= 0) o.connection->application().stopTimer(d->id);
+                d->id = -1;
+                return;
+        }
+        GuiStatus timerStart(GuiObject &o) {
+                timerStop(o);
+                TimerData *d = dataOf<TimerData>(o);
+                auto [id, err] = o.connection->application().startTimer(d->interval, d->repeat, timerFired, &o);
+                if (err.isError()) return BadAccess; // the application's timers are all in use
+                d->id = id;
+                return Ok;
+        }
+        GuiStatus set_Timer_interval(GuiObject &o, const Value &v) {
+                if (v.number < int64_t(MinIntervalMs)) return BadValue;
+                dataOf<TimerData>(o)->interval = uint32_t(v.number);
+                return dataOf<TimerData>(o)->id >= 0 ? timerStart(o) : Ok;
+        }
+        Value get_Timer_interval(GuiObject &o) {
+                return Value::integer(int32_t(dataOf<TimerData>(o)->interval));
+        }
+        GuiStatus set_Timer_repeat(GuiObject &o, const Value &v) {
+                dataOf<TimerData>(o)->repeat = v.number != 0;
+                return dataOf<TimerData>(o)->id >= 0 ? timerStart(o) : Ok;
+        }
+        Value get_Timer_repeat(GuiObject &o) {
+                return Value::boolean(dataOf<TimerData>(o)->repeat);
+        }
+        Value get_Timer_active(GuiObject &o) {
+                return Value::boolean(dataOf<TimerData>(o)->id >= 0);
+        }
+        GuiStatus call_Timer_start(GuiObject &o, Args, Value &) {
+                return timerStart(o);
+        }
+        GuiStatus call_Timer_stop(GuiObject &o, Args, Value &) {
+                timerStop(o);
+                return Ok;
+        }
+        void disposeTimer(GuiObject &o) {
+                if (o.data != nullptr) timerStop(o);
+                freeData<TimerData>(o);
+                return;
+        }
+        GuiStatus create_Timer(GuiObject &o, GuiObject *parent) {
+                (void)parent;
+                if (makeData<TimerData>(o) == nullptr) return NoMem;
+                o.dispose = disposeTimer;
+                return Ok;
+        }
+
         // ---- The schema's tables, from classes.def
 
         template <typename... T> constexpr uint8_t countOf(T...) {
@@ -1810,6 +2484,11 @@ void ClientWindow::resized() {
         const Value size[] = {Value::integer(g.width), Value::integer(g.height)};
         _object.connection->emit(_object, "resized", Args(size, 2));
         return;
+}
+
+// A key no widget used: a menu item's shortcut, if one is.
+bool ClientWindow::keyUnused(const KeyEvent &event) {
+        return _object.connection->shortcut(this, event);
 }
 
 void ClientWindow::activeChanged() {

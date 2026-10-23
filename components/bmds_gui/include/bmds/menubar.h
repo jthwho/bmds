@@ -65,6 +65,12 @@ class MenuBar : public Widget {
                  */
                 Error addMenu(StringView title, Menu &menu);
 
+                /** @brief Sets title @p index's text (`&` marking its key). */
+                void setTitle(size_t index, StringView title);
+
+                /** @brief Takes every menu away (closing an open one); the menus stay their owner's. */
+                void clear();
+
                 /** @brief Returns the titles. */
                 size_t count() const { return _count; }
 

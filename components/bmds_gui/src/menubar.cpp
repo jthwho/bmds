@@ -30,9 +30,15 @@ class MenuTitle final : public Widget {
         public:
                 MenuTitle(Widget *parent, MenuBar &bar, size_t index, StringView text)
                     : Widget(parent), _bar(bar), _index(index) {
+                        setText(text);
+                }
+
+                void setText(StringView text) {
                         const Mnemonic::Stripped m = Mnemonic::strip(text, Span<char>(_text, sizeof(_text)));
                         _underline = m.at;
                         _key = m.key;
+                        update();
+                        return;
                 }
 
                 uint16_t textWidth() const {
@@ -109,6 +115,29 @@ Error MenuBar::addMenu(StringView title, Menu &menu) {
         menu.setMoved(moved, this);
         resized();
         return Error::Ok;
+}
+
+void MenuBar::setTitle(size_t index, StringView title) {
+        if (index >= _count) return;
+        _titles[index]->setText(title);
+        resized();
+        update();
+        return;
+}
+
+void MenuBar::clear() {
+        if (_open >= 0 && _menus[_open] != nullptr) _menus[_open]->dismiss();
+        for (size_t i = 0; i < _count; ++i) {
+                _menus[i]->setDismissed(nullptr, nullptr);
+                _menus[i]->setMoved(nullptr, nullptr);
+                _titles[i]->destroy();
+                _titles[i] = nullptr;
+                _menus[i] = nullptr;
+        }
+        _count = 0;
+        _open = -1;
+        update();
+        return;
 }
 
 GuiSize MenuBar::sizeHint() const {

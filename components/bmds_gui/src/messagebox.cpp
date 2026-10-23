@@ -56,6 +56,20 @@ namespace {
 
 Error MessageBox::show(GuiApplication &app, Kind kind, StringView title, StringView text, Buttons buttons, Done fn,
                        void *arg) {
+        return open(app, kind, title, text, buttons, fn, arg).error();
+}
+
+void MessageBox::abandon() {
+        _done = nullptr;
+        if (_answered) return; // freed after the event that answered it
+        close();
+        this->~MessageBox();
+        Memory::free(this);
+        return;
+}
+
+Result<MessageBox *> MessageBox::open(GuiApplication &app, Kind kind, StringView title, StringView text,
+                                      Buttons buttons, Done fn, void *arg) {
         // Its text first: the window's size comes from it.
         char   kept[MaxText + 1];
         size_t n = text.size() < MaxText ? text.size() : MaxText;
@@ -115,7 +129,7 @@ Error MessageBox::show(GuiApplication &app, Kind kind, StringView title, StringV
         config.level = WindowManager::Level::Above;
         config.kind = "message";
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(MessageBox));
-        if (mem == nullptr) return Error::NoMem;
+        if (mem == nullptr) return makeError<MessageBox *>(Error::NoMem);
         auto *box = ::new (mem) MessageBox(app, config);
         std::memcpy(box->_text, kept, n + 1);
         box->_lineCount =
@@ -162,8 +176,9 @@ Error MessageBox::show(GuiApplication &app, Kind kind, StringView title, StringV
         if (err.isError()) {
                 box->~MessageBox();
                 Memory::free(box);
+                return makeError<MessageBox *>(err);
         }
-        return err;
+        return makeResult(box);
 }
 
 MessageBox::~MessageBox() {

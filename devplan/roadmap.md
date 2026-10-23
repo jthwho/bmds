@@ -450,7 +450,8 @@ Plan: [`input.md`](input.md).
   Step 2 under way (§10): 2a, the schema (`sdk/gui/classes.def`, `tools/guigen.py`, `gui.lock`,
   `Describe`), 2b, windows and the asked close (Edit asks in place), 2c, the controls and
   layouts, and 2d, the views (lists, details, icons, tree, text and code editors, a terminal the
-  program feeds), done. Next: 2e, menus, dialogs and timers.
+  program feeds), and 2e, menus (shortcuts as keys), message, file and colour dialogs and
+  timers, done. Next: 2f, the gallery finished (every class) and step 2 closed.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.
