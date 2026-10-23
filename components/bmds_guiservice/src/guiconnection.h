@@ -249,10 +249,11 @@ class GuiConnection {
                 /**
                  * @brief Starts a connection on @p end (the service's end of the stream), as slot
                  *        @p slot. @p clientEnd is the client's end (only compared: a local client's
-                 *        system calls name the connection by it).
+                 *        system calls name the connection by it). @p session is its program's (0:
+                 *        none known; a remote client's).
                  */
                 static Error start(FileHandle::Ptr end, Stream *clientEnd, uint8_t slot, uint32_t display,
-                                   StringView program);
+                                   StringView program, int32_t session);
 
                 /** @brief Makes the connections' registry (`GuiService::init()`, once at boot). */
                 static void initRegistry();
@@ -391,6 +392,7 @@ class GuiConnection {
                 std::atomic<bool>    _stopping{false};
                 bool                 _helloDone = false;
                 bool                 _shellAllowed = false;     // the program named by gui/shell-clients
+                int32_t              _session = 0;              // its program's session (launch feedback)
                 uint32_t             _sequence = 0;             // the request being run
                 uint16_t             _opcode = 0;               // and its opcode
                 List<GuiObject *>    _objects{MemSpace::Psram}; // sorted by id
@@ -422,6 +424,9 @@ Result<FileHandle::Ptr> guiCanvasSurface(GuiObject &object, const GuiOpener::Sur
 
 /** @brief Notification @p id of @p connection's notifier came to @p event (`activated`: @p action). */
 void guiNotificationTold(GuiConnection &connection, uint32_t id, Notifier::Event event, uint32_t action);
+
+/** @brief Widget object @p object made (by its class, a tool bar...): its hooks set (a right press). */
+void guiWidgetMade(GuiObject &object);
 
 /** @brief The class named @p name, or null. */
 const GuiClass *guiClass(StringView name);

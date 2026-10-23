@@ -458,7 +458,10 @@ Plan: [`input.md`](input.md).
   4a done: `Notification` and `TrayIcon` (a `Menu` made under it is its menu); 4b done: the
   `SERVICES` extension (`Services`: names, messages, watches); 4c done: the `SHELL` extension
   (`Shell`: other programs' windows followed and acted on, icons, keys, launch feedback; panel and
-  desktop windows; `gui/shell-clients`). Next: 4d, a panel in C.
+  desktop windows; `gui/shell-clients`); 4d done: `guipanel`, a panel in C (start menu, window
+  buttons, the tray through `bmds/tray.h`, a clock), and what it found missing (`Widget.geometry`,
+  `contextMenu`, `wheel`; launch feedback for GUI programs; a tool button's icon). Step 4 done.
+  Next: step 5, angel's GUI bindings.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

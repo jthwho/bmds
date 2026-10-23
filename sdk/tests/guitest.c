@@ -625,6 +625,13 @@ static void dropTypesTest(bmds_gui_t *gui, uint32_t window) {
         EXPECT(BMDS_GUI_BAD_VALUE);
         bmds_widget_set_drop_types(gui, label, NULL, 0); // none: takes no drops
         CHECK(bmds_widget_get_drop_types(gui, label, &v) == 0 && v.count == 0);
+        // Its place in the window, as laid out (4d).
+        bmds_label_set_text(gui, label, "a label in its place");
+        bmds_gui_sync(gui);
+        CHECK(bmds_widget_get_geometry(gui, label, &v) == 0 && v.tag == BMDS_GUI_RECT && v.width > 0 && v.height > 0);
+        if (v.width == 0)
+                printf("guitest: geometry %d %d %u %u (tag %u)\n", (int)v.x, (int)v.y, (unsigned)v.width,
+                       (unsigned)v.height, (unsigned)v.tag);
         bmds_gui_destroy(gui, label);
         EXPECT_NONE();
         return;

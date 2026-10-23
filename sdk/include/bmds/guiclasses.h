@@ -1238,6 +1238,11 @@ static inline int bmds_shell_program_starting(bmds_gui_t *gui, uint32_t id, int3
 #define BMDS_GUI_SHELL_WINDOW_CLOSED "windowClosed" /**< Shell's event (Int). */
 #define BMDS_GUI_SHELL_WORK_AREA_CHANGED "workAreaChanged" /**< Shell's event (Rect). */
 #define BMDS_GUI_SHELL_KEY_GRABBED "keyGrabbed" /**< Shell's event (Int, Int). */
+static inline int bmds_widget_get_geometry(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "geometry", out);
+}
+#define BMDS_GUI_WIDGET_CONTEXT_MENU "contextMenu" /**< Widget's event (Int, Int). */
+#define BMDS_GUI_WIDGET_WHEEL "wheel" /**< Widget's event (Int). */
 
 #ifdef __cplusplus
 }

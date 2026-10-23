@@ -233,6 +233,38 @@ class Widget {
                         return _dropHook != nullptr && _dropHook(_dropHookArg, *this, event);
                 }
 
+                /** @brief What an input hook is asked about (`setInputHook()`). */
+                struct InputHookEvent {
+                                enum class Type : uint8_t {
+                                        Context, ///< A right press: a context menu asked for.
+                                        Wheel,   ///< The wheel turned over it (`notches`, away positive).
+                                };
+                                Type type = Type::Context;
+                                int  x = 0; ///< `Context`: in its window's client area.
+                                int  y = 0;
+                                int  notches = 0;
+                };
+
+                /**
+                 * @brief Asked about a right press or the wheel over the widget (or over one of its
+                 *        children that doesn't take it), before the widget's own handling and
+                 *        whatever its class (`devplan/guiprograms.md` §12 4d).
+                 * @return True if taken: the widget isn't told.
+                 */
+                using InputHook = bool (*)(void *arg, Widget &widget, const InputHookEvent &event);
+
+                /** @brief Sets its input hook (null: none). */
+                void setInputHook(InputHook hook, void *arg) {
+                        _inputHook = hook;
+                        _inputHookArg = arg;
+                        return;
+                }
+
+                /** @brief Asks its hook about @p event. @return True if taken. */
+                bool askInputHook(const InputHookEvent &event) {
+                        return _inputHook != nullptr && _inputHook(_inputHookArg, *this, event);
+                }
+
                 /**
                  * @brief A drag came over it (`devplan/clipboard.md` §5d): answer with
                  *        `accept()` or `ignore()`. By default as `dragMoved()`.
@@ -378,6 +410,8 @@ class Widget {
                 bool       _acceptsDrops = false;
                 DropHook   _dropHook = nullptr;
                 void      *_dropHookArg = nullptr;
+                InputHook  _inputHook = nullptr;
+                void      *_inputHookArg = nullptr;
 };
 
 /**

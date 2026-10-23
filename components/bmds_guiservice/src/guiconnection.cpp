@@ -104,12 +104,14 @@ const Icon *GuiConnection::icon(StringView name, uint16_t side) {
         return &k->icon;
 }
 
-Error GuiConnection::start(FileHandle::Ptr end, Stream *clientEnd, uint8_t slot, uint32_t display, StringView program) {
+Error GuiConnection::start(FileHandle::Ptr end, Stream *clientEnd, uint8_t slot, uint32_t display, StringView program,
+                           int32_t session) {
         if (slot >= GuiService::MaxConnections) return Error::Invalid;
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(GuiConnection));
         if (mem == nullptr) return Error::NoMem;
         auto *self = ::new (mem) GuiConnection(std::move(end), clientEnd, slot, display);
         (void)self->_program.assign(program);
+        self->_session = session;
         Thread::Config config;
         config.name = "gui.conn";
         config.stackBytes = LoopStackBytes;
@@ -209,6 +211,7 @@ void GuiConnection::loopMain(void *arg) {
         if (mem != nullptr) {
                 self->_app = ::new (mem) GuiApplication();
                 self->_app->setApplicationName(programName(self->_program.view()));
+                self->_app->setSession(self->_session); // its windows end its launch feedback
                 self->_shellAllowed = GuiServicePriv::shellAllowed(self->_program.view());
                 if (self->_app->connect(self->_display).isOk()) {
                         if (registryLock != nullptr) { // its system calls post to the app from here
@@ -589,6 +592,7 @@ void GuiConnection::create(GP::Reader &body) {
         o->cls = cls;
         o->connection = this;
         const GuiStatus made = cls->create(*o, parent);
+        if (made == 0 && o->widget != nullptr) guiWidgetMade(*o); // its hooks, whatever made it
         if (made != 0 || add(o).isError()) {
                 if (made == 0) { // made, but not recorded: let go again
                         if (o->window != nullptr) {

@@ -423,6 +423,8 @@ class WindowManager {
                                 Pad        pad = nullptr;        ///< May be null: pads' events dropped.
                                 Drop       drop = nullptr;       ///< May be null: drags show they can't drop.
                                 CloseRequest closeRequested = nullptr; ///< May be null: the user's close closes it.
+                                int32_t      session = 0; ///< Its program's session, for `programStarting()`
+                                                          ///< (0: the opening task's; a GUI service's client's).
                 };
 
                 /** @brief A window, as `list()` reports it. */

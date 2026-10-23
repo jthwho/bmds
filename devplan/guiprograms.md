@@ -1,8 +1,8 @@
 # GUI Programs: the Toolkit for Every Program, and Angel's Bindings to the Whole System
 
 Status: **steps 1-3 built** (2026-10-22; §9-§11): the protocol, the classes, pictures and the
-clipboard. **Step 4 under way** (§12): 4a-4c built (notifications, tray icons, the
-service bus, the shell); next 4d, a panel in C. The user agreed with the shape (2026-10-22): the
+clipboard. **Step 4 built** (§12): notifications, tray icons, the service bus, the
+shell, and a panel in C. Next: step 5, angel's GUI bindings. The user agreed with the shape (2026-10-22): the
 toolkit as a service (P1), names (P2), and **a wire protocol in the spirit of X11's** between
 programs and the service (P8), so that applications can also run on another machine. This plan
 revises `gui.md` G1 and fills in `windows.md` §6 ("ABI (later)").
@@ -1451,3 +1451,71 @@ every connection, and `SHELL` (value "1") on connections the setting allows.
     panel.
   - Fifteen runs: memory unchanged after the first five (24 bytes of PSRAM).
 - **Size:** `bmds_guiservice` 62.0 KB of flash (58.0 KB after 4b).
+
+**4d, as built (2026-10-23):**
+- **`guipanel`** (`sdk/examples/guipanel`, about 460 lines of C), run from the PC's files on the
+  board beside the system's panel, named in `gui/shell-clients` for the runs (never saved):
+  - A strip at the edge `panel/edge` leaves free (the bottom here; `-e` to choose), its work area
+    reserved: maximized windows stopped above it.
+  - **Start:** a menu of the `.elf` programs in a folder (`-d`; the panel's own by default), each
+    started with `vfork`, `setsid` and `execv`, then `programStarting(pid)`; Ctrl+Escape
+    (`grabKey`) opens it too.
+  - **Window buttons:** one for each application window, from `windowChanged` and
+    `windowClosed`: its icon (`copyIcon` into an `Image`) and title. A click raises the window, or
+    minimizes it if it has the focus; a right click opens its window menu at the pointer.
+  - **The tray** (`-t`), when the `tray` service is free: it registers `tray`, reads the programs'
+    messages (`bmds/tray.h`) into tool buttons (a theme icon, or the pixels as an `Image`), answers
+    clicks, right clicks and the wheel to each icon's reply service with the icon's place on the
+    screen, and watches each reply service so an icon goes with its program.
+  - A clock, from a `Timer`; the programs it started are reaped each second.
+  - `-v` prints each event and tray message as it comes.
+- **What it found missing, now added:**
+  - **A right press and the wheel on any widget:** `Widget.contextMenu(x, y)` and
+    `Widget.wheel(notches)`, both Off until the client listens. The toolkit's widgets gained an
+    input hook (`Widget::setInputHook()`), asked before a widget's own right press or wheel,
+    whatever its class, as 3e's drop hook is for drops. The service sets it on every widget object
+    when it is made (`guiWidgetMade`), however it was made: a tool button is made by its tool bar,
+    not `makeWidget`, and first went without one. A canvas's own `wheel` (On) is told the same way.
+  - **`Widget.geometry`** (RO): where a widget is in its window's client area, for menus and the
+    tray's icon rectangles.
+  - **Launch feedback for GUI programs:** the window manager ends a program's starting pointer when
+    a task of its session opens a window, but a GUI program's windows are opened by its
+    connection's task, in no session. `gui_open` (on the program's own thread) now records the
+    caller's session, the connection's application carries it (`GuiApplication::setSession()`),
+    and `WindowConfig::session` tells the window manager. This helps programs started by the
+    system's panel too.
+  - **A tool button without its icon:** `Button::paint` checked the room for the icon at the
+    text's column, not the icon's own, so a 24-pixel tool button on a column that isn't a multiple
+    of 4 (the tray's, after the clock and spacing) drew no icon. It checks the icon's column now.
+  - **The tray's messages in C:** `sdk/include/bmds/tray.h`, the same structs as `TrayProtocol`.
+    The service checks sizes, offsets and constants against `TrayProtocol` with `static_assert`s,
+    so the two can't drift.
+- **Tried on the board** (the system's panel at the top, `guipanel` at the bottom):
+  - The start menu opened over the Start button with the folder's 19 programs. The gallery chosen
+    from it started with the starting pointer, which ended when its window opened.
+  - Its button showed its icon and title at once. A click minimized it (it had the focus), another
+    raised it. A right click opened its window menu at the button. Ctrl+Escape opened Start.
+  - The gallery maximized stopped above the strip.
+  - With the system's panel's tray item off (`panel/items`, live, put back after), `guipanel -t`
+    showed the system's own tray icons (the CPU meter, live; volume; network; notifications).
+    Clicking the volume icon opened the system's volume control above it, placed by the rectangle
+    `guipanel` sent.
+  - The gallery's own tray icon came to `guipanel`'s tray. Its right click opened the gallery's
+    menu at the icon, and the wheel told it +1 and -1. The gallery killed, its button and its tray
+    icon went. With `guipanel` ended and the tray item back, the system's tray came back.
+  - Four starts and kills of `guipanel`: memory within 40 bytes; fifteen guitest runs after all
+    this: unchanged after the first five.
+  - Two `guipanel`s at once (by mistake: a kill that missed) stacked, the second above the first,
+    as each is placed within the work area the other leaves. A second one's Ctrl+Escape was
+    `BadAccess`: the first holds the chord.
+- **Not done:** a panel's tooltips (no `toolTip` property on widgets yet), and §12 4c's deferred
+  desktop menu, palette and screen capture. Each is appended when something needs it.
+- **Size:** `bmds_guiservice` 62.4 KB of flash (62.0 KB after 4c).
+- **Step 4 as a whole:**
+  - Notifications and tray icons as classes; the service bus (`SERVICES`); the shell (`SHELL`,
+    `gui/shell-clients`); a panel in C that does what `/bin/panel` does, with the system's own
+    tray icons in it.
+  - Fixed on the way: launch feedback for GUI programs, a tool button's icon, the work area told
+    to window watchers, a window too small for its frame (`BadValue`).
+  - The service 53.9 KB → 62.4 KB of flash.
+  - Next: step 5 (§6), angel's GUI bindings, with the window types' names to settle (§4d).

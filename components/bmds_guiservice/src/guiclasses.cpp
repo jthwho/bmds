@@ -12,6 +12,7 @@
  */
 
 #include <climits>
+#include <cstddef>
 #include <cstring>
 #include <new>
 #include <bmds/codeedit.h>
@@ -39,6 +40,7 @@
 #include <bmds/trayicon.h>
 #include <bmds/windowmanager.h>
 #include <bmds/windowstack.h>
+#include "../../../sdk/include/bmds/tray.h"
 #include "canvassurface.h"
 #include "guiatoms.h"
 #include "guiconnection.h"
@@ -64,6 +66,18 @@ namespace {
 
         StringView atomName(const Value &v) {
                 return v.tag == Tag::Atom ? GuiAtoms::name(uint32_t(v.number)) : StringView();
+        }
+
+        // A right press over a widget: `contextMenu(x, y)`; the wheel: `wheel(notches)`; if the
+        // client listens (Widget's are Off by default; a canvas's wheel is On), else the widget's own.
+        bool inputHook(void *arg, Widget &, const Widget::InputHookEvent &e) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const bool  context = e.type == Widget::InputHookEvent::Type::Context;
+                const char *name = context ? "contextMenu" : "wheel";
+                if (!o.connection->listens(o, name)) return false;
+                const Value v[] = {Value::integer(context ? e.x : e.notches), Value::integer(e.y)};
+                o.connection->emit(o, name, Span<const Value>(v, context ? 2 : 1));
+                return true;
         }
 
         // A widget made under its parent's container (a window's column, a box): none, BadMatch.
@@ -112,6 +126,14 @@ namespace {
         GuiStatus call_Widget_setFocus(GuiObject &o, Args, Value &) {
                 o.widget->setFocus();
                 return Ok;
+        }
+        // Where it is in its window's client area (as laid out at the last round of requests).
+        Value get_Widget_geometry(GuiObject &o) {
+                const bmds::Rect &g = o.widget->geometry();
+                Value             v;
+                v.tag = Tag::Rect;
+                v.rect = GuiProtocol::Rect{g.x, g.y, g.width, g.height};
+                return v;
         }
 
         // ---- Window
@@ -3078,6 +3100,18 @@ namespace {
         // ---- Step 4a: TrayIcon, the toolkit's (the tray's messages through the window manager's
         // services); a Menu made under it opens at the icon on a right click
 
+        // The SDK's tray messages (bmds/tray.h, for programs that are the tray) are TrayProtocol's.
+        static_assert(sizeof(bmds_tray_header_t) == sizeof(TrayProtocol::Header));
+        static_assert(sizeof(bmds_tray_update_t) == sizeof(TrayProtocol::Update));
+        static_assert(offsetof(bmds_tray_update_t, tool_tip_more) == offsetof(TrayProtocol::Update, toolTipMore));
+        static_assert(sizeof(bmds_tray_pixels_t) == sizeof(TrayProtocol::Pixels));
+        static_assert(offsetof(bmds_tray_pixels_t, argb) == offsetof(TrayProtocol::Pixels, argb));
+        static_assert(sizeof(bmds_tray_event_t) == sizeof(TrayProtocol::Event));
+        static_assert(offsetof(bmds_tray_event_t, x) == offsetof(TrayProtocol::Event, x));
+        static_assert(offsetof(bmds_tray_event_t, height) == offsetof(TrayProtocol::Event, height));
+        static_assert(BMDS_TRAY_CONTEXT == uint32_t(TrayProtocol::Reason::Context));
+        static_assert(BMDS_TRAY_GEOMETRY == uint32_t(TrayProtocol::Kind::Geometry));
+
         struct TrayData {
                         TrayIcon *icon = nullptr;
                         String    name{MemSpace::Psram}; // its theme icon's
@@ -3906,6 +3940,11 @@ void ClientWindow::updateBlock() {
 }
 
 // ---- Lookups
+
+void guiWidgetMade(GuiObject &object) {
+        object.widget->setInputHook(inputHook, &object);
+        return;
+}
 
 void guiNotificationTold(GuiConnection &connection, uint32_t id, Notifier::Event event, uint32_t action) {
         notificationTold(connection, id, event, action);

@@ -322,3 +322,7 @@ event Shell.windowChanged(Int, String, List) on
 event Shell.windowClosed(Int) on
 event Shell.workAreaChanged(Rect) on
 event Shell.keyGrabbed(Int, Int) on
+# Step 4d (2026-10-23): what a panel in C needed
+property Widget.geometry Rect RO
+event Widget.contextMenu(Int, Int) off
+event Widget.wheel(Int) off

@@ -2080,8 +2080,8 @@ Rect WindowManager::placed(const Rect &rect) const {
 Result<uint8_t> WindowManager::open(const WindowConfig &config) {
         // Whose it is, asked before the lock (the loader takes its own): a program starting ends
         // with its session's first window (devplan/windows.md §4l).
-        TaskOwner    *owner = TaskOwner::current();
-        const int32_t session = owner != nullptr ? owner->sessionId() : 0;
+        TaskOwner    *owner = config.session > 0 ? nullptr : TaskOwner::current();
+        const int32_t session = config.session > 0 ? config.session : owner != nullptr ? owner->sessionId() : 0;
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return makeError<uint8_t>(Error::InvalidState);
         auto opened = openLocked(config);

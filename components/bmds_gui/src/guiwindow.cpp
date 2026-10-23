@@ -67,6 +67,7 @@ Error GuiWindow::show(const Rect &rect) {
         c.arg = this;
         c.decorations = _config.decorations;
         c.level = _config.level;
+        c.session = _app.session();
         c.reserve = _config.reserve;
         c.focusable = _config.focusable;
         c.kind = _config.kind;
@@ -670,7 +671,16 @@ void GuiWindow::mouse(const WindowManager::MouseEvent &event) {
                         if (w != this && w->isFocusable() && w->isEnabled()) setFocusWidget(w);
                         if (_hover != w && _hover != nullptr) _hover->mouseLeft();
                         _hover = w;
-                        if (w->isEnabled()) w->mousePressed(event);
+                        // A right press: a context menu, if the widget or one around it takes it.
+                        bool taken = false;
+                        if (event.button == PointerEvent::Right && w->isEnabled()) {
+                                Widget::InputHookEvent ask;
+                                ask.x = event.x;
+                                ask.y = event.y;
+                                for (Widget *c = w; c != nullptr && !taken; c = c->parent())
+                                        taken = c->askInputHook(ask);
+                        }
+                        if (!taken && w->isEnabled()) w->mousePressed(event);
                         break;
                 }
                 case MType::Release: {
@@ -722,8 +732,11 @@ void GuiWindow::mouse(const WindowManager::MouseEvent &event) {
 
 // The wheel: to the widget under the pointer, then its parents, until one uses it.
 void GuiWindow::wheel(int notches) {
+        Widget::InputHookEvent ask;
+        ask.type = Widget::InputHookEvent::Type::Wheel;
+        ask.notches = notches;
         for (Widget *w = _hover; w != nullptr; w = w->parent())
-                if (w->isVisible() && w->isEnabled() && w->wheelTurned(notches)) return;
+                if (w->isVisible() && w->isEnabled() && (w->askInputHook(ask) || w->wheelTurned(notches))) return;
         return;
 }
 

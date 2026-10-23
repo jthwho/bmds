@@ -16,6 +16,7 @@
 #include <bmds/log.h>
 #include <bmds/string.h>
 #include <bmds/sysconf.h>
+#include <bmds/taskowner.h>
 #include <bmds/streampair.h>
 #include <bmds/windowmanager.h>
 #include "guiatoms.h"
@@ -43,10 +44,13 @@ namespace {
                         if (used[i].compare_exchange_strong(expected, true)) slot = i;
                 }
                 if (slot == GuiService::MaxConnections) return makeError<FileHandle::Ptr>(Error::Full);
+                // The caller's session (this is its thread): the windows it opens end its launch feedback.
+                TaskOwner    *owner = TaskOwner::current();
+                const int32_t session = owner != nullptr ? owner->sessionId() : 0;
                 auto [ends, err] = StreamPair::create();
                 if (err.isOk())
                         err = GuiConnection::start(std::move(ends.second), &ends.first->stream(), uint8_t(slot),
-                                                   display, client.program);
+                                                   display, client.program, session);
                 if (err.isError()) {
                         used[slot].store(false);
                         return makeError<FileHandle::Ptr>(err);

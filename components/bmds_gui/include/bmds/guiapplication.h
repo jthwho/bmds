@@ -87,6 +87,16 @@ class GuiApplication {
                 uint8_t client() const { return _client; }
 
                 /**
+                 * @brief Sets the session of the program its windows are for (0: the opening
+                 *        task's): a GUI service's client's, whose windows its own task opens, so a
+                 *        program shown starting is shown started (`WindowManager::programStarting()`).
+                 */
+                void setSession(int32_t session) { _session = session; }
+
+                /** @brief Returns the session its windows are for (0: the opening task's). */
+                int32_t session() const { return _session; }
+
+                /**
                  * @brief Runs the loop until `quit()`, the window manager stops, or
                  *        a signal raises the program's interrupt.
                  * @return `quit()`'s code, 0 when the window manager stopped, or
@@ -356,6 +366,7 @@ class GuiApplication {
 
                 WindowManager    *_wm = nullptr;
                 uint8_t           _client = 0;
+                int32_t           _session = 0;
                 Mutex             _lock;
                 SpinLock          _queueLock;
                 Semaphore         _wake{1, 0};

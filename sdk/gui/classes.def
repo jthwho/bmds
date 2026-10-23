@@ -378,3 +378,8 @@ GUI_EVENT(Shell, windowChanged, On, Int, String, List)
 GUI_EVENT(Shell, windowClosed, On, Int)
 GUI_EVENT(Shell, workAreaChanged, On, Rect)
 GUI_EVENT(Shell, keyGrabbed, On, Int, Int)
+
+/* ---- Step 4d (2026-10-23): what a panel in C needed: a right press on any widget, its place */
+GUI_PROP(Widget, geometry, Rect, RO)
+GUI_EVENT(Widget, contextMenu, Off, Int, Int)
+GUI_EVENT(Widget, wheel, Off, Int)

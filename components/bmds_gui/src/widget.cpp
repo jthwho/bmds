@@ -460,11 +460,12 @@ void Button::paint(Painter &painter) {
                                          {uint16_t(f.right() - 1), uint16_t(f.y + 1), 1, uint16_t(f.height - 2)}};
                 (void)painter.fill(Span<const Rect>(ring), p.color(Role::Highlight));
         }
-        uint16_t x = columnUp(r.x + GuiStyle::ButtonPad);
+        uint16_t       x = columnUp(r.x + GuiStyle::ButtonPad);
+        const uint16_t ix = columnUp(r.x + GuiStyle::ButtonPad / 2); // the icon's column
+        // Room for the icon where it goes (not where text would: a tool button on an odd column).
         if (_icon != nullptr && _icon->isValid() && _icon->width <= GuiStyle::IconSize &&
-            _icon->height <= GuiStyle::IconSize && x + _icon->width <= r.right()) {
+            _icon->height <= GuiStyle::IconSize && ix + _icon->width <= r.right()) {
                 // The icon first, a pixel lower pressed in as the text, then the text after a gap.
-                const uint16_t ix = columnUp(r.x + GuiStyle::ButtonPad / 2);
                 const uint16_t iy = static_cast<uint16_t>(textTop(r, in) + (GuiStyle::TextHeight - _icon->height) / 2);
                 (void)painter.image(ix, iy, *_icon, bg);
                 x = columnUp(ix + _icon->width + GuiStyle::IconGap);
