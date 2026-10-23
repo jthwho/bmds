@@ -1189,9 +1189,10 @@ namespace {
                 return;
         }
 
-        // The model changed: the view counts again, its current row kept where it can be.
-        void refresh(GuiObject &o) {
-                const int cur = itemView(o)->current();
+        // The model changed: the view counts again, its current row @p cur (-2: the one it had)
+        // where it can be.
+        void refresh(GuiObject &o, int cur = -2) {
+                if (cur == -2) cur = itemView(o)->current();
                 o.quiet = true;
                 itemView(o)->modelReset();
                 if (cur >= 0 && size_t(cur) < itemView(o)->count()) itemView(o)->selectOnly(cur);
@@ -1280,8 +1281,12 @@ namespace {
         }
         GuiStatus call_ItemView_removeItem(GuiObject &o, Args args, Value &) {
                 if (args[0].number < 0 || args[0].number >= int64_t(model(o)->count())) return BadValue;
-                model(o)->removeAt(size_t(args[0].number));
-                refresh(o);
+                // The current row follows its item: one before it going moves it up.
+                const int removed = int(args[0].number);
+                int       cur = itemView(o)->current();
+                if (cur > removed || (cur == removed && cur == int(model(o)->count()) - 1)) --cur;
+                model(o)->removeAt(size_t(removed));
+                refresh(o, cur);
                 return Ok;
         }
         GuiStatus call_ItemView_clear(GuiObject &o, Args, Value &) {
@@ -1757,6 +1762,9 @@ namespace {
         // ---- Menus: a menu keeps its entries (items, separators, submenus) and builds the toolkit's
         // menu again before it opens; a menu bar builds its titles again after a round of requests.
 
+        // An item's number in the toolkit's menu: its id's part within the connection (24 bits).
+        constexpr uint32_t ItemNumberMask = 0x00ffffffu;
+
         struct MenuData {
                         Menu  *menu = nullptr;
                         String title{MemSpace::Psram};
@@ -1799,7 +1807,10 @@ namespace {
                                                                 (item->checked ? MenuLayout::Checked : 0));
                                 const Icon     *icon =
                                         item->icon.isEmpty() ? nullptr : o.connection->icon(item->icon.view(), 16);
-                                (void)menu.addItem(item->text.view(), int(i), flags, item->shortcut.view(), icon);
+                                // Numbered by its id: the toolkit tells the top menu of the tree the
+                                // number chosen, a submenu's too.
+                                (void)menu.addItem(item->text.view(), int(id & ItemNumberMask), flags,
+                                                   item->shortcut.view(), icon);
                         }
                 }
                 return;
@@ -1814,10 +1825,11 @@ namespace {
                 return;
         }
 
+        // An item of the tree @p arg (its top menu) heads was chosen: @p item, its id's low bits.
         void menuTriggered(void *arg, int item) {
                 auto &o = *static_cast<GuiObject *>(arg);
-                if (item < 0 || size_t(item) >= o.entries.size()) return;
-                GuiObject *child = o.connection->find(o.entries[size_t(item)]);
+                if (item < 0) return;
+                GuiObject *child = o.connection->find((o.id & ~ItemNumberMask) | uint32_t(item));
                 if (child != nullptr && child->chosen != nullptr) (void)child->chosen(*child);
                 return;
         }

@@ -211,6 +211,20 @@ int bmds_gui_get_named(bmds_gui_t *gui, uint32_t id, const char *name, bmds_gui_
 int bmds_gui_call_named(bmds_gui_t *gui, uint32_t id, const char *name, const bmds_gui_value_t *args, uint32_t count,
                         bmds_gui_value_t *result);
 
+/**
+ * @brief Asks what class @p cls (an atom) has (`Describe`, devplan/guiprograms.md §10): its
+ *        reply's body in @p body (valid until the next call on the connection), little-endian
+ *        uint32 fields:
+ *        - the parent class's atom (0: none), then 1 if it can be made (0: a base);
+ *        - its own properties: a count, then each one's atom, tag and flags (1 readable,
+ *          2 writable);
+ *        - its methods: a count, then each one's atom, result tag, argument count and tags;
+ *        - its events: a count, then each one's atom, 1 if sent by default, value count and tags.
+ *        A parent's entries are described by asking for the parent.
+ * @return 0, or -1 with `errno` (`EINVAL`: no such class, the error handler told).
+ */
+int bmds_gui_describe(bmds_gui_t *gui, uint32_t cls, const uint8_t **body, uint32_t *length);
+
 /** @brief Returns true if @p event is the one named @p name (`clicked`). */
 int bmds_gui_event_is(bmds_gui_t *gui, const bmds_gui_event_t *event, const char *name);
 

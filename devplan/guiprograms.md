@@ -961,3 +961,38 @@ touch its edges and only their content areas pad themselves.
   was the real leak: a script's shell kept every ended background job (`devplan/processes.md`
   §3.6.2).
 - **Size:** `bmds_guiservice` 41.9 KB of flash (33.7 KB after 2d).
+
+**2f, as built (2026-10-22): step 2 closed.**
+- **The gallery uses every class:**
+  - a line edit (its `accepted` text in the status bar);
+  - a spacer (Quit at the right of its row);
+  - a plain `TextEdit` under the `CodeEdit` (a splitter, down);
+  - a submenu (View ▸ Pointer, its items checked in turn);
+  - the details view sorted by the column whose header is clicked (again: the other way).
+- **`sdk/tests/guitest.c`**, the service's board test (run it on the board; it prints
+  `guitest: ok`). It checks:
+  - **Describe** of all 36 classes (which can be made), entries' tags, and the parents;
+  - **every error a bad request gets:** `BadClass`, `BadMatch` (a widget with no window, a
+    window in a window, a bar in a box, an item in a window, a third splitter side, a non-page
+    in tabs), `BadValue` (a value not among a property's names, wrong arguments, a shortcut
+    that isn't one, a 1 ms timer), `BadAccess` (a write-only property read, a popup before its
+    window shows), `BadName`, `BadId`;
+  - **events from methods** (a button's click), an event turned off, the client's own changes
+    not told back, a removed row moving the current one;
+  - **a one-shot timer** firing once;
+  - **containers letting go** of their children;
+  - **100 windows** with children made and destroyed.
+  - Run five times in one session: 36 bytes of PSRAM, none internal.
+- **`bmds_gui_describe()`** in libbmdsgui: a class's raw `Describe` body, its layout documented
+  in `gui.h` (for tools and angel's bindings, step 5).
+- **Fixed while testing:**
+  - **A submenu's items did nothing.** The toolkit tells the *top* menu of a tree the number of
+    the item chosen, so numbers must be unique across the tree. Items were numbered by their
+    place in their own menu; they are numbered by their object id now (its 24 bits within the
+    connection).
+  - **`removeItem` before the current row** kept the current index, so the current item became
+    the next one. The current row now follows its item.
+- **Size:** `bmds_guiservice` 42.0 KB of flash.
+- **Step 2 as a whole:** 36 classes in `sdk/gui/classes.def`, locked in `tests/scripts/gui.lock`;
+  C wrappers generated; the service 11.8 KB → 42.0 KB of flash. Next: step 3 (§6), pictures
+  and the clipboard (`PutImage`, `Canvas`, the `CLIPBOARD` extension).

@@ -14,7 +14,7 @@
  * a folder opens) and the chosen one's entries in a details view. Text: a code editor, its cursor and state shown. Terminal: a shell
  * on the program's own pseudo-terminal, its output written to the widget, the typing sent back.
  * Menus: File (Open and Save As through the file dialog, Quit), View (the status bar, a checked
- * item), Help (About), their shortcuts as keys. Dialogs: a message box, the colour dialog, a popup
+ * item; the pointer, a submenu), Help (About), their shortcuts as keys. Dialogs: a message box, the colour dialog, a popup
  * menu, and a timer counting seconds.
  */
 
@@ -45,6 +45,9 @@ typedef struct Gallery {
                 uint32_t    ask, answer, colorButton, colorDialog, popupButton, popup, popupItems[3];
                 uint32_t    timer, timerButton, ticks;
                 int         statusShown, seconds;
+                uint32_t    arrowItem, busyItem, nameEdit;
+                char        folder[256]; // the details view's
+                int         sortColumn, sortDown;
                 int         master; // the shell's pty (-1: none)
                 pid_t       shell;
                 uint32_t    dialog, dialogOk, dialogNo; // the open About or Quit box (0: none)
@@ -85,6 +88,22 @@ static void openBox(Gallery *g, const char *title, const char *text, int asking)
 
 // Folder @p path's entries: the subfolders' names into the tree (@p folders), or every entry with
 // its size into the details view.
+// A folder's entry, as the details view shows it.
+typedef struct Entry {
+                char      name[64];
+                long long size; // -1: a folder
+                int       folder;
+} Entry;
+
+static int sortBy, sortDown; // qsort's comparison has no argument of its own
+
+static int compareEntries(const void *a, const void *b) {
+        const Entry *x = (const Entry *)a, *y = (const Entry *)b;
+        int          c = sortBy == 1 ? (x->size > y->size) - (x->size < y->size) : strcmp(x->name, y->name);
+        if (c == 0) c = strcmp(x->name, y->name);
+        return sortDown ? -c : c;
+}
+
 static void readFolder(Gallery *g, const char *path, int folders) {
         DIR *dir = opendir(path);
         if (folders) {
@@ -104,23 +123,37 @@ static void readFolder(Gallery *g, const char *path, int folders) {
                 }
                 bmds_tree_view_set_children(g->gui, g->tree, path, names, n);
         } else {
-                bmds_item_view_clear(g->gui, g->files);
+                // Every entry, sorted by the column the header asked for, then shown.
+                static Entry   entries[200];
+                size_t         n = 0;
                 struct dirent *d;
-                uint32_t       row = 0;
-                while (dir != NULL && row < 200 && (d = readdir(dir)) != NULL) {
+                while (dir != NULL && n < 200 && (d = readdir(dir)) != NULL) {
                         if (d->d_name[0] == '.') continue;
-                        char        full[512], size[24];
+                        char        full[512];
                         struct stat st;
                         snprintf(full, sizeof(full), "%s/%s", path, d->d_name);
-                        const int folder = stat(full, &st) == 0 && S_ISDIR(st.st_mode);
-                        if (folder)
+                        Entry *en = &entries[n++];
+                        snprintf(en->name, sizeof(en->name), "%s", d->d_name);
+                        en->folder = stat(full, &st) == 0 && S_ISDIR(st.st_mode);
+                        en->size = en->folder ? -1 : (long long)st.st_size;
+                }
+                sortBy = g->sortColumn;
+                sortDown = g->sortDown;
+                qsort(entries, n, sizeof(Entry), compareEntries);
+                bmds_item_view_clear(g->gui, g->files);
+                for (size_t i = 0; i < n; ++i) {
+                        char size[24];
+                        if (entries[i].folder)
                                 snprintf(size, sizeof(size), "folder");
                         else
-                                snprintf(size, sizeof(size), "%lld", (long long)st.st_size);
-                        const char *texts[] = {d->d_name, size};
+                                snprintf(size, sizeof(size), "%lld", entries[i].size);
+                        const char *texts[] = {entries[i].name, size};
                         bmds_details_view_add_row(g->gui, g->files, texts, 2);
-                        bmds_item_view_set_icon(g->gui, g->files, (int32_t)row++, folder ? "folder" : "text-x-generic");
+                        bmds_item_view_set_icon(g->gui, g->files, (int32_t)i,
+                                                entries[i].folder ? "folder" : "text-x-generic");
                 }
+                bmds_details_view_set_sort_indicator(g->gui, g->files, g->sortColumn, g->sortDown);
+                snprintf(g->folder, sizeof(g->folder), "%s", path);
         }
         if (dir != NULL) closedir(dir);
         return;
@@ -178,6 +211,21 @@ static void shellOutput(Gallery *g) {
 // The views', text's and terminal's events. @return 1 if it was one of theirs.
 static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
         bmds_gui_t *gui = g->gui;
+        if (e->source == g->files && bmds_gui_event_is(gui, e, BMDS_GUI_DETAILS_VIEW_SORT_ASKED) && e->count == 1) {
+                // The same column again turns the order round.
+                const int column = (int)e->values[0].number;
+                g->sortDown = column == g->sortColumn ? !g->sortDown : 0;
+                g->sortColumn = column;
+                if (g->folder[0] != '\0') readFolder(g, g->folder, 0);
+                return 1;
+        }
+        if (e->source == g->arrowItem || e->source == g->busyItem) {
+                const int busy = e->source == g->busyItem;
+                bmds_window_set_pointer(gui, g->window, busy ? "starting" : "arrow");
+                bmds_menu_item_set_checked(gui, g->arrowItem, !busy);
+                bmds_menu_item_set_checked(gui, g->busyItem, busy);
+                return 1;
+        }
         if (e->source == g->tree && e->count == 1) {
                 char path[256];
                 snprintf(path, sizeof(path), "%.*s", (int)e->values[0].length, e->values[0].text);
@@ -357,6 +405,13 @@ int main(void) {
         bmds_menu_item_set_text(gui, g.statusItem, "&Status bar");
         bmds_menu_item_set_checked(gui, g.statusItem, 1);
         g.statusShown = 1;
+        const uint32_t pointer = bmds_menu_new(gui, view); // a submenu
+        bmds_menu_set_title(gui, pointer, "&Pointer");
+        g.arrowItem = bmds_menu_item_new(gui, pointer);
+        bmds_menu_item_set_text(gui, g.arrowItem, "&Arrow");
+        bmds_menu_item_set_checked(gui, g.arrowItem, 1);
+        g.busyItem = bmds_menu_item_new(gui, pointer);
+        bmds_menu_item_set_text(gui, g.busyItem, "&Busy");
         const uint32_t help = bmds_menu_new(gui, bar);
         bmds_menu_set_title(gui, help, "&Help");
         g.aboutItem = bmds_menu_item_new(gui, help);
@@ -394,6 +449,7 @@ int main(void) {
         bmds_box_set_direction(gui, row, "across");
         g.about = bmds_button_new(gui, row);
         bmds_button_set_text(gui, g.about, "&About...");
+        bmds_gui_new(gui, "Spacer", row); // Quit at the right
         g.quit = bmds_button_new(gui, row);
         bmds_button_set_text(gui, g.quit, "&Quit");
 
@@ -431,6 +487,12 @@ int main(void) {
         static const char *const fruit[] = {"Apple", "Banana", "Cherry"};
         bmds_combo_box_set_items(gui, g.combo, fruit, 3);
         bmds_combo_box_add_item(gui, g.combo, "Damson");
+        r = bmds_form_row_new(gui, form);
+        bmds_form_row_set_label(gui, r, "Line edit:");
+        bmds_form_row_set_help(gui, r, "Enter shows it in the status bar.");
+        g.nameEdit = bmds_line_edit_new(gui, r);
+        bmds_widget_set_stretch(gui, g.nameEdit, 1);
+        bmds_line_edit_set_max_length(gui, g.nameEdit, 40);
 
         // Layouts: a splitter, a list and icons its sides
         const uint32_t layouts = bmds_tab_page_new(gui, g.tabs);
@@ -502,7 +564,11 @@ int main(void) {
         // Text: a code editor, and its cursor and state
         const uint32_t textPage = bmds_tab_page_new(gui, g.tabs);
         bmds_tab_page_set_title(gui, textPage, "Text");
-        g.code = bmds_code_edit_new(gui, textPage);
+        const uint32_t textSplit = bmds_splitter_new(gui, textPage);
+        bmds_splitter_set_direction(gui, textSplit, "down");
+        bmds_splitter_set_min_first(gui, textSplit, 60);
+        bmds_splitter_set_min_second(gui, textSplit, 40);
+        g.code = bmds_code_edit_new(gui, textSplit);
         bmds_code_edit_set_syntax(gui, g.code, "c");
         bmds_code_edit_set_line_numbers(gui, g.code, 1);
         bmds_text_edit_set_text(gui, g.code,
@@ -512,6 +578,9 @@ int main(void) {
                                 "        printf(\"Hello from the gallery\\n\");\n"
                                 "        return 0;\n"
                                 "}\n");
+        const uint32_t notes = bmds_text_edit_new(gui, textSplit); // plain text, no colours
+        bmds_text_edit_set_text(gui, notes, "Notes: a plain text editor below the code editor.\n");
+        bmds_splitter_set_position(gui, textSplit, 200);
         const uint32_t cursorMoved = bmds_gui_atom(gui, BMDS_GUI_TEXT_EDIT_CURSOR_MOVED);
         bmds_gui_listen(gui, g.code, &cursorMoved, 1, 1);
         g.codeState = bmds_label_new(gui, textPage);

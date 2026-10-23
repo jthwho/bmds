@@ -26,6 +26,7 @@
 #define OP_HELLO 0u
 #define OP_INTERN_NAMES 1u
 #define OP_NAME_OF 2u
+#define OP_DESCRIBE 3u
 #define OP_CREATE 4u
 #define OP_DESTROY 5u
 #define OP_SET 6u
@@ -663,6 +664,15 @@ int bmds_gui_get(bmds_gui_t *g, uint32_t id, const uint32_t *names, uint32_t cou
                         errno = EPROTO;
                         return -1;
                 }
+        return 0;
+}
+
+int bmds_gui_describe(bmds_gui_t *g, uint32_t cls, const uint8_t **body, uint32_t *length) {
+        if (begin(g, OP_DESCRIBE, 0) != 0 || put32(g, cls) != 0 || end(g) != 0) return -1;
+        message_t m;
+        if (answer(g, &m) != 0) return -1;
+        *body = m.data + 12;
+        *length = m.length - 12;
         return 0;
 }
 
