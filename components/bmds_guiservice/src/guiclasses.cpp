@@ -42,6 +42,7 @@
 #include "canvassurface.h"
 #include "guiatoms.h"
 #include "guiconnection.h"
+#include "guiservicepriv.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -176,7 +177,7 @@ namespace {
                         if (y < work.y) y = work.y;
                         err = win.show(Rect{uint16_t(x & ~3), uint16_t(y), ow, oh});
                 }
-                if (err.isError()) return NoMem;
+                if (err.isError()) return err == Error::Invalid ? BadValue : NoMem; // smaller than its frame
                 const uint8_t  id = win.id();
                 WindowManager &wm = o.connection->application().windowManager();
                 if (win.above) (void)wm.setAbove(id, true);
@@ -3337,6 +3338,254 @@ namespace {
                 (void)parent;
                 if (makeData<ServicesData>(o) == nullptr) return NoMem;
                 o.dispose = disposeServices;
+                return Ok;
+        }
+
+        // ---- Step 4c: SHELL, for the programs gui/shell-clients names: a window's level (a panel's,
+        // a desktop's), and the Shell class (other programs' windows, keys, launch feedback)
+
+        bool mayShell(GuiObject &o) {
+                return o.connection->shellAllowed();
+        }
+        constexpr const char *LevelNames[] = {"normal", "desktop", "panel"};
+        GuiStatus             set_Window_level(GuiObject &o, const Value &v) {
+                const StringView           name = atomName(v);
+                const WindowManager::Level level = name == StringView("desktop") ? WindowManager::Level::Desktop
+                                                               : name == StringView("panel") ? WindowManager::Level::Panel
+                                                                                             : WindowManager::Level::Normal;
+                if (level != WindowManager::Level::Normal && !mayShell(o)) return BadAccess;
+                // Its reserve kept: the window manager takes a panel's only.
+                return o.window->setLevel(level, o.window->reserve()).isOk() ? Ok : BadAccess; // shown: too late
+        }
+        Value get_Window_level(GuiObject &o) {
+                const WindowManager::Level level = o.window->level();
+                const size_t               i = level == WindowManager::Level::Desktop ? 1
+                                               : level == WindowManager::Level::Panel ? 2
+                                                                                      : 0;
+                return Value::atom(GuiAtoms::intern(StringView(LevelNames[i])));
+        }
+        GuiStatus set_Window_reserve(GuiObject &o, const Value &v) {
+                if (v.number < 0 || v.number > 360) return BadValue;
+                if (v.number != 0 && !mayShell(o)) return BadAccess;
+                return o.window->setLevel(o.window->level(), uint16_t(v.number)).isOk() ? Ok : BadAccess;
+        }
+        Value get_Window_reserve(GuiObject &o) {
+                return Value::integer(o.window->reserve());
+        }
+
+        constexpr uint32_t IconSide = 16;
+
+        // An application window as the client was last told it.
+        struct ShellWindow {
+                        uint8_t  id = 0;
+                        uint8_t  state = 0; // ShellState bits
+                        uint32_t iconSum = 0;
+                        char     title[WindowManager::MaxTitle + 1] = {};
+        };
+        enum ShellState : uint8_t {
+                Focused = 1u << 0,
+                Minimized = 1u << 1,
+                Maximized = 1u << 2,
+                Shaded = 1u << 3,
+                Above = 1u << 4,
+                HasIcon = 1u << 5,
+        };
+        constexpr const char *StateNames[] = {"focused", "minimized", "maximized", "shaded", "above", "icon"};
+
+        struct ShellData {
+                        List<ShellWindow> windows{MemSpace::Psram}; // as last told
+                        bmds::Rect        workArea;
+                        uint32_t          icon[IconSide * IconSide]; // a window's icon, copied to be summed
+        };
+        ShellData &shellData(GuiObject &o) {
+                return *dataOf<ShellData>(o);
+        }
+        Value rectValue(const bmds::Rect &r) {
+                Value v;
+                v.tag = Tag::Rect;
+                v.rect = GuiProtocol::Rect{r.x, r.y, r.width, r.height};
+                return v;
+        }
+        // Window @p id's icon's checksum (FNV-1a over its size and pixels; 0: none).
+        uint32_t iconSum(WindowManager &wm, uint8_t id, ShellData &d) {
+                auto [icon, err] = wm.copyIcon(id, Span<uint32_t>(d.icon));
+                if (err.isError()) return 0;
+                uint32_t     h = 2166136261u ^ (uint32_t(icon.width) << 8 | icon.height);
+                const size_t n = size_t(icon.width) * icon.height;
+                for (size_t i = 0; i < n; ++i) h = (h ^ d.icon[i]) * 16777619u;
+                return h != 0 ? h : 1;
+        }
+        // The window manager's list compared with what the client was told: the changes told.
+        void shellRefresh(GuiObject &o) {
+                ShellData     &d = shellData(o);
+                WindowManager &wm = wmOf(o);
+                auto [infos, err] = wm.windows();
+                if (err.isError()) return; // the next change tries again
+                List<ShellWindow> now(MemSpace::Psram);
+                if (now.reserve(infos.size()).isError()) return;
+                for (const WindowManager::Info &info : infos) {
+                        if (!WindowStack::isApplication(info.level)) continue;
+                        ShellWindow w;
+                        w.id = info.id;
+                        std::memcpy(w.title, info.title, sizeof(w.title));
+                        w.state = uint8_t((info.focused ? Focused : 0) | (info.minimized ? Minimized : 0) |
+                                          (info.maximized ? Maximized : 0) | (info.shaded ? Shaded : 0) |
+                                          (info.level == WindowManager::Level::Above ? Above : 0));
+                        w.iconSum = info.hasIcon ? iconSum(wm, info.id, d) : 0;
+                        if (w.iconSum != 0) w.state = uint8_t(w.state | HasIcon);
+                        const ShellWindow *was = nullptr;
+                        for (const ShellWindow &old : d.windows)
+                                if (old.id == w.id) was = &old;
+                        if (was == nullptr || was->state != w.state || was->iconSum != w.iconSum ||
+                            std::strcmp(was->title, w.title) != 0) {
+                                StringView names[6];
+                                size_t     n = 0;
+                                for (size_t i = 0; i < 6; ++i)
+                                        if ((w.state & (1u << i)) != 0) names[n++] = StringView(StateNames[i]);
+                                const Value v[] = {Value::integer(w.id), Value::string(StringView(w.title)),
+                                                   makeStrings(o, n, [&](size_t i) { return names[i]; })};
+                                o.connection->emit(o, "windowChanged", Args(v, 3));
+                        }
+                        (void)now.append(w); // reserved
+                }
+                for (const ShellWindow &old : d.windows) {
+                        bool still = false;
+                        for (const ShellWindow &w : now)
+                                if (w.id == old.id) still = true;
+                        if (still) continue;
+                        const Value v = Value::integer(old.id);
+                        o.connection->emit(o, "windowClosed", Args(&v, 1));
+                }
+                d.windows = std::move(now);
+                const bmds::Rect work = wm.workArea();
+                if (work != d.workArea) {
+                        d.workArea = work;
+                        const Value v = rectValue(work);
+                        o.connection->emit(o, "workAreaChanged", Args(&v, 1));
+                }
+                return;
+        }
+        void shellWindowsChanged(void *arg) {
+                shellRefresh(*static_cast<GuiObject *>(arg));
+                return;
+        }
+        Value get_Shell_workArea(GuiObject &o) {
+                return rectValue(wmOf(o).workArea());
+        }
+        // Window @p v's number, if it is an application's window now. False: BadValue.
+        bool shellWindow(GuiObject &o, const Value &v, uint8_t &id) {
+                if (v.number <= 0 || v.number > 255) return false;
+                id = uint8_t(v.number);
+                for (const ShellWindow &w : shellData(o).windows)
+                        if (w.id == id) return true;
+                return false;
+        }
+        GuiStatus call_Shell_act(GuiObject &o, Args args, Value &) {
+                uint8_t id;
+                if (!shellWindow(o, args[0], id)) return BadValue;
+                WindowManager   &wm = wmOf(o);
+                const StringView action = atomName(args[1]);
+                Error            err;
+                if (action == StringView("raise"))
+                        err = wm.raise(id);
+                else if (action == StringView("minimize"))
+                        err = wm.minimize(id);
+                else if (action == StringView("maximize"))
+                        err = wm.maximize(id);
+                else if (action == StringView("restore"))
+                        err = wm.restore(id);
+                else if (action == StringView("close"))
+                        err = wm.requestClose(id); // asked, as the user's close is
+                else if (action == StringView("shade") || action == StringView("unshade"))
+                        err = wm.shade(id, action == StringView("shade"));
+                else
+                        return BadValue;
+                return err.isOk() ? Ok : BadMatch; // gone meanwhile, or not for this window
+        }
+        GuiStatus call_Shell_showWindowMenu(GuiObject &o, Args args, Value &) {
+                uint8_t id;
+                if (!shellWindow(o, args[0], id)) return BadValue;
+                if (args[1].number < 0 || args[1].number > 4095 || args[2].number < 0 || args[2].number > 4095)
+                        return BadValue;
+                return wmOf(o).showWindowMenu(id, uint16_t(args[1].number), uint16_t(args[2].number)).isOk() ? Ok
+                                                                                                             : BadMatch;
+        }
+        // Window's icon into the client's Image (a new picture: shown again by setting it again).
+        GuiStatus call_Shell_copyIcon(GuiObject &o, Args args, Value &result) {
+                uint8_t id;
+                if (!shellWindow(o, args[0], id)) return BadValue;
+                GuiObject *image = o.connection->find(uint32_t(args[1].number));
+                if (image == nullptr) return GuiStatus(GuiProtocol::ErrorCode::BadId);
+                if (!isClassNamed(image, "Image")) return BadMatch;
+                ShellData &d = shellData(o);
+                auto [icon, err] = wmOf(o).copyIcon(id, Span<uint32_t>(d.icon));
+                result = Value::boolean(err.isOk());
+                if (err.isError()) return Ok; // it has none
+                GuiImage *copy = GuiImage::make(icon.width, icon.height);
+                if (copy == nullptr) return NoMem;
+                std::memcpy(copy->pixels, d.icon, size_t(icon.width) * icon.height * sizeof(uint32_t));
+                GuiImage::unref(image->image); // its users keep the old picture
+                image->image = copy;
+                return Ok;
+        }
+        void shellKey(void *arg) {
+                auto       &g = *static_cast<GuiConnection::KeyGrab *>(arg);
+                GuiObject  *o = g.connection->find(g.object); // gone: the key goes nowhere
+                const Value v[] = {Value::integer(g.usage), Value::integer(g.modifiers)};
+                if (o != nullptr) o->connection->emit(*o, "keyGrabbed", Args(v, 2));
+                return;
+        }
+        GuiStatus call_Shell_grabKey(GuiObject &o, Args args, Value &) {
+                if (args[0].number <= 0 || args[0].number > 255 || args[1].number < 0 || args[1].number > 255)
+                        return BadValue;
+                const uint8_t           usage = uint8_t(args[0].number), modifiers = uint8_t(args[1].number);
+                GuiConnection::KeyGrab *slot = nullptr;
+                for (GuiConnection::KeyGrab &g : o.connection->keyGrabs) {
+                        if (g.connection != nullptr && g.usage == usage && g.modifiers == modifiers) {
+                                if (g.object != 0 && g.object != o.id) return BadAccess; // another object's
+                                g.object = o.id; // the connection's already: this object's now
+                                return Ok;
+                        }
+                        if (g.connection == nullptr && slot == nullptr) slot = &g;
+                }
+                if (slot == nullptr) return BadAccess;
+                const Error err = o.connection->application().grabKey(usage, modifiers, shellKey, slot);
+                if (err.isError()) return BadAccess; // another program has the chord, or all in use
+                *slot = GuiConnection::KeyGrab{o.connection, o.id, usage, modifiers};
+                return Ok;
+        }
+        GuiStatus call_Shell_programStarting(GuiObject &o, Args args, Value &) {
+                if (args[0].number <= 0) return BadValue;
+                wmOf(o).programStarting(int32_t(args[0].number), &GuiServicePriv::launcher(),
+                                        WindowManager::StartingTimeoutMs);
+                return Ok;
+        }
+        void shellDue(void *arg) {
+                shellRefresh(*static_cast<GuiObject *>(arg)); // every window told at first
+                return;
+        }
+        void disposeShell(GuiObject &o) {
+                GuiApplication &app = o.connection->application();
+                (void)app.setWindowsChanged(nullptr, nullptr);
+                app.cancelPosts(&o);
+                for (GuiConnection::KeyGrab &g : o.connection->keyGrabs)
+                        if (g.object == o.id) g.object = 0; // claimed until the connection ends
+                freeData<ShellData>(o);
+                return;
+        }
+        GuiStatus create_Shell(GuiObject &o, GuiObject *parent) {
+                (void)parent;
+                if (!mayShell(o)) return BadAccess;
+                for (GuiObject *other : o.connection->objects())
+                        if (isClassNamed(other, "Shell")) return BadAccess; // one a connection
+                if (makeData<ShellData>(o) == nullptr) return NoMem;
+                GuiApplication &app = o.connection->application();
+                if (app.setWindowsChanged(shellWindowsChanged, &o).isError() || app.post(shellDue, &o).isError()) {
+                        (void)app.setWindowsChanged(nullptr, nullptr);
+                        freeData<ShellData>(o);
+                        return NoMem;
+                }
+                o.dispose = disposeShell;
                 return Ok;
         }
 

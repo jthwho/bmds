@@ -288,6 +288,9 @@ class GuiConnection {
 
                 GuiApplication &application() { return *_app; }
 
+                /** @brief True if its program may use the `SHELL` extension (`gui/shell-clients`). */
+                bool shellAllowed() const { return _shellAllowed; }
+
                 /** @brief Its objects, by id. */
                 Span<GuiObject *const> objects() const { return _objects.span(); }
 
@@ -306,6 +309,19 @@ class GuiConnection {
                 };
                 static constexpr size_t MaxPendingDrops = 4;
                 PendingDrop             pendingDrops[MaxPendingDrops]; ///< The loop's thread.
+
+                /**
+                 * @brief A key claimed for its `Shell` object (`grabKey`): kept with the connection,
+                 *        as the window manager's claim is, so a claim outlives its object (its
+                 *        keys then go nowhere, or to the next `Shell` object claiming the chord).
+                 */
+                struct KeyGrab {
+                                GuiConnection *connection = nullptr; // null: the slot is free
+                                uint32_t       object = 0;           // the Shell object told (0: none now)
+                                uint8_t        usage = 0;
+                                uint8_t        modifiers = 0;
+                };
+                KeyGrab keyGrabs[GuiApplication::MaxGrabs]; ///< The loop's thread.
 
         private:
                 // A canvas surface asked for (canvasSurface()), on its caller's stack until `done`.
@@ -374,6 +390,7 @@ class GuiConnection {
                 std::atomic<bool>    _posted{false};
                 std::atomic<bool>    _stopping{false};
                 bool                 _helloDone = false;
+                bool                 _shellAllowed = false;     // the program named by gui/shell-clients
                 uint32_t             _sequence = 0;             // the request being run
                 uint16_t             _opcode = 0;               // and its opcode
                 List<GuiObject *>    _objects{MemSpace::Psram}; // sorted by id

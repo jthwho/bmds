@@ -71,6 +71,10 @@ namespace {
         }
 
         // The SSH server, while net/ssh/server says so (devplan/network.md §24): programs run by the loader.
+        bmds::Error startGui() {
+                return bmds::GuiService::init(loader);
+        }
+
         bmds::Error startSsh() {
                 return bmds::SshService::init(loader);
         }
@@ -111,7 +115,7 @@ namespace {
                 {"input", bmds::Input::init},
                 {"pads", bmds::Pads::init},                // the gamepads' table; before USB attaches any
                 {"controls", bmds::ProgramControls::init}, // programs' actions, changed live
-                {"gui", bmds::GuiService::init},           // programs' windows (gui_open), while the window system runs
+                {"gui", startGui},                         // programs' windows (gui_open), while the window system runs
                 {"usb", bmds::UsbHost::init},
                 {"usbdev", startUsbDevice},          // usb/device/mode: the console port as a USB device
                 {"net", bmds::EthernetDevice::init}, // eth0 (devplan/network.md)

@@ -150,6 +150,20 @@ class GuiWindow : public Widget {
                  */
                 Error setDecorations(uint8_t decorations);
 
+                /**
+                 * @brief Sets its level and, a panel's, the strip it reserves (`Config::level`,
+                 *        `reserve`) before it is shown. A panel's isn't focused by a press
+                 *        (`focusOnPress`), as the system's panel.
+                 * @return `Ok`, or `InvalidState` (shown).
+                 */
+                Error setLevel(WindowManager::Level level, uint16_t reserve);
+
+                /** @brief Returns its level. */
+                WindowManager::Level level() const { return _config.level; }
+
+                /** @brief Returns the strip it reserves (a panel's). */
+                uint16_t reserve() const { return _config.reserve; }
+
                 /** @brief Returns its frame (`WindowFrame`'s flags). */
                 uint8_t decorations() const { return _config.decorations; }
 

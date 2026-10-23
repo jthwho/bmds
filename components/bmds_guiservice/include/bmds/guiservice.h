@@ -14,6 +14,8 @@
 
 BMDS_NAMESPACE_BEGIN
 
+class ProgramLauncher;
+
 /**
  * @brief The GUI service (`devplan/guiprograms.md`): the toolkit run for programs, which speak
  *        the GUI protocol on a connection (`gui_open`; later TCP). Each connection has its own
@@ -27,8 +29,12 @@ namespace GuiService {
         /** @brief Connections at once. */
         constexpr size_t MaxConnections = 32;
 
-        /** @brief Registers the service with the loader (`GuiOpener`): the boot stage `gui`. */
-        Error init();
+        /**
+         * @brief Registers the service with the loader (`GuiOpener`): the boot stage `gui`.
+         *        @p launcher (kept: the loader) is what the `SHELL` extension's launch
+         *        feedback asks whether a program still runs.
+         */
+        Error init(ProgramLauncher &launcher);
 
 } // namespace GuiService
 

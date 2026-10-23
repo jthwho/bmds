@@ -1,8 +1,8 @@
 # GUI Programs: the Toolkit for Every Program, and Angel's Bindings to the Whole System
 
 Status: **steps 1-3 built** (2026-10-22; §9-§11): the protocol, the classes, pictures and the
-clipboard. **Step 4 under way** (§12): 4a and 4b built (notifications, tray icons, the
-service bus); next 4c, `SHELL`. The user agreed with the shape (2026-10-22): the
+clipboard. **Step 4 under way** (§12): 4a-4c built (notifications, tray icons, the
+service bus, the shell); next 4d, a panel in C. The user agreed with the shape (2026-10-22): the
 toolkit as a service (P1), names (P2), and **a wire protocol in the spirit of X11's** between
 programs and the service (P8), so that applications can also run on another machine. This plan
 revises `gui.md` G1 and fills in `windows.md` §6 ("ABI (later)").
@@ -1404,3 +1404,50 @@ every connection, and `SHELL` (value "1") on connections the setting allows.
     ends. Tried with the first minimized: it came back, focused.
   - Fifteen guitest runs: memory unchanged to the byte.
 - **Size:** `bmds_guiservice` 58.0 KB of flash (56.4 KB after 4a).
+
+**4c, as built (2026-10-23):**
+- **Who may:** the setting `gui/shell-clients` (Paths, `;` between, empty by default), compared
+  with the program's path as run, once when its connection starts. `Hello` names `SHELL` (value
+  "1") to those programs only. `Shell` objects and the desktop and panel levels are `BadAccess`
+  to others.
+- **`Window.level`** (`normal`, `desktop`, `panel`) and **`Window.reserve`** (0 to 360), set
+  before `show()` (after: `BadAccess`), through the toolkit's new `GuiWindow::setLevel()`. A
+  panel's window isn't focused by a press, as the system's panel. Its place is `placement`'s, and
+  the client turns its frame and title bar off.
+- **`Shell`**, one a connection:
+  - **Following windows:** at once (posted after its `Create`) and at every change of the window
+    manager's list, `windowChanged(window, title, state)` for each application window new or
+    changed, and `windowClosed(window)` for each gone. `state` names `focused`, `minimized`,
+    `maximized`, `shaded`, `above` and `icon`. An icon's change is found by a checksum of its
+    pixels, so a new icon is told too.
+  - **`act(window, action)`:** `raise`, `minimize`, `maximize`, `restore`, `close`, `shade`,
+    `unshade`. `close` asks, as the close box does: the new `WindowManager::requestClose()`.
+    A window not told (not an application's, or gone) is `BadValue`.
+  - **`showWindowMenu(window, x, y)`**, at a screen point.
+  - **`copyIcon(window, image)`:** the window's icon becomes the client's `Image`'s pixels (a new
+    picture: users of the old one keep it until the image is set again). False: no icon.
+  - **`workAreaChanged(rect)`** and `workArea`. The window manager now tells its watchers when
+    the work area changes too (before, only application windows' changes), so a panel's strip
+    coming or going is told.
+  - **`grabKey(usage, modifiers)`** (HID usage and modifier bits, as `Canvas.key`'s) and the event
+    `keyGrabbed`. The claims belong to the connection, as the window manager's do (it has no
+    release): a `Shell` destroyed leaves its keys going nowhere, and a later `Shell` of the same
+    connection claiming the chord takes them.
+  - **`programStarting(pid)`:** the window manager's launch feedback, with the loader as the
+    launcher (`GuiService::init()` now takes it).
+- **Also fixed:** a window that can't be shown at its size (smaller than its frame) was `NoMem`;
+  it is `BadValue`.
+- **Tried:**
+  - guitest without the setting: the refusals (`Shell`, the desktop level, a reserve), the
+    normal level allowed.
+  - guitest with itself named (set for the run, then reverted; never saved):
+    - another window of its own followed: opened (with `icon`), minimized and restored by `act`,
+      its icon copied into an `Image` (16 wide), and closed by asking (`closeRequested` came,
+      then `windowClosed` once destroyed);
+    - a panel of its own at the bottom: the work area 24 pixels shorter, and back when it went;
+    - the refusals: a second `Shell`, an action that isn't one, window 0, an icon into a window,
+      a level changed once shown, a bad key.
+  - `keyGrabbed` and `programStarting` need a key typed and a program started: tried with 4d's
+    panel.
+  - Fifteen runs: memory unchanged after the first five (24 bytes of PSRAM).
+- **Size:** `bmds_guiservice` 62.0 KB of flash (58.0 KB after 4b).

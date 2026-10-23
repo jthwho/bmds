@@ -787,6 +787,120 @@ static void servicesTest(bmds_gui_t *gui) {
         return;
 }
 
+// A Shell's windowChanged for @p window (0: whichever comes), waited for; its window in @p id,
+// its state names checked for @p name (NULL: none). @return 1 if it came and @p name is (or
+// isn't, @p has 0) among them.
+static int shellChanged(bmds_gui_t *gui, uint32_t shell, const char *title, const char *name, int has, int32_t *id) {
+        bmds_gui_event_t e;
+        while (waitFor(gui, shell, BMDS_GUI_SHELL_WINDOW_CHANGED, 3000, &e)) {
+                if (e.count != 3 || e.values[1].length != strlen(title) ||
+                    memcmp(e.values[1].text, title, e.values[1].length) != 0)
+                        continue;
+                *id = (int32_t)e.values[0].number;
+                int found = 0;
+                for (uint32_t i = 0; name != NULL && i < e.values[2].count; ++i) {
+                        bmds_gui_value_t item;
+                        if (bmds_gui_list_item(&e.values[2], i, &item) == 0 && item.length == strlen(name) &&
+                            memcmp(item.text, name, item.length) == 0)
+                                found = 1;
+                }
+                if (name == NULL || found == has) return 1;
+        }
+        return 0;
+}
+
+// The shell (SHELL), for programs gui/shell-clients names. Without it: the refusals. With it:
+// another window followed (opened, minimized, restored, its icon, closed by asking), the work
+// area a panel of our own reserves, the refusals.
+static void shellTest(bmds_gui_t *gui) {
+        const int      allowed = bmds_gui_has_extension(gui, "SHELL");
+        const uint32_t probe = bmds_window_new(gui, 0);
+        bmds_window_set_level(gui, probe, "desktop");
+        if (!allowed) {
+                EXPECT(BMDS_GUI_BAD_ACCESS);
+                bmds_window_set_reserve(gui, probe, 24);
+                EXPECT(BMDS_GUI_BAD_ACCESS);
+                bmds_window_set_level(gui, probe, "normal"); // anyone's
+                bmds_gui_destroy(gui, probe);
+                EXPECT_NONE();
+                bmds_shell_new(gui, 0);
+                EXPECT(BMDS_GUI_BAD_ACCESS);
+                printf("guitest: no SHELL here (gui/shell-clients): its refusals checked only\n");
+                return;
+        }
+        bmds_window_set_reserve(gui, probe, 24);
+        bmds_gui_value_t v;
+        CHECK(bmds_window_get_level(gui, probe, &v) == 0 && v.number == bmds_gui_atom(gui, "desktop"));
+        CHECK(bmds_window_get_reserve(gui, probe, &v) == 0 && v.number == 24);
+        bmds_gui_destroy(gui, probe);
+        EXPECT_NONE();
+        const uint32_t shell = bmds_shell_new(gui, 0);
+        bmds_shell_new(gui, 0); // one a connection
+        EXPECT(BMDS_GUI_BAD_ACCESS);
+        bmds_gui_value_t work;
+        CHECK(bmds_shell_get_work_area(gui, shell, &work) == 0 && work.tag == BMDS_GUI_RECT && work.width > 0);
+
+        // Another window: opened, minimized and restored, its icon copied, closed by asking.
+        const uint32_t other = bmds_window_new(gui, 0);
+        bmds_window_set_title(gui, other, "guitest shell");
+        bmds_window_set_icon(gui, other, "dialog-information");
+        bmds_window_show(gui, other);
+        int32_t id = 0, again = 0;
+        CHECK(shellChanged(gui, shell, "guitest shell", "icon", 1, &id));
+        bmds_shell_act(gui, shell, id, "minimize");
+        CHECK(shellChanged(gui, shell, "guitest shell", "minimized", 1, &again) && again == id);
+        bmds_shell_act(gui, shell, id, "restore");
+        CHECK(shellChanged(gui, shell, "guitest shell", "minimized", 0, &again) && again == id);
+        const uint32_t image = bmds_gui_new(gui, "Image", 0);
+        CHECK(bmds_shell_copy_icon(gui, shell, id, image, &v) == 0 && v.number == 1);
+        CHECK(bmds_image_get_width(gui, image, &v) == 0 && v.number == 16);
+        EXPECT_NONE();
+        bmds_shell_act(gui, shell, id, "explode");
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_shell_act(gui, shell, 0, "raise");
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_shell_copy_icon(gui, shell, id, other, &v); // not an image
+        EXPECT(BMDS_GUI_BAD_MATCH);
+        const uint32_t closeRequested = bmds_gui_atom(gui, BMDS_GUI_WINDOW_CLOSE_REQUESTED);
+        bmds_gui_listen(gui, other, &closeRequested, 1, 1);
+        bmds_shell_act(gui, shell, id, "close");
+        bmds_gui_event_t e;
+        CHECK(waitFor(gui, other, BMDS_GUI_WINDOW_CLOSE_REQUESTED, 3000, &e)); // asked, not closed
+        bmds_gui_destroy(gui, other);
+        CHECK(waitFor(gui, shell, BMDS_GUI_SHELL_WINDOW_CLOSED, 3000, &e) && e.count == 1 && e.values[0].number == id);
+
+        // A panel of our own at the bottom: the work area shrinks by its strip, and comes back.
+        bmds_gui_value_t screen;
+        CHECK(bmds_gui_display(gui, "screen", &screen) == 0);
+        const uint32_t panel = bmds_window_new(gui, 0);
+        bmds_window_set_level(gui, panel, "panel");
+        bmds_window_set_reserve(gui, panel, 24);
+        bmds_window_set_frame(gui, panel, 0);
+        bmds_window_set_title_bar(gui, panel, 0);
+        char where[64];
+        snprintf(where, sizeof(where), "0 %u %u 24", (unsigned)(screen.height - 24), (unsigned)screen.width);
+        bmds_window_set_placement(gui, panel, where);
+        bmds_window_show(gui, panel);
+        CHECK(waitFor(gui, shell, BMDS_GUI_SHELL_WORK_AREA_CHANGED, 3000, &e) && e.count == 1 &&
+              e.values[0].height == work.height - 24);
+        bmds_window_set_level(gui, panel, "normal"); // shown: too late
+        EXPECT(BMDS_GUI_BAD_ACCESS);
+        bmds_gui_destroy(gui, panel);
+        CHECK(waitFor(gui, shell, BMDS_GUI_SHELL_WORK_AREA_CHANGED, 3000, &e) && e.count == 1 &&
+              e.values[0].height == work.height);
+
+        // A key claimed, again by the same object (fine), and a bad usage.
+        bmds_shell_grab_key(gui, shell, 0x45, 0x05); // Ctrl+Alt+F12
+        bmds_shell_grab_key(gui, shell, 0x45, 0x05);
+        EXPECT_NONE();
+        bmds_shell_grab_key(gui, shell, 0, 0);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_gui_destroy(gui, image);
+        bmds_gui_destroy(gui, shell);
+        EXPECT_NONE();
+        return;
+}
+
 // Many windows with children made and destroyed; the service answers throughout.
 static void many(bmds_gui_t *gui) {
         for (int i = 0; i < 100; ++i) {
@@ -826,6 +940,7 @@ int main(void) {
         notificationTest(gui);
         trayTest(gui);
         servicesTest(gui);
+        shellTest(gui);
         many(gui);
         bmds_gui_close(gui);
         if (failures != 0) {

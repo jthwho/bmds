@@ -14,6 +14,8 @@
 #include <atomic>
 #include <bmds/guiopener.h>
 #include <bmds/log.h>
+#include <bmds/string.h>
+#include <bmds/sysconf.h>
 #include <bmds/streampair.h>
 #include <bmds/windowmanager.h>
 #include "guiatoms.h"
@@ -25,6 +27,12 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constinit std::atomic<bool> used[GuiService::MaxConnections] = {};
+        constinit ProgramLauncher  *loader = nullptr;
+
+        BMDS_SYSCONF(guiShellClients, "gui/shell-clients", Config::Type::Paths, "",
+                     "The programs that may act as the shell through the GUI service (SHELL: panels, docks), "
+                     "by their paths as run (; between)",
+                     0, 1024, nullptr, nullptr)
 
         Result<FileHandle::Ptr> open(uint32_t display, const GuiOpener::Client &client) {
                 auto [wm, werr] = WindowManager::manager(display);
@@ -53,7 +61,26 @@ void GuiServicePriv::released(uint8_t slot) {
         return;
 }
 
-Error GuiService::init() {
+ProgramLauncher &GuiServicePriv::launcher() {
+        return *loader;
+}
+
+bool GuiServicePriv::shellAllowed(StringView path) {
+        String list(MemSpace::Psram);
+        if (path.isEmpty() || SysConf::get(StringView(bmdsConf_guiShellClients.key), list).isError()) return false;
+        StringView rest = list.view();
+        while (!rest.isEmpty()) {
+                const size_t     semi = rest.indexOf(';');
+                const StringView one = (semi == StringView::NPos ? rest : rest.left(semi)).trimmed();
+                if (one == path) return true;
+                if (semi == StringView::NPos) break;
+                rest = rest.mid(semi + 1);
+        }
+        return false;
+}
+
+Error GuiService::init(ProgramLauncher &launcher) {
+        loader = &launcher;
         const Error err = GuiAtoms::init();
         if (err.isError()) return err;
         GuiConnection::initRegistry();

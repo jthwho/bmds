@@ -209,6 +209,7 @@ void GuiConnection::loopMain(void *arg) {
         if (mem != nullptr) {
                 self->_app = ::new (mem) GuiApplication();
                 self->_app->setApplicationName(programName(self->_program.view()));
+                self->_shellAllowed = GuiServicePriv::shellAllowed(self->_program.view());
                 if (self->_app->connect(self->_display).isOk()) {
                         if (registryLock != nullptr) { // its system calls post to the app from here
                                 Mutex::Locker locker(*registryLock, WaitForever);
@@ -407,7 +408,7 @@ void GuiConnection::hello(GP::Reader &body) {
         w.u32(GP::MaxMessage);
         // The extensions (their first opcode and event code 0: classes and a system call, not
         // requests): the clipboard and the service bus; a local client's canvases take surfaces.
-        w.u32(_clientEnd != nullptr ? 3 : 2);
+        w.u32(2u + (_clientEnd != nullptr ? 1u : 0u) + (_shellAllowed ? 1u : 0u));
         w.string("CLIPBOARD");
         w.string("1");
         w.u32(0);
@@ -418,6 +419,12 @@ void GuiConnection::hello(GP::Reader &body) {
         w.u32(0);
         if (_clientEnd != nullptr) {
                 w.string("CANVAS-SURFACE");
+                w.string("1");
+                w.u32(0);
+                w.u32(0);
+        }
+        if (_shellAllowed) { // the programs gui/shell-clients names (devplan/guiprograms.md §12 4c)
+                w.string("SHELL");
                 w.string("1");
                 w.u32(0);
                 w.u32(0);

@@ -1193,6 +1193,51 @@ static inline int bmds_services_unwatch(bmds_gui_t *gui, uint32_t id, const char
 }
 #define BMDS_GUI_SERVICES_MESSAGE "message" /**< Services's event (String, Bytes). */
 #define BMDS_GUI_SERVICES_CHANGED "changed" /**< Services's event (String, Bool). */
+static inline int bmds_window_set_level(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "level", bmds_gui_atom_value(bmds_gui_atom(gui, value)));
+}
+static inline int bmds_window_get_level(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "level", out);
+}
+static inline int bmds_window_set_reserve(bmds_gui_t *gui, uint32_t id, int32_t value) {
+        return bmds_gui_set_named(gui, id, "reserve", bmds_gui_int(value));
+}
+static inline int bmds_window_get_reserve(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "reserve", out);
+}
+
+/* ---- Shell */
+/** @brief A new Shell under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_shell_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "Shell", parent);
+}
+static inline int bmds_shell_get_work_area(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "workArea", out);
+}
+static inline int bmds_shell_act(bmds_gui_t *gui, uint32_t id, int32_t a0, const char *a1) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0), bmds_gui_atom_value(bmds_gui_atom(gui, a1))};
+        return bmds_gui_call_named(gui, id, "act", args, 2, NULL);
+}
+static inline int bmds_shell_show_window_menu(bmds_gui_t *gui, uint32_t id, int32_t a0, int32_t a1, int32_t a2) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0), bmds_gui_int(a1), bmds_gui_int(a2)};
+        return bmds_gui_call_named(gui, id, "showWindowMenu", args, 3, NULL);
+}
+static inline int bmds_shell_copy_icon(bmds_gui_t *gui, uint32_t id, int32_t a0, uint32_t a1, bmds_gui_value_t *result) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0), bmds_gui_id(a1)};
+        return bmds_gui_call_named(gui, id, "copyIcon", args, 2, result);
+}
+static inline int bmds_shell_grab_key(bmds_gui_t *gui, uint32_t id, int32_t a0, int32_t a1) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0), bmds_gui_int(a1)};
+        return bmds_gui_call_named(gui, id, "grabKey", args, 2, NULL);
+}
+static inline int bmds_shell_program_starting(bmds_gui_t *gui, uint32_t id, int32_t a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0)};
+        return bmds_gui_call_named(gui, id, "programStarting", args, 1, NULL);
+}
+#define BMDS_GUI_SHELL_WINDOW_CHANGED "windowChanged" /**< Shell's event (Int, String, List). */
+#define BMDS_GUI_SHELL_WINDOW_CLOSED "windowClosed" /**< Shell's event (Int). */
+#define BMDS_GUI_SHELL_WORK_AREA_CHANGED "workAreaChanged" /**< Shell's event (Rect). */
+#define BMDS_GUI_SHELL_KEY_GRABBED "keyGrabbed" /**< Shell's event (Int, Int). */
 
 #ifdef __cplusplus
 }

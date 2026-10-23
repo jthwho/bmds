@@ -272,6 +272,14 @@ void GuiWindow::setLargeIcon(const Icon *icon) {
         return;
 }
 
+Error GuiWindow::setLevel(WindowManager::Level level, uint16_t reserve) {
+        if (isShown()) return Error::InvalidState;
+        _config.level = level;
+        _config.reserve = reserve;
+        _config.focusOnPress = level != WindowManager::Level::Panel; // a press on a panel keeps the focus where it is
+        return Error::Ok;
+}
+
 Error GuiWindow::setDecorations(uint8_t decorations) {
         if (!WindowFrame::isValid(decorations)) return Error::Invalid;
         const uint8_t id = this->id();

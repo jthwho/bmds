@@ -456,8 +456,9 @@ Plan: [`input.md`](input.md).
   (`Clipboard`, offers answered on request, the `Bytes` tag), and drops onto any widget
   (`dropTypes`, `dropped`; the toolkit's widget drop hook). Step 4 designed (§12), in four parts;
   4a done: `Notification` and `TrayIcon` (a `Menu` made under it is its menu); 4b done: the
-  `SERVICES` extension (`Services`: names, messages, watches). Next: 4c, `SHELL`; then a panel
-  in C.
+  `SERVICES` extension (`Services`: names, messages, watches); 4c done: the `SHELL` extension
+  (`Shell`: other programs' windows followed and acted on, icons, keys, launch feedback; panel and
+  desktop windows; `gui/shell-clients`). Next: 4d, a panel in C.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

@@ -2182,6 +2182,14 @@ Error WindowManager::close(uint8_t id) {
         return closeLocked(id);
 }
 
+Error WindowManager::requestClose(uint8_t id) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return Error::InvalidState;
+        if (id == 0 || id > _windows.size() || _stack.rectOf(id).isError()) return Error::NotFound;
+        requestCloseLocked(id);
+        return Error::Ok;
+}
+
 Error WindowManager::closeLocked(uint8_t id) {
         const uint8_t      oldTop = focusId();
         const Level        level = _stack.levelOf(id);
@@ -2503,6 +2511,7 @@ void WindowManager::workAreaChanged() {
         const Rect area = workAreaLocked();
         if (area == _workArea) return;
         _workArea = area;
+        _listChanged = true; // the watchers told: a shell's panel follows the work area
         for (size_t id = 1; id <= _windows.size(); ++id) {
                 const Window &w = _windows[id - 1];
                 if (w.maximized && _stack.rectOf(uint8_t(id)).isOk())

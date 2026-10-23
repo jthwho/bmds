@@ -239,7 +239,7 @@ class WindowManager {
                 /**
                  * @brief Told that the list of windows changed (opened, closed,
                  *        titled, focused, minimized, restored, maximized, an icon
-                 *        set), once a round at most (on the window manager's task,
+                 *        set) or the work area did, once a round at most (on the window manager's task,
                  *        locked: it must not call it).
                  */
                 using Watch = void (*)(void *arg);
@@ -559,6 +559,14 @@ class WindowManager {
 
                 /** @brief Closes window @p id. @return `Ok`, `NotFound`, `InvalidState`. */
                 Error close(uint8_t id);
+
+                /**
+                 * @brief Asks to close window @p id as the user's close does (its close box): its
+                 *        owner is asked (`CloseRequest`), or it closes (a panel's window list,
+                 *        `devplan/guiprograms.md` §12 4c).
+                 * @return `Ok`, `NotFound`, `InvalidState`.
+                 */
+                Error requestClose(uint8_t id);
 
                 /**
                  * @brief Moves window @p id's top-left corner to (@p x, @p y), kept on the screen.

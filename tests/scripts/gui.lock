@@ -307,3 +307,18 @@ method Services.watch(String) -> None
 method Services.unwatch(String) -> None
 event Services.message(String, Bytes) on
 event Services.changed(String, Bool) on
+# Step 4c (2026-10-23): the shell (SHELL)
+property Window.level Atom RW
+values Window.level normal desktop panel
+property Window.reserve Int RW
+class Shell : None Concrete
+property Shell.workArea Rect RO
+method Shell.act(Int, Atom) -> None
+method Shell.showWindowMenu(Int, Int, Int) -> None
+method Shell.copyIcon(Int, Id) -> Bool
+method Shell.grabKey(Int, Int) -> None
+method Shell.programStarting(Int) -> None
+event Shell.windowChanged(Int, String, List) on
+event Shell.windowClosed(Int) on
+event Shell.workAreaChanged(Rect) on
+event Shell.keyGrabbed(Int, Int) on
