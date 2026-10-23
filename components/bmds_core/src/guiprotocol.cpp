@@ -97,7 +97,8 @@ namespace GuiProtocol {
                         case Tag::Atom:
                         case Tag::Id: u32(uint32_t(v.number)); break;
                         case Tag::Long: i64(v.number); break;
-                        case Tag::String: string(v.text); break;
+                        case Tag::String:
+                        case Tag::Bytes: string(v.text); break;
                         case Tag::Rect:
                                 i32(v.rect.x);
                                 i32(v.rect.y);
@@ -187,7 +188,8 @@ namespace GuiProtocol {
                         case Tag::Atom:
                         case Tag::Id: out.number = u32(); break;
                         case Tag::Long: out.number = i64(); break;
-                        case Tag::String: out.text = string(); break;
+                        case Tag::String:
+                        case Tag::Bytes: out.text = string(); break;
                         case Tag::Rect:
                                 out.rect.x = i32();
                                 out.rect.y = i32();
@@ -201,7 +203,7 @@ namespace GuiProtocol {
                         case Tag::List: {
                                 out.elements = Tag(u32());
                                 out.count = u32();
-                                if (out.elements == Tag::List || uint32_t(out.elements) > uint32_t(Tag::Color)) {
+                                if (out.elements == Tag::List || uint32_t(out.elements) > uint32_t(Tag::Bytes)) {
                                         _ok = false;
                                         break;
                                 }
@@ -220,7 +222,7 @@ namespace GuiProtocol {
 
         bool Reader::value(Value &out) {
                 const uint32_t tag = u32();
-                if (!_ok || tag > uint32_t(Tag::List)) {
+                if (!_ok || tag > uint32_t(Tag::Bytes)) {
                         _ok = false;
                         return false;
                 }

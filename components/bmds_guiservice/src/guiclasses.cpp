@@ -34,6 +34,7 @@
 #include <bmds/memory.h>
 #include <bmds/menu.h>
 #include <bmds/menubar.h>
+#include <bmds/guiclipboard.h>
 #include <bmds/messagebox.h>
 #include <bmds/windowstack.h>
 #include "canvassurface.h"
@@ -2668,6 +2669,177 @@ namespace {
         }
         GuiStatus create_Canvas(GuiObject &o, GuiObject *parent) {
                 return makeWidget<CanvasWidget>(o, parent, o);
+        }
+
+        // ---- Step 3d: Clipboard, the connection's application's clipboard (the service its owner)
+
+        // Copies larger than a pasted event holds fail (the rest of a message: its header, the names).
+        constexpr size_t MaxPasted = GuiProtocol::MaxMessage - 1024;
+
+        // A selection by its atom: clipboard or primary (drag's is the window manager's own).
+        bool selectionOf(const Value &v, GuiClipboard::Selection &out) {
+                const StringView name = v.tag == Tag::Atom ? GuiAtoms::name(uint32_t(v.number)) : StringView();
+                if (name == StringView("clipboard"))
+                        out = GuiClipboard::Selection::Clipboard;
+                else if (name == StringView("primary"))
+                        out = GuiClipboard::Selection::Primary;
+                else
+                        return false;
+                return true;
+        }
+        Value selectionValue(GuiClipboard::Selection s) {
+                return Value::atom(GuiAtoms::intern(s == GuiClipboard::Selection::Primary ? StringView("primary")
+                                                                                          : StringView("clipboard")));
+        }
+        GuiClipboard *clipboardOf(GuiObject &o) {
+                return o.connection->application().clipboard();
+        }
+        GuiStatus clipboardStatus(Error err) {
+                if (err.isOk()) return Ok;
+                if (err == Error::Invalid) return BadValue;
+                if (err == Error::NoMem || err == Error::NoSpace) return NoMem;
+                return BadAccess; // no clipboard, not this client's
+        }
+        // Another program copied onto a selection a Clipboard object of this connection had.
+        void clipboardLost(void *arg, GuiClipboard::Selection s) {
+                auto          *c = static_cast<GuiConnection *>(arg);
+                const size_t   i = size_t(s);
+                const uint32_t id = i < 3 ? c->clipboardOwners[i] : 0;
+                if (id == 0) return;
+                c->clipboardOwners[i] = 0;
+                GuiObject *o = c->find(id);
+                if (o == nullptr) return;
+                const Value v = selectionValue(s);
+                o->connection->emit(*o, "lost", Args(&v, 1));
+                return;
+        }
+        void clipboardAsked(void *arg, uint32_t request, GuiClipboard::Selection s, StringView type) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const Value v[] = {Value::integer(int32_t(request)), selectionValue(s), Value::string(type)};
+                o.connection->emit(o, "requested", Args(v, 3));
+                return;
+        }
+        // A Clipboard object's: its pastes' callbacks' arguments, one a selection (a paste's
+        // `Received` isn't told which selection it read).
+        struct ClipboardData {
+                        struct Paste {
+                                        GuiObject              *object = nullptr;
+                                        GuiClipboard::Selection selection = GuiClipboard::Selection::Clipboard;
+                        };
+                        Paste pastes[2];
+        };
+        void clipboardPasted(void *arg, Error err, StringView type, StringView data) {
+                const auto &p = *static_cast<const ClipboardData::Paste *>(arg);
+                GuiObject  &o = *p.object;
+                if (err.isOk() && data.size() > MaxPasted) err = Error::NoSpace;
+                if (err.isOk()) {
+                        const Value v[] = {selectionValue(p.selection), Value::string(type), Value::bytes(data)};
+                        o.connection->emit(o, "pasted", Args(v, 3));
+                        return;
+                }
+                // Why: empty, notOffered (nor convertible), tooBig, own (its own offer), failed.
+                const char *why = err == Error::Empty          ? "empty"
+                                  : err == Error::NotFound     ? "notOffered"
+                                  : err == Error::NoSpace      ? "tooBig"
+                                  : err == Error::InvalidState ? "own"
+                                                               : "failed";
+                const Value v[] = {selectionValue(p.selection), Value::string(type),
+                                   Value::atom(GuiAtoms::intern(StringView(why)))};
+                o.connection->emit(o, "pasteFailed", Args(v, 3));
+                return;
+        }
+        void owned(GuiObject &o, GuiClipboard::Selection s) {
+                o.connection->clipboardOwners[size_t(s)] = o.id;
+                return;
+        }
+        GuiStatus call_Clipboard_copyText(GuiObject &o, Args args, Value &) {
+                GuiClipboard::Selection s;
+                if (!selectionOf(args[0], s)) return BadValue;
+                GuiClipboard *c = clipboardOf(o);
+                if (c == nullptr) return NoMem;
+                const Error err = c->copyText(s, args[1].text);
+                if (err.isOk()) owned(o, s);
+                return clipboardStatus(err);
+        }
+        GuiStatus call_Clipboard_offer(GuiObject &o, Args args, Value &) {
+                GuiClipboard::Selection s;
+                StringView              types[Clipboard::MaxTypes];
+                size_t                  count = 0;
+                if (!selectionOf(args[0], s) || !readStrings(args[1], types, Clipboard::MaxTypes, count) || count == 0)
+                        return BadValue;
+                GuiClipboard *c = clipboardOf(o);
+                if (c == nullptr) return NoMem;
+                const Error err = c->offer(s, Span<const StringView>(types, count), clipboardAsked, &o);
+                if (err.isOk()) owned(o, s);
+                return clipboardStatus(err);
+        }
+        GuiStatus call_Clipboard_answer(GuiObject &o, Args args, Value &) {
+                GuiClipboard *c = clipboardOf(o);
+                if (c == nullptr) return NoMem;
+                const Error err = c->answer(uint32_t(args[0].number), args[1].text);
+                return err == Error::NotFound ? BadValue : clipboardStatus(err); // finished, or given up
+        }
+        GuiStatus call_Clipboard_finish(GuiObject &o, Args args, Value &) {
+                GuiClipboard *c = clipboardOf(o);
+                if (c == nullptr) return NoMem;
+                const Error err = c->finish(uint32_t(args[0].number));
+                return err == Error::NotFound ? BadValue : clipboardStatus(err);
+        }
+        GuiStatus call_Clipboard_clear(GuiObject &o, Args args, Value &) {
+                GuiClipboard::Selection s;
+                if (!selectionOf(args[0], s)) return BadValue;
+                GuiClipboard *c = clipboardOf(o);
+                if (c == nullptr) return NoMem;
+                (void)c->clear(s); // another program's copy now: left alone
+                o.connection->clipboardOwners[size_t(s)] = 0;
+                return Ok;
+        }
+        GuiStatus call_Clipboard_paste(GuiObject &o, Args args, Value &) {
+                GuiClipboard::Selection s;
+                if (!selectionOf(args[0], s) || args[1].text.isEmpty()) return BadValue;
+                GuiClipboard *c = clipboardOf(o);
+                if (c == nullptr) return NoMem;
+                const Error err =
+                        c->paste(s, args[1].text, clipboardPasted, &dataOf<ClipboardData>(o)->pastes[size_t(s)]);
+                return err == Error::Full ? BadAccess : clipboardStatus(err);
+        }
+        GuiStatus call_Clipboard_types(GuiObject &o, Args args, Value &result) {
+                GuiClipboard::Selection s;
+                if (!selectionOf(args[0], s)) return BadValue;
+                Clipboard::Description d;
+                auto [clip, err] = Clipboard::clipboard(0);
+                if (err.isOk()) clip->describe(s, d);
+                result = makeStrings(o, d.count, [&](size_t i) { return StringView(d.types[i].type); });
+                return Ok;
+        }
+        GuiStatus call_Clipboard_owns(GuiObject &o, Args args, Value &result) {
+                GuiClipboard::Selection s;
+                if (!selectionOf(args[0], s)) return BadValue;
+                GuiClipboard *c = clipboardOf(o);
+                result = Value::boolean(c != nullptr && c->owns(s) && o.connection->clipboardOwners[size_t(s)] == o.id);
+                return Ok;
+        }
+        void disposeClipboard(GuiObject &o) {
+                if (GuiClipboard *c = clipboardOf(o); c != nullptr) {
+                        c->forget(&o); // its offers withdrawn, its requests ended
+                        if (o.data != nullptr)
+                                for (ClipboardData::Paste &p : dataOf<ClipboardData>(o)->pastes) c->cancel(&p);
+                }
+                for (uint32_t &id : o.connection->clipboardOwners)
+                        if (id == o.id) id = 0; // a text copy stays on the clipboard
+                freeData<ClipboardData>(o);
+                return;
+        }
+        GuiStatus create_Clipboard(GuiObject &o, GuiObject *parent) {
+                (void)parent;
+                GuiClipboard  *c = clipboardOf(o);
+                ClipboardData *d = c != nullptr ? makeData<ClipboardData>(o) : nullptr;
+                if (d == nullptr) return NoMem;
+                d->pastes[0] = ClipboardData::Paste{&o, GuiClipboard::Selection::Clipboard};
+                d->pastes[1] = ClipboardData::Paste{&o, GuiClipboard::Selection::Primary};
+                c->setLost(clipboardLost, o.connection);
+                o.dispose = disposeClipboard;
+                return Ok;
         }
 
         // ---- The schema's tables, from classes.def

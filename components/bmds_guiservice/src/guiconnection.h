@@ -285,6 +285,8 @@ class GuiConnection {
 
                 GuiApplication &application() { return *_app; }
 
+                uint32_t clipboardOwners[3] = {}; ///< The `Clipboard` object that copied onto each selection (0: none).
+
         private:
                 // A canvas surface asked for (canvasSurface()), on its caller's stack until `done`.
                 struct SurfaceJob {

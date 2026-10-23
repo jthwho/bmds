@@ -456,6 +456,8 @@ GuiClipboard *GuiApplication::clipboard() {
         if (_clipboard != nullptr) return _clipboard;
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(GuiClipboard));
         if (mem != nullptr) _clipboard = ::new (mem) GuiClipboard(*this);
+        // Named after the application for `clip list` (until it names it otherwise).
+        if (_clipboard != nullptr && _applicationName[0] != '\0') _clipboard->setName(applicationName());
         return _clipboard;
 }
 

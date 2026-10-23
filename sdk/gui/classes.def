@@ -11,7 +11,7 @@
  * GUI_EVENT(Class, name, On|Off, ValueTags...)   On: sent unless the client turns it off
  *
  * Tags: None Int Long Bool String Atom Id Rect Color List (a list of strings, as a property or
- * an argument). One entry a line.
+ * an argument) Bytes (any bytes: a clipboard's data). One entry a line.
  */
 
 /* ---- Every widget's */
@@ -301,3 +301,18 @@ GUI_EVENT(Canvas, released, On, Int, Int, Int)
 GUI_EVENT(Canvas, moved, Off, Int, Int, Int)
 GUI_EVENT(Canvas, wheel, On, Int)
 GUI_EVENT(Canvas, key, On, Int, Int, Bool, String)
+
+/* ---- Step 3d (2026-10-22): the clipboard; selections are the atoms clipboard and primary */
+GUI_CLASS(Clipboard, None, Concrete)
+GUI_METHOD(Clipboard, copyText, None, Atom, String)
+GUI_METHOD(Clipboard, offer, None, Atom, List)
+GUI_METHOD(Clipboard, answer, None, Int, Bytes)
+GUI_METHOD(Clipboard, finish, None, Int)
+GUI_METHOD(Clipboard, clear, None, Atom)
+GUI_METHOD(Clipboard, paste, None, Atom, String)
+GUI_METHOD(Clipboard, types, List, Atom)
+GUI_METHOD(Clipboard, owns, Bool, Atom)
+GUI_EVENT(Clipboard, requested, On, Int, Atom, String)
+GUI_EVENT(Clipboard, lost, On, Atom)
+GUI_EVENT(Clipboard, pasted, On, Atom, String, Bytes)
+GUI_EVENT(Clipboard, pasteFailed, On, Atom, String, Atom)

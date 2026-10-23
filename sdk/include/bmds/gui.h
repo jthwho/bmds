@@ -43,6 +43,7 @@ extern "C" {
 #define BMDS_GUI_RECT 7u   /**< `x`, `y`, `width`, `height`. */
 #define BMDS_GUI_COLOR 8u  /**< 0xRRGGBB (`number`), or a palette role's atom (`role`). */
 #define BMDS_GUI_LIST 9u   /**< `elements` (their tag), `count`, `items` (read with `bmds_gui_list_item`). */
+#define BMDS_GUI_BYTES 10u /**< Any bytes (`text`, `length`): a clipboard's data (appended 2026-10-22). */
 
 /** @brief A value: what a property holds, an argument, a result, an event's datum. */
 typedef struct bmds_gui_value_t {
@@ -288,6 +289,9 @@ bmds_gui_value_t bmds_gui_bool(int v);
 bmds_gui_value_t bmds_gui_string(const char *text);
 bmds_gui_value_t bmds_gui_atom_value(uint32_t atom);
 bmds_gui_value_t bmds_gui_id(uint32_t id);
+
+/** @brief A value of @p size bytes at @p data (`BMDS_GUI_BYTES`: any bytes, a clipboard's data). */
+bmds_gui_value_t bmds_gui_bytes(const void *data, uint32_t size);
 
 #ifdef __cplusplus
 }

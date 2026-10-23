@@ -17,7 +17,7 @@ import sys
 
 ENTRY = re.compile(r"^\s*(GUI_CLASS|GUI_PROP|GUI_VALUES|GUI_METHOD|GUI_EVENT)\((.*)\)\s*$")
 
-TAGS = ("Int", "Long", "Bool", "String", "Atom", "Id", "Rect", "Color", "List")
+TAGS = ("Int", "Long", "Bool", "String", "Atom", "Id", "Rect", "Color", "List", "Bytes")
 
 
 def param(tag, n):
@@ -33,6 +33,7 @@ def param(tag, n):
                  "bmds_gui_rect(%s_x, %s_y, %s_width, %s_height)" % (n, n, n, n)),
         "Color": ("uint32_t %s" % n, "bmds_gui_color(%s)" % n),
         "List": ("const char *const *%s, uint32_t %s_count" % (n, n), "bmds_gui_strings(gui, %s, %s_count)" % (n, n)),
+        "Bytes": ("const void *%s, uint32_t %s_size" % (n, n), "bmds_gui_bytes(%s, %s_size)" % (n, n)),
     }[tag]
 
 

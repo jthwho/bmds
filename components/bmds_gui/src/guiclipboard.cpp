@@ -12,6 +12,7 @@
 #include <new>
 #include <sdkconfig.h>
 #include <bmds/clipboardreader.h>
+#include <bmds/clock.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiclipboard.h>
 #include <bmds/memory.h>
@@ -54,7 +55,8 @@ GuiClipboard::~GuiClipboard() {
         // No owner calls into a clipboard that is gone (keep() has run, unless exec() didn't).
         Clipboard *c = clipboard();
         for (size_t s = 0; s < Clipboard::Selections && c != nullptr; ++s)
-                if (_own[s].fn != nullptr) (void)c->withdraw(static_cast<Selection>(s), _own[s].serial);
+                if (_own[s].fn != nullptr || _own[s].asked != nullptr)
+                        (void)c->withdraw(static_cast<Selection>(s), _own[s].serial);
         if (_started.load(std::memory_order_acquire)) {
                 _quit.store(true, std::memory_order_release);
                 _work.release();
@@ -103,6 +105,72 @@ Error GuiClipboard::copy(Selection selection, Span<const StringView> types, Prov
         if (err.isError()) return err;
         _own[index(selection)] = Own{serial, fn, arg};
         return Error::Ok;
+}
+
+Error GuiClipboard::offer(Selection selection, Span<const StringView> types, Asked fn, void *arg) {
+        Clipboard *c = clipboard();
+        if (c == nullptr) return Error::NotExist;
+        if (fn == nullptr) return Error::Invalid;
+        Clipboard::Owner owner;
+        owner.requested = requested;
+        owner.lost = lost;
+        owner.arg = this;
+        owner.name = StringView(_name);
+        auto [serial, err] = c->offer(selection, types, owner);
+        if (err.isError()) return err;
+        Own own;
+        own.serial = serial;
+        own.arg = arg;
+        own.asked = fn;
+        _own[index(selection)] = own;
+        return Error::Ok;
+}
+
+GuiClipboard::Request *GuiClipboard::askedRequest(uint32_t id) {
+        Mutex::Locker lock(_jobsLock, WaitForever);
+        for (Request &r : _requests)
+                if (r.state == State::Asked && r.id == id && id != 0) return &r;
+        return nullptr;
+}
+
+Error GuiClipboard::answer(uint32_t request, StringView data) {
+        Request *r = askedRequest(request); // asked: only this thread touches it until finished
+        if (r == nullptr) return Error::NotFound;
+        const Clipboard *c = clipboard();
+        if (c != nullptr && r->data.size() + data.size() > c->limit()) return Error::NoSpace;
+        return r->data.append(data);
+}
+
+Error GuiClipboard::finish(uint32_t request) {
+        Request *r = askedRequest(request);
+        if (r == nullptr) return Error::NotFound;
+        {
+                Mutex::Locker lock(_jobsLock, WaitForever);
+                r->state = State::Ready;
+        }
+        return wake();
+}
+
+void GuiClipboard::forget(void *arg) {
+        Clipboard *c = clipboard();
+        for (size_t s = 0; s < Clipboard::Selections; ++s) {
+                Own &own = _own[s];
+                if (own.asked == nullptr || own.arg != arg) continue;
+                if (c != nullptr) (void)c->withdraw(static_cast<Selection>(s), own.serial);
+                own = Own();
+        }
+        bool ended = false;
+        {
+                Mutex::Locker lock(_jobsLock, WaitForever);
+                for (Request &r : _requests) {
+                        if (r.state != State::Asked || r.askedArg != arg) continue;
+                        r.data = String(MemSpace::Psram);
+                        r.state = State::Ready; // nothing written: the asker sees the end
+                        ended = true;
+                }
+        }
+        if (ended) (void)wake();
+        return;
 }
 
 Error GuiClipboard::clear(Selection selection) {
@@ -157,8 +225,10 @@ Error GuiClipboard::paste(Selection selection, StringView type, Received fn, voi
         slot->data = String(MemSpace::Psram);
         auto [normal, nerr] = ClipboardType::normalize(type, Span<char>(slot->type, sizeof(slot->type)));
         (void)normal;
-        // Its own copy: rendered here and converted (the thread would wait for this thread).
+        // Its own copy: rendered here and converted (the thread would wait for this thread). One
+        // answered later can't be: the application has what it offered.
         const Own &own = _own[index(selection)];
+        if (nerr.isOk() && own.asked != nullptr && owns(selection)) nerr = Error::InvalidState;
         if (nerr.isOk() && c != nullptr && own.fn != nullptr && owns(selection)) {
                 Clipboard::Description d;
                 c->describe(selection, d);
@@ -183,7 +253,7 @@ Error GuiClipboard::paste(Selection selection, StringView type, Received fn, voi
                 return Error::Ok;
         }
         if (nerr.isError()) {
-                slot->err = Error::Invalid;
+                slot->err = nerr == Error::InvalidState ? nerr : Error::Invalid;
                 {
                         Mutex::Locker lock(_jobsLock, WaitForever);
                         slot->state = State::Ready;
@@ -254,12 +324,46 @@ void GuiClipboard::drain(void *arg) {
                         if (self->_lost != nullptr) self->_lost(self->_lostArg, static_cast<Selection>(s));
                 }
         }
-        bool written = false;
+        bool          written = false;
+        const int64_t now = Clock::monotonicNs();
+        {
+                // Answers not finished in time: the asker has given up (its read timed out).
+                Mutex::Locker lock(self->_jobsLock, WaitForever);
+                for (Request &r : self->_requests) {
+                        if (r.state != State::Asked || now < r.deadlineNs) continue;
+                        r.data = String(MemSpace::Psram);
+                        r.state = State::Ready;
+                        written = true;
+                }
+        }
         for (Request &r : self->_requests) {
                 {
                         Mutex::Locker lock(self->_jobsLock, WaitForever);
                         if (r.state != State::Waiting) continue;
                         r.state = State::Busy;
+                }
+                // A copy answered later: its owner told, the answer coming by answer() and finish().
+                const Own *asked = nullptr;
+                size_t     askedSelection = 0;
+                for (size_t s = 0; s < Clipboard::Selections; ++s) {
+                        if (self->_own[s].serial != r.serial || self->_own[s].asked == nullptr) continue;
+                        asked = &self->_own[s];
+                        askedSelection = s;
+                }
+                if (asked != nullptr) {
+                        if (++self->_nextRequest == 0) self->_nextRequest = 1;
+                        r.id = self->_nextRequest;
+                        r.deadlineNs = now + int64_t(TimeoutMs) * 1000000;
+                        r.askedArg = asked->arg;
+                        r.data = String(MemSpace::Psram);
+                        {
+                                Mutex::Locker lock(self->_jobsLock, WaitForever);
+                                r.state = State::Asked;
+                        }
+                        const Asked fn = asked->asked; // the call may copy again: _own changes
+                        void       *fnArg = asked->arg;
+                        fn(fnArg, r.id, static_cast<Selection>(askedSelection), StringView(r.type));
+                        continue;
                 }
                 self->render(r);
                 Mutex::Locker lock(self->_jobsLock, WaitForever);
@@ -393,6 +497,11 @@ void GuiClipboard::keep() {
         if (c == nullptr) return;
         for (size_t s = 0; s < Clipboard::Selections; ++s) {
                 Own &own = _own[s];
+                if (own.asked != nullptr) { // nothing could answer it once the application is gone
+                        (void)c->withdraw(static_cast<Selection>(s), own.serial);
+                        own = Own();
+                        continue;
+                }
                 if (own.fn == nullptr || !owns(static_cast<Selection>(s))) {
                         own = Own();
                         continue;

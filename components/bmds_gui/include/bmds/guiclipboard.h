@@ -37,8 +37,14 @@ class GuiApplication;
  * the asker's pipe on that thread too. It starts at the first copy on
  * request or paste.
  *
+ * A copy may also be answered later (`offer()`): the application is told of
+ * each request on the loop's thread (`Asked`) and answers it in pieces
+ * (`answer()`, `finish()`), as the GUI service does for its clients
+ * (`devplan/guiprograms.md` §11 3d).
+ *
  * When the application ends (`~GuiApplication`), a copy it still owns keeps
- * its first type: rendered and stored, so it outlives the application.
+ * its first type: rendered and stored, so it outlives the application (one
+ * answered later is withdrawn: nothing could answer it).
  *
  * @par Thread Safety
  * The loop's thread (with the application's lock held), as the widgets.
@@ -62,6 +68,12 @@ class GuiClipboard {
 
                 /** @brief Another program copied onto @p selection, which was this one's. */
                 using Lost = void (*)(void *arg, Selection selection);
+
+                /**
+                 * @brief Asked for @p type of the copy on @p selection made with `offer()` (on the
+                 *        loop's thread): answer request @p request with `answer()`, then `finish()`.
+                 */
+                using Asked = void (*)(void *arg, uint32_t request, Selection selection, StringView type);
 
                 /** @brief The most pastes waiting at once. */
                 static constexpr size_t MaxPastes = 4;
@@ -88,6 +100,32 @@ class GuiClipboard {
                  * @return `Ok`, `Invalid` (a bad type), `NotExist`, `NoMem`.
                  */
                 Error copy(Selection selection, Span<const StringView> types, Provider fn, void *arg);
+
+                /**
+                 * @brief Offers @p types (the best first) on @p selection, each asked of
+                 *        @p fn when another program wants it and answered later.
+                 * @return `Ok`, `Invalid` (a bad type), `NotExist`, `NoMem`.
+                 */
+                Error offer(Selection selection, Span<const StringView> types, Asked fn, void *arg);
+
+                /**
+                 * @brief Adds @p data to request @p request's answer.
+                 * @return `Ok`, `NotFound` (no such request waiting: finished, or given up after
+                 *         `TimeoutMs`), `NoSpace` (over the clipboard's limit), `NoMem`.
+                 */
+                Error answer(uint32_t request, StringView data);
+
+                /**
+                 * @brief Ends request @p request: its answer written to the asker (none: it gets
+                 *        nothing). @return `Ok`, `NotFound`.
+                 */
+                Error finish(uint32_t request);
+
+                /**
+                 * @brief @p arg is going: its copies made with `offer()` are withdrawn and its
+                 *        requests end unanswered.
+                 */
+                void forget(void *arg);
 
                 /**
                  * @brief Empties @p selection if it holds this application's copy
@@ -138,15 +176,18 @@ class GuiClipboard {
                                 uint32_t serial = 0; // 0: none
                                 Provider fn = nullptr;
                                 void    *arg = nullptr;
+                                Asked    asked = nullptr; // answered later (offer()); fn null
                 };
 
                 // Where a paste or a request is: waiting (a paste to read, a request to render),
-                // busy (being read, rendered or written), ready (read: to tell; rendered: to write).
+                // busy (being read, rendered or written), ready (read: to tell; rendered: to write),
+                // asked (a request told to its asked copy's owner, its answer coming).
                 enum class State : uint8_t {
                         Free,
                         Waiting,
                         Busy,
-                        Ready
+                        Ready,
+                        Asked
                 };
 
                 // A paste: what the thread reads, then what it read.
@@ -167,6 +208,9 @@ class GuiClipboard {
                                 char            type[ClipboardType::BufferBytes] = {};
                                 FileHandle::Ptr write;
                                 String          data{MemSpace::Psram};
+                                uint32_t        id = 0;         // asked: its number for answer()
+                                int64_t         deadlineNs = 0; // asked: given up after
+                                void           *askedArg = nullptr;
                 };
 
                 static constexpr size_t MaxRequests = 4;
@@ -180,6 +224,7 @@ class GuiClipboard {
                 void       render(Request &r); // on the loop's thread
                 void       read(Paste &p);     // on the thread
                 Clipboard *clipboard() const;
+                Request   *askedRequest(uint32_t id); // the loop's thread: one waiting for its answer
 
                 GuiApplication   &_app;
                 Own               _own[Clipboard::Selections];
@@ -194,6 +239,7 @@ class GuiClipboard {
                 std::atomic<bool> _started{false};
                 std::atomic<bool> _quit{false};
                 std::atomic<bool> _posted{false}; // a drain() queued
+                uint32_t          _nextRequest = 0;
                 char              _name[Clipboard::MaxOwnerName + 1] = "application";
 };
 

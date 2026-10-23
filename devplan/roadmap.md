@@ -453,7 +453,8 @@ Plan: [`input.md`](input.md).
   `guigallery` uses every class, `sdk/tests/guitest.c` is the board test. Step 3 under way (§11):
   3a, images (`PutImage`), 3b, `Canvas` drawn through the protocol (`PutPixels`), and 3c,
   canvases as local surfaces (`gui_canvas_surface`, slot 125; `SwapChain` under the surface
-  calls), done. Next: 3d, the `CLIPBOARD` extension.
+  calls), and 3d, the clipboard (`Clipboard`, offers answered on request, the `Bytes` tag), done.
+  Next: 3e, drops onto program widgets.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

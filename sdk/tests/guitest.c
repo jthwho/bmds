@@ -485,6 +485,131 @@ static void canvasSurfaceTest(bmds_gui_t *gui, uint32_t window) {
         return;
 }
 
+// The next event @p name from @p source within @p ms (others skipped), in @p out. @return 1, or 0.
+static int waitFor(bmds_gui_t *gui, uint32_t source, const char *name, int ms, bmds_gui_event_t *out) {
+        while (nextEvent(gui, out, ms) == 1)
+                if (out->source == source && bmds_gui_event_is(gui, out, name)) return 1;
+        return 0;
+}
+
+// @p clip's paste of @p type from @p selection, waited for: its bytes in @p out (NUL-ended, at most
+// @p max), its length returned; or -1 (pasteFailed: its reason's atom in @p why), -2 (no answer).
+static int pasteOf(bmds_gui_t *gui, uint32_t clip, const char *selection, const char *type, char *out, size_t max,
+                   uint32_t *why) {
+        bmds_clipboard_paste(gui, clip, selection, type);
+        bmds_gui_event_t e;
+        while (nextEvent(gui, &e, 3000) == 1) {
+                if (e.source != clip) continue;
+                if (bmds_gui_event_is(gui, &e, BMDS_GUI_CLIPBOARD_PASTED) && e.count == 3) {
+                        const size_t n = e.values[2].length < max - 1 ? e.values[2].length : max - 1;
+                        memcpy(out, e.values[2].text, n);
+                        out[n] = '\0';
+                        return (int)e.values[2].length;
+                }
+                if (bmds_gui_event_is(gui, &e, BMDS_GUI_CLIPBOARD_PASTE_FAILED) && e.count == 3) {
+                        if (why != NULL) *why = (uint32_t)e.values[2].number;
+                        return -1;
+                }
+        }
+        return -2;
+}
+
+// The clipboard (CLIPBOARD): copies and pastes between two connections, offers answered on
+// request, losses, refusals. The user's clipboard text is put back after.
+static void clipboardTest(bmds_gui_t *gui) {
+        CHECK(bmds_gui_has_extension(gui, "CLIPBOARD") == 1);
+        bmds_gui_t *other = bmds_gui_connect(NULL);
+        CHECK(other != NULL);
+        if (other == NULL) return;
+        bmds_gui_on_error(other, onError, NULL);
+        const uint32_t a = bmds_clipboard_new(gui, 0), b = bmds_clipboard_new(other, 0);
+        static char    saved[2][4096], got[256];
+        int            savedLength[2];
+        uint32_t       why = 0;
+        savedLength[0] = pasteOf(other, b, "clipboard", "text", saved[0], sizeof(saved[0]), NULL);
+        savedLength[1] = pasteOf(other, b, "primary", "text", saved[1], sizeof(saved[1]), NULL);
+
+        // Text copied by one, pasted by the other.
+        bmds_clipboard_copy_text(gui, a, "clipboard", "hello, clipboard");
+        bmds_gui_sync(gui);
+        bmds_gui_value_t v;
+        CHECK(bmds_clipboard_owns(gui, a, "clipboard", &v) == 0 && v.number == 1);
+        CHECK(bmds_clipboard_types(other, b, "clipboard", &v) == 0 && v.count == 1);
+        CHECK(pasteOf(other, b, "clipboard", "text/plain", got, sizeof(got), NULL) == 16 &&
+              strcmp(got, "hello, clipboard") == 0);
+        CHECK(pasteOf(other, b, "clipboard", "image/png", got, sizeof(got), &why) == -1 &&
+              why == bmds_gui_atom(other, "notOffered"));
+
+        // An offer answered on request, its bytes any (a NUL among them), in two pieces.
+        const char *types[] = {"application/x-guitest", "text"};
+        bmds_clipboard_offer(gui, a, "primary", types, 2);
+        bmds_gui_sync(gui);
+        bmds_clipboard_paste(other, b, "primary", "application/x-guitest");
+        bmds_gui_flush(other);
+        bmds_gui_event_t e;
+        CHECK(waitFor(gui, a, BMDS_GUI_CLIPBOARD_REQUESTED, 3000, &e) && e.count == 3 &&
+              e.values[1].number == bmds_gui_atom(gui, "primary") && e.values[2].length == 21 &&
+              memcmp(e.values[2].text, "application/x-guitest", 21) == 0);
+        const int32_t request = (int32_t)e.values[0].number;
+        bmds_clipboard_answer(gui, a, request, "ab\0", 3);
+        bmds_clipboard_answer(gui, a, request, "cd", 2);
+        bmds_clipboard_finish(gui, a, request);
+        bmds_gui_flush(gui);
+        CHECK(waitFor(other, b, BMDS_GUI_CLIPBOARD_PASTED, 3000, &e) && e.count == 3 &&
+              e.values[2].tag == BMDS_GUI_BYTES && e.values[2].length == 5 &&
+              memcmp(e.values[2].text, "ab\0cd", 5) == 0);
+        bmds_clipboard_finish(gui, a, request); // finished already
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        // Its own offer pasted: it has it.
+        CHECK(pasteOf(gui, a, "primary", "text", got, sizeof(got), &why) == -1 && why == bmds_gui_atom(gui, "own"));
+
+        // Copied over by the other: lost.
+        bmds_clipboard_copy_text(other, b, "primary", "mine now");
+        bmds_gui_flush(other);
+        CHECK(waitFor(gui, a, BMDS_GUI_CLIPBOARD_LOST, 3000, &e) && e.count == 1 &&
+              e.values[0].number == bmds_gui_atom(gui, "primary"));
+        CHECK(bmds_clipboard_owns(gui, a, "primary", &v) == 0 && v.number == 0);
+        CHECK(pasteOf(gui, a, "primary", "text", got, sizeof(got), NULL) == 8 && strcmp(got, "mine now") == 0);
+
+        // Cleared by its owner only; empty pastes fail.
+        bmds_clipboard_clear(other, b, "clipboard"); // not its copy: left
+        CHECK(bmds_clipboard_types(other, b, "clipboard", &v) == 0 && v.count == 1);
+        bmds_clipboard_clear(gui, a, "clipboard");
+        bmds_gui_sync(gui);
+        CHECK(bmds_clipboard_types(other, b, "clipboard", &v) == 0 && v.count == 0);
+        CHECK(pasteOf(other, b, "clipboard", "text", got, sizeof(got), &why) == -1 &&
+              why == bmds_gui_atom(other, "empty"));
+
+        // An offer goes with its object.
+        bmds_clipboard_offer(gui, a, "clipboard", types, 2);
+        bmds_gui_destroy(gui, a);
+        bmds_gui_sync(gui);
+        CHECK(bmds_clipboard_types(other, b, "clipboard", &v) == 0 && v.count == 0);
+
+        // Refused: a selection that isn't one, no types, an unknown request.
+        const uint32_t c = bmds_clipboard_new(gui, 0);
+        bmds_clipboard_copy_text(gui, c, "drag", "x");
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_clipboard_offer(gui, c, "clipboard", types, 0);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_clipboard_answer(gui, c, 12345, "x", 1);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+
+        // The user's text back (or nothing, as it was).
+        for (int i = 0; i < 2; ++i) {
+                const char *selection = i == 0 ? "clipboard" : "primary";
+                if (savedLength[i] >= 0)
+                        bmds_clipboard_copy_text(other, b, selection, saved[i]);
+                else
+                        bmds_clipboard_clear(other, b, selection); // only if its copy is there
+        }
+        bmds_gui_sync(other);
+        bmds_gui_destroy(gui, c);
+        EXPECT_NONE();
+        bmds_gui_close(other);
+        return;
+}
+
 // Many windows with children made and destroyed; the service answers throughout.
 static void many(bmds_gui_t *gui) {
         for (int i = 0; i < 100; ++i) {
@@ -519,6 +644,7 @@ int main(void) {
         images(gui, window);
         canvasTest(gui, window);
         canvasSurfaceTest(gui, window);
+        clipboardTest(gui);
         many(gui);
         bmds_gui_close(gui);
         if (failures != 0) {

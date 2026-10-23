@@ -18,7 +18,9 @@
  * menu, and a timer counting seconds. Images: a diamond the program draws, sent once (PutImage) and
  * shown on a tool button, a list's rows and in the icon view. Paint: a canvas the program draws
  * with the mouse, its picture kept here and only the changed rectangle sent (PutPixels); the
- * colour dialog's colour is the brush's.
+ * colour dialog's colour is the brush's. Clipboard: a field's text copied, or offered and answered
+ * only when another program asks (as plain text, or as HTML in bold), and pasted back; what
+ * happens is shown below (CLIPBOARD).
  */
 
 #include <bmds/guiclasses.h>
@@ -48,6 +50,7 @@ typedef struct Gallery {
                 uint32_t    ask, answer, colorButton, colorDialog, popupButton, popup, popupItems[3];
                 uint32_t    timer, timerButton, ticks;
                 uint32_t    canvas, clearButton;
+                uint32_t    clipboard, clipEdit, clipCopy, clipOffer, clipPaste, clipState;
                 uint16_t   *picture; // the canvas's, as drawn here (RGB565)
                 int         pictureWidth, pictureHeight, lastX, lastY, drawing;
                 uint16_t    brush;
@@ -267,8 +270,56 @@ static void paintTo(Gallery *g, int x, int y) {
 }
 
 // The views', text's, terminal's and paint's events. @return 1 if it was one of theirs.
+// The Clipboard tab's events: its buttons, and the clipboard's requests, losses and pastes.
+static int clipboardEvent(Gallery *g, const bmds_gui_event_t *e) {
+        bmds_gui_t *gui = g->gui;
+        char        text[160];
+        if (e->source == g->clipCopy || e->source == g->clipOffer) {
+                bmds_gui_value_t v;
+                if (bmds_line_edit_get_text(gui, g->clipEdit, &v) != 0) return 1;
+                snprintf(text, sizeof(text), "%.*s", (int)v.length, v.text);
+                if (e->source == g->clipCopy) {
+                        bmds_clipboard_copy_text(gui, g->clipboard, "clipboard", text);
+                        bmds_label_set_text(gui, g->clipState, "Copied.");
+                } else {
+                        static const char *const types[] = {"text/html", "text"};
+                        bmds_clipboard_offer(gui, g->clipboard, "clipboard", types, 2);
+                        bmds_label_set_text(gui, g->clipState, "Offered: answered when pasted elsewhere.");
+                }
+                return 1;
+        }
+        if (e->source == g->clipPaste) {
+                bmds_clipboard_paste(gui, g->clipboard, "clipboard", "text");
+                return 1;
+        }
+        if (e->source != g->clipboard) return 0;
+        if (bmds_gui_event_is(gui, e, BMDS_GUI_CLIPBOARD_REQUESTED) && e->count == 3) {
+                // Answered from the field as it is now.
+                bmds_gui_value_t v;
+                if (bmds_line_edit_get_text(gui, g->clipEdit, &v) != 0) v.length = 0;
+                const int     html = e->values[2].length >= 9 && memcmp(e->values[2].text, "text/html", 9) == 0;
+                const int     n = snprintf(text, sizeof(text), html ? "<b>%.*s</b>" : "%.*s", (int)v.length, v.text);
+                const int32_t request = (int32_t)e->values[0].number;
+                bmds_clipboard_answer(gui, g->clipboard, request, text, (uint32_t)(n < (int)sizeof(text) ? n : 0));
+                bmds_clipboard_finish(gui, g->clipboard, request);
+                snprintf(text, sizeof(text), "Asked for %.*s: answered.", (int)e->values[2].length, e->values[2].text);
+                bmds_label_set_text(gui, g->clipState, text);
+        } else if (bmds_gui_event_is(gui, e, BMDS_GUI_CLIPBOARD_LOST)) {
+                bmds_label_set_text(gui, g->clipState, "Another program copied over ours.");
+        } else if (bmds_gui_event_is(gui, e, BMDS_GUI_CLIPBOARD_PASTED) && e->count == 3) {
+                snprintf(text, sizeof(text), "Pasted: %.*s", (int)e->values[2].length, e->values[2].text);
+                bmds_label_set_text(gui, g->clipState, text);
+        } else if (bmds_gui_event_is(gui, e, BMDS_GUI_CLIPBOARD_PASTE_FAILED) && e->count == 3) {
+                const char *why = bmds_gui_atom_name(gui, (uint32_t)e->values[2].number);
+                snprintf(text, sizeof(text), "Nothing pasted (%s).", why != NULL ? why : "?");
+                bmds_label_set_text(gui, g->clipState, text);
+        }
+        return 1;
+}
+
 static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
         bmds_gui_t *gui = g->gui;
+        if (clipboardEvent(g, e)) return 1;
         if (e->source == g->files && bmds_gui_event_is(gui, e, BMDS_GUI_DETAILS_VIEW_SORT_ASKED) && e->count == 1) {
                 // The same column again turns the order round.
                 const int column = (int)e->values[0].number;
@@ -695,6 +746,24 @@ int main(void) {
         g.clearButton = bmds_button_new(gui, paint);
         bmds_button_set_text(gui, g.clearButton, "C&lear (the brush: Dialogs, Colour...)");
         g.brush = rgb565(0x3a6ea5);
+
+        // Clipboard: a field copied, offered, and pasted back
+        const uint32_t clipPage = bmds_tab_page_new(gui, g.tabs);
+        bmds_tab_page_set_title(gui, clipPage, "Clipboard");
+        g.clipboard = bmds_clipboard_new(gui, 0);
+        g.clipEdit = bmds_line_edit_new(gui, clipPage);
+        bmds_line_edit_set_text(gui, g.clipEdit, "Text from the gallery");
+        const uint32_t clipRow = bmds_gui_new(gui, "Box", clipPage);
+        bmds_box_set_direction(gui, clipRow, "across");
+        g.clipCopy = bmds_button_new(gui, clipRow);
+        bmds_button_set_text(gui, g.clipCopy, "&Copy");
+        g.clipOffer = bmds_button_new(gui, clipRow);
+        bmds_button_set_text(gui, g.clipOffer, "&Offer");
+        g.clipPaste = bmds_button_new(gui, clipRow);
+        bmds_button_set_text(gui, g.clipPaste, "&Paste");
+        g.clipState = bmds_label_new(gui, clipPage);
+        bmds_label_set_text(gui, g.clipState, "Copy stores the text now; Offer answers when asked.");
+        bmds_gui_new(gui, "Spacer", clipPage);
 
         // Terminal: a shell on our own pty
         const uint32_t termPage = bmds_tab_page_new(gui, g.tabs);

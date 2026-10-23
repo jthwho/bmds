@@ -108,6 +108,7 @@ namespace GuiProtocol {
                 Rect = 7,  ///< int32 x, y; uint32 width, height.
                 Color = 8, ///< uint32 0xRRGGBB, uint32 a palette role's atom (0: the colour).
                 List = 9,  ///< uint32 element tag, uint32 count, the elements untagged.
+                Bytes = 10, ///< uint32 length, any bytes, padded (a clipboard's data; appended 2026-10-22).
         };
 
         /** @brief A rectangle's value. */
@@ -123,7 +124,7 @@ namespace GuiProtocol {
                         Tag        tag = Tag::None;
                         int64_t    number = 0;           ///< Int, Long, Bool, Atom, Id, Color's RGB.
                         uint32_t   role = 0;             ///< Color's palette role (an atom; 0: none).
-                        StringView text;                 ///< String.
+                        StringView text;                 ///< String, Bytes.
                         Rect       rect;                 ///< Rect.
                         Tag        elements = Tag::None; ///< List: the elements' tag.
                         uint32_t   count = 0;            ///< List: how many.
@@ -136,6 +137,12 @@ namespace GuiProtocol {
                         static Value string(StringView v) {
                                 Value r;
                                 r.tag = Tag::String;
+                                r.text = v;
+                                return r;
+                        }
+                        static Value bytes(StringView v) {
+                                Value r;
+                                r.tag = Tag::Bytes;
                                 r.text = v;
                                 return r;
                         }

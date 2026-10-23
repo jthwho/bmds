@@ -58,9 +58,10 @@ namespace {
                         Value              value;
         };
 
-        // A value of @p tag given for a property of @p want: the same tag (a boolean's 0 or 1 checked by the reader).
+        // A value of @p tag given for a property or an argument of @p want: the same tag (a boolean's 0
+        // or 1 checked by the reader), or text where bytes are wanted.
         bool fits(Tag want, const Value &v) {
-                return v.tag == want;
+                return v.tag == want || (want == Tag::Bytes && v.tag == Tag::String);
         }
 
 } // namespace
@@ -397,9 +398,13 @@ void GuiConnection::hello(GP::Reader &body) {
         w.u32(idBase());
         w.u32(IdMask);
         w.u32(GP::MaxMessage);
-        // The extensions: a local client's canvases take surfaces (its first opcode and event
-        // code 0: it is a system call, not requests).
-        w.u32(_clientEnd != nullptr ? 1 : 0);
+        // The extensions (their first opcode and event code 0: classes and a system call, not
+        // requests): the clipboard; a local client's canvases take surfaces.
+        w.u32(_clientEnd != nullptr ? 2 : 1);
+        w.string("CLIPBOARD");
+        w.string("1");
+        w.u32(0);
+        w.u32(0);
         if (_clientEnd != nullptr) {
                 w.string("CANVAS-SURFACE");
                 w.string("1");
@@ -678,7 +683,7 @@ void GuiConnection::call(GP::Reader &body, uint16_t flags) {
         }
         Value args[GuiMaxArgs];
         for (uint32_t i = 0; i < count; ++i)
-                if (!body.value(args[i]) || args[i].tag != m->args[i]) {
+                if (!body.value(args[i]) || !fits(m->args[i], args[i])) {
                         fail(body.ok() ? ErrorCode::BadValue : ErrorCode::BadLength, methodAtom);
                         return;
                 }

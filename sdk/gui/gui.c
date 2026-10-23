@@ -134,7 +134,8 @@ static int put_element(bmds_gui_t *g, const bmds_gui_value_t *v) {
                 case BMDS_GUI_LONG:
                         if (put32(g, (uint32_t)(uint64_t)v->number) != 0) return -1;
                         return put32(g, (uint32_t)((uint64_t)v->number >> 32));
-                case BMDS_GUI_STRING: return put_string(g, v->text != NULL ? v->text : "", v->length);
+                case BMDS_GUI_STRING:
+                case BMDS_GUI_BYTES: return put_string(g, v->text != NULL ? v->text : "", v->length);
                 case BMDS_GUI_RECT:
                         if (put32(g, (uint32_t)v->x) != 0 || put32(g, (uint32_t)v->y) != 0 || put32(g, v->width) != 0)
                                 return -1;
@@ -245,6 +246,7 @@ static int get_element(reader_t *r, uint32_t tag, bmds_gui_value_t *v) {
                         break;
                 }
                 case BMDS_GUI_STRING:
+                case BMDS_GUI_BYTES:
                         v->length = get32(r);
                         v->text = (const char *)get_bytes(r, v->length);
                         break;
@@ -261,7 +263,7 @@ static int get_element(reader_t *r, uint32_t tag, bmds_gui_value_t *v) {
                 case BMDS_GUI_LIST: {
                         v->elements = get32(r);
                         v->count = get32(r);
-                        if (v->elements == BMDS_GUI_LIST || v->elements > BMDS_GUI_COLOR) {
+                        if (v->elements == BMDS_GUI_LIST || v->elements > BMDS_GUI_BYTES) {
                                 r->ok = 0;
                                 break;
                         }
@@ -279,7 +281,7 @@ static int get_element(reader_t *r, uint32_t tag, bmds_gui_value_t *v) {
 
 static int get_value(reader_t *r, bmds_gui_value_t *v) {
         const uint32_t tag = get32(r);
-        if (!r->ok || tag > BMDS_GUI_LIST) {
+        if (!r->ok || tag > BMDS_GUI_BYTES) {
                 r->ok = 0;
                 return -1;
         }
@@ -916,6 +918,15 @@ bmds_gui_value_t bmds_gui_string(const char *text) {
         r.tag = BMDS_GUI_STRING;
         r.text = text != NULL ? text : "";
         r.length = (uint32_t)strlen(r.text);
+        return r;
+}
+
+bmds_gui_value_t bmds_gui_bytes(const void *data, uint32_t size) {
+        bmds_gui_value_t r;
+        memset(&r, 0, sizeof(r));
+        r.tag = BMDS_GUI_BYTES;
+        r.text = data != NULL ? (const char *)data : "";
+        r.length = data != NULL ? size : 0;
         return r;
 }
 

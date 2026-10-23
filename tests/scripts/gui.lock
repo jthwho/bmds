@@ -250,3 +250,18 @@ event Canvas.released(Int, Int, Int) on
 event Canvas.moved(Int, Int, Int) off
 event Canvas.wheel(Int) on
 event Canvas.key(Int, Int, Bool, String) on
+
+# Step 3d (2026-10-22): the clipboard (the Bytes tag, 10, appended to the wire)
+class Clipboard : None Concrete
+method Clipboard.copyText(Atom, String) -> None
+method Clipboard.offer(Atom, List) -> None
+method Clipboard.answer(Int, Bytes) -> None
+method Clipboard.finish(Int) -> None
+method Clipboard.clear(Atom) -> None
+method Clipboard.paste(Atom, String) -> None
+method Clipboard.types(Atom) -> List
+method Clipboard.owns(Atom) -> Bool
+event Clipboard.requested(Int, Atom, String) on
+event Clipboard.lost(Atom) on
+event Clipboard.pasted(Atom, String, Bytes) on
+event Clipboard.pasteFailed(Atom, String, Atom) on

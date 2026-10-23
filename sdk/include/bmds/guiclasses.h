@@ -1002,6 +1002,48 @@ static inline int bmds_canvas_get_preferred_height(bmds_gui_t *gui, uint32_t id,
 #define BMDS_GUI_CANVAS_WHEEL "wheel" /**< Canvas's event (Int). */
 #define BMDS_GUI_CANVAS_KEY "key" /**< Canvas's event (Int, Int, Bool, String). */
 
+/* ---- Clipboard */
+/** @brief A new Clipboard under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_clipboard_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "Clipboard", parent);
+}
+static inline int bmds_clipboard_copy_text(bmds_gui_t *gui, uint32_t id, const char *a0, const char *a1) {
+        const bmds_gui_value_t args[] = {bmds_gui_atom_value(bmds_gui_atom(gui, a0)), bmds_gui_string(a1)};
+        return bmds_gui_call_named(gui, id, "copyText", args, 2, NULL);
+}
+static inline int bmds_clipboard_offer(bmds_gui_t *gui, uint32_t id, const char *a0, const char *const *a1, uint32_t a1_count) {
+        const bmds_gui_value_t args[] = {bmds_gui_atom_value(bmds_gui_atom(gui, a0)), bmds_gui_strings(gui, a1, a1_count)};
+        return bmds_gui_call_named(gui, id, "offer", args, 2, NULL);
+}
+static inline int bmds_clipboard_answer(bmds_gui_t *gui, uint32_t id, int32_t a0, const void *a1, uint32_t a1_size) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0), bmds_gui_bytes(a1, a1_size)};
+        return bmds_gui_call_named(gui, id, "answer", args, 2, NULL);
+}
+static inline int bmds_clipboard_finish(bmds_gui_t *gui, uint32_t id, int32_t a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0)};
+        return bmds_gui_call_named(gui, id, "finish", args, 1, NULL);
+}
+static inline int bmds_clipboard_clear(bmds_gui_t *gui, uint32_t id, const char *a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_atom_value(bmds_gui_atom(gui, a0))};
+        return bmds_gui_call_named(gui, id, "clear", args, 1, NULL);
+}
+static inline int bmds_clipboard_paste(bmds_gui_t *gui, uint32_t id, const char *a0, const char *a1) {
+        const bmds_gui_value_t args[] = {bmds_gui_atom_value(bmds_gui_atom(gui, a0)), bmds_gui_string(a1)};
+        return bmds_gui_call_named(gui, id, "paste", args, 2, NULL);
+}
+static inline int bmds_clipboard_types(bmds_gui_t *gui, uint32_t id, const char *a0, bmds_gui_value_t *result) {
+        const bmds_gui_value_t args[] = {bmds_gui_atom_value(bmds_gui_atom(gui, a0))};
+        return bmds_gui_call_named(gui, id, "types", args, 1, result);
+}
+static inline int bmds_clipboard_owns(bmds_gui_t *gui, uint32_t id, const char *a0, bmds_gui_value_t *result) {
+        const bmds_gui_value_t args[] = {bmds_gui_atom_value(bmds_gui_atom(gui, a0))};
+        return bmds_gui_call_named(gui, id, "owns", args, 1, result);
+}
+#define BMDS_GUI_CLIPBOARD_REQUESTED "requested" /**< Clipboard's event (Int, Atom, String). */
+#define BMDS_GUI_CLIPBOARD_LOST "lost" /**< Clipboard's event (Atom). */
+#define BMDS_GUI_CLIPBOARD_PASTED "pasted" /**< Clipboard's event (Atom, String, Bytes). */
+#define BMDS_GUI_CLIPBOARD_PASTE_FAILED "pasteFailed" /**< Clipboard's event (Atom, String, Atom). */
+
 #ifdef __cplusplus
 }
 #endif

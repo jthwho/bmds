@@ -106,6 +106,8 @@ TEST_CASE("GuiProtocol: every tag written and read back, padded to 4; lists by t
         w.listHeader(GP::Tag::String, 2);
         w.element(GP::Value::string("a"));
         w.element(GP::Value::string("bcdef"));
+        const char binary[] = {'\0', '\xff', 'x'}; // any bytes, a NUL among them
+        w.value(GP::Value::bytes(StringView(binary, 3)));
         w.end();
         REQUIRE(w.ok());
         CHECK(out.size() % 4 == 0);
@@ -137,6 +139,9 @@ TEST_CASE("GuiProtocol: every tag written and read back, padded to 4; lists by t
         CHECK(e.text == StringView("a"));
         REQUIRE(items.element(GP::Tag::String, e));
         CHECK(e.text == StringView("bcdef"));
+        REQUIRE(r.value(v));
+        CHECK((v.tag == GP::Tag::Bytes && v.text.size() == 3 && v.text.data()[0] == '\0' &&
+               uint8_t(v.text.data()[1]) == 0xff && v.text.data()[2] == 'x'));
         CHECK(r.remaining() == 0);
         // Past the end: not a value, and the reader stays failed.
         CHECK_FALSE(r.value(v));

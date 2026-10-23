@@ -1168,3 +1168,54 @@ touch its edges and only their content areas pad themselves.
     once the connections had ended (each frees its surface a moment after its program exits).
   - blittest and surfdemo still pass on `ProgramSurface`.
 - **Size:** `bmds_guiservice` 49.6 KB of flash (46.6 KB after 3b).
+
+**3d, as built (2026-10-22):**
+- **`Clipboard`** (no parent), on the connection's application's clipboard (`GuiClipboard`), so the
+  service is the owner to the system's. Selections are the atoms `clipboard` and `primary`
+  (drag's stays the window manager's); anything else is `BadValue`.
+  - **Copying:** `copyText(selection, text)` stores it now. `offer(selection, types)` (1 to 8)
+    is answered on request: the event `requested(request, selection, type)` asks, and the client
+    answers with `answer(request, data)` (as many pieces as it likes, up to the clipboard's limit)
+    and then `finish(request)`.
+  - A request not finished in 5 s is given up (the asker's read has timed out by then). Answering
+    one finished or given up is `BadValue`.
+  - **Pasting:** `paste(selection, type)` is read on the clipboard's thread. The answer is the
+    event `pasted(selection, type, data)`, or `pasteFailed(selection, type, why)`. `why` is one of
+    `empty`, `notOffered` (nor convertible), `tooBig` (over a message: about 255 KB), `own` (its
+    own offer: the client has it) or `failed`. The design had no reason; it costs one value.
+  - **Also:** `clear(selection)` (only this object's copy), `types(selection)` (what is offered
+    there, as a list) and `owns(selection)`, and the event `lost(selection)` when another program
+    copies over this object's copy.
+  - **Its object going:** its offers are withdrawn, and its requests end unanswered (the asker
+    gets nothing). A text copy stays.
+- **The `Bytes` tag** (10, appended to the wire): a length and any bytes, coded as a String is.
+  `answer`'s and `pasted`'s data use it, so binary types travel without breaking the String
+  tag's UTF-8.
+  - Where `Bytes` is wanted, a String is taken.
+  - `bmds_gui_bytes()` makes one; the generator gives `Bytes` arguments a pointer and a size.
+- **The toolkit's side:** `GuiClipboard::offer(selection, types, Asked, arg)`, `answer()`,
+  `finish()` and `forget(arg)`.
+  - An asked copy's requests are told on the loop's thread and wait in their slot (state
+    `Asked`, a deadline) until finished. The clipboard's thread then writes them, as rendered
+    ones are.
+  - At the application's end an asked copy is withdrawn: `keep()` can't render it.
+  - A toolkit application's clipboard is now named after it for `clip list` (was
+    "application").
+- **`Hello`** names `CLIPBOARD` (value "1") on every connection, beside `CANVAS-SURFACE` on local
+  ones.
+- **Tried:**
+  - guitest copies and pastes between two connections of its own:
+    - text copied by one and pasted by the other (`text/plain` from the stored
+      `text/plain;charset=utf-8`), and `notOffered` for a PNG;
+    - an offer answered in two pieces of bytes with a NUL among them, then finished twice
+      (`BadValue`), and its own offer pasted (`own`);
+    - the loss when the other copies over it, and a clear by the non-owner (left) and the owner
+      (`empty` after);
+    - an offer gone with its object, and the refusals.
+  - It saves the user's clipboard and primary text first and puts them back.
+  - The gallery's new Clipboard tab: Offer, then `clip paste` gave the field's text and
+    `clip paste -t text/html` the same in bold, each asked for and answered. `clip copy` from the
+    shell told it `lost`, and Paste brought that text in. Killed with an offer out, the gallery
+    left the clipboard empty.
+  - Eleven guitest runs: memory unchanged to 48 bytes of PSRAM.
+- **Size:** `bmds_guiservice` 52.7 KB of flash (49.6 KB after 3c).
