@@ -91,6 +91,12 @@ class Splitter : public Widget {
 
                 Splitter(Widget *parent, Orientation orientation);
 
+                /** @brief Places its sides @p orientation from now on. */
+                void setOrientation(Orientation orientation);
+
+                /** @brief Returns how its sides are placed. */
+                Orientation orientation() const { return _orientation; }
+
                 /**
                  * @brief Sets the two sides (its children; null: none), placed again: call
                  *        again after hiding or showing one (a side hidden leaves all the room

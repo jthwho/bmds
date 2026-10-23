@@ -11,9 +11,16 @@
  * one doesn't compile.
  */
 
+#include <climits>
 #include <cstring>
 #include <new>
+#include <bmds/combobox.h>
+#include <bmds/formlayout.h>
+#include <bmds/furniture.h>
 #include <bmds/lineedit.h>
+#include <bmds/numberfield.h>
+#include <bmds/slider.h>
+#include <bmds/tabwidget.h>
 #include <bmds/memory.h>
 #include <bmds/windowstack.h>
 #include "guiatoms.h"
@@ -49,6 +56,15 @@ namespace {
                 T *w = Widget::create<T>(in, static_cast<A &&>(args)...);
                 if (w == nullptr) return NoMem;
                 o.widget = w;
+                if (parent->adopt != nullptr) {
+                        // A container that places its children itself (a splitter's sides, tabs' pages).
+                        const GuiStatus s = parent->adopt(*parent, o);
+                        if (s != Ok) {
+                                w->destroy();
+                                o.widget = nullptr;
+                                return s;
+                        }
+                }
                 o.owner = parent->owner;
                 o.connection->touched(o.owner);
                 return Ok;
@@ -406,10 +422,15 @@ namespace {
                 o.connection->touched(o.owner);
                 return Ok;
         }
+        void boxRelayout(GuiObject &o) {
+                box(o)->relayout();
+                return;
+        }
         GuiStatus create_Box(GuiObject &o, GuiObject *parent) {
                 const GuiStatus s = makeWidget<BoxLayout>(o, parent, BoxLayout::Direction::Vertical);
                 if (s == Ok) {
                         o.container = o.widget;
+                        o.relayout = boxRelayout;
                         box(o)->setSpacing(Spacing);
                 }
                 return s;
@@ -506,6 +527,598 @@ namespace {
                 return s;
         }
 
+        // ---- Step 2c: controls and layouts
+
+        void emitValue(GuiObject &o, const char *event, const Value &v) {
+                o.connection->emit(o, event, Args(&v, 1));
+                return;
+        }
+
+        // A range's ends: either may be set first, the other kept on its side.
+        bool rangeValue(const Value &v) {
+                return v.number >= INT32_MIN && v.number <= INT32_MAX;
+        }
+
+        GuiStatus set_Widget_stretch(GuiObject &o, const Value &v) {
+                if (v.number < 0 || v.number > 255) return BadValue;
+                o.widget->setStretch(uint8_t(v.number));
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_Widget_stretch(GuiObject &o) {
+                return Value::integer(o.widget->stretch());
+        }
+
+        // ---- CheckBox
+
+        CheckBox *checkBox(GuiObject &o) {
+                return static_cast<CheckBox *>(o.widget);
+        }
+        GuiStatus set_CheckBox_text(GuiObject &o, const Value &v) {
+                checkBox(o)->setText(v.text);
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_CheckBox_text(GuiObject &o) {
+                return Value::string(checkBox(o)->text());
+        }
+        GuiStatus set_CheckBox_checked(GuiObject &o, const Value &v) {
+                checkBox(o)->setChecked(v.number != 0);
+                return Ok;
+        }
+        Value get_CheckBox_checked(GuiObject &o) {
+                return Value::boolean(checkBox(o)->isChecked());
+        }
+        void checkToggled(void *arg, CheckBox &box) {
+                emitValue(*static_cast<GuiObject *>(arg), "toggled", Value::boolean(box.isChecked()));
+                return;
+        }
+        GuiStatus create_CheckBox(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<CheckBox>(o, parent);
+                if (s == Ok) checkBox(o)->setToggled(checkToggled, &o);
+                return s;
+        }
+
+        // ---- NumberField (its range kept in the object: the toolkit's has no getters)
+
+        NumberField *numberField(GuiObject &o) {
+                return static_cast<NumberField *>(o.widget);
+        }
+        void numberRange(GuiObject &o) {
+                numberField(o)->setRange(o.minimum, o.maximum);
+                numberField(o)->setSteps(uint32_t(o.step), uint32_t(o.step) * 10);
+                return;
+        }
+        GuiStatus set_NumberField_value(GuiObject &o, const Value &v) {
+                if (!rangeValue(v)) return BadValue;
+                numberField(o)->setValue(int32_t(v.number));
+                return Ok;
+        }
+        Value get_NumberField_value(GuiObject &o) {
+                return Value::integer(numberField(o)->value());
+        }
+        GuiStatus set_NumberField_minimum(GuiObject &o, const Value &v) {
+                o.minimum = int32_t(v.number);
+                if (o.maximum < o.minimum) o.maximum = o.minimum;
+                numberRange(o);
+                return Ok;
+        }
+        Value get_NumberField_minimum(GuiObject &o) {
+                return Value::integer(o.minimum);
+        }
+        GuiStatus set_NumberField_maximum(GuiObject &o, const Value &v) {
+                o.maximum = int32_t(v.number);
+                if (o.minimum > o.maximum) o.minimum = o.maximum;
+                numberRange(o);
+                return Ok;
+        }
+        Value get_NumberField_maximum(GuiObject &o) {
+                return Value::integer(o.maximum);
+        }
+        GuiStatus set_NumberField_step(GuiObject &o, const Value &v) {
+                if (v.number < 1) return BadValue;
+                o.step = int32_t(v.number);
+                numberRange(o);
+                return Ok;
+        }
+        Value get_NumberField_step(GuiObject &o) {
+                return Value::integer(o.step);
+        }
+        void numberChanged(void *arg, NumberField &, int32_t value) {
+                emitValue(*static_cast<GuiObject *>(arg), "changed", Value::integer(value));
+                return;
+        }
+        GuiStatus create_NumberField(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<NumberField>(o, parent);
+                if (s != Ok) return s;
+                if (numberField(o)->edit() == nullptr) {
+                        o.widget->destroy();
+                        o.widget = nullptr;
+                        return NoMem;
+                }
+                numberRange(o);
+                numberField(o)->setChanged(numberChanged, &o);
+                return Ok;
+        }
+
+        // ---- Slider
+
+        Slider *slider(GuiObject &o) {
+                return static_cast<Slider *>(o.widget);
+        }
+        void sliderRange(GuiObject &o) {
+                slider(o)->setRange(o.minimum, o.maximum);
+                slider(o)->setSteps(o.step, o.step * 10);
+                return;
+        }
+        GuiStatus set_Slider_value(GuiObject &o, const Value &v) {
+                slider(o)->setValue(v.number);
+                return Ok;
+        }
+        Value get_Slider_value(GuiObject &o) {
+                return Value::integer(slider(o)->value());
+        }
+        GuiStatus set_Slider_minimum(GuiObject &o, const Value &v) {
+                o.minimum = int32_t(v.number);
+                if (o.maximum < o.minimum) o.maximum = o.minimum;
+                sliderRange(o);
+                return Ok;
+        }
+        Value get_Slider_minimum(GuiObject &o) {
+                return Value::integer(o.minimum);
+        }
+        GuiStatus set_Slider_maximum(GuiObject &o, const Value &v) {
+                o.maximum = int32_t(v.number);
+                if (o.minimum > o.maximum) o.minimum = o.maximum;
+                sliderRange(o);
+                return Ok;
+        }
+        Value get_Slider_maximum(GuiObject &o) {
+                return Value::integer(o.maximum);
+        }
+        GuiStatus set_Slider_step(GuiObject &o, const Value &v) {
+                if (v.number < 1) return BadValue;
+                o.step = int32_t(v.number);
+                sliderRange(o);
+                return Ok;
+        }
+        Value get_Slider_step(GuiObject &o) {
+                return Value::integer(o.step);
+        }
+        GuiStatus set_Slider_direction(GuiObject &o, const Value &v) {
+                slider(o)->setOrientation(atomName(v) == "down" ? Slider::Orientation::Vertical
+                                                                : Slider::Orientation::Horizontal);
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_Slider_direction(GuiObject &o) {
+                const bool down = slider(o)->orientation() == Slider::Orientation::Vertical;
+                return Value::atom(GuiAtoms::intern(down ? StringView("down") : StringView("across")));
+        }
+        void sliderChanged(void *arg, Slider &, int32_t value) {
+                emitValue(*static_cast<GuiObject *>(arg), "changed", Value::integer(value));
+                return;
+        }
+        void sliderReleased(void *arg, Slider &, int32_t value) {
+                emitValue(*static_cast<GuiObject *>(arg), "released", Value::integer(value));
+                return;
+        }
+        GuiStatus create_Slider(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<Slider>(o, parent, Slider::Orientation::Horizontal);
+                if (s != Ok) return s;
+                sliderRange(o);
+                slider(o)->setChanged(sliderChanged, &o);
+                slider(o)->setReleased(sliderReleased, &o);
+                return Ok;
+        }
+
+        // ---- ComboBox
+
+        ComboBox *combo(GuiObject &o) {
+                return static_cast<ComboBox *>(o.widget);
+        }
+        GuiStatus set_ComboBox_items(GuiObject &o, const Value &v) {
+                if (v.elements != Tag::String && v.count != 0) return BadValue;
+                if (v.count > ComboBox::MaxItems) return BadValue;
+                combo(o)->clear();
+                GuiProtocol::Reader items(v.items);
+                for (uint32_t i = 0; i < v.count; ++i) {
+                        Value item;
+                        if (!items.element(Tag::String, item)) return BadValue;
+                        (void)combo(o)->addItem(item.text);
+                }
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_ComboBox_items(GuiObject &o) {
+                o.items.clear();
+                GuiProtocol::Writer w(o.items);
+                for (size_t i = 0; i < combo(o)->count(); ++i) w.element(Value::string(combo(o)->itemText(i)));
+                Value list;
+                list.tag = Tag::List;
+                list.elements = Tag::String;
+                list.count = w.ok() ? uint32_t(combo(o)->count()) : 0;
+                list.items = w.ok() ? ByteSpan(o.items.data(), o.items.size()) : ByteSpan();
+                return list;
+        }
+        GuiStatus set_ComboBox_current(GuiObject &o, const Value &v) {
+                if (v.number < -1 || v.number >= int64_t(combo(o)->count())) return BadValue;
+                combo(o)->setCurrent(int(v.number));
+                return Ok;
+        }
+        Value get_ComboBox_current(GuiObject &o) {
+                return Value::integer(combo(o)->current());
+        }
+        GuiStatus call_ComboBox_addItem(GuiObject &o, Args args, Value &) {
+                if (combo(o)->addItem(args[0].text).isError()) return BadAccess;
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        GuiStatus call_ComboBox_clear(GuiObject &o, Args, Value &) {
+                combo(o)->clear();
+                return Ok;
+        }
+        void comboChanged(void *arg, ComboBox &, int index) {
+                emitValue(*static_cast<GuiObject *>(arg), "changed", Value::integer(index));
+                return;
+        }
+        GuiStatus create_ComboBox(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<ComboBox>(o, parent);
+                if (s == Ok) combo(o)->setChanged(comboChanged, &o);
+                return s;
+        }
+
+        // ---- ProgressBar
+
+        ProgressBar *progress(GuiObject &o) {
+                return static_cast<ProgressBar *>(o.widget);
+        }
+        GuiStatus set_ProgressBar_value(GuiObject &o, const Value &v) {
+                if (v.number < 0) return BadValue;
+                progress(o)->setValue(uint64_t(v.number));
+                return Ok;
+        }
+        Value get_ProgressBar_value(GuiObject &o) {
+                Value r = Value::integer(0);
+                r.tag = Tag::Long;
+                r.number = int64_t(progress(o)->value());
+                return r;
+        }
+        GuiStatus set_ProgressBar_maximum(GuiObject &o, const Value &v) {
+                if (v.number < 0) return BadValue;
+                o.longMaximum = v.number;
+                progress(o)->setMaximum(uint64_t(v.number));
+                return Ok;
+        }
+        Value get_ProgressBar_maximum(GuiObject &o) {
+                Value r = Value::integer(0);
+                r.tag = Tag::Long;
+                r.number = o.longMaximum;
+                return r;
+        }
+        GuiStatus create_ProgressBar(GuiObject &o, GuiObject *parent) {
+                o.longMaximum = 100;
+                return makeWidget<ProgressBar>(o, parent);
+        }
+
+        // ---- Spacer: room, stretching unless its stretch is set to 0
+
+        class SpacerWidget final : public Widget {
+                public:
+                        explicit SpacerWidget(Widget *parent) : Widget(parent) { setStretch(1); }
+
+                        GuiSize sizeHint() const override { return GuiSize{size, size}; }
+
+                        uint16_t size = 0;
+        };
+
+        GuiStatus set_Spacer_size(GuiObject &o, const Value &v) {
+                if (v.number < 0 || v.number > 1280) return BadValue;
+                static_cast<SpacerWidget *>(o.widget)->size = uint16_t(v.number);
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_Spacer_size(GuiObject &o) {
+                return Value::integer(static_cast<SpacerWidget *>(o.widget)->size);
+        }
+        GuiStatus create_Spacer(GuiObject &o, GuiObject *parent) {
+                return makeWidget<SpacerWidget>(o, parent);
+        }
+
+        // ---- Form: sections and rows (a row's widgets go in its field), or any widget as a row
+
+        bool isClassNamed(const GuiObject *o, const char *name) {
+                return o != nullptr && o->cls != nullptr && std::strcmp(o->cls->name, name) == 0;
+        }
+        void formRelayout(GuiObject &o) {
+                static_cast<FormLayout *>(o.widget)->relayout();
+                return;
+        }
+        GuiStatus create_Form(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<FormLayout>(o, parent);
+                if (s == Ok) {
+                        o.container = o.widget;
+                        o.relayout = formRelayout;
+                }
+                return s;
+        }
+
+        GuiStatus set_FormSection_title(GuiObject &o, const Value &v) {
+                static_cast<FormSection *>(o.widget)->setTitle(v.text);
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_FormSection_title(GuiObject &o) {
+                return Value::string(static_cast<FormSection *>(o.widget)->title());
+        }
+        GuiStatus create_FormSection(GuiObject &o, GuiObject *parent) {
+                if (!isClassNamed(parent, "Form")) return BadMatch;
+                FormSection *section = static_cast<FormLayout *>(parent->widget)->addSection(StringView());
+                if (section == nullptr) return NoMem;
+                o.widget = section;
+                o.owner = parent->owner;
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+
+        FormRow *formRow(GuiObject &o) {
+                return static_cast<FormRow *>(o.widget);
+        }
+        GuiStatus set_FormRow_label(GuiObject &o, const Value &v) {
+                formRow(o)->label()->setText(v.text);
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_FormRow_label(GuiObject &o) {
+                return Value::string(formRow(o)->label()->text());
+        }
+        GuiStatus set_FormRow_help(GuiObject &o, const Value &v) {
+                if (formRow(o)->setHelp(v.text).isError()) return NoMem;
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_FormRow_help(GuiObject &o) {
+                const TextBlock *help = formRow(o)->help();
+                return Value::string(help != nullptr ? help->text() : StringView());
+        }
+        void rowRelayout(GuiObject &o) {
+                formRow(o)->field()->relayout();
+                return;
+        }
+        GuiStatus create_FormRow(GuiObject &o, GuiObject *parent) {
+                if (!isClassNamed(parent, "Form")) return BadMatch;
+                FormRow *row = static_cast<FormLayout *>(parent->widget)->addRow(StringView());
+                if (row == nullptr) return NoMem;
+                o.widget = row;
+                o.container = row->field();
+                o.relayout = rowRelayout;
+                o.owner = parent->owner;
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+
+        // ---- Splitter: its first two children are its sides
+
+        Splitter *splitter(GuiObject &o) {
+                return static_cast<Splitter *>(o.widget);
+        }
+        GuiObject *side(GuiObject &o, int which) {
+                return o.connection->find(which == 0 ? o.first : o.second);
+        }
+        void splitterPlace(GuiObject &o) {
+                GuiObject *a = side(o, 0), *b = side(o, 1);
+                splitter(o)->setWidgets(a != nullptr ? a->widget : nullptr, b != nullptr ? b->widget : nullptr);
+                return;
+        }
+        GuiStatus splitterAdopt(GuiObject &self, GuiObject &child) {
+                if (self.first == 0) {
+                        self.first = child.id;
+                } else if (self.second == 0) {
+                        self.second = child.id;
+                } else {
+                        return BadMatch; // two sides only
+                }
+                // Placed once it is in the connection's list (find() sees it): after this round.
+                self.connection->touched(self.owner);
+                return Ok;
+        }
+        void splitterRelease(GuiObject &self, GuiObject &child) {
+                if (self.first == child.id) self.first = 0;
+                if (self.second == child.id) self.second = 0;
+                GuiObject *a = side(self, 0), *b = side(self, 1);
+                splitter(self)->setWidgets(a != nullptr ? a->widget : nullptr, b != nullptr ? b->widget : nullptr);
+                return;
+        }
+        void splitterRelayout(GuiObject &o) {
+                splitterPlace(o);
+                return;
+        }
+        GuiStatus set_Splitter_direction(GuiObject &o, const Value &v) {
+                splitter(o)->setOrientation(atomName(v) == "down" ? Splitter::Orientation::Vertical
+                                                                  : Splitter::Orientation::Horizontal);
+                return Ok;
+        }
+        Value get_Splitter_direction(GuiObject &o) {
+                const bool down = splitter(o)->orientation() == Splitter::Orientation::Vertical;
+                return Value::atom(GuiAtoms::intern(down ? StringView("down") : StringView("across")));
+        }
+        GuiStatus set_Splitter_position(GuiObject &o, const Value &v) {
+                if (v.number < 0 || v.number > 1280) return BadValue;
+                splitter(o)->setPosition(uint16_t(v.number));
+                return Ok;
+        }
+        Value get_Splitter_position(GuiObject &o) {
+                return Value::integer(splitter(o)->position());
+        }
+        GuiStatus set_Splitter_minFirst(GuiObject &o, const Value &v) {
+                if (v.number < 0 || v.number > 1280) return BadValue;
+                o.minimum = int32_t(v.number);
+                splitter(o)->setLeast(uint16_t(o.minimum), uint16_t(o.maximum));
+                return Ok;
+        }
+        Value get_Splitter_minFirst(GuiObject &o) {
+                return Value::integer(o.minimum);
+        }
+        GuiStatus set_Splitter_minSecond(GuiObject &o, const Value &v) {
+                if (v.number < 0 || v.number > 1280) return BadValue;
+                o.maximum = int32_t(v.number);
+                splitter(o)->setLeast(uint16_t(o.minimum), uint16_t(o.maximum));
+                return Ok;
+        }
+        Value get_Splitter_minSecond(GuiObject &o) {
+                return Value::integer(o.maximum);
+        }
+        GuiStatus create_Splitter(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<Splitter>(o, parent, Splitter::Orientation::Horizontal);
+                if (s == Ok) {
+                        o.container = o.widget;
+                        o.adopt = splitterAdopt;
+                        o.release = splitterRelease;
+                        o.relayout = splitterRelayout;
+                        o.minimum = o.maximum = 0;
+                        o.widget->setStretch(1);
+                }
+                return s;
+        }
+
+        // ---- Tabs and their pages (boxes)
+
+        TabWidget *tabs(GuiObject &o) {
+                return static_cast<TabWidget *>(o.widget);
+        }
+        int tabIndex(GuiObject &tabsObject, const Widget *page) {
+                for (size_t i = 0; i < tabs(tabsObject)->count(); ++i)
+                        if (tabs(tabsObject)->page(i) == page) return int(i);
+                return -1;
+        }
+        GuiStatus tabsAdopt(GuiObject &self, GuiObject &child) {
+                if (!isClassNamed(&child, "TabPage")) return BadMatch;
+                const Error err = tabs(self)->addTab(child.widget, StringView());
+                return err.isOk() ? Ok : (err == Error::Full ? BadAccess : NoMem);
+        }
+        void tabsRelease(GuiObject &self, GuiObject &child) {
+                const int at = tabIndex(self, child.widget);
+                if (at >= 0) tabs(self)->removeTab(size_t(at));
+                return;
+        }
+        GuiStatus set_Tabs_current(GuiObject &o, const Value &v) {
+                if (v.number < 0 || v.number >= int64_t(tabs(o)->count())) return BadValue;
+                tabs(o)->setCurrent(size_t(v.number));
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_Tabs_current(GuiObject &o) {
+                return Value::integer(int32_t(tabs(o)->current()));
+        }
+        void tabsChanged(void *arg, TabWidget &, size_t index) {
+                emitValue(*static_cast<GuiObject *>(arg), "changed", Value::integer(int32_t(index)));
+                return;
+        }
+        GuiStatus create_Tabs(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<TabWidget>(o, parent);
+                if (s == Ok) {
+                        o.container = o.widget;
+                        o.adopt = tabsAdopt;
+                        o.release = tabsRelease;
+                        o.widget->setStretch(1);
+                        tabs(o)->setChanged(tabsChanged, &o);
+                }
+                return s;
+        }
+
+        GuiStatus set_TabPage_title(GuiObject &o, const Value &v) {
+                GuiObject *owner = o.connection->find(o.parent);
+                if (owner == nullptr) return BadMatch;
+                const int at = tabIndex(*owner, o.widget);
+                if (at >= 0) tabs(*owner)->setTitle(size_t(at), v.text);
+                if (o.text.assign(v.text).isError()) return NoMem;
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_TabPage_title(GuiObject &o) {
+                return Value::string(o.text.view());
+        }
+        GuiStatus create_TabPage(GuiObject &o, GuiObject *parent) {
+                if (!isClassNamed(parent, "Tabs")) return BadMatch;
+                const GuiStatus s = create_Box(o, parent);
+                if (s == Ok) box(o)->setMargins(WindowMargin, WindowMargin, WindowMargin, WindowMargin);
+                return s;
+        }
+
+        // ---- ToolBar and its buttons
+
+        GuiStatus call_ToolBar_addSeparator(GuiObject &o, Args, Value &) {
+                if (static_cast<ToolBar *>(o.widget)->addSeparator() == nullptr) return NoMem;
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        void toolBarRelayout(GuiObject &o) {
+                static_cast<ToolBar *>(o.widget)->relayout();
+                return;
+        }
+        GuiStatus create_ToolBar(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<ToolBar>(o, parent);
+                if (s == Ok) o.relayout = toolBarRelayout;
+                return s;
+        }
+
+        GuiStatus set_ToolButton_text(GuiObject &o, const Value &v) {
+                button(o)->setText(v.text);
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_ToolButton_text(GuiObject &o) {
+                return Value::string(button(o)->text());
+        }
+        GuiStatus set_ToolButton_icon(GuiObject &o, const Value &v) {
+                if (!o.icon.set(o.connection->application().icons(), v.text, 16)) return BadValue;
+                button(o)->setIcon(o.icon.icon());
+                o.icon.dropPrevious();
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_ToolButton_icon(GuiObject &o) {
+                return Value::string(o.icon.name());
+        }
+        GuiStatus call_ToolButton_click(GuiObject &o, Args, Value &) {
+                button(o)->click();
+                return Ok;
+        }
+        GuiStatus create_ToolButton(GuiObject &o, GuiObject *parent) {
+                if (!isClassNamed(parent, "ToolBar")) return BadMatch;
+                Button *b = static_cast<ToolBar *>(parent->widget)->addButton(nullptr, StringView(), buttonClicked, &o);
+                if (b == nullptr) return NoMem;
+                o.widget = b;
+                o.owner = parent->owner;
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+
+        // ---- StatusBar
+
+        GuiStatus call_StatusBar_addField(GuiObject &o, Args args, Value &result) {
+                if (args[0].number < 0 || args[0].number > 1280) return BadValue;
+                const int field = static_cast<StatusBar *>(o.widget)->addField(uint16_t(args[0].number));
+                if (field < 0) return BadAccess;
+                result = Value::integer(field);
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        GuiStatus call_StatusBar_setField(GuiObject &o, Args args, Value &) {
+                if (args[0].number < 0 || args[0].number >= int64_t(StatusBar::MaxFields)) return BadValue;
+                static_cast<StatusBar *>(o.widget)->setText(size_t(args[0].number), args[1].text);
+                return Ok;
+        }
+        void statusRelayout(GuiObject &o) {
+                static_cast<StatusBar *>(o.widget)->relayout();
+                return;
+        }
+        GuiStatus create_StatusBar(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<StatusBar>(o, parent);
+                if (s == Ok) o.relayout = statusRelayout;
+                return s;
+        }
+
         // ---- The schema's tables, from classes.def
 
         template <typename... T> constexpr uint8_t countOf(T...) {
@@ -582,6 +1195,39 @@ namespace {
 
 } // namespace
 
+// ---- GuiIcon
+
+GuiIcon::~GuiIcon() {
+        Memory::free(_pixels[0]);
+        Memory::free(_pixels[1]);
+}
+
+bool GuiIcon::set(IconTheme &theme, StringView name, uint16_t side) {
+        if (name.isEmpty()) {
+                _name.clear();
+                return true;
+        }
+        const Icon *found = theme.find(name, side);
+        if (found == nullptr || !found->isValid()) return false;
+        const uint8_t other = uint8_t(1 - _current);
+        const size_t  bytes = size_t(found->width) * found->height * sizeof(uint32_t);
+        Memory::free(_pixels[other]); // the one before the current: dropped already, or never in use
+        _pixels[other] = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, bytes));
+        if (_pixels[other] == nullptr || _name.assign(name).isError()) return false;
+        std::memcpy(_pixels[other], found->pixels, bytes);
+        _icons[other] = Icon{found->width, found->height, _pixels[other]};
+        _current = other;
+        return true;
+}
+
+void GuiIcon::dropPrevious() {
+        const uint8_t other = uint8_t(1 - _current);
+        Memory::free(_pixels[other]);
+        _pixels[other] = nullptr;
+        _icons[other] = Icon();
+        return;
+}
+
 // ---- ClientWindow
 
 ClientWindow::ClientWindow(GuiApplication &app, const Config &config, GuiObject &object)
@@ -598,7 +1244,6 @@ ClientWindow::~ClientWindow() {
         application().cancelPosts(this);
         close();
         updateBlock();
-        Memory::free(_iconPixels);
 }
 
 void ClientWindow::closedByManager() {
@@ -644,26 +1289,9 @@ void ClientWindow::activeChanged() {
 }
 
 bool ClientWindow::setIconNamed(StringView name) {
-        if (name.isEmpty()) {
-                setIcon(nullptr);
-                Memory::free(_iconPixels);
-                _iconPixels = nullptr;
-                _iconName.clear();
-                return true;
-        }
-        const Icon *found = application().icons().find(name, 16);
-        if (found == nullptr || !found->isValid()) return false;
-        const size_t bytes = size_t(found->width) * found->height * sizeof(uint32_t);
-        auto        *pixels = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, bytes));
-        if (pixels == nullptr || _iconName.assign(name).isError()) {
-                Memory::free(pixels);
-                return false;
-        }
-        std::memcpy(pixels, found->pixels, bytes);
-        _icon = Icon{found->width, found->height, pixels};
-        setIcon(&_icon); // the window manager has the new one before the old goes
-        Memory::free(_iconPixels);
-        _iconPixels = pixels;
+        if (!_icon.set(application().icons(), name, 16)) return false;
+        setIcon(_icon.icon()); // the window manager has the new one before the old goes
+        _icon.dropPrevious();
         return true;
 }
 

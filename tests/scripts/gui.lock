@@ -58,3 +58,63 @@ event Window.resized(Int, Int) on
 event Window.activated(Bool) off
 event Window.closeRequested() off
 event Window.windowMenuChosen() on
+
+# Step 2c (2026-10-22): controls and layouts.
+property Widget.stretch Int RW
+class CheckBox : Widget Concrete
+property CheckBox.text String RW
+property CheckBox.checked Bool RW
+event CheckBox.toggled(Bool) on
+class NumberField : Widget Concrete
+property NumberField.value Int RW
+property NumberField.minimum Int RW
+property NumberField.maximum Int RW
+property NumberField.step Int RW
+event NumberField.changed(Int) on
+class Slider : Widget Concrete
+property Slider.value Int RW
+property Slider.minimum Int RW
+property Slider.maximum Int RW
+property Slider.step Int RW
+property Slider.direction Atom RW
+values Slider.direction across down
+event Slider.changed(Int) on
+event Slider.released(Int) off
+class ComboBox : Widget Concrete
+property ComboBox.items List RW
+property ComboBox.current Int RW
+method ComboBox.addItem(String) -> None
+method ComboBox.clear() -> None
+event ComboBox.changed(Int) on
+class ProgressBar : Widget Concrete
+property ProgressBar.value Long RW
+property ProgressBar.maximum Long RW
+class Spacer : Widget Concrete
+property Spacer.size Int RW
+class Form : Widget Concrete
+class FormSection : Widget Concrete
+property FormSection.title String RW
+class FormRow : Widget Concrete
+property FormRow.label String RW
+property FormRow.help String RW
+class Splitter : Widget Concrete
+property Splitter.direction Atom RW
+values Splitter.direction across down
+property Splitter.position Int RW
+property Splitter.minFirst Int RW
+property Splitter.minSecond Int RW
+class Tabs : Widget Concrete
+property Tabs.current Int RW
+event Tabs.changed(Int) on
+class TabPage : Box Concrete
+property TabPage.title String RW
+class ToolBar : Widget Concrete
+method ToolBar.addSeparator() -> None
+class ToolButton : Widget Concrete
+property ToolButton.text String RW
+property ToolButton.icon String RW
+method ToolButton.click() -> None
+event ToolButton.clicked() on
+class StatusBar : Widget Concrete
+method StatusBar.addField(Int) -> Int
+method StatusBar.setField(Int, String) -> None

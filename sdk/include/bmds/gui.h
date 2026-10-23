@@ -138,6 +138,12 @@ uint32_t bmds_gui_atom(bmds_gui_t *gui, const char *name);
 /** @brief Fills @p out with the atoms of @p count names, in one round trip for those not cached. @return 0 or -1. */
 int bmds_gui_atoms(bmds_gui_t *gui, const char *const *names, uint32_t count, uint32_t *out);
 
+/**
+ * @brief Returns @p atom's name (cached for the connection's life; a round trip the first time),
+ *        or NULL with `errno`.
+ */
+const char *bmds_gui_atom_name(bmds_gui_t *gui, uint32_t atom);
+
 /** @brief Returns a new object id, or 0 (all used). */
 uint32_t bmds_gui_new_id(bmds_gui_t *gui);
 

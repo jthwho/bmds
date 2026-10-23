@@ -16,6 +16,7 @@
 #include <bmds/guiapplication.h>
 #include <bmds/guiprotocol.h>
 #include <bmds/guiwindow.h>
+#include <bmds/icontheme.h>
 #include <bmds/list.h>
 #include <bmds/mutex.h>
 #include <bmds/semaphore.h>
@@ -83,6 +84,35 @@ struct GuiValues {
                 const char *names;
 };
 
+/**
+ * @brief A theme icon by name, its pixels copied (the theme's cache may drop its own). Two
+ *        slots: a new icon goes in the other, and the one before is freed by `dropPrevious()`
+ *        once the new one is in use (the window manager may be drawing the old).
+ */
+class GuiIcon {
+        public:
+                GuiIcon() = default;
+                ~GuiIcon();
+                GuiIcon(const GuiIcon &) = delete;
+                GuiIcon &operator=(const GuiIcon &) = delete;
+
+                /** @brief Takes icon @p name of @p side pixels from @p theme (empty: none). @return False: no such icon. */
+                bool set(IconTheme &theme, StringView name, uint16_t side);
+
+                /** @brief Frees the icon before the current one (no longer in use). */
+                void dropPrevious();
+
+                /** @brief The icon (null: none). */
+                const Icon *icon() const { return _name.isEmpty() ? nullptr : &_icons[_current]; }
+                StringView  name() const { return _name.view(); }
+
+        private:
+                Icon      _icons[2];
+                uint32_t *_pixels[2] = {};
+                uint8_t   _current = 0;
+                String    _name{MemSpace::Psram};
+};
+
 /** @brief A window made by a client: a column for its children; its close told. */
 class ClientWindow final : public GuiWindow {
         public:
@@ -93,7 +123,7 @@ class ClientWindow final : public GuiWindow {
 
                 /** @brief Its icon: theme icon @p name's 16 × 16, copied (empty: none). @return False if none. */
                 bool       setIconNamed(StringView name);
-                StringView iconName() const { return _iconName.view(); }
+                StringView iconName() const { return _icon.name(); }
 
                 /** @brief Its window menu's own item (empty: none). */
                 void       setMenuItem(StringView label);
@@ -119,9 +149,7 @@ class ClientWindow final : public GuiWindow {
 
                 GuiObject &_object;
                 BoxLayout *_column = nullptr;
-                uint32_t  *_iconPixels = nullptr; // its icon's copy (a theme's may be dropped from the cache)
-                Icon       _icon;
-                String     _iconName{MemSpace::Psram};
+                GuiIcon    _icon;
                 String     _menuItem{MemSpace::Psram};
                 uint16_t   _toldWidth = 0; // the size last sent with `resized`
                 uint16_t   _toldHeight = 0;
@@ -145,6 +173,21 @@ struct GuiObject {
                 uint16_t minWidth = 0;                        ///< A window's least client area.
                 uint16_t minHeight = 0;
                 String   text{MemSpace::Psram};             ///< A getter's made text (valid until the next).
+                GuiIcon         icon;                              ///< A widget's icon by name (a tool button's).
+                int32_t  minimum = 0;   ///< A range's (a number field's, a slider's; a splitter's first side's least).
+                int32_t  maximum = 100; ///< (A splitter's second side's least.)
+                int32_t  step = 1;
+                int64_t  longMaximum = 0; ///< A progress bar's.
+                uint32_t first = 0;       ///< A splitter's sides (ids; 0: none).
+                uint32_t second = 0;
+                List<uint8_t> items{MemSpace::Psram}; ///< A getter's made list (valid until the next).
+
+                /** @name A container's (null: a plain one) */
+                ///@{
+                GuiStatus (*adopt)(GuiObject &self, GuiObject &child) = nullptr; ///< A child made in it.
+                void (*release)(GuiObject &self, GuiObject &child) = nullptr;    ///< A child going.
+                void (*relayout)(GuiObject &self) = nullptr; ///< After a round of requests that changed it.
+                ///@}
                 List<uint32_t>  listenOn{MemSpace::Psram};  ///< Events turned on (atoms).
                 List<uint32_t>  listenOff{MemSpace::Psram}; ///< And off.
 };

@@ -29,6 +29,14 @@ Slider::Slider(Widget *parent, Orientation orientation) : Widget(parent), _orien
         setFocusable(true);
 }
 
+void Slider::setOrientation(Orientation orientation) {
+        if (orientation == _orientation) return;
+        _orientation = orientation;
+        _model.setInverted(orientation == Orientation::Vertical); // up is more
+        update();
+        return;
+}
+
 void Slider::setRange(int32_t minimum, int32_t maximum) {
         _model.setRange(minimum, maximum);
         update();

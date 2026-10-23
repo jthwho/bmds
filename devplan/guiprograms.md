@@ -803,3 +803,45 @@ Each step ends tried on the board and with its measurements (§5's estimates rep
   - Edit's close: asked in place, Cancel kept it, No closed it, and an unmodified file closed
     at once.
 - **Size:** `bmds_guiservice` 17.0 KB of flash after 2a and 2b (11.8 KB at step 1).
+
+**2c, as built (2026-10-22):**
+- **Classes:**
+  - `CheckBox`: `text`, `checked`; event `toggled(Bool)`.
+  - `NumberField` and `Slider`: `value`, `minimum`, `maximum`, `step` (a page is ten steps);
+    events `changed(Int)` and, for the slider, `released(Int)` (Off). A slider has a
+    `direction`, `across` or `down`.
+  - `ComboBox`: `items` (a list, read and set), `current`, `addItem`, `clear`; event
+    `changed(Int)`.
+  - `ProgressBar`: `value` and `maximum`, both Long (a file's bytes fit).
+  - `Spacer`: `size` (its least length), stretching by default.
+  - `Form` with `FormSection` (`title`) and `FormRow` (`label`, `help`); a row's widgets go in
+    its field, and any other widget made in a form is a row of its own.
+  - `Splitter`: `direction`, `position`, `minFirst`, `minSecond`. Its first two children are
+    its sides; a third is refused (`BadMatch`).
+  - `Tabs` (`current`; event `changed(Int)`) with `TabPage`, a `Box` with a `title`. Only pages
+    go in tabs.
+  - `ToolBar` (`addSeparator`) with `ToolButton` (`text`, `icon` by theme name, `click`; event
+    `clicked`).
+  - `StatusBar`: `addField(width) -> Int` and `setField(index, text)`.
+  - `Widget.stretch` for every widget.
+- **Containers that place their children themselves** (a splitter's sides, tabs' pages) have
+  hooks on their object: `adopt` when a child is made in them, `release` before one goes (a
+  page's tab removed, a side let go), and `relayout` after a round of requests. The layout pass
+  calls the hook instead of assuming every container is a `BoxLayout`.
+- **A splitter's sides** are recorded by id when adopted. They are placed at the next layout,
+  once they are in the connection's list.
+- **New in the toolkit:** `Slider::setOrientation()` and `Splitter::setOrientation()`, for the
+  same reason as the box's direction.
+- **Icons:** tool buttons' icons and windows' share `GuiIcon`, a copy in two slots. A new icon
+  goes in the other slot, and the old one is freed only after the toolkit has the new one.
+- **Client library:** `bmds_gui_atom_name()`, an atom's name, from the cache or by one `NameOf`.
+  The gallery uses it to show each event in its status bar.
+- **Tried on the board with the gallery** (tool bar, tabs, status bar):
+  - the Controls page's form: the check box, the number field stepping in twos, the slider
+    with the progress bar following it, and the combo box's items and choice;
+  - the splitter's handle dragged;
+  - the tool buttons' About and Quit.
+- **Release hooks, tried with a throwaway program:** it removed a tab page, a splitter side, a
+  form row and a tool button, then added a side again, and was refused a third side and a
+  non-page in tabs. Destroying the tabs took their pages, and the board stayed up.
+- **Size:** `bmds_guiservice` 25.1 KB of flash (17.0 KB after 2b).

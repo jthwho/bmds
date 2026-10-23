@@ -119,6 +119,14 @@ GuiSize StatusBar::sizeHint() const {
 
 Splitter::Splitter(Widget *parent, Orientation orientation) : Widget(parent), _orientation(orientation) {}
 
+void Splitter::setOrientation(Orientation orientation) {
+        if (orientation == _orientation) return;
+        _orientation = orientation;
+        place();
+        update();
+        return;
+}
+
 void Splitter::setWidgets(Widget *first, Widget *second) {
         _first = first;
         _second = second;

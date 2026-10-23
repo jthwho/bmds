@@ -25,6 +25,7 @@
 
 #define OP_HELLO 0u
 #define OP_INTERN_NAMES 1u
+#define OP_NAME_OF 2u
 #define OP_CREATE 4u
 #define OP_DESTROY 5u
 #define OP_SET 6u
@@ -588,6 +589,29 @@ int bmds_gui_atoms(bmds_gui_t *g, const char *const *names, uint32_t count, uint
 uint32_t bmds_gui_atom(bmds_gui_t *g, const char *name) {
         uint32_t atom = 0;
         return bmds_gui_atoms(g, &name, 1, &atom) == 0 ? atom : 0;
+}
+
+const char *bmds_gui_atom_name(bmds_gui_t *g, uint32_t atom) {
+        for (size_t i = 0; i < g->atom_count; ++i)
+                if (g->atoms[i].atom == atom) return g->atoms[i].name;
+        if (begin(g, OP_NAME_OF, 0) != 0 || put32(g, 1) != 0 || put32(g, atom) != 0 || end(g) != 0) return NULL;
+        message_t m;
+        if (answer(g, &m) != 0) return NULL;
+        reader_t       r = {m.data + 12, m.length - 12, 0, 1};
+        const uint32_t count = get32(&r);
+        const uint32_t length = get32(&r);
+        const char    *text = (const char *)get_bytes(&r, length);
+        if (!r.ok || count != 1 || length == 0) {
+                errno = EPROTO;
+                return NULL;
+        }
+        char *name = (char *)malloc(length + 1);
+        if (name == NULL) return NULL;
+        memcpy(name, text, length);
+        name[length] = '\0';
+        const int kept = remember(g, name, atom);
+        free(name);
+        return kept == 0 ? g->atoms[g->atom_count - 1].name : NULL;
 }
 
 uint32_t bmds_gui_new_id(bmds_gui_t *g) {

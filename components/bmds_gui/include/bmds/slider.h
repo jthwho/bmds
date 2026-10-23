@@ -48,6 +48,12 @@ class Slider : public Widget {
 
                 Slider(Widget *parent, Orientation orientation);
 
+                /** @brief Makes it run @p orientation from now on. */
+                void setOrientation(Orientation orientation);
+
+                /** @brief Returns which way it runs. */
+                Orientation orientation() const { return _orientation; }
+
                 /** @brief Returns what it shows. */
                 const SliderModel &model() const { return _model; }
 

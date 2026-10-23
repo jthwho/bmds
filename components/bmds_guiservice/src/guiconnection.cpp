@@ -439,6 +439,7 @@ void GuiConnection::create(GP::Reader &body) {
                                 o->window->~ClientWindow();
                                 Memory::free(o->window);
                         } else if (o->widget != nullptr) {
+                                if (parent != nullptr && parent->release != nullptr) parent->release(*parent, *o);
                                 o->widget->destroy();
                         }
                 }
@@ -741,6 +742,8 @@ void GuiConnection::remove(GuiObject *object) {
                 object->window->~ClientWindow();
                 Memory::free(object->window);
         } else if (object->widget != nullptr) {
+                GuiObject *parent = object->parent != 0 ? find(object->parent) : nullptr;
+                if (parent != nullptr && parent->release != nullptr) parent->release(*parent, *object);
                 object->widget->destroy();
                 touched(object->owner);
         }
@@ -768,8 +771,7 @@ void GuiConnection::layOut() {
                 if (!w->isShown()) continue;
                 w->column()->relayout();
                 for (GuiObject *o : _objects)
-                        if (o->owner == w && o->container != nullptr && o->window == nullptr)
-                                static_cast<BoxLayout *>(o->container)->relayout();
+                        if (o->owner == w && o->relayout != nullptr) o->relayout(*o);
                 w->update();
         }
         _dirty.clear();

@@ -80,3 +80,78 @@ GUI_EVENT(Window, resized, On, Int, Int)
 GUI_EVENT(Window, activated, Off, Bool)
 GUI_EVENT(Window, closeRequested, Off)
 GUI_EVENT(Window, windowMenuChosen, On)
+
+/* ---- Step 2c (2026-10-22): controls and layouts */
+GUI_PROP(Widget, stretch, Int, RW)
+
+GUI_CLASS(CheckBox, Widget, Concrete)
+GUI_PROP(CheckBox, text, String, RW)
+GUI_PROP(CheckBox, checked, Bool, RW)
+GUI_EVENT(CheckBox, toggled, On, Bool)
+
+GUI_CLASS(NumberField, Widget, Concrete)
+GUI_PROP(NumberField, value, Int, RW)
+GUI_PROP(NumberField, minimum, Int, RW)
+GUI_PROP(NumberField, maximum, Int, RW)
+GUI_PROP(NumberField, step, Int, RW)
+GUI_EVENT(NumberField, changed, On, Int)
+
+GUI_CLASS(Slider, Widget, Concrete)
+GUI_PROP(Slider, value, Int, RW)
+GUI_PROP(Slider, minimum, Int, RW)
+GUI_PROP(Slider, maximum, Int, RW)
+GUI_PROP(Slider, step, Int, RW)
+GUI_PROP(Slider, direction, Atom, RW)
+GUI_VALUES(Slider, direction, across, down)
+GUI_EVENT(Slider, changed, On, Int)
+GUI_EVENT(Slider, released, Off, Int)
+
+GUI_CLASS(ComboBox, Widget, Concrete)
+GUI_PROP(ComboBox, items, List, RW)
+GUI_PROP(ComboBox, current, Int, RW)
+GUI_METHOD(ComboBox, addItem, None, String)
+GUI_METHOD(ComboBox, clear, None)
+GUI_EVENT(ComboBox, changed, On, Int)
+
+GUI_CLASS(ProgressBar, Widget, Concrete)
+GUI_PROP(ProgressBar, value, Long, RW)
+GUI_PROP(ProgressBar, maximum, Long, RW)
+
+GUI_CLASS(Spacer, Widget, Concrete)
+GUI_PROP(Spacer, size, Int, RW)
+
+GUI_CLASS(Form, Widget, Concrete)
+
+GUI_CLASS(FormSection, Widget, Concrete)
+GUI_PROP(FormSection, title, String, RW)
+
+GUI_CLASS(FormRow, Widget, Concrete)
+GUI_PROP(FormRow, label, String, RW)
+GUI_PROP(FormRow, help, String, RW)
+
+GUI_CLASS(Splitter, Widget, Concrete)
+GUI_PROP(Splitter, direction, Atom, RW)
+GUI_VALUES(Splitter, direction, across, down)
+GUI_PROP(Splitter, position, Int, RW)
+GUI_PROP(Splitter, minFirst, Int, RW)
+GUI_PROP(Splitter, minSecond, Int, RW)
+
+GUI_CLASS(Tabs, Widget, Concrete)
+GUI_PROP(Tabs, current, Int, RW)
+GUI_EVENT(Tabs, changed, On, Int)
+
+GUI_CLASS(TabPage, Box, Concrete)
+GUI_PROP(TabPage, title, String, RW)
+
+GUI_CLASS(ToolBar, Widget, Concrete)
+GUI_METHOD(ToolBar, addSeparator, None)
+
+GUI_CLASS(ToolButton, Widget, Concrete)
+GUI_PROP(ToolButton, text, String, RW)
+GUI_PROP(ToolButton, icon, String, RW)
+GUI_METHOD(ToolButton, click, None)
+GUI_EVENT(ToolButton, clicked, On)
+
+GUI_CLASS(StatusBar, Widget, Concrete)
+GUI_METHOD(StatusBar, addField, Int, Int)
+GUI_METHOD(StatusBar, setField, None, Int, String)
