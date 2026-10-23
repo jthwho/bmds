@@ -265,3 +265,7 @@ event Clipboard.requested(Int, Atom, String) on
 event Clipboard.lost(Atom) on
 event Clipboard.pasted(Atom, String, Bytes) on
 event Clipboard.pasteFailed(Atom, String, Atom) on
+
+# Step 3e (2026-10-22): drops onto any widget
+property Widget.dropTypes List RW
+event Widget.dropped(String, Bytes, Int, Int) on

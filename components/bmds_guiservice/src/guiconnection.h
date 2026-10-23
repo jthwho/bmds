@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/filehandle.h>
+#include <bmds/clipboardtype.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiopener.h>
 #include <bmds/guiprotocol.h>
@@ -226,6 +227,7 @@ struct GuiObject {
                 bool (*chosen)(GuiObject &self) = nullptr;   ///< Its shortcut was typed. @return True if it acted.
                 String  path{MemSpace::Psram};               ///< A tree's current path as last told.
                 ///@}
+                String          dropTypes{MemSpace::Psram}; ///< A widget's `dropTypes`, each ending in a newline.
                 List<uint32_t>  listenOn{MemSpace::Psram};  ///< Events turned on (atoms).
                 List<uint32_t>  listenOff{MemSpace::Psram}; ///< And off.
 };
@@ -286,6 +288,17 @@ class GuiConnection {
                 GuiApplication &application() { return *_app; }
 
                 uint32_t clipboardOwners[3] = {}; ///< The `Clipboard` object that copied onto each selection (0: none).
+
+                /** @brief A drop on one of its widgets whose data is being read (`dropTypes`). */
+                struct PendingDrop {
+                                GuiConnection *connection = nullptr;
+                                uint32_t       object = 0; ///< 0: the slot is free.
+                                uint32_t       drag = 0;
+                                int32_t        x = 0; ///< In the widget.
+                                int32_t        y = 0;
+                };
+                static constexpr size_t MaxPendingDrops = 4;
+                PendingDrop             pendingDrops[MaxPendingDrops]; ///< The loop's thread.
 
         private:
                 // A canvas surface asked for (canvasSurface()), on its caller's stack until `done`.

@@ -1219,3 +1219,37 @@ touch its edges and only their content areas pad themselves.
     left the clipboard empty.
   - Eleven guitest runs: memory unchanged to 48 bytes of PSRAM.
 - **Size:** `bmds_guiservice` 52.7 KB of flash (49.6 KB after 3c).
+
+**3e, as built (2026-10-22):**
+- **`Widget.dropTypes`** (a list of clipboard types, read and written; invalid ones are
+  `BadValue`; an empty list takes none) and the event **`dropped(type, data, x, y)`**: the type
+  taken, its bytes (`Bytes`), and where in the widget.
+  - The first of the widget's types the drag has (the client's order is its preference) is
+    taken, conversions included (`GuiDropEvent::hasType`).
+  - A drop is always a copy: the client gets the data and the source keeps its own. A drag that
+    can't be copied is refused.
+  - Up to 4 drops a connection are read at once; more are refused. A widget gone before its data
+    arrives refuses the drop, and data over a message (about 255 KB) is refused too.
+- **The toolkit's side:** `Widget::setDropHook(hook, arg)`, asked before the widget's own
+  `dragMoved()` and `dropped()`, whatever its class. The service's widgets are the toolkit's own
+  classes and can't override those.
+  - A hook that declines (none of its types) leaves the drag to the widget, so a `LineEdit` still
+    takes text on its own.
+  - `GuiWindow` finds targets by `takesDrags()`: its class's `acceptsDrops()`, or a hook.
+  - The data is read on the drag selection by the clipboard's thread. The loop tells `dropped`
+    and finishes the drop with Copy (None when it failed).
+- **Tried:**
+  - guitest sets and reads back `dropTypes`, and checks an invalid type and an empty list. A drop
+    needs a drag, so it was tried by hand.
+  - The gallery's Clipboard tab has a label taking `text/uri-list` and text. The desktop's
+    terminal icon dragged onto it with `win pointer` showed the copy badge. Let go, it told
+    `dropped` as `text/uri-list` (`file:///home/Desktop/...`) at (120, 8) in the label; the icon
+    stayed.
+- **Size:** `bmds_guiservice` 53.9 KB of flash (52.7 KB after 3d).
+- **Step 3 as a whole:**
+  - `Image` (PutImage) and a `Canvas` drawn by PutPixels or, locally, through a surface
+    (`gui_canvas_surface`, slot 125, on the new `SwapChain` under the surface calls).
+  - The `Clipboard` with offers answered on request, the `Bytes` tag, and drops onto any widget.
+  - The service 42.0 KB → 53.9 KB of flash.
+  - Next: step 4 (§6), between programs and the shell (`Notification`, `TrayIcon`, `SERVICES`,
+    `SHELL`, a panel in C).

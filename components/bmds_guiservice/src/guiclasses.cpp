@@ -2842,6 +2842,91 @@ namespace {
                 return Ok;
         }
 
+        // ---- Step 3e: drops onto any widget (its dropTypes; the toolkit's widget drop hook)
+
+        // The first of @p o's types (its order: the client's preference) that @p e's drag has.
+        StringView dropTypeFor(const GuiObject &o, const GuiDropEvent &e) {
+                const StringView all = o.dropTypes.view();
+                for (size_t at = 0; at < all.size();) {
+                        size_t end = at;
+                        while (end < all.size() && all[end] != '\n') ++end;
+                        const StringView type = all.mid(at, end - at);
+                        if (e.hasType(type)) return type;
+                        at = end + 1;
+                }
+                return StringView();
+        }
+        // Its data read: told as `dropped`, and the drop finished.
+        void dropRead(void *arg, Error err, StringView type, StringView data) {
+                auto          &d = *static_cast<GuiConnection::PendingDrop *>(arg);
+                GuiConnection *c = d.connection;
+                GuiObject     *o = c->find(d.object); // gone meanwhile: refused
+                const bool     ok = err.isOk() && o != nullptr && data.size() <= MaxPasted;
+                if (ok) {
+                        const Value v[] = {Value::string(type), Value::bytes(data), Value::integer(d.x),
+                                           Value::integer(d.y)};
+                        o->connection->emit(*o, "dropped", Args(v, 4));
+                }
+                (void)c->application().windowManager().finishDrop(d.drag, ok ? DropAction::Copy : DropAction::None);
+                d.object = 0;
+                return;
+        }
+        // A drag over one of the client's widgets, or a drop: of its types, copied (the client gets
+        // the data; nothing of the source's is moved). Others go to the widget's own handling.
+        bool dropHook(void *arg, Widget &w, GuiDropEvent &e) {
+                GuiObject       &o = *static_cast<GuiObject *>(arg);
+                const StringView type = dropTypeFor(o, e);
+                if (type.isEmpty()) return false;
+                const bool copies = (e.actions() & DropActions::CanCopy) != 0;
+                if (e.type() != GuiDropEvent::Type::Drop) {
+                        e.accept(copies ? DropAction::Copy : DropAction::None);
+                        return true;
+                }
+                GuiConnection::PendingDrop *slot = nullptr;
+                for (GuiConnection::PendingDrop &d : o.connection->pendingDrops)
+                        if (d.object == 0 && slot == nullptr) slot = &d;
+                if (!copies || slot == nullptr) { // too many being read: refused
+                        e.finish(DropAction::None);
+                        return true;
+                }
+                const bmds::Rect g = w.geometry();
+                slot->connection = o.connection;
+                slot->object = o.id;
+                slot->drag = e.drag();
+                slot->x = e.x() - g.x;
+                slot->y = e.y() - g.y;
+                if (e.read(type, dropRead, slot).isError()) {
+                        slot->object = 0;
+                        e.finish(DropAction::None);
+                }
+                return true;
+        }
+        GuiStatus set_Widget_dropTypes(GuiObject &o, const Value &v) {
+                StringView types[Clipboard::MaxTypes];
+                size_t     count = 0;
+                if (!readStrings(v, types, Clipboard::MaxTypes, count)) return BadValue;
+                String all(MemSpace::Psram);
+                for (size_t i = 0; i < count; ++i) {
+                        if (!ClipboardType::isValid(types[i])) return BadValue;
+                        if (all.append(types[i]).isError() || all.append(StringView("\n")).isError()) return NoMem;
+                }
+                o.dropTypes = std::move(all);
+                o.widget->setDropHook(count != 0 ? dropHook : nullptr, &o);
+                return Ok;
+        }
+        Value get_Widget_dropTypes(GuiObject &o) {
+                const StringView all = o.dropTypes.view(); // each type ends in a newline
+                StringView       types[Clipboard::MaxTypes];
+                size_t           n = 0;
+                for (size_t at = 0; at < all.size() && n < Clipboard::MaxTypes;) {
+                        size_t end = at;
+                        while (all[end] != '\n') ++end;
+                        types[n++] = all.mid(at, end - at);
+                        at = end + 1;
+                }
+                return makeStrings(o, n, [&](size_t i) { return types[i]; });
+        }
+
         // ---- The schema's tables, from classes.def
 
         template <typename... T> constexpr uint8_t countOf(T...) {

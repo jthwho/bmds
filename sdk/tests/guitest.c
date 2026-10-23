@@ -610,6 +610,26 @@ static void clipboardTest(bmds_gui_t *gui) {
         return;
 }
 
+// Drops (dropTypes): set and read back, refused when not types. (A drop itself needs a drag:
+// tried by hand in the gallery.)
+static void dropTypesTest(bmds_gui_t *gui, uint32_t window) {
+        const uint32_t    label = bmds_label_new(gui, window);
+        const char *const types[] = {"text/uri-list", "text/plain;charset=utf-8"};
+        bmds_widget_set_drop_types(gui, label, types, 2);
+        bmds_gui_value_t v, item;
+        CHECK(bmds_widget_get_drop_types(gui, label, &v) == 0 && v.count == 2 &&
+              bmds_gui_list_item(&v, 1, &item) == 0 && item.length == 24 &&
+              memcmp(item.text, "text/plain;charset=utf-8", 24) == 0);
+        const char *const bad[] = {"not a type"};
+        bmds_widget_set_drop_types(gui, label, bad, 1);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_widget_set_drop_types(gui, label, NULL, 0); // none: takes no drops
+        CHECK(bmds_widget_get_drop_types(gui, label, &v) == 0 && v.count == 0);
+        bmds_gui_destroy(gui, label);
+        EXPECT_NONE();
+        return;
+}
+
 // Many windows with children made and destroyed; the service answers throughout.
 static void many(bmds_gui_t *gui) {
         for (int i = 0; i < 100; ++i) {
@@ -645,6 +665,7 @@ int main(void) {
         canvasTest(gui, window);
         canvasSurfaceTest(gui, window);
         clipboardTest(gui);
+        dropTypesTest(gui, window);
         many(gui);
         bmds_gui_close(gui);
         if (failures != 0) {

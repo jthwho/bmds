@@ -450,11 +450,12 @@ Plan: [`input.md`](input.md).
   Step 2 done (§10): 36 classes from one schema (`sdk/gui/classes.def`, `tools/guigen.py`,
   `gui.lock`, `Describe`), windows and the asked close (Edit asks in place), controls and
   layouts, views (a terminal the program feeds), menus with shortcuts, dialogs and timers;
-  `guigallery` uses every class, `sdk/tests/guitest.c` is the board test. Step 3 under way (§11):
-  3a, images (`PutImage`), 3b, `Canvas` drawn through the protocol (`PutPixels`), and 3c,
-  canvases as local surfaces (`gui_canvas_surface`, slot 125; `SwapChain` under the surface
-  calls), and 3d, the clipboard (`Clipboard`, offers answered on request, the `Bytes` tag), done.
-  Next: 3e, drops onto program widgets.
+  `guigallery` uses every class, `sdk/tests/guitest.c` is the board test. Step 3 done (§11):
+  images (`PutImage`), `Canvas` drawn through the protocol (`PutPixels`) or locally through a
+  surface (`gui_canvas_surface`, slot 125; `SwapChain` under the surface calls), the clipboard
+  (`Clipboard`, offers answered on request, the `Bytes` tag), and drops onto any widget
+  (`dropTypes`, `dropped`; the toolkit's widget drop hook). Next: step 4, between programs and
+  the shell (`Notification`, `TrayIcon`, `SERVICES`, `SHELL`, a panel in C).
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

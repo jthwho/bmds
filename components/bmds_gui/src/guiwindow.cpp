@@ -528,7 +528,7 @@ void GuiWindow::dropEvent(const WindowManager::DropEvent &event) {
         Widget      *target = nullptr;
         if (event.type != DType::Leave)
                 for (Widget *p = widgetAt(event.x, event.y); p != nullptr && target == nullptr; p = p->parent())
-                        if (p->acceptsDrops() && p->isVisible() && p->isEnabled()) target = p;
+                        if (p->takesDrags() && p->isVisible() && p->isEnabled()) target = p;
         if (target != _dropWidget && _dropWidget != nullptr) _dropWidget->dragLeft();
         if (event.type == DType::Leave) {
                 _dropWidget = nullptr;
@@ -537,11 +537,11 @@ void GuiWindow::dropEvent(const WindowManager::DropEvent &event) {
         if (event.type == DType::Drop) {
                 if (target != nullptr && target == _dropWidget) target->dragLeft(); // its marks gone first
                 _dropWidget = nullptr;
-                const bool taken = target != nullptr && target->dropped(e);
+                const bool taken = target != nullptr && (target->askDropHook(e) || target->dropped(e));
                 if (!taken) (void)_app.windowManager().finishDrop(event.drag, DropAction::None);
                 return;
         }
-        if (target != nullptr) {
+        if (target != nullptr && !target->askDropHook(e)) {
                 if (target == _dropWidget) {
                         target->dragMoved(e);
                 } else {

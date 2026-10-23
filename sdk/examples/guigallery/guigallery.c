@@ -20,7 +20,7 @@
  * with the mouse, its picture kept here and only the changed rectangle sent (PutPixels); the
  * colour dialog's colour is the brush's. Clipboard: a field's text copied, or offered and answered
  * only when another program asks (as plain text, or as HTML in bold), and pasted back; what
- * happens is shown below (CLIPBOARD).
+ * happens is shown below (CLIPBOARD); a label below takes drops of files or text (`dropTypes`).
  */
 
 #include <bmds/guiclasses.h>
@@ -50,7 +50,7 @@ typedef struct Gallery {
                 uint32_t    ask, answer, colorButton, colorDialog, popupButton, popup, popupItems[3];
                 uint32_t    timer, timerButton, ticks;
                 uint32_t    canvas, clearButton;
-                uint32_t    clipboard, clipEdit, clipCopy, clipOffer, clipPaste, clipState;
+                uint32_t    clipboard, clipEdit, clipCopy, clipOffer, clipPaste, clipState, dropTarget;
                 uint16_t   *picture; // the canvas's, as drawn here (RGB565)
                 int         pictureWidth, pictureHeight, lastX, lastY, drawing;
                 uint16_t    brush;
@@ -286,6 +286,13 @@ static int clipboardEvent(Gallery *g, const bmds_gui_event_t *e) {
                         bmds_clipboard_offer(gui, g->clipboard, "clipboard", types, 2);
                         bmds_label_set_text(gui, g->clipState, "Offered: answered when pasted elsewhere.");
                 }
+                return 1;
+        }
+        if (e->source == g->dropTarget && bmds_gui_event_is(gui, e, BMDS_GUI_WIDGET_DROPPED) && e->count == 4) {
+                snprintf(text, sizeof(text), "Dropped at %d, %d as %.*s: %.*s", (int)e->values[2].number,
+                         (int)e->values[3].number, (int)e->values[0].length, e->values[0].text,
+                         (int)e->values[1].length, e->values[1].text);
+                bmds_label_set_text(gui, g->clipState, text);
                 return 1;
         }
         if (e->source == g->clipPaste) {
@@ -763,6 +770,10 @@ int main(void) {
         bmds_button_set_text(gui, g.clipPaste, "&Paste");
         g.clipState = bmds_label_new(gui, clipPage);
         bmds_label_set_text(gui, g.clipState, "Copy stores the text now; Offer answers when asked.");
+        g.dropTarget = bmds_label_new(gui, clipPage);
+        bmds_label_set_text(gui, g.dropTarget, "[ Drop a file or text here ]");
+        static const char *const dropTypes[] = {"text/uri-list", "text"};
+        bmds_widget_set_drop_types(gui, g.dropTarget, dropTypes, 2);
         bmds_gui_new(gui, "Spacer", clipPage);
 
         // Terminal: a shell on our own pty

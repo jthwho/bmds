@@ -1043,6 +1043,13 @@ static inline int bmds_clipboard_owns(bmds_gui_t *gui, uint32_t id, const char *
 #define BMDS_GUI_CLIPBOARD_LOST "lost" /**< Clipboard's event (Atom). */
 #define BMDS_GUI_CLIPBOARD_PASTED "pasted" /**< Clipboard's event (Atom, String, Bytes). */
 #define BMDS_GUI_CLIPBOARD_PASTE_FAILED "pasteFailed" /**< Clipboard's event (Atom, String, Atom). */
+static inline int bmds_widget_set_drop_types(bmds_gui_t *gui, uint32_t id, const char *const *value, uint32_t value_count) {
+        return bmds_gui_set_named(gui, id, "dropTypes", bmds_gui_strings(gui, value, value_count));
+}
+static inline int bmds_widget_get_drop_types(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "dropTypes", out);
+}
+#define BMDS_GUI_WIDGET_DROPPED "dropped" /**< Widget's event (String, Bytes, Int, Int). */
 
 #ifdef __cplusplus
 }

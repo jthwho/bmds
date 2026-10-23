@@ -210,6 +210,30 @@ class Widget {
                 bool acceptsDrops() const { return _acceptsDrops; }
 
                 /**
+                 * @brief Asked first about each drag over it and each drop on it, whatever the
+                 *        widget's class (the GUI service's `dropTypes`, `devplan/guiprograms.md`
+                 *        §11 3e). It answers a drag (`accept()`, `ignore()`) or takes a drop (it
+                 *        finishes it), and returns true; false leaves the drag to the widget's own
+                 *        `dragMoved()` and `dropped()`.
+                 */
+                using DropHook = bool (*)(void *arg, Widget &widget, GuiDropEvent &event);
+
+                /** @brief Sets its drop hook (null: none); with one, it takes drags. */
+                void setDropHook(DropHook hook, void *arg) {
+                        _dropHook = hook;
+                        _dropHookArg = arg;
+                        return;
+                }
+
+                /** @brief Returns true if it takes drags, by its class or its hook. */
+                bool takesDrags() const { return _acceptsDrops || _dropHook != nullptr; }
+
+                /** @brief Asks its hook about @p event. @return True if the hook answered it. */
+                bool askDropHook(GuiDropEvent &event) {
+                        return _dropHook != nullptr && _dropHook(_dropHookArg, *this, event);
+                }
+
+                /**
                  * @brief A drag came over it (`devplan/clipboard.md` §5d): answer with
                  *        `accept()` or `ignore()`. By default as `dragMoved()`.
                  */
@@ -352,6 +376,8 @@ class Widget {
                 bool       _owned = false;
                 bool       _focusable = false;
                 bool       _acceptsDrops = false;
+                DropHook   _dropHook = nullptr;
+                void      *_dropHookArg = nullptr;
 };
 
 /**

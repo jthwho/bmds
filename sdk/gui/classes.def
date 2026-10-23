@@ -316,3 +316,7 @@ GUI_EVENT(Clipboard, requested, On, Int, Atom, String)
 GUI_EVENT(Clipboard, lost, On, Atom)
 GUI_EVENT(Clipboard, pasted, On, Atom, String, Bytes)
 GUI_EVENT(Clipboard, pasteFailed, On, Atom, String, Atom)
+
+/* ---- Step 3e (2026-10-22): drops onto any widget: the types it takes, the drop's data */
+GUI_PROP(Widget, dropTypes, List, RW)
+GUI_EVENT(Widget, dropped, On, String, Bytes, Int, Int)
