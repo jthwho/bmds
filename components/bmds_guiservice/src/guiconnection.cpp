@@ -35,6 +35,7 @@ namespace {
         constexpr unsigned int WriteTimeoutMs = 10000;    // a client that reads nothing this long is let go
         constexpr unsigned int ReadSliceMs = 200;         // the reader looks at `_stopping` this often
         constexpr uint32_t     MaxNames = 4096;           // in one InternNames, NameOf or Get
+        constexpr uint32_t     MaxImageSide = 512;        // an Image's width and height at most (1 MB)
         constexpr uint32_t     MaxProperties = 256;       // in one Create or Set
         constexpr size_t       MaxObjects = 4096;
 
@@ -160,8 +161,7 @@ void GuiConnection::readerMain(void *arg) {
                 auto [n, err] = self->_end->read(WritableByteSpan(buf, sizeof(buf)), ReadSliceMs);
                 if (err == Error::Timeout) continue;
                 if (err.isError() || n == 0) break; // the client went
-                bool bad = false;
-                for (size_t i = 0; i < n && !bad; ++i) bad = partial.append(buf[i]).isError();
+                bool bad = partial.append(Span<const uint8_t>(buf, n)).isError();
                 // Whole messages to the loop, in order.
                 for (;;) {
                         const int64_t length =
@@ -173,8 +173,10 @@ void GuiConnection::readerMain(void *arg) {
                                         Mutex::Locker locked(self->_lock, WaitForever);
                                         if (self->_pending.size() + size_t(length) <= MaxPending ||
                                             self->_pending.isEmpty()) {
-                                                for (int64_t k = 0; k < length && !bad; ++k)
-                                                        bad = self->_pending.append(partial[size_t(k)]).isError();
+                                                bad = self->_pending
+                                                              .append(Span<const uint8_t>(partial.data(),
+                                                                                          size_t(length)))
+                                                              .isError();
                                                 break;
                                         }
                                 }
@@ -260,6 +262,8 @@ void GuiConnection::handle(ByteSpan message) {
                 case Opcode::Listen: listen(body); break;
                 case Opcode::Describe: describe(body); break;
                 case Opcode::Sync: sync(); break;
+                case Opcode::PutImage: putImage(body); break;
+                case Opcode::PutPixels: putPixels(body); break;
                 default: fail(ErrorCode::BadRequest, opcode); break;
         }
         return;
@@ -683,6 +687,68 @@ void GuiConnection::describe(GP::Reader &body) {
         return;
 }
 
+// PutImage: an Image object's pixels, in pieces: id, width, height, format (1: ARGB8888), the first
+// pixel's offset, the count, then the pixels. A piece at offset 0 sets the size (a new block if
+// it differs, the old one kept by its users).
+void GuiConnection::putImage(GP::Reader &body) {
+        const uint32_t id = body.u32(), width = body.u32(), height = body.u32(), format = body.u32();
+        const uint32_t offset = body.u32(), count = body.u32();
+        GuiObject     *o = body.ok() ? find(id) : nullptr;
+        if (o == nullptr) {
+                fail(ErrorCode::BadId, id);
+                return;
+        }
+        if (o->cls == nullptr || std::strcmp(o->cls->name, "Image") != 0) {
+                fail(ErrorCode::BadMatch, id);
+                return;
+        }
+        if (format != 1 || width == 0 || height == 0 || width > MaxImageSide || height > MaxImageSide) {
+                fail(ErrorCode::BadValue, id);
+                return;
+        }
+        if (body.remaining() < size_t(count) * 4) {
+                fail(ErrorCode::BadLength, count);
+                return;
+        }
+        GuiImage *&image = o->image;
+        if (offset == 0 && (image == nullptr || image->icon.width != width || image->icon.height != height)) {
+                GuiImage *made = GuiImage::make(uint16_t(width), uint16_t(height));
+                if (made == nullptr) {
+                        fail(ErrorCode::NoMem, id);
+                        return;
+                }
+                GuiImage::unref(image);
+                image = made;
+        }
+        if (image == nullptr || image->icon.width != width || image->icon.height != height ||
+            uint64_t(offset) + count > uint64_t(width) * height) {
+                fail(ErrorCode::BadValue, id);
+                return;
+        }
+        const ByteSpan pixels = body.bytes(size_t(count) * 4);
+        std::memcpy(image->pixels + offset, pixels.data(), pixels.size()); // little-endian, as the wire
+        return;
+}
+
+// PutPixels: canvas id, x, y, width, height, encoding, the data's bytes, the data (padded).
+void GuiConnection::putPixels(GP::Reader &body) {
+        const uint32_t id = body.u32();
+        const int32_t  x = body.i32(), y = body.i32();
+        const uint32_t width = body.u32(), height = body.u32(), encoding = body.u32(), bytes = body.u32();
+        GuiObject     *o = body.ok() ? find(id) : nullptr;
+        if (o == nullptr) {
+                fail(ErrorCode::BadId, id);
+                return;
+        }
+        if (body.remaining() < bytes) {
+                fail(ErrorCode::BadLength, bytes);
+                return;
+        }
+        const GuiStatus s = guiPutPixels(*o, x, y, int(width), int(height), encoding, body.bytes(bytes));
+        if (s != 0) fail(ErrorCode(s), id);
+        return;
+}
+
 void GuiConnection::sync() {
         GP::Writer w(_out);
         w.beginAnswer(GP::Kind::Reply, uint16_t(Opcode::Sync), _sequence);
@@ -793,6 +859,9 @@ void GuiConnection::remove(GuiObject *object) {
                 if (object->dispose != nullptr) object->dispose(*object); // a menu, a dialog, a timer
                 touched(object->owner);
         }
+        // Its images let go once nothing of its shows them.
+        GuiImage::unref(object->image);
+        for (GuiImage *&image : object->images) GuiImage::unref(image);
         for (size_t i = 0; i < _objects.size(); ++i)
                 if (_objects[i] == object) {
                         _objects.removeAt(i);

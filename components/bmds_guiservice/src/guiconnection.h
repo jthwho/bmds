@@ -85,6 +85,26 @@ struct GuiValues {
 };
 
 /**
+ * @brief An image's pixels (`PutImage`), counted: the `Image` object holds one reference and each
+ *        user (a window's icon, a button's, a view's rows) another, so it outlives its object
+ *        while shown. One block: the header, then the pixels (ARGB8888). The loop's thread only.
+ */
+struct GuiImage {
+                uint32_t  refs = 1;
+                Icon      icon; ///< Its pixels as the toolkit takes them.
+                uint32_t *pixels = nullptr;
+
+                /** @brief A new image of @p width × @p height (pixels cleared), one reference, or null. */
+                static GuiImage *make(uint16_t width, uint16_t height);
+
+                /** @brief Another reference to @p image (null: none). @return @p image. */
+                static GuiImage *ref(GuiImage *image);
+
+                /** @brief Drops @p image's reference (null: none), freeing it with the last; @p image is null then. */
+                static void unref(GuiImage *&image);
+};
+
+/**
  * @brief A theme icon by name, its pixels copied (the theme's cache may drop its own). Two
  *        slots: a new icon goes in the other, and the one before is freed by `dropPrevious()`
  *        once the new one is in use (the window manager may be drawing the old).
@@ -123,6 +143,9 @@ class ClientWindow final : public GuiWindow {
 
                 /** @brief Its icon: theme icon @p name's 16 × 16, copied (empty: none). @return False if none. */
                 bool       setIconNamed(StringView name);
+
+                /** @brief Its icon: @p image (a reference taken; null: its name's, if any). */
+                void       setIconImage(GuiImage *image);
                 StringView iconName() const { return _icon.name(); }
 
                 /** @brief Its window menu's own item (empty: none). */
@@ -175,6 +198,9 @@ struct GuiObject {
                 uint16_t minHeight = 0;
                 String   text{MemSpace::Psram};             ///< A getter's made text (valid until the next).
                 GuiIcon         icon;                              ///< A widget's icon by name (a tool button's).
+                GuiImage        *image = nullptr;                   ///< An image it is, or shows (a reference).
+                uint32_t         imageId = 0;             ///< The `Image` object it was given (its `iconImage`).
+                List<GuiImage *> images{MemSpace::Psram}; ///< The images a view's rows show (references).
                 int32_t  minimum = 0;   ///< A range's (a number field's, a slider's; a splitter's first side's least).
                 int32_t  maximum = 100; ///< (A splitter's second side's least.)
                 int32_t  step = 1;
@@ -263,6 +289,8 @@ class GuiConnection {
                 void call(GuiProtocol::Reader &body, uint16_t flags);
                 void listen(GuiProtocol::Reader &body);
                 void describe(GuiProtocol::Reader &body);
+                void putImage(GuiProtocol::Reader &body);
+                void putPixels(GuiProtocol::Reader &body);
                 void sync();
                 void layOut();
                 void fail(GuiProtocol::ErrorCode code, uint32_t bad);
@@ -305,6 +333,12 @@ class GuiConnection {
                 static constexpr size_t MaxIcons = 64;
                 List<KeptIcon *>        _icons{MemSpace::Psram};
 };
+
+/**
+ * @brief PutPixels into canvas @p object: @p width × @p height at (@p x, @p y), raw RGB565 (1) or
+ *        run-length (2). @return 0, or the error code.
+ */
+GuiStatus guiPutPixels(GuiObject &object, int x, int y, int width, int height, uint32_t encoding, ByteSpan data);
 
 /** @brief The class named @p name, or null. */
 const GuiClass *guiClass(StringView name);

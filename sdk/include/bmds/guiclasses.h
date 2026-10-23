@@ -932,6 +932,76 @@ static inline int bmds_timer_stop(bmds_gui_t *gui, uint32_t id) {
 }
 #define BMDS_GUI_TIMER_TIMEOUT "timeout" /**< Timer's event (no values). */
 
+/* ---- Image */
+/** @brief A new Image under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_image_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "Image", parent);
+}
+static inline int bmds_image_get_width(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "width", out);
+}
+static inline int bmds_image_get_height(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "height", out);
+}
+static inline int bmds_window_set_icon_image(bmds_gui_t *gui, uint32_t id, uint32_t value) {
+        return bmds_gui_set_named(gui, id, "iconImage", bmds_gui_id(value));
+}
+static inline int bmds_window_get_icon_image(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "iconImage", out);
+}
+static inline int bmds_button_set_icon_image(bmds_gui_t *gui, uint32_t id, uint32_t value) {
+        return bmds_gui_set_named(gui, id, "iconImage", bmds_gui_id(value));
+}
+static inline int bmds_button_get_icon_image(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "iconImage", out);
+}
+static inline int bmds_tool_button_set_icon_image(bmds_gui_t *gui, uint32_t id, uint32_t value) {
+        return bmds_gui_set_named(gui, id, "iconImage", bmds_gui_id(value));
+}
+static inline int bmds_tool_button_get_icon_image(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "iconImage", out);
+}
+static inline int bmds_menu_item_set_icon_image(bmds_gui_t *gui, uint32_t id, uint32_t value) {
+        return bmds_gui_set_named(gui, id, "iconImage", bmds_gui_id(value));
+}
+static inline int bmds_menu_item_get_icon_image(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "iconImage", out);
+}
+static inline int bmds_item_view_set_icon_image(bmds_gui_t *gui, uint32_t id, int32_t a0, uint32_t a1) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0), bmds_gui_id(a1)};
+        return bmds_gui_call_named(gui, id, "setIconImage", args, 2, NULL);
+}
+
+/* ---- Canvas (of Widget) */
+/** @brief A new Canvas under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_canvas_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "Canvas", parent);
+}
+static inline int bmds_canvas_get_width(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "width", out);
+}
+static inline int bmds_canvas_get_height(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "height", out);
+}
+static inline int bmds_canvas_set_preferred_width(bmds_gui_t *gui, uint32_t id, int32_t value) {
+        return bmds_gui_set_named(gui, id, "preferredWidth", bmds_gui_int(value));
+}
+static inline int bmds_canvas_get_preferred_width(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "preferredWidth", out);
+}
+static inline int bmds_canvas_set_preferred_height(bmds_gui_t *gui, uint32_t id, int32_t value) {
+        return bmds_gui_set_named(gui, id, "preferredHeight", bmds_gui_int(value));
+}
+static inline int bmds_canvas_get_preferred_height(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "preferredHeight", out);
+}
+#define BMDS_GUI_CANVAS_RESIZED "resized" /**< Canvas's event (Int, Int). */
+#define BMDS_GUI_CANVAS_PRESSED "pressed" /**< Canvas's event (Int, Int, Int). */
+#define BMDS_GUI_CANVAS_RELEASED "released" /**< Canvas's event (Int, Int, Int). */
+#define BMDS_GUI_CANVAS_MOVED "moved" /**< Canvas's event (Int, Int, Int). */
+#define BMDS_GUI_CANVAS_WHEEL "wheel" /**< Canvas's event (Int). */
+#define BMDS_GUI_CANVAS_KEY "key" /**< Canvas's event (Int, Int, Bool, String). */
+
 #ifdef __cplusplus
 }
 #endif

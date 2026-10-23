@@ -34,6 +34,8 @@
 #define OP_CALL 8u
 #define OP_LISTEN 9u
 #define OP_SYNC 12u
+#define OP_PUT_IMAGE 10u
+#define OP_PUT_PIXELS 11u
 #define WANT_RESULT 1u
 
 #define KIND_REPLY 1u
@@ -664,6 +666,84 @@ int bmds_gui_get(bmds_gui_t *g, uint32_t id, const uint32_t *names, uint32_t cou
                         errno = EPROTO;
                         return -1;
                 }
+        return 0;
+}
+
+int bmds_gui_put_image(bmds_gui_t *g, uint32_t id, uint32_t width, uint32_t height, const uint32_t *argb) {
+        /* In pieces under the largest message: 32768 pixels (128 KB) each. */
+        const uint32_t total = width * height, piece = 32768;
+        for (uint32_t at = 0; at < total || at == 0; at += piece) {
+                const uint32_t n = total - at < piece ? total - at : piece;
+                if (begin(g, OP_PUT_IMAGE, 0) != 0 || put32(g, id) != 0 || put32(g, width) != 0 ||
+                    put32(g, height) != 0 || put32(g, 1) != 0 || put32(g, at) != 0 || put32(g, n) != 0)
+                        return -1;
+                /* The wire is little-endian, as the pixels are in memory here. */
+                if (n != 0 && put(g, argb + at, (size_t)n * 4) != 0) return -1;
+                if (end(g) != 0 || bmds_gui_flush(g) != 0) return -1; /* a piece at a time in memory */
+                if (total == 0) break;
+        }
+        return 0;
+}
+
+/* One PutPixels of rows [row, row + rows) of the rectangle: run-length coded if that is smaller. */
+static int put_pixel_rows(bmds_gui_t *g, uint32_t canvas, int32_t x, int32_t y, uint32_t width, uint32_t rows,
+                          const uint16_t *pixels, uint32_t stride) {
+        /* Count the runs first (row by row, runs crossing rows allowed). */
+        uint32_t runs = 0, run = 0;
+        uint16_t last = 0;
+        for (uint32_t r = 0; r < rows; ++r)
+                for (uint32_t c = 0; c < width; ++c) {
+                        const uint16_t p = pixels[(size_t)r * stride + c];
+                        if (run != 0 && p == last && run < 0xffff) {
+                                ++run;
+                        } else {
+                                ++runs;
+                                run = 1;
+                                last = p;
+                        }
+                }
+        const int      rle = (size_t)runs * 4 < (size_t)width * rows * 2;
+        const uint32_t bytes = rle ? runs * 4 : width * rows * 2;
+        if (begin(g, OP_PUT_PIXELS, 0) != 0 || put32(g, canvas) != 0 || put32(g, (uint32_t)x) != 0 ||
+            put32(g, (uint32_t)y) != 0 || put32(g, width) != 0 || put32(g, rows) != 0 || put32(g, rle ? 2u : 1u) != 0 ||
+            put32(g, bytes) != 0)
+                return -1;
+        if (rle) {
+                run = 0;
+                for (uint32_t r = 0; r < rows; ++r)
+                        for (uint32_t c = 0; c < width; ++c) {
+                                const uint16_t p = pixels[(size_t)r * stride + c];
+                                if (run != 0 && p == last && run < 0xffff) {
+                                        ++run;
+                                        continue;
+                                }
+                                if (run != 0 && (put16(g, run) != 0 || put16(g, last) != 0)) return -1;
+                                run = 1;
+                                last = p;
+                        }
+                if (run != 0 && (put16(g, run) != 0 || put16(g, last) != 0)) return -1;
+        } else {
+                for (uint32_t r = 0; r < rows; ++r)
+                        if (put(g, pixels + (size_t)r * stride, (size_t)width * 2) != 0) return -1;
+        }
+        static const uint8_t zero[3] = {0, 0, 0};
+        if (put(g, zero, ((bytes + 3) & ~3u) - bytes) != 0) return -1;
+        return end(g);
+}
+
+int bmds_gui_put_pixels(bmds_gui_t *g, uint32_t canvas, int32_t x, int32_t y, uint32_t width, uint32_t height,
+                        const uint16_t *rgb565, uint32_t stride) {
+        if (width == 0 || height == 0) return 0;
+        /* In bands under the largest message (raw at most 128 KB a band). */
+        uint32_t band = 65536 / width;
+        if (band == 0) band = 1;
+        for (uint32_t row = 0; row < height; row += band) {
+                const uint32_t rows = height - row < band ? height - row : band;
+                if (put_pixel_rows(g, canvas, x, y + (int32_t)row, width, rows, rgb565 + (size_t)row * stride,
+                                   stride) != 0)
+                        return -1;
+                if (height > band && bmds_gui_flush(g) != 0) return -1;
+        }
         return 0;
 }
 

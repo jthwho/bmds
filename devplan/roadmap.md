@@ -450,8 +450,9 @@ Plan: [`input.md`](input.md).
   Step 2 done (§10): 36 classes from one schema (`sdk/gui/classes.def`, `tools/guigen.py`,
   `gui.lock`, `Describe`), windows and the asked close (Edit asks in place), controls and
   layouts, views (a terminal the program feeds), menus with shortcuts, dialogs and timers;
-  `guigallery` uses every class, `sdk/tests/guitest.c` is the board test. Next: step 3, pictures
-  and the clipboard.
+  `guigallery` uses every class, `sdk/tests/guitest.c` is the board test. Step 3 under way (§11):
+  3a, images (`PutImage`), and 3b, `Canvas` drawn through the protocol (`PutPixels`), done. Next:
+  3c, canvases as local surfaces.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

@@ -223,6 +223,24 @@ template <typename T> class List {
                 Error append(T &&value) { return emplace(_size, std::move(value)); }
 
                 /**
+                 * @brief Appends copies of @p values (not of this list), as one growth and one copy.
+                 * @return `Ok`, or `NoMem` (list unchanged).
+                 */
+                Error append(Span<const T> values)
+                        requires std::is_trivially_copyable_v<T>
+                {
+                        if (values.size() == 0) return Error::Ok;
+                        if (_size + values.size() > _capacity) {
+                                const Error err =
+                                        reallocate(Detail::listGrownCapacity(_capacity, _size + values.size()));
+                                if (err.isError()) return err;
+                        }
+                        std::memcpy(static_cast<void *>(_data + _size), values.data(), values.size() * sizeof(T));
+                        _size += values.size();
+                        return Error::Ok;
+                }
+
+                /**
                  * @brief Inserts @p value before element @p index (clamped to `size()`).
                  * @return `Ok`, or `NoMem` (list unchanged, @p value untouched).
                  */
@@ -276,7 +294,11 @@ template <typename T> class List {
 
                 /** @brief Destroys elements past @p size; no effect if already shorter. Keeps the block. */
                 void truncate(size_t size) {
-                        while (_size > size) _data[--_size].~T();
+                        if constexpr (std::is_trivially_destructible_v<T>) {
+                                if (_size > size) _size = size;
+                        } else {
+                                while (_size > size) _data[--_size].~T();
+                        }
                         return;
                 }
 

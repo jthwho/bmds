@@ -1189,10 +1189,26 @@ namespace {
                 return;
         }
 
+        // The images no row of @p o's shows any more let go (and duplicates of one kept).
+        void pruneImages(GuiObject &o) {
+                for (size_t i = o.images.size(); i-- > 0;) {
+                        GuiImage *image = o.images[i];
+                        bool      used = false;
+                        for (size_t r = 0; r < model(o)->count() && !used; ++r)
+                                used = model(o)->icon(r, 16) == &image->icon || model(o)->icon(r, 32) == &image->icon;
+                        for (size_t k = 0; k < i && used; ++k) used = o.images[k] != image; // kept once
+                        if (used) continue;
+                        GuiImage::unref(o.images[i]);
+                        o.images.removeAt(i);
+                }
+                return;
+        }
+
         // The model changed: the view counts again, its current row @p cur (-2: the one it had)
         // where it can be.
         void refresh(GuiObject &o, int cur = -2) {
                 if (cur == -2) cur = itemView(o)->current();
+                pruneImages(o);
                 o.quiet = true;
                 itemView(o)->modelReset();
                 if (cur >= 0 && size_t(cur) < itemView(o)->count()) itemView(o)->selectOnly(cur);
@@ -1805,8 +1821,9 @@ namespace {
                                 const ItemData *item = dataOf<ItemData>(*child);
                                 const uint8_t   flags = uint8_t((item->enabled ? 0 : MenuLayout::Disabled) |
                                                                 (item->checked ? MenuLayout::Checked : 0));
-                                const Icon     *icon =
-                                        item->icon.isEmpty() ? nullptr : o.connection->icon(item->icon.view(), 16);
+                                const Icon     *icon = child->image != nullptr ? &child->image->icon
+                                                       : item->icon.isEmpty()  ? nullptr
+                                                                              : o.connection->icon(item->icon.view(), 16);
                                 // Numbered by its id: the toolkit tells the top menu of the tree the
                                 // number chosen, a submenu's too.
                                 (void)menu.addItem(item->text.view(), int(id & ItemNumberMask), flags,
@@ -2345,6 +2362,275 @@ namespace {
                 return Ok;
         }
 
+        // ---- Step 3a: images
+
+        // Image object @p id's pixels for a user (0: none, null with Ok), or BadId / BadMatch.
+        GuiImage *imageOf(GuiObject &o, uint32_t id, GuiStatus &status) {
+                status = Ok;
+                if (id == 0) return nullptr;
+                GuiObject *image = o.connection->find(id);
+                if (image == nullptr) {
+                        status = GuiStatus(GuiProtocol::ErrorCode::BadId);
+                        return nullptr;
+                }
+                if (!isClassNamed(image, "Image") || image->image == nullptr) status = BadMatch; // no pixels yet
+                return image->image;
+        }
+        // @p o shows @p image now (a reference taken), the one before let go.
+        void holdImage(GuiObject &o, GuiImage *image, uint32_t id) {
+                GuiImage *old = o.image;
+                o.image = GuiImage::ref(image);
+                o.imageId = image != nullptr ? id : 0;
+                GuiImage::unref(old);
+                return;
+        }
+
+        Value get_Image_width(GuiObject &o) {
+                return Value::integer(o.image != nullptr ? o.image->icon.width : 0);
+        }
+        Value get_Image_height(GuiObject &o) {
+                return Value::integer(o.image != nullptr ? o.image->icon.height : 0);
+        }
+        GuiStatus create_Image(GuiObject &o, GuiObject *parent) {
+                (void)o;
+                return parent == nullptr ? Ok : BadMatch; // its pixels come by PutImage
+        }
+
+        GuiStatus set_Window_iconImage(GuiObject &o, const Value &v) {
+                GuiStatus s = Ok;
+                GuiImage *image = imageOf(o, uint32_t(v.number), s);
+                if (s != Ok) return s;
+                o.window->setIconImage(image);
+                o.imageId = image != nullptr ? uint32_t(v.number) : 0;
+                return Ok;
+        }
+        Value get_Window_iconImage(GuiObject &o) {
+                return Value::id(o.imageId);
+        }
+
+        GuiStatus setButtonImage(GuiObject &o, const Value &v) {
+                GuiStatus s = Ok;
+                GuiImage *image = imageOf(o, uint32_t(v.number), s);
+                if (s != Ok) return s;
+                static_cast<Button *>(o.widget)->setIcon(image != nullptr ? &image->icon : nullptr);
+                holdImage(o, image, uint32_t(v.number));
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        GuiStatus set_Button_iconImage(GuiObject &o, const Value &v) {
+                return setButtonImage(o, v);
+        }
+        Value get_Button_iconImage(GuiObject &o) {
+                return Value::id(o.imageId);
+        }
+        GuiStatus set_ToolButton_iconImage(GuiObject &o, const Value &v) {
+                return setButtonImage(o, v);
+        }
+        Value get_ToolButton_iconImage(GuiObject &o) {
+                return Value::id(o.imageId);
+        }
+
+        GuiStatus set_MenuItem_iconImage(GuiObject &o, const Value &v) {
+                GuiStatus s = Ok;
+                GuiImage *image = imageOf(o, uint32_t(v.number), s);
+                if (s != Ok) return s;
+                holdImage(o, image, uint32_t(v.number));
+                parentChanged(o);
+                return Ok;
+        }
+        Value get_MenuItem_iconImage(GuiObject &o) {
+                return Value::id(o.imageId);
+        }
+
+        // A row's icon: an image, shown at its own size (16 × 16 for lists, 32 × 32 for icons).
+        GuiStatus call_ItemView_setIconImage(GuiObject &o, Args args, Value &) {
+                if (args[0].number < 0 || args[0].number >= int64_t(model(o)->count())) return BadValue;
+                GuiStatus s = Ok;
+                GuiImage *image = imageOf(o, uint32_t(args[1].number), s);
+                if (s != Ok) return s;
+                if (image != nullptr && o.images.append(GuiImage::ref(image)).isError()) {
+                        GuiImage::unref(image);
+                        return NoMem;
+                }
+                model(o)->setIcons(size_t(args[0].number), image != nullptr ? &image->icon : nullptr,
+                                   image != nullptr ? &image->icon : nullptr);
+                pruneImages(o);
+                itemView(o)->update();
+                return Ok;
+        }
+
+        // ---- Step 3b: Canvas, a picture the client draws (PutPixels), its input as events
+
+        class CanvasWidget final : public Widget {
+                public:
+                        CanvasWidget(Widget *parent, GuiObject &object) : Widget(parent), _object(object) {
+                                setFocusable(true);
+                                setStretch(1);
+                        }
+                        ~CanvasWidget() override { Memory::free(_pixels); }
+
+                        GuiSize sizeHint() const override { return GuiSize{preferredWidth, preferredHeight}; }
+
+                        void paint(Painter &painter) override {
+                                const Rect g = geometry();
+                                if (_pixels == nullptr || _width == 0 || _height == 0) {
+                                        (void)painter.fill(g, 0xffffff);
+                                        return;
+                                }
+                                (void)painter.pixels565(g.x, g.y, reinterpret_cast<const uint8_t *>(_pixels),
+                                                        size_t(_width) * 2, _width, _height);
+                                return;
+                        }
+
+                        // PutPixels' rectangle, cut to the picture (drawn for a size it no longer has:
+                        // the client draws again on `resized`). @return The part kept.
+                        Rect clip(int x, int y, int w, int h) const {
+                                const int right = x + w < int(_width) ? x + w : int(_width);
+                                const int bottom = y + h < int(_height) ? y + h : int(_height);
+                                if (x < 0) x = 0;
+                                if (y < 0) y = 0;
+                                if (right <= x || bottom <= y) return Rect();
+                                return Rect{uint16_t(x), uint16_t(y), uint16_t(right - x), uint16_t(bottom - y)};
+                        }
+
+                        uint16_t *row(int y) { return _pixels + size_t(y) * _width; }
+
+                        // Its part @p r (picture coordinates) drawn again.
+                        void changed(const Rect &r) {
+                                GuiWindow *w = window();
+                                const Rect g = geometry();
+                                if (w != nullptr && r.width != 0)
+                                        w->invalidate(
+                                                Rect{uint16_t(g.x + r.x), uint16_t(g.y + r.y), r.width, r.height});
+                                return;
+                        }
+
+                        uint16_t width() const { return _width; }
+                        uint16_t height() const { return _height; }
+
+                        void mousePressed(const WindowManager::MouseEvent &e) override {
+                                setFocus();
+                                mouse("pressed", e, e.button);
+                                return;
+                        }
+                        void mouseReleased(const WindowManager::MouseEvent &e) override {
+                                mouse("released", e, e.button);
+                                return;
+                        }
+                        void mouseMoved(const WindowManager::MouseEvent &e) override {
+                                mouse("moved", e, e.buttons);
+                                return;
+                        }
+                        bool wheelTurned(int notches) override {
+                                const Value v = Value::integer(notches);
+                                _object.connection->emit(_object, "wheel", Args(&v, 1));
+                                return true;
+                        }
+                        bool keyPressed(const KeyEvent &e) override {
+                                char        text[4] = {};
+                                const auto  n = utf8(e.codepoint, text);
+                                const Value v[] = {Value::integer(e.usage), Value::integer(e.modifiers),
+                                                   Value::boolean(e.action != KeyEvent::Action::Release),
+                                                   Value::string(StringView(text, n))};
+                                _object.connection->emit(_object, "key", Args(v, 4));
+                                // Tab still moves the focus; the window's shortcuts still work.
+                                return e.usage != HidKey::Tab && !e.hasAlt();
+                        }
+
+                        uint16_t preferredWidth = 0; // its size hint (0: none)
+                        uint16_t preferredHeight = 0;
+
+                protected:
+                        // A new size: a new picture, white until the client draws it (told `resized`).
+                        void resized() override {
+                                const Rect g = geometry();
+                                if (g.width == _width && g.height == _height) return;
+                                Memory::free(_pixels);
+                                _pixels = nullptr;
+                                _width = _height = 0;
+                                const size_t count = size_t(g.width) * g.height;
+                                if (count != 0) {
+                                        _pixels = static_cast<uint16_t *>(Memory::alloc(MemSpace::Psram, count * 2));
+                                        if (_pixels != nullptr) {
+                                                std::memset(_pixels, 0xff, count * 2);
+                                                _width = g.width;
+                                                _height = g.height;
+                                        }
+                                }
+                                const Value v[] = {Value::integer(_width), Value::integer(_height)};
+                                _object.connection->emit(_object, "resized", Args(v, 2));
+                                return;
+                        }
+
+                private:
+                        void mouse(const char *event, const WindowManager::MouseEvent &e, uint8_t buttons) {
+                                const Rect  g = geometry();
+                                const Value v[] = {Value::integer(e.x - g.x), Value::integer(e.y - g.y),
+                                                   Value::integer(buttons)};
+                                _object.connection->emit(_object, event, Args(v, 3));
+                                return;
+                        }
+                        static size_t utf8(uint32_t c, char (&out)[4]) {
+                                if (c == 0 || c > 0x10ffff) return 0;
+                                if (c < 0x80) {
+                                        out[0] = char(c);
+                                        return 1;
+                                }
+                                if (c < 0x800) {
+                                        out[0] = char(0xc0 | (c >> 6));
+                                        out[1] = char(0x80 | (c & 0x3f));
+                                        return 2;
+                                }
+                                if (c < 0x10000) {
+                                        out[0] = char(0xe0 | (c >> 12));
+                                        out[1] = char(0x80 | ((c >> 6) & 0x3f));
+                                        out[2] = char(0x80 | (c & 0x3f));
+                                        return 3;
+                                }
+                                out[0] = char(0xf0 | (c >> 18));
+                                out[1] = char(0x80 | ((c >> 12) & 0x3f));
+                                out[2] = char(0x80 | ((c >> 6) & 0x3f));
+                                out[3] = char(0x80 | (c & 0x3f));
+                                return 4;
+                        }
+
+                        GuiObject &_object;
+                        uint16_t  *_pixels = nullptr; // RGB565, _width × _height
+                        uint16_t   _width = 0;
+                        uint16_t   _height = 0;
+        };
+
+        CanvasWidget *canvas(GuiObject &o) {
+                return static_cast<CanvasWidget *>(o.widget);
+        }
+        Value get_Canvas_width(GuiObject &o) {
+                return Value::integer(canvas(o)->width());
+        }
+        Value get_Canvas_height(GuiObject &o) {
+                return Value::integer(canvas(o)->height());
+        }
+        GuiStatus set_Canvas_preferredWidth(GuiObject &o, const Value &v) {
+                if (v.number < 0 || v.number > 1280) return BadValue;
+                canvas(o)->preferredWidth = uint16_t(v.number);
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_Canvas_preferredWidth(GuiObject &o) {
+                return Value::integer(canvas(o)->preferredWidth);
+        }
+        GuiStatus set_Canvas_preferredHeight(GuiObject &o, const Value &v) {
+                if (v.number < 0 || v.number > 720) return BadValue;
+                canvas(o)->preferredHeight = uint16_t(v.number);
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_Canvas_preferredHeight(GuiObject &o) {
+                return Value::integer(canvas(o)->preferredHeight);
+        }
+        GuiStatus create_Canvas(GuiObject &o, GuiObject *parent) {
+                return makeWidget<CanvasWidget>(o, parent, o);
+        }
+
         // ---- The schema's tables, from classes.def
 
         template <typename... T> constexpr uint8_t countOf(T...) {
@@ -2420,6 +2706,81 @@ namespace {
         }
 
 } // namespace
+
+// ---- PutPixels: a canvas's pixels, raw RGB565 (1) or run-length (2: uint16 count, uint16 pixel)
+
+GuiStatus guiPutPixels(GuiObject &o, int x, int y, int width, int height, uint32_t encoding, ByteSpan data) {
+        if (!isClassNamed(&o, "Canvas")) return BadMatch;
+        if (width <= 0 || height <= 0 || width > 4096 || height > 4096 || (encoding != 1 && encoding != 2))
+                return BadValue;
+        const size_t count = size_t(width) * size_t(height);
+        if (encoding == 1 && data.size() < count * 2) return GuiStatus(GuiProtocol::ErrorCode::BadLength);
+        CanvasWidget    &c = *canvas(o);
+        const bmds::Rect kept = c.clip(x, y, width, height); // the rest drawn for an older size: dropped
+        if (encoding == 1) {
+                // Raw: each row's part inside the picture copied whole (the wire is little-endian).
+                for (int row = kept.y; row < int(kept.y + kept.height) && kept.width != 0; ++row) {
+                        const size_t from = (size_t(row - y) * size_t(width) + size_t(int(kept.x) - x)) * 2;
+                        std::memcpy(c.row(row) + kept.x, data.data() + from, size_t(kept.width) * 2);
+                }
+                c.changed(kept);
+                return Ok;
+        }
+        // Run-length: the pixels in order, row by row of the rectangle sent; those inside kept.
+        size_t   at = 0, run = 0;
+        uint16_t pixel = 0;
+        for (int row = 0; row < height; ++row) {
+                const int py = y + row;
+                uint16_t *line = py >= int(kept.y) && py < int(kept.y + kept.height) ? c.row(py) : nullptr;
+                for (int col = 0; col < width; ++col) {
+                        if (encoding == 1) {
+                                pixel = uint16_t(data[at] | data[at + 1] << 8);
+                                at += 2;
+                        } else {
+                                if (run == 0) {
+                                        if (at + 4 > data.size()) return GuiStatus(GuiProtocol::ErrorCode::BadLength);
+                                        run = size_t(data[at] | data[at + 1] << 8);
+                                        pixel = uint16_t(data[at + 2] | data[at + 3] << 8);
+                                        at += 4;
+                                        if (run == 0) return BadValue;
+                                }
+                                --run;
+                        }
+                        const int px = x + col;
+                        if (line != nullptr && px >= int(kept.x) && px < int(kept.x + kept.width)) line[px] = pixel;
+                }
+        }
+        c.changed(kept);
+        return Ok;
+}
+
+// ---- GuiImage
+
+GuiImage *GuiImage::make(uint16_t width, uint16_t height) {
+        const size_t header = (sizeof(GuiImage) + 7) & ~size_t(7);
+        const size_t bytes = size_t(width) * height * sizeof(uint32_t);
+        auto        *block = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, header + bytes));
+        if (block == nullptr) return nullptr;
+        auto *image = ::new (block) GuiImage();
+        image->pixels = reinterpret_cast<uint32_t *>(block + header);
+        std::memset(image->pixels, 0, bytes);
+        image->icon = Icon{width, height, image->pixels};
+        return image;
+}
+
+GuiImage *GuiImage::ref(GuiImage *image) {
+        if (image != nullptr) ++image->refs;
+        return image;
+}
+
+void GuiImage::unref(GuiImage *&image) {
+        if (image != nullptr && --image->refs == 0) {
+                image->~GuiImage();
+                Memory::free(image);
+        }
+        image = nullptr;
+        return;
+}
 
 // ---- GuiIcon
 
@@ -2521,7 +2882,17 @@ bool ClientWindow::setIconNamed(StringView name) {
         if (!_icon.set(application().icons(), name, 16)) return false;
         setIcon(_icon.icon()); // the window manager has the new one before the old goes
         _icon.dropPrevious();
+        GuiImage::unref(_object.image); // a name replaces an image
+        _object.imageId = 0;
         return true;
+}
+
+void ClientWindow::setIconImage(GuiImage *image) {
+        GuiImage *old = _object.image;
+        _object.image = GuiImage::ref(image);
+        setIcon(image != nullptr ? &image->icon : _icon.icon()); // none: its name's, if it has one
+        GuiImage::unref(old);
+        return;
 }
 
 void ClientWindow::setMenuItem(StringView label) {

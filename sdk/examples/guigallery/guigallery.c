@@ -15,7 +15,10 @@
  * on the program's own pseudo-terminal, its output written to the widget, the typing sent back.
  * Menus: File (Open and Save As through the file dialog, Quit), View (the status bar, a checked
  * item; the pointer, a submenu), Help (About), their shortcuts as keys. Dialogs: a message box, the colour dialog, a popup
- * menu, and a timer counting seconds.
+ * menu, and a timer counting seconds. Images: a diamond the program draws, sent once (PutImage) and
+ * shown on a tool button, a list's rows and in the icon view. Paint: a canvas the program draws
+ * with the mouse, its picture kept here and only the changed rectangle sent (PutPixels); the
+ * colour dialog's colour is the brush's.
  */
 
 #include <bmds/guiclasses.h>
@@ -44,6 +47,10 @@ typedef struct Gallery {
                 uint32_t    open, saveAs, quitItem, statusItem, aboutItem, fileDialog, saving;
                 uint32_t    ask, answer, colorButton, colorDialog, popupButton, popup, popupItems[3];
                 uint32_t    timer, timerButton, ticks;
+                uint32_t    canvas, clearButton;
+                uint16_t   *picture; // the canvas's, as drawn here (RGB565)
+                int         pictureWidth, pictureHeight, lastX, lastY, drawing;
+                uint16_t    brush;
                 int         statusShown, seconds;
                 uint32_t    arrowItem, busyItem, nameEdit;
                 char        folder[256]; // the details view's
@@ -208,7 +215,58 @@ static void shellOutput(Gallery *g) {
         return;
 }
 
-// The views', text's and terminal's events. @return 1 if it was one of theirs.
+// ---- Paint: the canvas's picture kept here, the changed part sent
+
+static uint16_t rgb565(uint32_t rgb) {
+        return (uint16_t)(((rgb >> 8) & 0xf800) | ((rgb >> 5) & 0x07e0) | ((rgb >> 3) & 0x001f));
+}
+
+// A new size: a white picture, sent whole (run-length coded, it costs little).
+static void paintResized(Gallery *g, int width, int height) {
+        free(g->picture);
+        g->picture = width > 0 && height > 0 ? (uint16_t *)malloc((size_t)width * height * 2) : NULL;
+        g->pictureWidth = g->picture != NULL ? width : 0;
+        g->pictureHeight = g->picture != NULL ? height : 0;
+        if (g->picture == NULL) return;
+        for (size_t i = 0; i < (size_t)width * height; ++i) g->picture[i] = 0xffff;
+        bmds_gui_put_pixels(g->gui, g->canvas, 0, 0, (uint32_t)width, (uint32_t)height, g->picture, (uint32_t)width);
+        return;
+}
+
+// A line of round dots from the last point to (@p x, @p y); the rectangle it touched sent.
+static void paintTo(Gallery *g, int x, int y) {
+        const int r = 3;
+        int       left = g->lastX < x ? g->lastX : x, right = g->lastX > x ? g->lastX : x;
+        int       top = g->lastY < y ? g->lastY : y, bottom = g->lastY > y ? g->lastY : y;
+        const int steps = (right - left > bottom - top ? right - left : bottom - top) + 1;
+        for (int i = 0; i <= steps; ++i) {
+                const int cx = g->lastX + (x - g->lastX) * i / steps, cy = g->lastY + (y - g->lastY) * i / steps;
+                for (int dy = -r; dy <= r; ++dy)
+                        for (int dx = -r; dx <= r; ++dx) {
+                                const int px = cx + dx, py = cy + dy;
+                                if (dx * dx + dy * dy > r * r || px < 0 || py < 0 || px >= g->pictureWidth ||
+                                    py >= g->pictureHeight)
+                                        continue;
+                                g->picture[(size_t)py * g->pictureWidth + px] = g->brush;
+                        }
+        }
+        g->lastX = x;
+        g->lastY = y;
+        left -= r;
+        top -= r;
+        right += r;
+        bottom += r;
+        if (left < 0) left = 0;
+        if (top < 0) top = 0;
+        if (right >= g->pictureWidth) right = g->pictureWidth - 1;
+        if (bottom >= g->pictureHeight) bottom = g->pictureHeight - 1;
+        if (right < left || bottom < top) return;
+        bmds_gui_put_pixels(g->gui, g->canvas, left, top, (uint32_t)(right - left + 1), (uint32_t)(bottom - top + 1),
+                            g->picture + (size_t)top * g->pictureWidth + left, (uint32_t)g->pictureWidth);
+        return;
+}
+
+// The views', text's, terminal's and paint's events. @return 1 if it was one of theirs.
 static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
         bmds_gui_t *gui = g->gui;
         if (e->source == g->files && bmds_gui_event_is(gui, e, BMDS_GUI_DETAILS_VIEW_SORT_ASKED) && e->count == 1) {
@@ -290,12 +348,32 @@ static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
                 bmds_color_dialog_open(gui, g->colorDialog);
                 return 1;
         }
+        if (e->source == g->canvas) {
+                if (bmds_gui_event_is(gui, e, BMDS_GUI_CANVAS_RESIZED) && e->count == 2) {
+                        paintResized(g, (int)e->values[0].number, (int)e->values[1].number);
+                } else if (bmds_gui_event_is(gui, e, BMDS_GUI_CANVAS_PRESSED) && e->count == 3 && g->picture != NULL) {
+                        g->drawing = 1;
+                        g->lastX = (int)e->values[0].number;
+                        g->lastY = (int)e->values[1].number;
+                        paintTo(g, g->lastX, g->lastY);
+                } else if (bmds_gui_event_is(gui, e, BMDS_GUI_CANVAS_MOVED) && e->count == 3 && g->drawing) {
+                        paintTo(g, (int)e->values[0].number, (int)e->values[1].number);
+                } else if (bmds_gui_event_is(gui, e, BMDS_GUI_CANVAS_RELEASED)) {
+                        g->drawing = 0;
+                }
+                return 1;
+        }
+        if (e->source == g->clearButton) {
+                paintResized(g, g->pictureWidth, g->pictureHeight);
+                return 1;
+        }
         if (e->source == g->colorDialog && e->count == 2) {
                 char text[64];
                 snprintf(text, sizeof(text),
                          e->values[0].number != 0 ? "The colour: #%06x" : "Colour: cancelled (#%06x)",
                          (unsigned)e->values[1].number);
                 bmds_label_set_text(gui, g->answer, text);
+                if (e->values[0].number != 0) g->brush = rgb565((uint32_t)e->values[1].number); // the brush's
                 return 1;
         }
         if (e->source == g->popupButton) {
@@ -357,6 +435,22 @@ static void showEvent(Gallery *g, const bmds_gui_event_t *e) {
         }
         bmds_status_bar_set_field(g->gui, g->status, 0, text);
         return;
+}
+
+// A diamond @p side pixels square in @p argb (ARGB8888): an image the program draws itself.
+static uint32_t diamondImage(bmds_gui_t *gui, int side, uint32_t *argb) {
+        const int half = side / 2;
+        for (int y = 0; y < side; ++y)
+                for (int x = 0; x < side; ++x) {
+                        const int d = abs(x - half + (x >= half)) + abs(y - half + (y >= half));
+                        const int edge = d == half - 1;
+                        argb[y * side + x] = d >= half ? 0x00000000u
+                                             : edge    ? 0xff802000u
+                                                       : 0xffffa020u - (uint32_t)(d * 0x0400);
+                }
+        const uint32_t image = bmds_gui_new(gui, "Image", 0);
+        bmds_gui_put_image(gui, image, (uint32_t)side, (uint32_t)side, argb);
+        return image;
 }
 
 static void closeBox(Gallery *g) {
@@ -424,6 +518,9 @@ int main(void) {
         const uint32_t tools = bmds_tool_bar_new(gui, g.window);
         g.toolAbout = bmds_tool_button_new(gui, tools);
         bmds_tool_button_set_icon(gui, g.toolAbout, "help-about");
+        static uint32_t small[16 * 16], large[32 * 32];
+        const uint32_t  diamond = diamondImage(gui, 16, small), bigDiamond = diamondImage(gui, 32, large);
+        bmds_tool_button_set_icon_image(gui, bmds_tool_button_new(gui, tools), diamond);
         bmds_tool_bar_add_separator(gui, tools);
         g.toolQuit = bmds_tool_button_new(gui, tools);
         bmds_tool_button_set_text(gui, g.toolQuit, "Quit");
@@ -504,6 +601,7 @@ int main(void) {
         static const char *const planets[] = {"Mercury", "Venus", "Earth", "Mars", "Jupiter", "Saturn"};
         bmds_item_view_set_items(gui, list, planets, 6);
         bmds_item_view_set_current(gui, list, 2);
+        bmds_item_view_set_icon_image(gui, list, 2, diamond);
         const uint32_t           icons = bmds_icon_view_new(gui, split);
         static const char *const things[][2] = {{"Folder", "folder"},
                                                 {"Music", "folder-music"},
@@ -514,6 +612,8 @@ int main(void) {
                 bmds_item_view_add_item(gui, icons, things[i][0]);
                 bmds_item_view_set_icon(gui, icons, i, things[i][1]);
         }
+        bmds_item_view_add_item(gui, icons, "Diamond");
+        bmds_item_view_set_icon_image(gui, icons, 5, bigDiamond);
         bmds_splitter_set_position(gui, split, 140);
 
         // Dialogs: a message box, the colour dialog, a popup menu, a timer
@@ -585,6 +685,16 @@ int main(void) {
         bmds_gui_listen(gui, g.code, &cursorMoved, 1, 1);
         g.codeState = bmds_label_new(gui, textPage);
         bmds_label_set_text(gui, g.codeState, "Line 1, byte 1");
+
+        // Paint: a canvas drawn with the mouse
+        const uint32_t paint = bmds_tab_page_new(gui, g.tabs);
+        bmds_tab_page_set_title(gui, paint, "Paint");
+        g.canvas = bmds_canvas_new(gui, paint);
+        const uint32_t moved = bmds_gui_atom(gui, BMDS_GUI_CANVAS_MOVED);
+        bmds_gui_listen(gui, g.canvas, &moved, 1, 1);
+        g.clearButton = bmds_button_new(gui, paint);
+        bmds_button_set_text(gui, g.clearButton, "C&lear (the brush: Dialogs, Colour...)");
+        g.brush = rgb565(0x3a6ea5);
 
         // Terminal: a shell on our own pty
         const uint32_t termPage = bmds_tab_page_new(gui, g.tabs);

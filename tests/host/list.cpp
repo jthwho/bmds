@@ -105,6 +105,32 @@ TEST_CASE("List: insert, remove, take, truncate") {
         CHECK(list.data() == nullptr);
 }
 
+TEST_CASE("List: appending a span copies it whole, growing once") {
+        List<uint8_t> list;
+        CHECK(list.append(Span<const uint8_t>()).isOk());
+        CHECK(list.isEmpty());
+        uint8_t bytes[300];
+        for (size_t i = 0; i < sizeof(bytes); ++i) bytes[i] = static_cast<uint8_t>(i);
+        CHECK(list.append(uint8_t(7)).isOk());
+        CHECK(list.append(Span<const uint8_t>(bytes, sizeof(bytes))).isOk());
+        REQUIRE(list.size() == 301);
+        CHECK(list[0] == 7);
+        for (size_t i = 0; i < sizeof(bytes); ++i) CHECK(list[i + 1] == bytes[i]);
+        CHECK(list.capacity() >= 301);
+        CHECK(list.append(Span<const uint8_t>(bytes, 4)).isOk()); // after the end
+        CHECK(list.size() == 305);
+        CHECK(list[304] == 3);
+        list.truncate(2); // trivially destroyed: the size alone
+        CHECK(list.size() == 2);
+        CHECK(list[1] == 0);
+        List<uint8_t> fresh; // a growth that fails leaves it as it was
+        {
+                HostMemory::FailGuard fail;
+                CHECK(fresh.append(Span<const uint8_t>(bytes, sizeof(bytes))) == Error::NoMem);
+        }
+        CHECK(fresh.isEmpty());
+}
+
 TEST_CASE("List: non-trivial elements are constructed and destroyed exactly once") {
         const size_t base = HostMemory::liveAllocations();
         {

@@ -212,6 +212,26 @@ int bmds_gui_call_named(bmds_gui_t *gui, uint32_t id, const char *name, const bm
                         bmds_gui_value_t *result);
 
 /**
+ * @brief Sends image object @p id's pixels (an `Image`, made first): @p width × @p height, at most
+ *        512 each, ARGB8888 (0xAARRGGBB, row by row), in pieces under the largest message.
+ *        Sent again, the image changes; at another size, it is a new picture (the old one stays
+ *        where it is shown).
+ * @return 0, or -1 with `errno` (the service's own errors come later).
+ */
+int bmds_gui_put_image(bmds_gui_t *gui, uint32_t id, uint32_t width, uint32_t height, const uint32_t *argb);
+
+/**
+ * @brief Draws into canvas @p canvas (a `Canvas`): the @p width × @p height pixels at
+ *        @p rgb565 (RGB565, @p stride pixels a row) put at (@p x, @p y) of its picture. Sent
+ *        run-length coded when that is smaller, in bands under the largest message. A part
+ *        outside the canvas's picture (drawn for a size it no longer has) is dropped: draw again
+ *        on its `resized` event.
+ * @return 0, or -1 with `errno` (the service's own errors come later).
+ */
+int bmds_gui_put_pixels(bmds_gui_t *gui, uint32_t canvas, int32_t x, int32_t y, uint32_t width, uint32_t height,
+                        const uint16_t *rgb565, uint32_t stride);
+
+/**
  * @brief Asks what class @p cls (an atom) has (`Describe`, devplan/guiprograms.md §10): its
  *        reply's body in @p body (valid until the next call on the connection), little-endian
  *        uint32 fields:

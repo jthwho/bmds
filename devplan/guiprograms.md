@@ -996,3 +996,103 @@ touch its edges and only their content areas pad themselves.
 - **Step 2 as a whole:** 36 classes in `sdk/gui/classes.def`, locked in `tests/scripts/gui.lock`;
   C wrappers generated; the service 11.8 KB → 42.0 KB of flash. Next: step 3 (§6), pictures
   and the clipboard (`PutImage`, `Canvas`, the `CLIPBOARD` extension).
+
+## 11. Step 3 design: pictures and the clipboard (2026-10-22)
+
+**Classes, as step 2's were.** Images, canvases and the clipboard are classes in
+`sdk/gui/classes.def`, so they get the generated wrappers, the lock and `Describe` for free.
+- **Bulk pixels** travel by the two reserved requests, `PutImage` (10) and `PutPixels` (11), since
+  a tagged value has no binary type.
+- **The extensions** named at `Hello` (§4a) say what a client may use: `CLIPBOARD` (value "1"),
+  and `CANVAS-SURFACE` on local connections only. Their first opcode and event code are 0: they
+  are classes, not opcodes of their own.
+
+**Built in five parts, each tried on the board:**
+- **3a, images:**
+  - The `Image` class (no parent; read-only `width`, `height`).
+  - `PutImage(id, width, height, format, offset, count, pixels)`: format 1 is ARGB8888 (a
+    `uint32` 0xAARRGGBB a pixel, as `Icon`). The pieces of a large image are sent in turn
+    (`offset` its first pixel); the first sets the size, at most 512 × 512.
+  - **Where an image goes:** `Window.iconImage`, `Button.iconImage`, `ToolButton.iconImage`,
+    `MenuItem.iconImage` and `ItemView.setIconImage(row, image)`, beside the theme names of
+    step 2.
+  - **Its pixels are a counted block.** Every user holds a reference, so an `Image` destroyed
+    while shown stays until the last user lets go, and the client's id is free at once.
+- **3b, `Canvas` through the protocol (`PutPixels`):**
+  - A widget whose picture the client draws: read-only `width` and `height` (its size from the
+    layout); `preferredWidth` and `preferredHeight` (its hint); event `resized` (On).
+  - Input as events: `pressed`, `released` and `moved` (x, y, buttons), `wheel` (notches), and
+    `key` (usage, modifiers, down, text). It takes the focus, so keys come to it.
+  - `PutPixels(canvas, x, y, width, height, encoding, data)`: the service keeps the picture in
+    the display's format, so a repaint costs the client nothing. Encoding 1 is raw RGB565; 2 is
+    run-length (`uint16` count, `uint16` pixel).
+  - This works for any client, local or remote.
+- **3c, `CANVAS-SURFACE`** (local only):
+  - The system call `gui_canvas_surface(conn, canvas)` gives a surface descriptor for a canvas,
+    used with the surface calls a game uses (buffer, acquire, present, the 2D-DMA blits).
+  - The canvas paints the last presented buffer. The loader's surface calls then take a surface
+    interface, which `ProgramSurface` and the canvas both implement, instead of
+    `ProgramSurface` itself.
+- **3d, `CLIPBOARD`:** the `Clipboard` class (no parent).
+  - **Selection values:** `clipboard`, `primary`.
+  - **Copying:** `copyText(selection, text)`; `offer(selection, types)` offers types the client
+    gives on request. The event `requested(request, selection, type)` asks for one; the client
+    answers with `answer(request, data)`, then `finish(request)` (an empty answer: none).
+  - **Also:** `clear(selection)`, the event `lost(selection)`, and `paste(selection, type)`,
+    answered by the event `pasted(selection, type, data)` or `pasteFailed(selection, type)`.
+  - **How the service does it:** it is the owner to the system's clipboard. A request's pipe end
+    is kept until the client finishes, written as the answers come. That is `clipboard.md` C14's
+    "requests become events".
+- **3e, drops** (`clipboard.md` D13, for programs):
+  - `Widget.dropTypes` (a list): a widget takes drops of those types.
+  - The event `dropped(type, data, x, y)`, its data read by the service.
+  - Programs starting drags of their own wait for a later step.
+- **Budget:** an image's pixels and a canvas's picture are the only new memory. They come from
+  PSRAM, freed with their object, a canvas's made again at its size.
+
+**3a, as built (2026-10-22):**
+- **`Image`** objects, their pixels sent by `PutImage`:
+  - The body is id, width, height, format (1: ARGB8888), offset, count, then the pixels.
+  - A piece at offset 0 sets the size, at most 512 × 512.
+  - `bmds_gui_put_image()` sends 32768 pixels (128 KB) a piece, flushing each.
+- **The pixels are a counted block (`GuiImage`).** The object holds one reference; a window, a
+  button, a tool button and a menu item hold one each (`GuiObject::image`), and a view one for
+  each image its rows show (`GuiObject::images`).
+  - A view lets go of images no row shows any more (on every change of its rows and
+    `setIconImage`).
+  - So an image destroyed while shown stays until the last user lets go, and its id is free at
+    once.
+- **Users:** `Window.iconImage`, `Button.iconImage`, `ToolButton.iconImage`, `MenuItem.iconImage`
+  and `ItemView.setIconImage(row, image)`. Rows show it at its own size (16 × 16 for lists,
+  32 × 32 for icons). A theme name and an image replace each other.
+- **Tried:** guitest checks sizes read back, the errors (too big, not an image, no pixels yet,
+  under a window), destroying while shown by a button, the window, a menu item and rows, and a
+  512 × 512 image in 8 pieces; five runs cost 1.2 KB of PSRAM. The gallery draws a diamond
+  (16 and 32 pixels, transparent corners) shown on a tool button, a list row and the icon view.
+
+**3b, as built (2026-10-22):**
+- **`Canvas`:** a widget holding an RGB565 picture at its size, made again (white) when the
+  layout resizes it, with the event `resized(width, height)`.
+  - It paints with `Painter::pixels565`, so a repaint costs the client nothing.
+  - Read-only `width` and `height`; `preferredWidth` and `preferredHeight` as its hint.
+  - Input: `pressed`, `released` (x, y, button), `moved` (x, y, buttons; Off), `wheel`, and
+    `key(usage, modifiers, down, text)`. Tab and Alt still go to the window. It takes the focus
+    on a press.
+- **`PutPixels`:** canvas id, x, y, width, height, encoding (1: raw RGB565; 2: run-length,
+  `uint16` count and pixel), the data's bytes, the data.
+  - A rectangle drawn for a size the canvas no longer has is cut to its picture, not refused:
+    the client can't know of a resize before its event.
+  - `bmds_gui_put_pixels()` codes each band run-length when that is smaller, in bands under the
+    largest message.
+- **Measured on the board** (a 640 × 480 canvas, a local connection):
+  - At first a raw frame took 270 ms (2.3 MB/s). The connection's reader copied the stream a
+    byte at a time, twice. Now it copies whole reads (`List::append(Span)`, new, with
+    `truncate()` dropping trivially destructible elements by the size alone): 89 ms (6.9 MB/s)
+    raw, 51 ms run-length.
+  - The rest is the stream's copies (a 16 KB ring), which 3c's local surfaces avoid.
+- **Tried:**
+  - guitest checks the size told on layout, raw and run-length pixels, a rectangle outside the
+    picture (dropped) and partly outside (cut), and `BadMatch` for a non-canvas.
+  - The gallery's Paint tab draws with the mouse (each motion's dots, only the changed
+    rectangle sent), its brush from the colour dialog. The picture stayed across tab switches.
+- **Size:** `bmds_guiservice` 46.6 KB of flash after 3a and 3b (42.0 KB after step 2).

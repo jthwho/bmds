@@ -227,3 +227,26 @@ property Timer.active Bool RO
 method Timer.start() -> None
 method Timer.stop() -> None
 event Timer.timeout() on
+
+# Step 3a (2026-10-22): images.
+class Image : None Concrete
+property Image.width Int RO
+property Image.height Int RO
+property Window.iconImage Id RW
+property Button.iconImage Id RW
+property ToolButton.iconImage Id RW
+property MenuItem.iconImage Id RW
+method ItemView.setIconImage(Int, Id) -> None
+
+# Step 3b (2026-10-22): Canvas.
+class Canvas : Widget Concrete
+property Canvas.width Int RO
+property Canvas.height Int RO
+property Canvas.preferredWidth Int RW
+property Canvas.preferredHeight Int RW
+event Canvas.resized(Int, Int) on
+event Canvas.pressed(Int, Int, Int) on
+event Canvas.released(Int, Int, Int) on
+event Canvas.moved(Int, Int, Int) off
+event Canvas.wheel(Int) on
+event Canvas.key(Int, Int, Bool, String) on

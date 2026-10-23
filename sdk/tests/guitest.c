@@ -9,7 +9,8 @@
  * display; it opens one window for a moment. Checks Describe for every class, the error each bad
  * request gets, events from methods (a button's click), what a client's own change doesn't tell
  * back, containers letting go of children (tabs, a splitter, a menu, a menu bar), a one-shot
- * timer, and many objects made and destroyed. Prints "guitest: ok", or each failure and exits 1.
+ * timer, images (shown by widgets and outliving their objects while shown), a canvas's pixels,
+ * and many objects made and destroyed. Prints "guitest: ok", or each failure and exits 1.
  */
 
 #include <bmds/guiclasses.h>
@@ -126,7 +127,7 @@ static void describeAll(bmds_gui_t *gui) {
                 {"StatusBar", 1},   {"ItemView", 0}, {"ListView", 1},    {"DetailsView", 1}, {"IconView", 1},
                 {"TreeView", 1},    {"TextEdit", 1}, {"CodeEdit", 1},    {"Terminal", 1},    {"MenuBar", 1},
                 {"Menu", 1},        {"MenuItem", 1}, {"MessageBox", 1},  {"FileDialog", 1},  {"ColorDialog", 1},
-                {"Timer", 1},
+                {"Timer", 1},       {"Image", 1},    {"Canvas", 1},
         };
         uint32_t parent = 0, creatable = 0;
         int      found = 0;
@@ -279,6 +280,97 @@ static void containers(bmds_gui_t *gui, uint32_t window) {
         return;
 }
 
+// Images: their pixels by PutImage, shown by buttons, windows, menus and rows, outliving their
+// objects while shown.
+static void images(bmds_gui_t *gui, uint32_t window) {
+        static uint32_t pixels[16 * 16];
+        for (int i = 0; i < 16 * 16; ++i) pixels[i] = 0xff000000u | (uint32_t)(i * 0x010203);
+        const uint32_t image = bmds_gui_new(gui, "Image", 0);
+        CHECK(bmds_gui_put_image(gui, image, 16, 16, pixels) == 0);
+        bmds_gui_value_t v;
+        CHECK(bmds_image_get_width(gui, image, &v) == 0 && v.number == 16);
+        CHECK(bmds_image_get_height(gui, image, &v) == 0 && v.number == 16);
+        EXPECT_NONE();
+        // Too big; not an image; an image without pixels yet; an image under a window.
+        static uint32_t row[600];
+        bmds_gui_put_image(gui, image, 600, 1, row);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        const uint32_t label = bmds_label_new(gui, window);
+        bmds_gui_put_image(gui, label, 16, 16, pixels);
+        EXPECT(BMDS_GUI_BAD_MATCH);
+        const uint32_t empty = bmds_gui_new(gui, "Image", 0);
+        const uint32_t button = bmds_button_new(gui, window);
+        bmds_button_set_icon_image(gui, button, empty);
+        EXPECT(BMDS_GUI_BAD_MATCH);
+        bmds_button_set_icon_image(gui, button, label);
+        EXPECT(BMDS_GUI_BAD_MATCH);
+        CHECK(bmds_gui_new(gui, "Image", window) != 0);
+        EXPECT(BMDS_GUI_BAD_MATCH);
+        // Shown by a button, the window, a menu item and list rows; then destroyed while shown.
+        bmds_button_set_icon_image(gui, button, image);
+        bmds_window_set_icon_image(gui, window, image);
+        CHECK(bmds_button_get_icon_image(gui, button, &v) == 0 && v.number == image);
+        const uint32_t popup = bmds_menu_new(gui, window);
+        bmds_menu_item_set_icon_image(gui, bmds_menu_item_new(gui, popup), image);
+        const uint32_t           list = bmds_list_view_new(gui, window);
+        static const char *const rows[] = {"a", "b", "c"};
+        bmds_item_view_set_items(gui, list, rows, 3);
+        for (int i = 0; i < 3; ++i) bmds_item_view_set_icon_image(gui, list, i, image);
+        EXPECT_NONE();
+        bmds_gui_destroy(gui, image);
+        CHECK(bmds_gui_put_image(gui, image, 16, 16, pixels) == 0);
+        EXPECT(BMDS_GUI_BAD_ID); // its id is free at once
+        const bmds_gui_value_t first = bmds_gui_int(0);
+        bmds_gui_call_named(gui, list, "removeItem", &first, 1, NULL);
+        bmds_item_view_clear(gui, list);
+        bmds_gui_destroy(gui, list);
+        bmds_gui_destroy(gui, popup);
+        bmds_window_set_icon_image(gui, window, 0);
+        bmds_gui_destroy(gui, button);
+        bmds_gui_destroy(gui, empty);
+        bmds_gui_destroy(gui, label);
+        EXPECT_NONE();
+        // A big one, in pieces (512 × 512: 8 pieces).
+        static uint32_t big[512 * 512];
+        const uint32_t  large = bmds_gui_new(gui, "Image", 0);
+        CHECK(bmds_gui_put_image(gui, large, 512, 512, big) == 0);
+        CHECK(bmds_image_get_width(gui, large, &v) == 0 && v.number == 512);
+        bmds_gui_destroy(gui, large);
+        EXPECT_NONE();
+        return;
+}
+
+// A canvas: its size told when laid out, pixels raw and run-length coded, a rectangle outside
+// its picture dropped.
+static void canvasTest(bmds_gui_t *gui, uint32_t window) {
+        const uint32_t c = bmds_canvas_new(gui, window);
+        bmds_canvas_set_preferred_width(gui, c, 64);
+        bmds_canvas_set_preferred_height(gui, c, 48);
+        bmds_gui_event_t e;
+        int              sized = 0;
+        while (!sized && nextEvent(gui, &e, 1000) == 1)
+                sized = e.source == c && bmds_gui_event_is(gui, &e, BMDS_GUI_CANVAS_RESIZED) && e.count == 2 &&
+                        e.values[0].number > 0 && e.values[1].number > 0;
+        CHECK(sized);
+        bmds_gui_value_t v;
+        CHECK(bmds_canvas_get_width(gui, c, &v) == 0 && v.number > 0);
+        static uint16_t pixels[32 * 32];
+        for (int i = 0; i < 32 * 32; ++i) pixels[i] = (uint16_t)(i * 37); // varied: sent raw
+        CHECK(bmds_gui_put_pixels(gui, c, 0, 0, 32, 32, pixels, 32) == 0);
+        for (int i = 0; i < 32 * 32; ++i) pixels[i] = 0xf800; // one colour: run-length coded
+        CHECK(bmds_gui_put_pixels(gui, c, 8, 8, 32, 32, pixels, 32) == 0);
+        CHECK(bmds_gui_put_pixels(gui, c, 10000, 10000, 32, 32, pixels, 32) == 0); // outside: dropped
+        CHECK(bmds_gui_put_pixels(gui, c, -16, -16, 32, 32, pixels, 32) == 0);     // partly: cut
+        EXPECT_NONE();
+        const uint32_t label = bmds_label_new(gui, window);
+        bmds_gui_put_pixels(gui, label, 0, 0, 32, 32, pixels, 32);
+        EXPECT(BMDS_GUI_BAD_MATCH);
+        bmds_gui_destroy(gui, label);
+        bmds_gui_destroy(gui, c);
+        EXPECT_NONE();
+        return;
+}
+
 // Many windows with children made and destroyed; the service answers throughout.
 static void many(bmds_gui_t *gui) {
         for (int i = 0; i < 100; ++i) {
@@ -310,6 +402,8 @@ int main(void) {
         bmds_window_show(gui, window);
         events(gui, window);
         containers(gui, window);
+        images(gui, window);
+        canvasTest(gui, window);
         many(gui);
         bmds_gui_close(gui);
         if (failures != 0) {
