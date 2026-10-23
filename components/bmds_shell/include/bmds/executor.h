@@ -73,6 +73,8 @@ struct Job {
  *
  * Ended jobs are taken (their processes freed) by `poll()`. A table that
  * goes with jobs still running disowns them: they are freed when they end.
+ * A shell that never reports them (a script's) keeps the last `MaxEnded`
+ * ended jobs, for `wait pid`, as POSIX allows (the last CHILD_MAX).
  *
  * @par Thread Safety
  * Thread-affine, as the `ShellState` that holds it.
@@ -85,6 +87,9 @@ class JobTable {
                         None,      ///< No such job.
                         Ambiguous, ///< `%name`, `%?text`: more than one.
                 };
+
+                /** @brief Ended jobs kept unreported, at most (the process table's size: CHILD_MAX). */
+                static constexpr size_t MaxEnded = 32;
 
                 JobTable() = default;
                 ~JobTable();
@@ -165,6 +170,7 @@ class JobTable {
 
         private:
                 void disownAll();
+                void dropOldEnded(); // beyond MaxEnded, the oldest ended jobs go
 
                 ProcessControl *_process = nullptr;
                 List<Job>       _jobs;

@@ -953,8 +953,11 @@ touch its edges and only their content areas pad themselves.
   - **The timer** counted seconds and stopped.
   - **Killed with a box open and the timer running:** the box went with the connection.
     Internal RAM came back exactly over six such runs.
-- **Found while checking for leaks, not the GUI service's:** each shell on a pty that ends by
-  hang-up leaves its loader `Running` record (about 850 bytes); in the gallery's case a 16 KB
-  `Pipe` too. The built-in terminal shows it as well (`win term`, then closed: one
-  `Running` a time, by `mem mark` / `mem new`). To be followed up in the loader.
+- **Leak checks, corrected afterwards (the user asked to chase the leak):** the `Running` and
+  `Pipe` blocks `mem new` listed were the measuring ssh session's own objects, not leaks. Its
+  shell is a new process since the mark, and dropbear gives it two pipes. Measured in one
+  session, nothing in the GUI service or the loader leaks: five gallery kills with a box open
+  and the timer running cost 280 bytes, which was the measuring shell's job list. That job list
+  was the real leak: a script's shell kept every ended background job (`devplan/processes.md`
+  §3.6.2).
 - **Size:** `bmds_guiservice` 41.9 KB of flash (33.7 KB after 2d).

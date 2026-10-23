@@ -156,6 +156,23 @@ void JobTable::poll() {
                         }
                 }
         }
+        dropOldEnded();
+        return;
+}
+
+// A script's shell never reports its ended jobs: each would stay until it exits (52 bytes a
+// background job, found as a slow leak). The newest MaxEnded are kept for `wait pid`.
+void JobTable::dropOldEnded() {
+        size_t ended = 0;
+        for (const Job &job : _jobs) ended += job.ended ? 1 : 0;
+        for (size_t i = 0; i < _jobs.size() && ended > MaxEnded;) {
+                if (!_jobs[i].ended) {
+                        ++i;
+                        continue;
+                }
+                _jobs.removeAt(i); // ended: its process is taken already
+                --ended;
+        }
         return;
 }
 

@@ -813,3 +813,23 @@ ABI 1 has not shipped, but these are recorded as `ABI:` lines because they chang
   - Found: `progtest rt` (audio) fails now and then with late periods, more often on the last
     commit's firmware (5 of 5 there, 2 of 5 here): not this change; not yet looked into. `progtest signals`
     run by `ssh` without `setsid` ends the session (it signals its own process group).
+
+### 3.6.2 Ended jobs a script never reports (2026-10-22)
+
+- **The leak:** a shell keeps a `Job` (its number, pid and command) for every background job.
+  An interactive shell drops ended ones once it reports them at the prompt. A script's shell
+  (`sh -c`, a `.sh` file) never reports, so each finished background job stayed until the shell
+  ended, 52 bytes a job (200 jobs: 10,440 bytes). The processes themselves were taken by
+  `poll()`; only the entries stayed.
+- **Now:** `JobTable` keeps the newest `MaxEnded` (32, the process table's size: CHILD_MAX)
+  ended jobs, as POSIX allows a non-interactive shell (the last CHILD_MAX). `wait pid` of an
+  older one says it is not a child (127), as bash does.
+- **Measured:** 200 background jobs then cost 2.2 KB once (the kept entries and the list's
+  room), and 200 more cost nothing. `wait` still returned 1 and 3 for recent jobs.
+- **How to measure a leak on the board:**
+  - `mem mark` / `mem new` from an ssh session lists that session's own blocks too. Its
+    shell's `Running` (848 bytes) and dropbear's two 16 KB `Pipe`s for its output look like a
+    leak but aren't.
+  - Measure inside one session instead: `mem | grep ^Psram` before and after many repeats of
+    the action, with one run first so caches settle.
+  - Free memory read from separate sessions drifts by kilobytes.
