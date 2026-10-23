@@ -37,6 +37,7 @@
 #include <bmds/guiclipboard.h>
 #include <bmds/messagebox.h>
 #include <bmds/trayicon.h>
+#include <bmds/windowmanager.h>
 #include <bmds/windowstack.h>
 #include "canvassurface.h"
 #include "guiatoms.h"
@@ -3208,6 +3209,134 @@ namespace {
                 d->icon->setAvailabilityChanged(trayAvailability, &o);
                 o.dispose = disposeTrayIcon;
                 o.release = trayRelease;
+                return Ok;
+        }
+
+        // ---- Step 4b: Services, the window manager's service bus (SERVICES): names this object
+        // registered (the connection's application's), and names it watches come and go
+
+        constexpr size_t MaxRegistered = GuiApplication::MaxServices;
+        constexpr size_t MaxWatched = 16;
+
+        struct ServicesData {
+                        struct Registered {
+                                        GuiObject *object = nullptr; // null: the slot is free
+                                        char       name[WindowManager::MaxServiceName + 1] = {};
+                        };
+                        struct Watched {
+                                        char name[WindowManager::MaxServiceName + 1] = {}; // empty: free
+                                        bool present = false;
+                        };
+                        Registered registered[MaxRegistered];
+                        Watched    watched[MaxWatched];
+                        bool       watching = false; // the application's watch, for this object
+        };
+        ServicesData &servicesData(GuiObject &o) {
+                return *dataOf<ServicesData>(o);
+        }
+        // A service's name: 1 to 31 bytes. False: not one.
+        bool serviceName(const Value &v) {
+                return !v.text.isEmpty() && v.text.size() <= WindowManager::MaxServiceName;
+        }
+        template <size_t N> void putName(char (&out)[N], StringView name) {
+                std::memcpy(out, name.data(), name.size()); // checked to fit
+                out[name.size()] = '\0';
+                return;
+        }
+        void serviceMessage(void *arg, ByteSpan message) {
+                auto       &r = *static_cast<ServicesData::Registered *>(arg);
+                const Value v[] = {
+                        Value::string(StringView(r.name)),
+                        Value::bytes(StringView(reinterpret_cast<const char *>(message.data()), message.size()))};
+                r.object->connection->emit(*r.object, "message", Args(v, 2));
+                return;
+        }
+        // Something came or went: each watched name whose presence changed told.
+        void servicesChanged(void *arg) {
+                auto           &o = *static_cast<GuiObject *>(arg);
+                GuiApplication &app = o.connection->application();
+                for (ServicesData::Watched &w : servicesData(o).watched) {
+                        if (w.name[0] == '\0') continue;
+                        const bool present = app.hasService(StringView(w.name));
+                        if (present == w.present) continue;
+                        w.present = present;
+                        const Value v[] = {Value::string(StringView(w.name)), Value::boolean(present)};
+                        o.connection->emit(o, "changed", Args(v, 2));
+                }
+                return;
+        }
+        GuiStatus call_Services_register(GuiObject &o, Args args, Value &) {
+                if (!serviceName(args[0])) return BadValue;
+                ServicesData::Registered *slot = nullptr;
+                for (ServicesData::Registered &r : servicesData(o).registered)
+                        if (r.object == nullptr && slot == nullptr) slot = &r;
+                if (slot == nullptr) return BadAccess;
+                putName(slot->name, args[0].text);
+                const Error err = o.connection->application().registerService(args[0].text, serviceMessage, slot);
+                if (err.isError()) return err == Error::NoMem ? NoMem : BadAccess; // another has it; all in use
+                slot->object = &o;
+                return Ok;
+        }
+        GuiStatus call_Services_unregister(GuiObject &o, Args args, Value &) {
+                for (ServicesData::Registered &r : servicesData(o).registered) {
+                        if (r.object == nullptr || StringView(r.name) != args[0].text) continue;
+                        (void)o.connection->application().unregisterService(args[0].text);
+                        r.object = nullptr;
+                        return Ok;
+                }
+                return BadValue; // not one of this object's
+        }
+        GuiStatus call_Services_send(GuiObject &o, Args args, Value &) {
+                if (!serviceName(args[0])) return BadValue;
+                const ByteSpan bytes(reinterpret_cast<const uint8_t *>(args[1].text.data()), args[1].text.size());
+                const Error    err = o.connection->application().windowManager().sendToService(args[0].text, bytes);
+                if (err.isOk()) return Ok;
+                if (err == Error::NotFound) return GuiStatus(GuiProtocol::ErrorCode::BadName); // nobody has it
+                if (err == Error::Invalid) return BadValue;                                    // empty, or over 4 KB
+                return err == Error::NoMem ? NoMem : BadAccess;                                // its queue is full
+        }
+        GuiStatus call_Services_has(GuiObject &o, Args args, Value &result) {
+                result = Value::boolean(serviceName(args[0]) && o.connection->application().hasService(args[0].text));
+                return Ok;
+        }
+        GuiStatus call_Services_watch(GuiObject &o, Args args, Value &) {
+                if (!serviceName(args[0])) return BadValue;
+                ServicesData          &d = servicesData(o);
+                ServicesData::Watched *slot = nullptr;
+                for (ServicesData::Watched &w : d.watched) {
+                        if (StringView(w.name) == args[0].text) return Ok; // watched already
+                        if (w.name[0] == '\0' && slot == nullptr) slot = &w;
+                }
+                if (slot == nullptr) return BadAccess;
+                GuiApplication &app = o.connection->application();
+                if (!d.watching) {
+                        const Error err = app.watchServices(servicesChanged, &o);
+                        if (err.isError()) return err == Error::NoMem ? NoMem : BadAccess;
+                        d.watching = true;
+                }
+                putName(slot->name, args[0].text);
+                slot->present = app.hasService(args[0].text); // told from the next change
+                return Ok;
+        }
+        GuiStatus call_Services_unwatch(GuiObject &o, Args args, Value &) {
+                for (ServicesData::Watched &w : servicesData(o).watched)
+                        if (StringView(w.name) == args[0].text) w.name[0] = '\0';
+                return Ok;
+        }
+        void disposeServices(GuiObject &o) {
+                if (o.data == nullptr) return;
+                ServicesData   &d = servicesData(o);
+                GuiApplication &app = o.connection->application();
+                for (ServicesData::Registered &r : d.registered)
+                        if (r.object != nullptr) (void)app.unregisterService(StringView(r.name));
+                if (d.watching) app.unwatchServices(servicesChanged, &o);
+                freeData<ServicesData>(o);
+                return;
+        }
+        GuiStatus create_Services(GuiObject &o, GuiObject *parent) {
+                (void)parent;
+                if (makeData<ServicesData>(o) == nullptr) return NoMem;
+                o.dispose = disposeServices;
                 return Ok;
         }
 

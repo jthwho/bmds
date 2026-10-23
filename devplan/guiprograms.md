@@ -1,8 +1,8 @@
 # GUI Programs: the Toolkit for Every Program, and Angel's Bindings to the Whole System
 
 Status: **steps 1-3 built** (2026-10-22; §9-§11): the protocol, the classes, pictures and the
-clipboard. **Step 4 under way** (§12): 4a built (notifications and tray icons); next 4b,
-`SERVICES`. The user agreed with the shape (2026-10-22): the
+clipboard. **Step 4 under way** (§12): 4a and 4b built (notifications, tray icons, the
+service bus); next 4c, `SHELL`. The user agreed with the shape (2026-10-22): the
 toolkit as a service (P1), names (P2), and **a wire protocol in the spirit of X11's** between
 programs and the service (P8), so that applications can also run on another machine. This plan
 revises `gui.md` G1 and fills in `windows.md` §6 ("ABI (later)").
@@ -1380,3 +1380,27 @@ every connection, and `SHELL` (value "1") on connections the setting allows.
     the swings before were caches.
 - **Size:** `bmds_guiservice` 56.4 KB of flash (53.9 KB after 3e). The toolkit's `Notifier` and
   `TrayIcon` were linked already (the panel and the media player use them).
+
+**4b, as built (2026-10-23):**
+- **`Services`** as designed, on the connection's application's services (the window manager's
+  bus). `Hello` names `SERVICES` (value "1") on every connection.
+  - `register(name)`: a name of 1 to 31 bytes (else `BadValue`). Taken by anyone, this object
+    included, or all in use: `BadAccess`. The application's names grew from 4 to 8
+    (`GuiApplication::MaxServices`, 32 bytes more each); its tray icons take one while shown.
+  - `unregister(name)`: `BadValue` unless this object has it.
+  - `send(name, bytes)`: `BadName` if nobody has the name, `BadValue` for a bad name or more than
+    4 KB, `BadAccess` when the receiver's queue is full.
+  - `watch(name)`: up to 16 names an object, its present state taken then; `changed(name,
+    present)` is told only when that changes. Watching a name twice is fine; `unwatch` forgets it.
+  - The object destroyed, or the connection ended: its names are released and its watch stopped.
+- **Tried:**
+  - guitest, between two connections of its own:
+    - a name watched by one and registered by the other (`changed` true), taken twice
+      (`BadAccess` from both), a message with a NUL among its bytes, the refusals (nobody,
+      a name too long, 5000 bytes);
+    - given up (`changed` false) and again (`BadValue`), released with its object, and the other
+      connection's name gone when that connection closed.
+  - The gallery runs once: a second start finds `org.bmds.guigallery` taken, sends it `raise` and
+    ends. Tried with the first minimized: it came back, focused.
+  - Fifteen guitest runs: memory unchanged to the byte.
+- **Size:** `bmds_guiservice` 58.0 KB of flash (56.4 KB after 4a).

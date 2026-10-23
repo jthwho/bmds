@@ -22,7 +22,8 @@
  * only when another program asks (as plain text, or as HTML in bold), and pasted back; what
  * happens is shown below (CLIPBOARD); a label below takes drops of files or text (`dropTypes`).
  * Desktop: a notification with two buttons, and a tray icon with a menu; what became of them shows
- * below.
+ * below. One gallery runs at a time: a second start asks the first, on the service bus (SERVICES),
+ * to come forward, and ends.
  */
 
 #include <bmds/guiclasses.h>
@@ -54,6 +55,7 @@ typedef struct Gallery {
                 uint32_t    canvas, clearButton;
                 uint32_t    clipboard, clipEdit, clipCopy, clipOffer, clipPaste, clipState, dropTarget;
                 uint32_t    notifyButton, note, trayCheck, tray, trayShow, trayNotify, deskState;
+                uint32_t    services; // our name on the service bus: one gallery at a time
                 uint16_t   *picture; // the canvas's, as drawn here (RGB565)
                 int         pictureWidth, pictureHeight, lastX, lastY, drawing;
                 uint16_t    brush;
@@ -375,10 +377,22 @@ static int desktopEvent(Gallery *g, const bmds_gui_event_t *e) {
         return 1;
 }
 
+// The gallery's name on the service bus.
+static const char GalleryService[] = "org.bmds.guigallery";
+
 static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
         bmds_gui_t *gui = g->gui;
         if (clipboardEvent(g, e)) return 1;
         if (desktopEvent(g, e)) return 1;
+        if (e->source == g->services && bmds_gui_event_is(gui, e, BMDS_GUI_SERVICES_MESSAGE) && e->count == 2) {
+                // Another gallery started: we come forward instead.
+                if (e->values[1].length == 5 && memcmp(e->values[1].text, "raise", 5) == 0) {
+                        bmds_window_restore(gui, g->window);
+                        bmds_window_raise(gui, g->window);
+                        bmds_label_set_text(gui, g->deskState, "Another start asked us to come forward.");
+                }
+                return 1;
+        }
         if (e->source == g->files && bmds_gui_event_is(gui, e, BMDS_GUI_DETAILS_VIEW_SORT_ASKED) && e->count == 1) {
                 // The same column again turns the order round.
                 const int column = (int)e->values[0].number;
@@ -578,6 +592,16 @@ int main(void) {
                 return 1;
         }
         bmds_gui_t *gui = g.gui;
+        // One gallery at a time (SERVICES): a second asks the first to come forward, and ends.
+        g.services = bmds_services_new(gui, 0);
+        bmds_gui_value_t running;
+        if (bmds_services_has(gui, g.services, GalleryService, &running) == 0 && running.number) {
+                bmds_services_send(gui, g.services, GalleryService, "raise", 5);
+                bmds_gui_close(gui);
+                printf("guigallery: running already: shown\n");
+                return 0;
+        }
+        bmds_services_register(gui, g.services, GalleryService);
         g.window = bmds_window_new(gui, 0);
         bmds_window_set_title(gui, g.window, "GUI gallery");
         bmds_window_set_icon(gui, g.window, "applications-system");

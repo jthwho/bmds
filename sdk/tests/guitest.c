@@ -719,6 +719,74 @@ static void trayTest(bmds_gui_t *gui) {
         return;
 }
 
+// The service bus (SERVICES) between two connections: a name registered, watched coming and
+// going, messages of any bytes sent to it, the refusals; names released with their object and
+// with their connection.
+static void servicesTest(bmds_gui_t *gui) {
+        CHECK(bmds_gui_has_extension(gui, "SERVICES") == 1);
+        bmds_gui_t *other = bmds_gui_connect(NULL);
+        CHECK(other != NULL);
+        if (other == NULL) return;
+        bmds_gui_on_error(other, onError, NULL);
+#define EXPECT_OTHER(code) expectErrors(other, code, __LINE__)
+        const char      *name = "org.bmds.guitest";
+        const uint32_t   a = bmds_services_new(gui, 0), b = bmds_services_new(other, 0);
+        bmds_gui_value_t v;
+        bmds_gui_event_t e;
+        CHECK(bmds_services_has(other, b, name, &v) == 0 && v.number == 0);
+        bmds_services_watch(other, b, name);
+        bmds_services_watch(other, b, name); // watched already: fine
+        bmds_gui_sync(other);
+        bmds_services_register(gui, a, name);
+        bmds_gui_sync(gui);
+        CHECK(waitFor(other, b, BMDS_GUI_SERVICES_CHANGED, 3000, &e) && e.count == 2 && e.values[0].length == 16 &&
+              memcmp(e.values[0].text, name, 16) == 0 && e.values[1].number == 1);
+        CHECK(bmds_services_has(other, b, name, &v) == 0 && v.number == 1);
+        EXPECT_NONE();
+        // Taken: by itself again, and by the other.
+        bmds_services_register(gui, a, name);
+        EXPECT(BMDS_GUI_BAD_ACCESS);
+        bmds_services_register(other, b, name);
+        EXPECT_OTHER(BMDS_GUI_BAD_ACCESS);
+        // A message, a NUL among its bytes; then one to nobody, a name too long, too many bytes.
+        bmds_services_send(other, b, name, "hi\0there", 8);
+        bmds_gui_flush(other);
+        CHECK(waitFor(gui, a, BMDS_GUI_SERVICES_MESSAGE, 3000, &e) && e.count == 2 && e.values[0].length == 16 &&
+              e.values[1].tag == BMDS_GUI_BYTES && e.values[1].length == 8 &&
+              memcmp(e.values[1].text, "hi\0there", 8) == 0);
+        EXPECT_NONE();
+        bmds_services_send(other, b, "org.bmds.nobody", "x", 1);
+        EXPECT_OTHER(BMDS_GUI_BAD_NAME);
+        bmds_services_send(other, b, "org.bmds.a.name.longer.than.31.bytes", "x", 1);
+        EXPECT_OTHER(BMDS_GUI_BAD_VALUE);
+        static char big[5000];
+        bmds_services_send(other, b, name, big, sizeof(big));
+        EXPECT_OTHER(BMDS_GUI_BAD_VALUE);
+        // Given up, and again (not its own now); registered again and gone with its object.
+        bmds_services_unregister(gui, a, name);
+        bmds_gui_sync(gui);
+        CHECK(waitFor(other, b, BMDS_GUI_SERVICES_CHANGED, 3000, &e) && e.count == 2 && e.values[1].number == 0);
+        bmds_services_unregister(gui, a, name);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_services_register(gui, a, name);
+        bmds_gui_destroy(gui, a);
+        bmds_gui_sync(gui);
+        CHECK(bmds_services_has(other, b, name, &v) == 0 && v.number == 0);
+        // The other's name goes with its connection.
+        bmds_services_register(other, b, name);
+        bmds_gui_sync(other);
+        const uint32_t c = bmds_services_new(gui, 0);
+        CHECK(bmds_services_has(gui, c, name, &v) == 0 && v.number == 1);
+        bmds_services_watch(gui, c, name);
+        bmds_gui_sync(gui);
+        bmds_gui_close(other);
+        CHECK(waitFor(gui, c, BMDS_GUI_SERVICES_CHANGED, 5000, &e) && e.count == 2 && e.values[1].number == 0);
+        bmds_gui_destroy(gui, c);
+        EXPECT_NONE();
+#undef EXPECT_OTHER
+        return;
+}
+
 // Many windows with children made and destroyed; the service answers throughout.
 static void many(bmds_gui_t *gui) {
         for (int i = 0; i < 100; ++i) {
@@ -757,6 +825,7 @@ int main(void) {
         dropTypesTest(gui, window);
         notificationTest(gui);
         trayTest(gui);
+        servicesTest(gui);
         many(gui);
         bmds_gui_close(gui);
         if (failures != 0) {

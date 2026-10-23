@@ -162,7 +162,7 @@ class GuiApplication {
                 using ServiceMessage = void (*)(void *arg, ByteSpan message);
 
                 /** @brief Services at once. */
-                static constexpr size_t MaxServices = 4;
+                static constexpr size_t MaxServices = 8;
 
                 /**
                  * @brief Names a service of the application (`WindowManager::registerService()`,

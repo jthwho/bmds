@@ -297,3 +297,13 @@ property TrayIcon.available Bool RO
 event TrayIcon.activated(Atom) on
 event TrayIcon.scrolled(Int) on
 event TrayIcon.availabilityChanged(Bool) on
+# Step 4b (2026-10-23): the service bus between programs
+class Services : None Concrete
+method Services.register(String) -> None
+method Services.unregister(String) -> None
+method Services.send(String, Bytes) -> None
+method Services.has(String) -> Bool
+method Services.watch(String) -> None
+method Services.unwatch(String) -> None
+event Services.message(String, Bytes) on
+event Services.changed(String, Bool) on

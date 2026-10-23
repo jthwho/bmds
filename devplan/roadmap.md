@@ -455,8 +455,9 @@ Plan: [`input.md`](input.md).
   surface (`gui_canvas_surface`, slot 125; `SwapChain` under the surface calls), the clipboard
   (`Clipboard`, offers answered on request, the `Bytes` tag), and drops onto any widget
   (`dropTypes`, `dropped`; the toolkit's widget drop hook). Step 4 designed (§12), in four parts;
-  4a done: `Notification` and `TrayIcon` (a `Menu` made under it is its menu). Next: 4b, the
-  `SERVICES` extension; then `SHELL` and a panel in C.
+  4a done: `Notification` and `TrayIcon` (a `Menu` made under it is its menu); 4b done: the
+  `SERVICES` extension (`Services`: names, messages, watches). Next: 4c, `SHELL`; then a panel
+  in C.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

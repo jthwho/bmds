@@ -1162,6 +1162,38 @@ static inline int bmds_tray_icon_get_available(bmds_gui_t *gui, uint32_t id, bmd
 #define BMDS_GUI_TRAY_ICON_SCROLLED "scrolled" /**< TrayIcon's event (Int). */
 #define BMDS_GUI_TRAY_ICON_AVAILABILITY_CHANGED "availabilityChanged" /**< TrayIcon's event (Bool). */
 
+/* ---- Services */
+/** @brief A new Services under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_services_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "Services", parent);
+}
+static inline int bmds_services_register(bmds_gui_t *gui, uint32_t id, const char *a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0)};
+        return bmds_gui_call_named(gui, id, "register", args, 1, NULL);
+}
+static inline int bmds_services_unregister(bmds_gui_t *gui, uint32_t id, const char *a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0)};
+        return bmds_gui_call_named(gui, id, "unregister", args, 1, NULL);
+}
+static inline int bmds_services_send(bmds_gui_t *gui, uint32_t id, const char *a0, const void *a1, uint32_t a1_size) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0), bmds_gui_bytes(a1, a1_size)};
+        return bmds_gui_call_named(gui, id, "send", args, 2, NULL);
+}
+static inline int bmds_services_has(bmds_gui_t *gui, uint32_t id, const char *a0, bmds_gui_value_t *result) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0)};
+        return bmds_gui_call_named(gui, id, "has", args, 1, result);
+}
+static inline int bmds_services_watch(bmds_gui_t *gui, uint32_t id, const char *a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0)};
+        return bmds_gui_call_named(gui, id, "watch", args, 1, NULL);
+}
+static inline int bmds_services_unwatch(bmds_gui_t *gui, uint32_t id, const char *a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0)};
+        return bmds_gui_call_named(gui, id, "unwatch", args, 1, NULL);
+}
+#define BMDS_GUI_SERVICES_MESSAGE "message" /**< Services's event (String, Bytes). */
+#define BMDS_GUI_SERVICES_CHANGED "changed" /**< Services's event (String, Bool). */
+
 #ifdef __cplusplus
 }
 #endif

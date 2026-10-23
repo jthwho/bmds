@@ -406,9 +406,13 @@ void GuiConnection::hello(GP::Reader &body) {
         w.u32(IdMask);
         w.u32(GP::MaxMessage);
         // The extensions (their first opcode and event code 0: classes and a system call, not
-        // requests): the clipboard; a local client's canvases take surfaces.
-        w.u32(_clientEnd != nullptr ? 2 : 1);
+        // requests): the clipboard and the service bus; a local client's canvases take surfaces.
+        w.u32(_clientEnd != nullptr ? 3 : 2);
         w.string("CLIPBOARD");
+        w.string("1");
+        w.u32(0);
+        w.u32(0);
+        w.string("SERVICES");
         w.string("1");
         w.u32(0);
         w.u32(0);
