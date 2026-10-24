@@ -7,7 +7,7 @@
 const int WIDTH = 640, HEIGHT = 480;
 const uint SKY = rgb(30, 30, 110); // the city's sky: where there's no building
 const float GRAVITY = 0.2;
-Window w("Rooftops", WIDTH, HEIGHT);
+Screen w("Rooftops", WIDTH, HEIGHT);
 
 // The city, sky and all: an image, so a bomb can knock holes in it and the flight can ask what's
 // there. Without a see-through colour it's copied to the window whole, by the computer's DMA

@@ -1,8 +1,8 @@
 # GUI Programs: the Toolkit for Every Program, and Angel's Bindings to the Whole System
 
 Status: **steps 1-3 built** (2026-10-22; §9-§11): the protocol, the classes, pictures and the
-clipboard. **Step 4 built** (§12): notifications, tray icons, the service bus, the
-shell, and a panel in C. Next: step 5, angel's GUI bindings. The user agreed with the shape (2026-10-22): the
+clipboard. **Step 4 built** (§12). **Step 5 under way** (§13): 5a built (angel's GUI
+classes, `app`, callbacks; `Screen` for games); next 5b. The user agreed with the shape (2026-10-22): the
 toolkit as a service (P1), names (P2), and **a wire protocol in the spirit of X11's** between
 programs and the service (P8), so that applications can also run on another machine. This plan
 revises `gui.md` G1 and fills in `windows.md` §6 ("ABI (later)").
@@ -1519,3 +1519,129 @@ every connection, and `SHELL` (value "1") on connections the setting allows.
     to window watchers, a window too small for its frame (`BadValue`).
   - The service 53.9 KB → 62.4 KB of flash.
   - Next: step 5 (§6), angel's GUI bindings, with the window types' names to settle (§4d).
+
+## 13. Step 5 design: angel's GUI bindings (2026-10-23)
+
+**The names (§4d, settled by the user 2026-10-23):** `Window` becomes the GUI window, and today's
+game surface is renamed **`Screen`** (its methods, `run(Game@)`, `Event` and `EventType`
+unchanged). Not released yet, so no alias is kept: the API lock's `Window` lines become `Screen`
+lines (the user's explicit go-ahead for that edit), and the guide's lessons 10-12, the examples
+and the corpus say `Screen`.
+
+**Bound from `classes.def` at build time, not from `Describe` at start:** angel includes the
+schema (the same X-macros the service uses), so `angel --api` is the same with or without a
+display (the host has none), and the lock lists every class. A class added to the schema is in
+angel at its next build.
+
+**How a class looks in a script:**
+- **Types:** each class a reference type of its own name (all but `Image`: angel's own `Image` is
+  the picture a GUI image is made from, sent when it is used). Parents' members are on each class
+  (AngelScript types don't inherit), and each class converts implicitly to its parents and to
+  `GuiObject`, the base every GUI object has: `destroy()`.
+- **Making one:** `Button b(row, "&Save");`. Every class takes its parent (`GuiObject@`, null
+  for none); a class with a `text` (or `title`) property also takes it second. `Window w("Notes",
+  480, 360)` (title, width, height), `Box b(parent, "down")` (direction).
+- **Properties** as script properties (`label.text = "Hi"`), through accessors. Types: `Int`
+  `int`, `Long` `int64`, `Bool` `bool`, `String` and `Atom` `string` (an enumeration's value by
+  name: `box.direction = "across"`), `Color` `uint` (angel's 0xRRGGBB), `List` `array<string>@`,
+  `Rect` the new value type `Rect` (x, y, width, height), `Id` the class it names (`owner`:
+  `Window@`; an image: `Image@`, angel's).
+- **Methods** as methods; one with a result waits for the answer, others are sent in batches.
+- **Events** as `onName(callback)`: `save.onClicked(function() { ... })`. A callback is a funcdef
+  for the event's values, named after their types: `Callback` (none), `IntCallback`,
+  `StringCallback`, `IntIntCallback`... A delegate (`MyClass::method`), a global function or an
+  anonymous one. An event the service sends only when asked (`Off`) is asked for when its
+  callback is set, and no more when it is cleared (null).
+- **Lifetime:** an object lives until `destroy()`, its parent's destruction or the script's end,
+  not until the script lets go of its handle (a button made in a function stays in its window).
+  The runtime keeps every object it made, to find it by id when an event comes.
+
+**`app`** (a global, type `App`): the program's connection, opened at the first object.
+- `app.run()` serves the GUI's events and the timers, calling the callbacks, until `app.quit()`,
+  or until no window is shown once one was. A script that ends with windows shown runs the loop
+  then, as one ending with a `Screen` waits for it to close.
+- `app.after(ms, callback)` and `app.every(ms, callback)`: timers of the loop's own (an `int`
+  each, `app.stop(timer)`), not round trips.
+- Callbacks run nested in the script's context, as `Game`'s methods do (the debugger stops in
+  them); after the script's end, in a context of their own.
+
+**Errors** (the service's, which come after the call): reported on stderr with the script line
+that made the request and the request's name (`line 12: Label.text: BadValue`); the script goes
+on, as X11's clients do. libbmdsgui gains `bmds_gui_sequence()` (the last request's number) for
+that. Making an object without a display raises a script exception ("no GUI here").
+
+**Built in three parts, each tried on the board:**
+- **5a:** the rename, the classes, `app` and its loop and timers, callbacks, errors; the
+  calculator example.
+- **5b:** the one-line dialogs (`alert(text)`, `ask(question)`, `askText(prompt)`,
+  `chooseFile()`), images (angel's `Image` as an icon), the notes example.
+- **5c:** `Canvas` drawn with `Screen`'s drawing methods (locally through its surface), events of
+  `Screen`s in the same loop, the paint example with a palette window.
+
+**Budget:** the bindings are tables walked at start: some KB of code in angel, a few KB of
+registrations in its heap, one object per GUI object made.
+
+**5a, as built (2026-10-23):**
+- **The rename:** angel's game surface is `Screen` (its registration's names, the lock's lines
+  edited in place with a comment saying why, lessons 10-12, six examples, three corpus scripts,
+  `serve.py`). The C++ class in `graphics.cpp` keeps its name.
+- **`programs/angel/gui.cpp`:** the schema included as the service includes it, into tables of
+  classes, properties, methods and events. Generic functions read which member they serve from
+  each registration's auxiliary pointer (`methodAux()` and `behaviourAux()`, new in `api.cpp`),
+  one `Binding` for each member of the schema, shared by the classes that inherit it.
+  - Types as designed: properties through `get_`/`set_` accessors, methods (one with a result
+    waits), events as `onName(XCallback@)`. There are 19 funcdefs, named after their values'
+    types (`Callback`, `IntCallback`, `StringStringIntIntCallback`...). A child's member hides
+    its parent's of the same name (`Canvas.wheel`, `Widget.wheel`). Image Ids aren't bound yet
+    (5b).
+  - **Handles:** angel's generic functions release the handle arguments they don't keep (as
+    `Screen::run`'s `Game@`): a parent, an `Id`, a callback (kept as the callback's reference).
+  - **Objects** are kept in a registry, which holds a reference to each, until `destroy()` (with
+    their children), or the runtime's end (`releaseGui()`, before the engine is shut down). A
+    destroyed object's use raises "This Button was destroyed".
+  - **The loop:** `app.run()` waits on the connection (`bmds_gui_next_event`, flushing first) or
+    the next timer, runs the timers due, and ends on `quit()` or when no window is shown once one
+    was. A window counts as shown from `show()` until `close()` or its `closed` event. With
+    windows shown at the script's end, `finishGui()` runs it then.
+  - **Callbacks** run nested in the active context (PushState), else in a context of the
+    runtime's own. An exception in one is reported with its line, and the script ends, as in a
+    `Game`'s methods.
+  - **Errors:** a ring of the last 128 requests (number, script line, class and member). A
+    request that doesn't wait is recorded after it is made; one that waits, before (as the next
+    number), since its error can come while it waits.
+- **The cost, and what was done about it:** registering every class's members (about 1,000
+  methods) took **1.07 s** at every start on the board. AngelScript parses each declaration and
+  checks each property accessor against every method of its type
+  (`asCBuilder::ValidateVirtualProperty`, half the time on the host's profile). So a script gets
+  only the members of the classes it names (whole words in its sources, with their parents and
+  `Window`), registered before it is built (`registerGuiClasses()`). The types, their reference
+  counts, `Rect`, `GuiObject`, the funcdefs and `app` are always registered; `--api` and
+  `--serve` get every class, so the lock and an editor's completion are whole.
+  - A script without GUI starts in 0.13 s on the board (1.29 s with every class). The
+    calculator's build takes 0.30 s.
+- **The SDK:** `bmds_gui_sequence()`. The host's angel links `gui.c` (no display there: making
+  an object raises "No GUI here: the window system isn't running").
+- **Tried:**
+  - `tests/board/gui.as`, run on the board with angel (new: `tests/board` holds scripts that need
+    the board): properties of every kind read back (a list, a 64-bit number, an atom, a bool),
+    a button as a `Widget`, `click()` coming back to its callback, a button made in a function
+    and let go of still calling back, `every()` three times and the loop ending when the window
+    closes, a widget's geometry, `after()` stopped, `destroy()` and a destroyed object's use
+    raising. It prints `gui.as: ok`. Ten runs left memory unchanged to the byte.
+  - A window's width set out of range was reported as `errors.as:3: GUI error: Window.width:
+    BadValue`, and the script went on.
+  - A script that shows a window and ends ran its loop: its timer closed the window.
+  - The calculator (`programs/angel/examples/calculator.as`, in the ROM): 7 × 6 = showed 42, and
+    its close box ended the script (`onClosed` calling `app.quit()`).
+  - The host corpus has `guinone.as`: a GUI script builds, and making an object raises.
+- **What the calculator wanted** (the user asked for centred keys that follow the window's size):
+  rows and keys already stretch (`Widget.stretch`; a box's children fill its other side), but
+  three things the toolkit has weren't classes' properties yet. Appended: `Button.centered` (its
+  text in the middle), `Label.align` (`left`, `center`, `right`) and `Label.frame` (`none`,
+  `field`, `status`, `sunken`, `raised`). The toolkit gained the getters, and `Label::clearFrame()`.
+  The calculator has a sunken display, right aligned, and keys that share the window, at 240 × 280
+  or maximized.
+- **Size:** angel's `gui.cpp` is 22.5 KB of code and tables (and libbmdsgui, about 6 KB, now
+  linked); angel's text is 1.05 MB.
+- **Not yet:** the debugger stopping in a callback after the script's end (its own context isn't
+  debugged); a `Screen`'s events in `app.run()` (5c).

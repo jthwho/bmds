@@ -461,7 +461,10 @@ Plan: [`input.md`](input.md).
   desktop windows; `gui/shell-clients`); 4d done: `guipanel`, a panel in C (start menu, window
   buttons, the tray through `bmds/tray.h`, a clock), and what it found missing (`Widget.geometry`,
   `contextMenu`, `wheel`; launch feedback for GUI programs; a tool button's icon). Step 4 done.
-  Next: step 5, angel's GUI bindings.
+  Step 5 designed (§13), in three parts; 5a done: angel's GUI (`Window` the GUI's, games'
+  surface renamed `Screen`; every class from `classes.def`, `app` with its loop and timers,
+  `onEvent` callbacks, errors with their script line; the calculator example). Next: 5b, the
+  one-line dialogs, images and the notes example.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

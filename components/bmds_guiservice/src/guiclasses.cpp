@@ -3623,6 +3623,54 @@ namespace {
                 return Ok;
         }
 
+        // ---- Step 5a: a button's centred text, a label's alignment and frame
+
+        GuiStatus set_Button_centered(GuiObject &o, const Value &v) {
+                static_cast<Button *>(o.widget)->setCentered(v.number != 0);
+                return Ok;
+        }
+        Value get_Button_centered(GuiObject &o) {
+                return Value::boolean(static_cast<Button *>(o.widget)->isCentered());
+        }
+        constexpr const char *AlignNames[] = {"left", "center", "right"};
+        GuiStatus             set_Label_align(GuiObject &o, const Value &v) {
+                const StringView name = atomName(v);
+                for (uint8_t i = 0; i < 3; ++i)
+                        if (name == StringView(AlignNames[i]))
+                                static_cast<Label *>(o.widget)->setAlign(Label::Align(i));
+                return Ok;
+        }
+        Value get_Label_align(GuiObject &o) {
+                const uint8_t i = uint8_t(static_cast<Label *>(o.widget)->align());
+                return Value::atom(GuiAtoms::intern(StringView(AlignNames[i < 3 ? i : 0])));
+        }
+        struct FrameName {
+                        const char  *name;
+                        Bevel::Style style;
+        };
+        constexpr FrameName FrameNames[] = {{"field", Bevel::Style::Field},
+                                            {"status", Bevel::Style::Status},
+                                            {"sunken", Bevel::Style::Sunken},
+                                            {"raised", Bevel::Style::Raised}};
+        // A label's frame takes room: laid out again.
+        GuiStatus set_Label_frame(GuiObject &o, const Value &v) {
+                const StringView name = atomName(v);
+                auto            *l = static_cast<Label *>(o.widget);
+                if (name == StringView("none")) l->clearFrame();
+                for (const FrameName &f : FrameNames)
+                        if (name == StringView(f.name)) l->setFrame(f.style);
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_Label_frame(GuiObject &o) {
+                Bevel::Style style;
+                const char  *name = "none";
+                if (static_cast<Label *>(o.widget)->frame(style))
+                        for (const FrameName &f : FrameNames)
+                                if (f.style == style) name = f.name;
+                return Value::atom(GuiAtoms::intern(StringView(name)));
+        }
+
         // ---- The schema's tables, from classes.def
 
         template <typename... T> constexpr uint8_t countOf(T...) {

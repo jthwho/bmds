@@ -6,7 +6,7 @@
 const int CELL = 16;
 const int COLS = 40, ROWS = 28;
 const int TOP = 32; // the score line above the field
-Window w("Serpents", COLS * CELL, ROWS * CELL + TOP);
+Screen w("Serpents", COLS * CELL, ROWS * CELL + TOP);
 
 // The walls: a grid of cells, true where there's a wall.
 bool[] walls(COLS * ROWS);

@@ -170,7 +170,7 @@ def main():
         kinds = {r[1] for r in api}
         check("api: every kind", {"type", "method", "function", "constant", "variable", "property"} <= kinds)
         check("api: a method with its help",
-              ["api", "method", "Window.fillRect", "void Window::fillRect(int, int, int, int, uint)",
+              ["api", "method", "Screen.fillRect", "void Screen::fillRect(int, int, int, int, uint)",
                "A filled rectangle."] in api)
         check("api: a namespaced function", any(r[2] == "Http::get" for r in api))
 
@@ -180,7 +180,7 @@ def main():
         check("check: where", diags and diags[0][3:5] == ["2", "20"] and diags[1][3:5] == ["3", "9"])
         check("check: no symbols from a failed build", not [x for x in r if x[0] == "symbol"])
 
-        r = check_text('#include "lib.as"\nclass Ball { float x; void move() {} }\nWindow w("t", 10, 10);\n'
+        r = check_text('#include "lib.as"\nclass Ball { float x; void move() {} }\nScreen w("t", 10, 10);\n'
                        "println(twice(2));\n")
         check("check: clean", not [x for x in r if x[0] == "diag"])
         names = {(x[1], x[2]) for x in r if x[0] == "symbol"}

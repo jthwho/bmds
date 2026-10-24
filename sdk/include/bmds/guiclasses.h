@@ -1243,6 +1243,24 @@ static inline int bmds_widget_get_geometry(bmds_gui_t *gui, uint32_t id, bmds_gu
 }
 #define BMDS_GUI_WIDGET_CONTEXT_MENU "contextMenu" /**< Widget's event (Int, Int). */
 #define BMDS_GUI_WIDGET_WHEEL "wheel" /**< Widget's event (Int). */
+static inline int bmds_button_set_centered(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "centered", bmds_gui_bool(value));
+}
+static inline int bmds_button_get_centered(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "centered", out);
+}
+static inline int bmds_label_set_align(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "align", bmds_gui_atom_value(bmds_gui_atom(gui, value)));
+}
+static inline int bmds_label_get_align(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "align", out);
+}
+static inline int bmds_label_set_frame(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "frame", bmds_gui_atom_value(bmds_gui_atom(gui, value)));
+}
+static inline int bmds_label_get_frame(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "frame", out);
+}
 
 #ifdef __cplusplus
 }

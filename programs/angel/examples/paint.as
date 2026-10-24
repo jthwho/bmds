@@ -2,7 +2,7 @@
 // A paint program: drag with the left button to draw, the right button to fill an area.
 // Keys 1-8 choose a colour, + and - the brush's size, C clears, S saves paint.png.
 
-Window w("Paint", 640, 480);
+Screen w("Paint", 640, 480);
 uint[] palette = {Color::Black, Color::Red, Color::Orange, Color::Yellow, Color::Green, Color::Blue,
                   Color::Purple, Color::White};
 uint color = Color::Black;

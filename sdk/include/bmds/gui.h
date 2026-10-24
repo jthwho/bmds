@@ -121,6 +121,12 @@ bmds_gui_t *bmds_gui_connect_fd(int fd);
 /** @brief Sends what is buffered, closes the connection; its objects and windows go. */
 void bmds_gui_close(bmds_gui_t *gui);
 
+/**
+ * @brief Returns the number of the last request made (sent or still buffered): an error's
+ *        `sequence` names it, so a caller can tell which of its calls failed.
+ */
+uint32_t bmds_gui_sequence(const bmds_gui_t *gui);
+
 /** @brief Returns the connection's fd, for `poll()` beside others (events are read with `bmds_gui_next_event`). */
 int bmds_gui_fd(const bmds_gui_t *gui);
 

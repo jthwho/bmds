@@ -512,6 +512,10 @@ void bmds_gui_close(bmds_gui_t *g) {
         return;
 }
 
+uint32_t bmds_gui_sequence(const bmds_gui_t *g) {
+        return g->sequence;
+}
+
 int bmds_gui_fd(const bmds_gui_t *g) {
         return g->fd;
 }

@@ -1,6 +1,6 @@
-// Window.run(): draw() only after a change: a bool tick() returning false draws nothing new
+// Screen.run(): draw() only after a change: a bool tick() returning false draws nothing new
 // (on the host the window is a picture; run() keeps time all the same).
-Window w("Run", 32, 32);
+Screen w("Run", 32, 32);
 class Quiet : Game {
         int ticks = 0, draws = 0;
         bool tick() {

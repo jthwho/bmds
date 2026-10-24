@@ -1,10 +1,10 @@
 #!/rom/bin/angel
 // Lesson 10: Drawing
 //
-// Window opens a window to draw on. Places in it are counted in pixels (dots) from its top-left
+// Screen opens a window to draw on. Places in it are counted in pixels (dots) from its top-left
 // corner: x goes across to the right, y goes down. This one is 640 across and 480 down.
 
-Window w("My Picture", 640, 480);
+Screen w("My Picture", 640, 480);
 
 // Colours have names (press F1 on Color to see them all), or are mixed from red, green and blue,
 // each from 0 to 255.

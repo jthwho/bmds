@@ -4,7 +4,7 @@
 // change the octave, 1-4 the instrument. A note sounds from noteOn() while its key is down to
 // noteOff() when it comes up, as on a real keyboard.
 
-Window w("Piano", 480, 220);
+Screen w("Piano", 480, 220);
 
 // The keys: the computer key that plays each, its place in the octave, and where it is.
 class Key {

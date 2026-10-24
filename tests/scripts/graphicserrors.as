@@ -1,7 +1,7 @@
 // What a drawing call refuses, as exceptions.
-try { Window big("Too big", 2000, 100); } catch { println(getExceptionInfo()); }
+try { Screen big("Too big", 2000, 100); } catch { println(getExceptionInfo()); }
 try { Image none(0, 5); } catch { println(getExceptionInfo()); }
-Window w;
+Screen w;
 println(w.width() + "x" + w.height());
 try { w.fillPolygon({1, 2, 3}, Color::Red); } catch { println(getExceptionInfo()); }
 Image@ missing;

@@ -439,6 +439,7 @@ namespace {
                 angel::registerGraphics(engine);
                 angel::registerSound(engine);
                 angel::registerNetwork(engine);
+                angel::registerGui(engine);
                 return engine;
         }
 
@@ -501,6 +502,7 @@ namespace {
                 fflush(stdout);
                 angel::finishSound();
                 angel::waitForWindows();
+                angel::finishGui(engine); // its windows served until the last closes
                 return status;
         }
 
@@ -586,6 +588,7 @@ namespace {
                 static char *argv[] = {argv0, nullptr};
                 angel::setArguments(1, argv);
                 asIScriptEngine *engine = makeEngine();
+                angel::registerGuiClasses(engine, nullptr, nullptr, 0); // an editor's: every class
                 engine->SetEngineProperty(asEP_INIT_GLOBAL_VARS_AFTER_BUILD, 0);
                 char header[1024];
                 while (fgets(header, sizeof(header), stdin) != nullptr) {
@@ -630,6 +633,7 @@ namespace {
                         fflush(stdout);
                 }
                 resetSources();
+                angel::releaseGui();
                 angel::releaseArguments();
                 engine->ShutDownAndRelease();
                 return 0;
@@ -648,6 +652,7 @@ int main(int argc, char **argv) {
         int  debugFd = -1;
         if (argc >= 2 && (strcmp(argv[1], "--api") == 0 || strcmp(argv[1], "--api-help") == 0)) {
                 asIScriptEngine *engine = makeEngine();
+                angel::registerGuiClasses(engine, nullptr, nullptr, 0);
                 angel::printApi(engine, strcmp(argv[1], "--api-help") == 0);
                 engine->ShutDownAndRelease();
                 return 0;
@@ -707,10 +712,21 @@ int main(int argc, char **argv) {
         // The script first: only its section may have top-level statements.
         for (int i = 0; i < sourceCount; ++i)
                 if (module->AddScriptSection(sources[i].path, sources[i].code, sources[i].length) < 0) return 70;
+        {
+                // The GUI's classes the sources name, before they are built.
+                const char *texts[MaxIncludes];
+                size_t      lengths[MaxIncludes];
+                for (int i = 0; i < sourceCount; ++i) {
+                        texts[i] = sources[i].code;
+                        lengths[i] = sources[i].length;
+                }
+                angel::registerGuiClasses(engine, texts, lengths, size_t(sourceCount));
+        }
         int status = ExitFailure;
         if (module->Build() >= 0) status = checkOnly ? 0 : run(engine, module);
         fflush(stdout);
         module->Discard();
+        angel::releaseGui();
         angel::releaseArguments();
         engine->ShutDownAndRelease();
         angel::restoreTerminal();

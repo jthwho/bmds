@@ -10,7 +10,7 @@
 // Catch the falling stars with the basket (the arrow keys or the mouse). Miss three and the game
 // is over; Space plays again.
 
-Window w("Star Catcher", 640, 480);
+Screen w("Star Catcher", 640, 480);
 
 // A falling star: where it is and how fast it falls. A small class of its own.
 class Star {

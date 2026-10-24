@@ -261,9 +261,11 @@ table, so they can't disagree.
   (doesn't wait, like `INKEY$`), `width()`, `height()`. VT sequences, and raw mode on the
   terminal the script runs in while keys are read (`input()` and the script's end restore it).
   QBasic's text-mode games (`LOCATE`, `COLOR`, `INKEY$`) translate to these directly.
-- **Graphics** (built, step 4): `Window` and `Image`, drawn on with the same methods; there is
-  no separate `Canvas` type (as built: one fewer thing to learn).
-  - **Immediate (QBasic's way):** `Window w("Title", 640, 480);` then `w.line(...)`,
+- **Graphics** (built, step 4): `Screen` and `Image`, drawn on with the same methods; there is
+  no separate `Canvas` type (as built: one fewer thing to learn). The screen was called `Window`
+  until 2026-10-23, when the GUI's window took the name (`devplan/guiprograms.md` §13: the GUI's
+  classes, `app`, callbacks).
+  - **Immediate (QBasic's way):** `Screen w("Title", 640, 480);` then `w.line(...)`,
     `w.fillCircle(...)`, `w.text(...)`, `w.image(...)` appear as they are drawn. Once a script
     calls `w.frame()` (once round an animation's loop) the window is shown only by `frame()`
     and while the script waits for input, so a frame is never shown half drawn; one that stops
@@ -640,7 +642,7 @@ calls). New system calls, if a binding needs one, follow the usual rules.
   8. Text: string methods (`split`, `find`, `replace`, `toUpper`), the text screen's colours
      and places (`Console`).
   9. Classes: fields, methods, constructors, a list of objects.
-  10. Drawing: `Window`, shapes, colours (`rgb`, `hsv`), text.
+  10. Drawing: `Screen` (was `Window`), shapes, colours (`rgb`, `hsv`), text.
   11. Animation: a loop with `frame()`, `keyDown`, moving a player, closing the window.
   12. A game: `Game` with `tick()`, `draw()` and `event()`; a score, lives, sounds, starting
       again.

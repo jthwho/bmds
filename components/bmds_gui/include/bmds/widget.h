@@ -443,8 +443,20 @@ class Label : public Widget {
                 /** @brief Sets where the text goes. */
                 void setAlign(Align align);
 
+                /** @brief Returns where the text goes. */
+                Align align() const { return _align; }
+
                 /** @brief Draws a bevel around it (a status field: `Bevel::Style::Status`); none by default. */
                 void setFrame(Bevel::Style style);
+
+                /** @brief Draws no bevel around it again. */
+                void clearFrame();
+
+                /** @brief Returns true if a bevel is drawn around it, and which (@p style). */
+                bool frame(Bevel::Style &style) const {
+                        style = _frame;
+                        return _framed;
+                }
 
                 /** @brief Sets the widget its mnemonic focuses (null: none, and `&` is shown as it is). */
                 void setBuddy(Widget *buddy);
@@ -535,6 +547,9 @@ class Button : public Widget {
 
                 /** @brief Centres its text (a dialog's button; without an icon), else from its left. */
                 void setCentered(bool centered);
+
+                /** @brief Returns true if its text is centred. */
+                bool isCentered() const { return _centered; }
 
                 /** @brief Draws it checked (pressed in) or not. */
                 void setChecked(bool checked);

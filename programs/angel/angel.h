@@ -82,6 +82,12 @@ namespace angel {
                     const char *help);
         void behaviour(asIScriptEngine *engine, const char *type, asEBehaviours behaviour, const char *decl,
                        asGENFUNC_t function, const char *help);
+        // The same with an auxiliary pointer the function reads (`GetAuxiliary()`): one function
+        // for many registrations (the GUI's, gui.cpp). @p help is kept, not copied.
+        void methodAux(asIScriptEngine *engine, const char *type, const char *decl, asGENFUNC_t function, void *aux,
+                       const char *help);
+        void behaviourAux(asIScriptEngine *engine, const char *type, asEBehaviours behaviour, const char *decl,
+                          asGENFUNC_t function, void *aux, const char *help);
         // A global property (its address the application's), with its help.
         void property(asIScriptEngine *engine, const char *decl, void *address, const char *help);
         // Registration failed: a bug in angel; says so and ends.
@@ -102,6 +108,18 @@ namespace angel {
         void registerGraphics(asIScriptEngine *engine);
         void registerSound(asIScriptEngine *engine);
         void registerNetwork(asIScriptEngine *engine);
+        void registerGui(asIScriptEngine *engine);
+        // The GUI's classes' members, factories and casts, for the classes @p count scripts
+        // (@p texts, @p lengths bytes each) name and their parents; all of them with no scripts
+        // (null: `--api`, an editor's). Registering all of them costs a second on the board, so a
+        // script gets what it names, before it is built. Each class once.
+        void registerGuiClasses(asIScriptEngine *engine, const char *const *texts, const size_t *lengths, size_t count);
+
+        // At the script's end (gui.cpp): with a GUI window shown, the GUI's loop runs until it
+        // closes (`app.run()`'s); then the connection is closed.
+        void finishGui(asIScriptEngine *engine);
+        // Before the engine is shut down: the callbacks and objects the GUI's runtime holds let go.
+        void releaseGui();
 
         // At the script's end: what play() put in the background is heard to its end.
         void finishSound();

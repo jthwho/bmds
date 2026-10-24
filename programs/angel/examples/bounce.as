@@ -1,7 +1,7 @@
 #!/rom/bin/angel
 // A bouncing ball: draw, move, wait for the next frame, again. Close the window to stop.
 
-Window w("Bounce", 640, 480);
+Screen w("Bounce", 640, 480);
 float x = 320, y = 100, dx = 4, dy = 0;
 float gravity = 0.4;
 int radius = 24;

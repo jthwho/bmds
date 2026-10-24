@@ -383,3 +383,11 @@ GUI_EVENT(Shell, keyGrabbed, On, Int, Int)
 GUI_PROP(Widget, geometry, Rect, RO)
 GUI_EVENT(Widget, contextMenu, Off, Int, Int)
 GUI_EVENT(Widget, wheel, Off, Int)
+
+/* ---- Step 5a (2026-10-23): what angel's calculator wanted: a button's centred text, a label's place
+ * for its text and its frame */
+GUI_PROP(Button, centered, Bool, RW)
+GUI_PROP(Label, align, Atom, RW)
+GUI_VALUES(Label, align, left, center, right)
+GUI_PROP(Label, frame, Atom, RW)
+GUI_VALUES(Label, frame, none, field, status, sunken, raised)

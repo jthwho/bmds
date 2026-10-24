@@ -199,8 +199,8 @@ Event::const int x
 Event::const int y
 Event::const string key
 Event::const string text
-Event@ Window::nextEvent()
-Event@ Window::waitEvent()
+Event@ Screen::nextEvent()
+Event@ Screen::waitEvent()
 EventType::Close = 6
 EventType::KeyDown = 0
 EventType::KeyUp = 1
@@ -211,14 +211,14 @@ EventType::Wheel = 5
 Image@ Image(const string&in)
 Image@ Image(int, int)
 Image@ Image::part(int, int, int, int) const
-Window@ Window(const string&in = "Angel", int = 640, int = 480, bool = false)
-bool Window::closed()
-bool Window::keyDown(const string&in)
-bool Window::mouseDown(int = 1)
+Screen@ Screen(const string&in = "Angel", int = 640, int = 480, bool = false)
+bool Screen::closed()
+bool Screen::keyDown(const string&in)
+bool Screen::mouseDown(int = 1)
 class Event
 class Game
 class Image
-class Window
+class Screen
 const uint Color::Black
 const uint Color::Blue
 const uint Color::Brown
@@ -241,19 +241,19 @@ enum EventType
 int Image::height() const
 int Image::text(int, int, const ?&in, uint, int = 1)
 int Image::width() const
-int Window::height() const
-int Window::mouseWheel()
-int Window::mouseX()
-int Window::mouseY()
-int Window::text(int, int, const ?&in, uint, int = 1)
-int Window::width() const
+int Screen::height() const
+int Screen::mouseWheel()
+int Screen::mouseX()
+int Screen::mouseY()
+int Screen::text(int, int, const ?&in, uint, int = 1)
+int Screen::width() const
 int textHeight(int = 1)
 int textWidth(const ?&in, int = 1)
-string Window::key()
-string Window::keyNow()
+string Screen::key()
+string Screen::keyNow()
 string setting(const string&in)
 uint Image::pixel(int, int) const
-uint Window::pixel(int, int) const
+uint Screen::pixel(int, int) const
 uint hsv(float, float, float)
 uint mix(uint, uint, float)
 uint rgb(int, int, int)
@@ -278,30 +278,30 @@ void Image::polygon(const int[]&in, uint)
 void Image::rect(int, int, int, int, uint)
 void Image::save(const string&in)
 void Image::transparent(uint)
-void Window::circle(int, int, int, uint)
-void Window::clear(uint = Color::Black)
-void Window::clip()
-void Window::clip(int, int, int, int)
-void Window::ellipse(int, int, int, int, uint)
-void Window::fillCircle(int, int, int, uint)
-void Window::fillEllipse(int, int, int, int, uint)
-void Window::fillPolygon(const int[]&in, uint)
-void Window::fillRect(int, int, int, int, uint)
-void Window::fillRect(int, int, int, int, uint, float)
-void Window::floodFill(int, int, uint)
-void Window::frame()
-void Window::image(Image@, int, int)
-void Window::image(Image@, int, int, int, int)
-void Window::imageRotated(Image@, int, int, float, float = 1)
-void Window::line(int, int, int, int, uint)
-void Window::plot(int, int, uint)
-void Window::pointer(bool)
-void Window::polygon(const int[]&in, uint)
-void Window::rect(int, int, int, int, uint)
-void Window::run(Game@, uint = 60)
-void Window::save(const string&in)
-void Window::stop()
-void Window::title(const string&in)
+void Screen::circle(int, int, int, uint)
+void Screen::clear(uint = Color::Black)
+void Screen::clip()
+void Screen::clip(int, int, int, int)
+void Screen::ellipse(int, int, int, int, uint)
+void Screen::fillCircle(int, int, int, uint)
+void Screen::fillEllipse(int, int, int, int, uint)
+void Screen::fillPolygon(const int[]&in, uint)
+void Screen::fillRect(int, int, int, int, uint)
+void Screen::fillRect(int, int, int, int, uint, float)
+void Screen::floodFill(int, int, uint)
+void Screen::frame()
+void Screen::image(Image@, int, int)
+void Screen::image(Image@, int, int, int, int)
+void Screen::imageRotated(Image@, int, int, float, float = 1)
+void Screen::line(int, int, int, int, uint)
+void Screen::plot(int, int, uint)
+void Screen::pointer(bool)
+void Screen::polygon(const int[]&in, uint)
+void Screen::rect(int, int, int, int, uint)
+void Screen::run(Game@, uint = 60)
+void Screen::save(const string&in)
+void Screen::stop()
+void Screen::title(const string&in)
 void notify(const string&in, const string&in)
 # Step 5 (2026-10-21): sound.
 Sound@ Sound(const string&in)
@@ -371,3 +371,1036 @@ void Socket::writeLine(const ?&in)
 void UdpSocket::close()
 void UdpSocket::sendTo(const string&in, int, const string&in)
 void UdpSocket::setTimeout(int)
+# 2026-10-23: the game surface Window renamed Screen, its lines above edited in place: the GUI's
+# window took the name (the user's decision, devplan/guiprograms.md §13; not released yet).
+# 2026-10-23: the GUI (devplan/guiprograms.md §13, step 5a): the classes of sdk/gui/classes.def, Rect, app.
+App app
+Box@ Box(GuiObject@ = null)
+Box@ Box(GuiObject@, const string&in)
+Box@ TabPage::opImplCast()
+Button@ Button(GuiObject@ = null)
+Button@ Button(GuiObject@, const string&in)
+Canvas@ Canvas(GuiObject@ = null)
+CheckBox@ CheckBox(GuiObject@ = null)
+CheckBox@ CheckBox(GuiObject@, const string&in)
+Clipboard@ Clipboard(GuiObject@ = null)
+CodeEdit@ CodeEdit(GuiObject@ = null)
+CodeEdit@ CodeEdit(GuiObject@, const string&in)
+ColorDialog@ ColorDialog(GuiObject@ = null)
+ColorDialog@ ColorDialog(GuiObject@, const string&in)
+ComboBox@ ComboBox(GuiObject@ = null)
+DetailsView@ DetailsView(GuiObject@ = null)
+FileDialog@ FileDialog(GuiObject@ = null)
+FileDialog@ FileDialog(GuiObject@, const string&in)
+Form@ Form(GuiObject@ = null)
+FormRow@ FormRow(GuiObject@ = null)
+FormRow@ FormRow(GuiObject@, const string&in)
+FormSection@ FormSection(GuiObject@ = null)
+FormSection@ FormSection(GuiObject@, const string&in)
+GuiObject@ Box::opImplCast()
+GuiObject@ Button::opImplCast()
+GuiObject@ Canvas::opImplCast()
+GuiObject@ CheckBox::opImplCast()
+GuiObject@ Clipboard::opImplCast()
+GuiObject@ CodeEdit::opImplCast()
+GuiObject@ ColorDialog::opImplCast()
+GuiObject@ ComboBox::opImplCast()
+GuiObject@ DetailsView::opImplCast()
+GuiObject@ FileDialog::opImplCast()
+GuiObject@ Form::opImplCast()
+GuiObject@ FormRow::opImplCast()
+GuiObject@ FormSection::opImplCast()
+GuiObject@ IconView::opImplCast()
+GuiObject@ ItemView::opImplCast()
+GuiObject@ Label::opImplCast()
+GuiObject@ LineEdit::opImplCast()
+GuiObject@ ListView::opImplCast()
+GuiObject@ Menu::opImplCast()
+GuiObject@ MenuBar::opImplCast()
+GuiObject@ MenuItem::opImplCast()
+GuiObject@ MessageBox::opImplCast()
+GuiObject@ Notification::opImplCast()
+GuiObject@ NumberField::opImplCast()
+GuiObject@ ProgressBar::opImplCast()
+GuiObject@ Services::opImplCast()
+GuiObject@ Shell::opImplCast()
+GuiObject@ Slider::opImplCast()
+GuiObject@ Spacer::opImplCast()
+GuiObject@ Splitter::opImplCast()
+GuiObject@ StatusBar::opImplCast()
+GuiObject@ TabPage::opImplCast()
+GuiObject@ Tabs::opImplCast()
+GuiObject@ Terminal::opImplCast()
+GuiObject@ TextEdit::opImplCast()
+GuiObject@ Timer::opImplCast()
+GuiObject@ ToolBar::opImplCast()
+GuiObject@ ToolButton::opImplCast()
+GuiObject@ TrayIcon::opImplCast()
+GuiObject@ TreeView::opImplCast()
+GuiObject@ Widget::opImplCast()
+GuiObject@ Window::opImplCast()
+IconView@ IconView(GuiObject@ = null)
+ItemView@ DetailsView::opImplCast()
+ItemView@ IconView::opImplCast()
+ItemView@ ListView::opImplCast()
+Label@ Label(GuiObject@ = null)
+Label@ Label(GuiObject@, const string&in)
+LineEdit@ LineEdit(GuiObject@ = null)
+LineEdit@ LineEdit(GuiObject@, const string&in)
+ListView@ ListView(GuiObject@ = null)
+Menu@ Menu(GuiObject@ = null)
+Menu@ Menu(GuiObject@, const string&in)
+MenuBar@ MenuBar(GuiObject@ = null)
+MenuItem@ MenuItem(GuiObject@ = null)
+MenuItem@ MenuItem(GuiObject@, const string&in)
+MessageBox@ MessageBox(GuiObject@ = null)
+MessageBox@ MessageBox(GuiObject@, const string&in)
+Notification@ Notification(GuiObject@ = null)
+Notification@ Notification(GuiObject@, const string&in)
+NumberField@ NumberField(GuiObject@ = null)
+ProgressBar@ ProgressBar(GuiObject@ = null)
+Rect Box::get_geometry() const
+Rect Button::get_geometry() const
+Rect Canvas::get_geometry() const
+Rect CheckBox::get_geometry() const
+Rect CodeEdit::get_geometry() const
+Rect ComboBox::get_geometry() const
+Rect DetailsView::get_geometry() const
+Rect Form::get_geometry() const
+Rect FormRow::get_geometry() const
+Rect FormSection::get_geometry() const
+Rect IconView::get_geometry() const
+Rect ItemView::get_geometry() const
+Rect Label::get_geometry() const
+Rect LineEdit::get_geometry() const
+Rect ListView::get_geometry() const
+Rect MenuBar::get_geometry() const
+Rect NumberField::get_geometry() const
+Rect ProgressBar::get_geometry() const
+Rect Shell::get_workArea() const
+Rect Slider::get_geometry() const
+Rect Spacer::get_geometry() const
+Rect Splitter::get_geometry() const
+Rect StatusBar::get_geometry() const
+Rect TabPage::get_geometry() const
+Rect Tabs::get_geometry() const
+Rect Terminal::get_geometry() const
+Rect TextEdit::get_geometry() const
+Rect ToolBar::get_geometry() const
+Rect ToolButton::get_geometry() const
+Rect TreeView::get_geometry() const
+Rect Widget::get_geometry() const
+Rect::Rect()
+Rect::Rect(int, int, int, int)
+Rect::int height
+Rect::int width
+Rect::int x
+Rect::int y
+Services@ Services(GuiObject@ = null)
+Shell@ Shell(GuiObject@ = null)
+Slider@ Slider(GuiObject@ = null)
+Spacer@ Spacer(GuiObject@ = null)
+Splitter@ Splitter(GuiObject@ = null)
+StatusBar@ StatusBar(GuiObject@ = null)
+TabPage@ TabPage(GuiObject@ = null)
+TabPage@ TabPage(GuiObject@, const string&in)
+Tabs@ Tabs(GuiObject@ = null)
+Terminal@ Terminal(GuiObject@ = null)
+TextEdit@ CodeEdit::opImplCast()
+TextEdit@ TextEdit(GuiObject@ = null)
+TextEdit@ TextEdit(GuiObject@, const string&in)
+Timer@ Timer(GuiObject@ = null)
+ToolBar@ ToolBar(GuiObject@ = null)
+ToolButton@ ToolButton(GuiObject@ = null)
+ToolButton@ ToolButton(GuiObject@, const string&in)
+TrayIcon@ TrayIcon(GuiObject@ = null)
+TreeView@ TreeView(GuiObject@ = null)
+Widget@ Box::opImplCast()
+Widget@ Button::opImplCast()
+Widget@ Canvas::opImplCast()
+Widget@ CheckBox::opImplCast()
+Widget@ CodeEdit::opImplCast()
+Widget@ ComboBox::opImplCast()
+Widget@ DetailsView::opImplCast()
+Widget@ Form::opImplCast()
+Widget@ FormRow::opImplCast()
+Widget@ FormSection::opImplCast()
+Widget@ IconView::opImplCast()
+Widget@ ItemView::opImplCast()
+Widget@ Label::opImplCast()
+Widget@ LineEdit::opImplCast()
+Widget@ ListView::opImplCast()
+Widget@ MenuBar::opImplCast()
+Widget@ NumberField::opImplCast()
+Widget@ ProgressBar::opImplCast()
+Widget@ Slider::opImplCast()
+Widget@ Spacer::opImplCast()
+Widget@ Splitter::opImplCast()
+Widget@ StatusBar::opImplCast()
+Widget@ TabPage::opImplCast()
+Widget@ Tabs::opImplCast()
+Widget@ Terminal::opImplCast()
+Widget@ TextEdit::opImplCast()
+Widget@ ToolBar::opImplCast()
+Widget@ ToolButton::opImplCast()
+Widget@ TreeView::opImplCast()
+Window@ Window(const string&in = "", int = 0, int = 0)
+Window@ Window::get_owner() const
+bool Box::get_enabled() const
+bool Box::get_visible() const
+bool Button::get_enabled() const
+bool Button::get_visible() const
+bool Canvas::get_enabled() const
+bool Canvas::get_visible() const
+bool CheckBox::get_checked() const
+bool CheckBox::get_enabled() const
+bool CheckBox::get_visible() const
+bool Clipboard::owns(const string&in)
+bool CodeEdit::get_enabled() const
+bool CodeEdit::get_lineNumbers() const
+bool CodeEdit::get_modified() const
+bool CodeEdit::get_readOnly() const
+bool CodeEdit::get_visible() const
+bool ComboBox::get_enabled() const
+bool ComboBox::get_visible() const
+bool DetailsView::get_enabled() const
+bool DetailsView::get_multiSelect() const
+bool DetailsView::get_visible() const
+bool Form::get_enabled() const
+bool Form::get_visible() const
+bool FormRow::get_enabled() const
+bool FormRow::get_visible() const
+bool FormSection::get_enabled() const
+bool FormSection::get_visible() const
+bool IconView::get_enabled() const
+bool IconView::get_multiSelect() const
+bool IconView::get_visible() const
+bool ItemView::get_enabled() const
+bool ItemView::get_multiSelect() const
+bool ItemView::get_visible() const
+bool Label::get_enabled() const
+bool Label::get_visible() const
+bool LineEdit::get_enabled() const
+bool LineEdit::get_visible() const
+bool ListView::get_enabled() const
+bool ListView::get_multiSelect() const
+bool ListView::get_visible() const
+bool MenuBar::get_enabled() const
+bool MenuBar::get_visible() const
+bool MenuItem::get_checked() const
+bool MenuItem::get_enabled() const
+bool Notification::get_silent() const
+bool Notification::get_transient() const
+bool NumberField::get_enabled() const
+bool NumberField::get_visible() const
+bool ProgressBar::get_enabled() const
+bool ProgressBar::get_visible() const
+bool Services::has(const string&in)
+bool Shell::copyIcon(int, GuiObject@)
+bool Slider::get_enabled() const
+bool Slider::get_visible() const
+bool Spacer::get_enabled() const
+bool Spacer::get_visible() const
+bool Splitter::get_enabled() const
+bool Splitter::get_visible() const
+bool StatusBar::get_enabled() const
+bool StatusBar::get_visible() const
+bool TabPage::get_enabled() const
+bool TabPage::get_visible() const
+bool Tabs::get_enabled() const
+bool Tabs::get_visible() const
+bool Terminal::get_enabled() const
+bool Terminal::get_visible() const
+bool TextEdit::get_enabled() const
+bool TextEdit::get_modified() const
+bool TextEdit::get_readOnly() const
+bool TextEdit::get_visible() const
+bool Timer::get_active() const
+bool Timer::get_repeat() const
+bool ToolBar::get_enabled() const
+bool ToolBar::get_visible() const
+bool ToolButton::get_enabled() const
+bool ToolButton::get_visible() const
+bool TrayIcon::get_available() const
+bool TrayIcon::get_visible() const
+bool TreeView::get_enabled() const
+bool TreeView::get_visible() const
+bool Widget::get_enabled() const
+bool Widget::get_visible() const
+bool Window::get_above() const
+bool Window::get_active() const
+bool Window::get_buttons() const
+bool Window::get_frame() const
+bool Window::get_maximized() const
+bool Window::get_minimized() const
+bool Window::get_modal() const
+bool Window::get_resizable() const
+bool Window::get_shaded() const
+bool Window::get_titleBar() const
+class App
+class Box
+class Button
+class Canvas
+class CheckBox
+class Clipboard
+class CodeEdit
+class ColorDialog
+class ComboBox
+class DetailsView
+class FileDialog
+class Form
+class FormRow
+class FormSection
+class GuiObject
+class IconView
+class ItemView
+class Label
+class LineEdit
+class ListView
+class Menu
+class MenuBar
+class MenuItem
+class MessageBox
+class Notification
+class NumberField
+class ProgressBar
+class Services
+class Shell
+class Slider
+class Spacer
+class Splitter
+class StatusBar
+class TabPage
+class Tabs
+class Terminal
+class TextEdit
+class Timer
+class ToolBar
+class ToolButton
+class TrayIcon
+class TreeView
+class Widget
+class Window
+funcdef void BoolCallback(bool)
+funcdef void BoolColorCallback(bool, uint)
+funcdef void BoolListCallback(bool, string[]@)
+funcdef void Callback()
+funcdef void ColorCallback(uint)
+funcdef void IntCallback(int)
+funcdef void IntIntBoolStringCallback(int, int, bool, const string&in)
+funcdef void IntIntCallback(int, int)
+funcdef void IntIntIntCallback(int, int, int)
+funcdef void IntStringListCallback(int, const string&in, string[]@)
+funcdef void IntStringStringCallback(int, const string&in, const string&in)
+funcdef void RectCallback(const Rect&in)
+funcdef void StringBoolCallback(const string&in, bool)
+funcdef void StringCallback(const string&in)
+funcdef void StringStringCallback(const string&in, const string&in)
+funcdef void StringStringIntIntCallback(const string&in, const string&in, int, int)
+funcdef void StringStringStringCallback(const string&in, const string&in, const string&in)
+int App::after(uint, Callback@)
+int App::every(uint, Callback@)
+int Box::get_stretch() const
+int Button::get_stretch() const
+int Canvas::get_height() const
+int Canvas::get_preferredHeight() const
+int Canvas::get_preferredWidth() const
+int Canvas::get_stretch() const
+int Canvas::get_width() const
+int CheckBox::get_stretch() const
+int CodeEdit::get_cursorColumn() const
+int CodeEdit::get_cursorLine() const
+int CodeEdit::get_stretch() const
+int ComboBox::get_current() const
+int ComboBox::get_stretch() const
+int DetailsView::get_current() const
+int DetailsView::get_stretch() const
+int Form::get_stretch() const
+int FormRow::get_stretch() const
+int FormSection::get_stretch() const
+int IconView::get_current() const
+int IconView::get_stretch() const
+int ItemView::get_current() const
+int ItemView::get_stretch() const
+int Label::get_stretch() const
+int LineEdit::get_stretch() const
+int ListView::get_current() const
+int ListView::get_stretch() const
+int MenuBar::get_stretch() const
+int Notification::get_timeout() const
+int NumberField::get_maximum() const
+int NumberField::get_minimum() const
+int NumberField::get_step() const
+int NumberField::get_stretch() const
+int NumberField::get_value() const
+int ProgressBar::get_stretch() const
+int Slider::get_maximum() const
+int Slider::get_minimum() const
+int Slider::get_step() const
+int Slider::get_stretch() const
+int Slider::get_value() const
+int Spacer::get_size() const
+int Spacer::get_stretch() const
+int Splitter::get_minFirst() const
+int Splitter::get_minSecond() const
+int Splitter::get_position() const
+int Splitter::get_stretch() const
+int StatusBar::addField(int)
+int StatusBar::get_stretch() const
+int TabPage::get_stretch() const
+int Tabs::get_current() const
+int Tabs::get_stretch() const
+int Terminal::get_columns() const
+int Terminal::get_rows() const
+int Terminal::get_stretch() const
+int TextEdit::get_cursorColumn() const
+int TextEdit::get_cursorLine() const
+int TextEdit::get_stretch() const
+int Timer::get_interval() const
+int ToolBar::get_stretch() const
+int ToolButton::get_stretch() const
+int TreeView::get_stretch() const
+int Widget::get_stretch() const
+int Window::get_height() const
+int Window::get_minHeight() const
+int Window::get_minWidth() const
+int Window::get_reserve() const
+int Window::get_width() const
+int64 ProgressBar::get_maximum() const
+int64 ProgressBar::get_value() const
+string Box::get_direction() const
+string Button::get_text() const
+string CheckBox::get_text() const
+string CodeEdit::get_scheme() const
+string CodeEdit::get_selectedText() const
+string CodeEdit::get_syntax() const
+string CodeEdit::get_text() const
+string ColorDialog::get_title() const
+string FileDialog::get_fileName() const
+string FileDialog::get_folder() const
+string FileDialog::get_mode() const
+string FileDialog::get_title() const
+string FormRow::get_help() const
+string FormRow::get_label() const
+string FormSection::get_title() const
+string Label::get_text() const
+string LineEdit::get_text() const
+string Menu::get_title() const
+string MenuItem::get_icon() const
+string MenuItem::get_shortcut() const
+string MenuItem::get_text() const
+string MessageBox::get_buttons() const
+string MessageBox::get_kind() const
+string MessageBox::get_text() const
+string MessageBox::get_title() const
+string Notification::get_app() const
+string Notification::get_body() const
+string Notification::get_icon() const
+string Notification::get_title() const
+string Notification::get_urgency() const
+string Slider::get_direction() const
+string Splitter::get_direction() const
+string TabPage::get_direction() const
+string TabPage::get_title() const
+string TextEdit::get_selectedText() const
+string TextEdit::get_text() const
+string ToolButton::get_icon() const
+string ToolButton::get_text() const
+string TrayIcon::get_category() const
+string TrayIcon::get_icon() const
+string TrayIcon::get_toolTip() const
+string TreeView::get_current() const
+string Window::get_icon() const
+string Window::get_level() const
+string Window::get_placement() const
+string Window::get_pointer() const
+string Window::get_title() const
+string Window::get_windowMenuItem() const
+string[]@ Box::get_dropTypes() const
+string[]@ Button::get_dropTypes() const
+string[]@ Canvas::get_dropTypes() const
+string[]@ CheckBox::get_dropTypes() const
+string[]@ Clipboard::types(const string&in)
+string[]@ CodeEdit::get_dropTypes() const
+string[]@ ComboBox::get_dropTypes() const
+string[]@ ComboBox::get_items() const
+string[]@ DetailsView::get_columns() const
+string[]@ DetailsView::get_dropTypes() const
+string[]@ DetailsView::get_items() const
+string[]@ Form::get_dropTypes() const
+string[]@ FormRow::get_dropTypes() const
+string[]@ FormSection::get_dropTypes() const
+string[]@ IconView::get_dropTypes() const
+string[]@ IconView::get_items() const
+string[]@ ItemView::get_dropTypes() const
+string[]@ ItemView::get_items() const
+string[]@ Label::get_dropTypes() const
+string[]@ LineEdit::get_dropTypes() const
+string[]@ ListView::get_dropTypes() const
+string[]@ ListView::get_items() const
+string[]@ MenuBar::get_dropTypes() const
+string[]@ Notification::get_actions() const
+string[]@ NumberField::get_dropTypes() const
+string[]@ ProgressBar::get_dropTypes() const
+string[]@ Slider::get_dropTypes() const
+string[]@ Spacer::get_dropTypes() const
+string[]@ Splitter::get_dropTypes() const
+string[]@ StatusBar::get_dropTypes() const
+string[]@ TabPage::get_dropTypes() const
+string[]@ Tabs::get_dropTypes() const
+string[]@ Terminal::get_dropTypes() const
+string[]@ TextEdit::get_dropTypes() const
+string[]@ ToolBar::get_dropTypes() const
+string[]@ ToolButton::get_dropTypes() const
+string[]@ TreeView::get_dropTypes() const
+string[]@ Widget::get_dropTypes() const
+uint ColorDialog::get_color() const
+value Rect
+void App::quit()
+void App::run()
+void App::stop(int)
+void Box::destroy()
+void Box::onContextMenu(IntIntCallback@)
+void Box::onDropped(StringStringIntIntCallback@)
+void Box::onWheel(IntCallback@)
+void Box::setFocus()
+void Box::set_direction(const string&in)
+void Box::set_dropTypes(const string[]&in)
+void Box::set_enabled(bool)
+void Box::set_margin(int)
+void Box::set_spacing(int)
+void Box::set_stretch(int)
+void Box::set_visible(bool)
+void Button::click()
+void Button::destroy()
+void Button::onClicked(Callback@)
+void Button::onContextMenu(IntIntCallback@)
+void Button::onDropped(StringStringIntIntCallback@)
+void Button::onWheel(IntCallback@)
+void Button::setFocus()
+void Button::set_dropTypes(const string[]&in)
+void Button::set_enabled(bool)
+void Button::set_stretch(int)
+void Button::set_text(const string&in)
+void Button::set_visible(bool)
+void Canvas::destroy()
+void Canvas::onContextMenu(IntIntCallback@)
+void Canvas::onDropped(StringStringIntIntCallback@)
+void Canvas::onKey(IntIntBoolStringCallback@)
+void Canvas::onMoved(IntIntIntCallback@)
+void Canvas::onPressed(IntIntIntCallback@)
+void Canvas::onReleased(IntIntIntCallback@)
+void Canvas::onResized(IntIntCallback@)
+void Canvas::onWheel(IntCallback@)
+void Canvas::setFocus()
+void Canvas::set_dropTypes(const string[]&in)
+void Canvas::set_enabled(bool)
+void Canvas::set_preferredHeight(int)
+void Canvas::set_preferredWidth(int)
+void Canvas::set_stretch(int)
+void Canvas::set_visible(bool)
+void CheckBox::destroy()
+void CheckBox::onContextMenu(IntIntCallback@)
+void CheckBox::onDropped(StringStringIntIntCallback@)
+void CheckBox::onToggled(BoolCallback@)
+void CheckBox::onWheel(IntCallback@)
+void CheckBox::setFocus()
+void CheckBox::set_checked(bool)
+void CheckBox::set_dropTypes(const string[]&in)
+void CheckBox::set_enabled(bool)
+void CheckBox::set_stretch(int)
+void CheckBox::set_text(const string&in)
+void CheckBox::set_visible(bool)
+void Clipboard::answer(int, const string&in)
+void Clipboard::clear(const string&in)
+void Clipboard::copyText(const string&in, const string&in)
+void Clipboard::destroy()
+void Clipboard::finish(int)
+void Clipboard::offer(const string&in, const string[]&in)
+void Clipboard::onLost(StringCallback@)
+void Clipboard::onPasteFailed(StringStringStringCallback@)
+void Clipboard::onPasted(StringStringStringCallback@)
+void Clipboard::onRequested(IntStringStringCallback@)
+void Clipboard::paste(const string&in, const string&in)
+void CodeEdit::copy()
+void CodeEdit::cut()
+void CodeEdit::destroy()
+void CodeEdit::goToLine(int)
+void CodeEdit::insert(const string&in)
+void CodeEdit::markSaved()
+void CodeEdit::onChanged(Callback@)
+void CodeEdit::onContextMenu(IntIntCallback@)
+void CodeEdit::onCursorMoved(IntIntCallback@)
+void CodeEdit::onDropped(StringStringIntIntCallback@)
+void CodeEdit::onWheel(IntCallback@)
+void CodeEdit::paste()
+void CodeEdit::redo()
+void CodeEdit::selectAll()
+void CodeEdit::setFocus()
+void CodeEdit::set_dropTypes(const string[]&in)
+void CodeEdit::set_enabled(bool)
+void CodeEdit::set_lineNumbers(bool)
+void CodeEdit::set_readOnly(bool)
+void CodeEdit::set_scheme(const string&in)
+void CodeEdit::set_stretch(int)
+void CodeEdit::set_syntax(const string&in)
+void CodeEdit::set_text(const string&in)
+void CodeEdit::set_visible(bool)
+void CodeEdit::undo()
+void ColorDialog::destroy()
+void ColorDialog::onChanged(ColorCallback@)
+void ColorDialog::onFinished(BoolColorCallback@)
+void ColorDialog::open()
+void ColorDialog::set_color(uint)
+void ColorDialog::set_title(const string&in)
+void ComboBox::addItem(const string&in)
+void ComboBox::clear()
+void ComboBox::destroy()
+void ComboBox::onChanged(IntCallback@)
+void ComboBox::onContextMenu(IntIntCallback@)
+void ComboBox::onDropped(StringStringIntIntCallback@)
+void ComboBox::onWheel(IntCallback@)
+void ComboBox::setFocus()
+void ComboBox::set_current(int)
+void ComboBox::set_dropTypes(const string[]&in)
+void ComboBox::set_enabled(bool)
+void ComboBox::set_items(const string[]&in)
+void ComboBox::set_stretch(int)
+void ComboBox::set_visible(bool)
+void DetailsView::addItem(const string&in)
+void DetailsView::addRow(const string[]&in)
+void DetailsView::clear()
+void DetailsView::destroy()
+void DetailsView::onActivated(IntCallback@)
+void DetailsView::onContextMenu(IntIntCallback@)
+void DetailsView::onCurrentChanged(IntCallback@)
+void DetailsView::onDropped(StringStringIntIntCallback@)
+void DetailsView::onSortAsked(IntCallback@)
+void DetailsView::onWheel(IntCallback@)
+void DetailsView::removeItem(int)
+void DetailsView::setColumnWidth(int, int)
+void DetailsView::setFocus()
+void DetailsView::setIcon(int, const string&in)
+void DetailsView::setSortIndicator(int, bool)
+void DetailsView::set_columns(const string[]&in)
+void DetailsView::set_current(int)
+void DetailsView::set_dropTypes(const string[]&in)
+void DetailsView::set_enabled(bool)
+void DetailsView::set_items(const string[]&in)
+void DetailsView::set_multiSelect(bool)
+void DetailsView::set_stretch(int)
+void DetailsView::set_visible(bool)
+void FileDialog::addFilter(const string&in, const string&in)
+void FileDialog::destroy()
+void FileDialog::onFinished(BoolListCallback@)
+void FileDialog::open()
+void FileDialog::set_fileName(const string&in)
+void FileDialog::set_folder(const string&in)
+void FileDialog::set_mode(const string&in)
+void FileDialog::set_title(const string&in)
+void Form::destroy()
+void Form::onContextMenu(IntIntCallback@)
+void Form::onDropped(StringStringIntIntCallback@)
+void Form::onWheel(IntCallback@)
+void Form::setFocus()
+void Form::set_dropTypes(const string[]&in)
+void Form::set_enabled(bool)
+void Form::set_stretch(int)
+void Form::set_visible(bool)
+void FormRow::destroy()
+void FormRow::onContextMenu(IntIntCallback@)
+void FormRow::onDropped(StringStringIntIntCallback@)
+void FormRow::onWheel(IntCallback@)
+void FormRow::setFocus()
+void FormRow::set_dropTypes(const string[]&in)
+void FormRow::set_enabled(bool)
+void FormRow::set_help(const string&in)
+void FormRow::set_label(const string&in)
+void FormRow::set_stretch(int)
+void FormRow::set_visible(bool)
+void FormSection::destroy()
+void FormSection::onContextMenu(IntIntCallback@)
+void FormSection::onDropped(StringStringIntIntCallback@)
+void FormSection::onWheel(IntCallback@)
+void FormSection::setFocus()
+void FormSection::set_dropTypes(const string[]&in)
+void FormSection::set_enabled(bool)
+void FormSection::set_stretch(int)
+void FormSection::set_title(const string&in)
+void FormSection::set_visible(bool)
+void GuiObject::destroy()
+void IconView::addItem(const string&in)
+void IconView::clear()
+void IconView::destroy()
+void IconView::onActivated(IntCallback@)
+void IconView::onContextMenu(IntIntCallback@)
+void IconView::onCurrentChanged(IntCallback@)
+void IconView::onDropped(StringStringIntIntCallback@)
+void IconView::onWheel(IntCallback@)
+void IconView::removeItem(int)
+void IconView::setFocus()
+void IconView::setIcon(int, const string&in)
+void IconView::set_current(int)
+void IconView::set_dropTypes(const string[]&in)
+void IconView::set_enabled(bool)
+void IconView::set_items(const string[]&in)
+void IconView::set_multiSelect(bool)
+void IconView::set_stretch(int)
+void IconView::set_visible(bool)
+void ItemView::addItem(const string&in)
+void ItemView::clear()
+void ItemView::destroy()
+void ItemView::onActivated(IntCallback@)
+void ItemView::onContextMenu(IntIntCallback@)
+void ItemView::onCurrentChanged(IntCallback@)
+void ItemView::onDropped(StringStringIntIntCallback@)
+void ItemView::onWheel(IntCallback@)
+void ItemView::removeItem(int)
+void ItemView::setFocus()
+void ItemView::setIcon(int, const string&in)
+void ItemView::set_current(int)
+void ItemView::set_dropTypes(const string[]&in)
+void ItemView::set_enabled(bool)
+void ItemView::set_items(const string[]&in)
+void ItemView::set_multiSelect(bool)
+void ItemView::set_stretch(int)
+void ItemView::set_visible(bool)
+void Label::destroy()
+void Label::onContextMenu(IntIntCallback@)
+void Label::onDropped(StringStringIntIntCallback@)
+void Label::onWheel(IntCallback@)
+void Label::setFocus()
+void Label::set_dropTypes(const string[]&in)
+void Label::set_enabled(bool)
+void Label::set_stretch(int)
+void Label::set_text(const string&in)
+void Label::set_visible(bool)
+void LineEdit::destroy()
+void LineEdit::onAccepted(StringCallback@)
+void LineEdit::onContextMenu(IntIntCallback@)
+void LineEdit::onDropped(StringStringIntIntCallback@)
+void LineEdit::onEdited(StringCallback@)
+void LineEdit::onWheel(IntCallback@)
+void LineEdit::selectAll()
+void LineEdit::setFocus()
+void LineEdit::set_dropTypes(const string[]&in)
+void LineEdit::set_enabled(bool)
+void LineEdit::set_masked(bool)
+void LineEdit::set_maxLength(int)
+void LineEdit::set_stretch(int)
+void LineEdit::set_text(const string&in)
+void LineEdit::set_visible(bool)
+void ListView::addItem(const string&in)
+void ListView::clear()
+void ListView::destroy()
+void ListView::onActivated(IntCallback@)
+void ListView::onContextMenu(IntIntCallback@)
+void ListView::onCurrentChanged(IntCallback@)
+void ListView::onDropped(StringStringIntIntCallback@)
+void ListView::onWheel(IntCallback@)
+void ListView::removeItem(int)
+void ListView::setFocus()
+void ListView::setIcon(int, const string&in)
+void ListView::set_current(int)
+void ListView::set_dropTypes(const string[]&in)
+void ListView::set_enabled(bool)
+void ListView::set_items(const string[]&in)
+void ListView::set_multiSelect(bool)
+void ListView::set_stretch(int)
+void ListView::set_visible(bool)
+void Menu::addSeparator()
+void Menu::destroy()
+void Menu::popup(int, int)
+void Menu::set_title(const string&in)
+void MenuBar::destroy()
+void MenuBar::onContextMenu(IntIntCallback@)
+void MenuBar::onDropped(StringStringIntIntCallback@)
+void MenuBar::onWheel(IntCallback@)
+void MenuBar::setFocus()
+void MenuBar::set_dropTypes(const string[]&in)
+void MenuBar::set_enabled(bool)
+void MenuBar::set_stretch(int)
+void MenuBar::set_visible(bool)
+void MenuItem::destroy()
+void MenuItem::onChosen(Callback@)
+void MenuItem::set_checked(bool)
+void MenuItem::set_enabled(bool)
+void MenuItem::set_icon(const string&in)
+void MenuItem::set_shortcut(const string&in)
+void MenuItem::set_text(const string&in)
+void MessageBox::destroy()
+void MessageBox::onAnswered(StringCallback@)
+void MessageBox::open()
+void MessageBox::set_buttons(const string&in)
+void MessageBox::set_kind(const string&in)
+void MessageBox::set_text(const string&in)
+void MessageBox::set_title(const string&in)
+void Notification::close()
+void Notification::destroy()
+void Notification::onActivated(IntCallback@)
+void Notification::onDismissed(Callback@)
+void Notification::onExpired(Callback@)
+void Notification::set_actions(const string[]&in)
+void Notification::set_app(const string&in)
+void Notification::set_body(const string&in)
+void Notification::set_icon(const string&in)
+void Notification::set_silent(bool)
+void Notification::set_timeout(int)
+void Notification::set_title(const string&in)
+void Notification::set_transient(bool)
+void Notification::set_urgency(const string&in)
+void Notification::show()
+void NumberField::destroy()
+void NumberField::onChanged(IntCallback@)
+void NumberField::onContextMenu(IntIntCallback@)
+void NumberField::onDropped(StringStringIntIntCallback@)
+void NumberField::onWheel(IntCallback@)
+void NumberField::setFocus()
+void NumberField::set_dropTypes(const string[]&in)
+void NumberField::set_enabled(bool)
+void NumberField::set_maximum(int)
+void NumberField::set_minimum(int)
+void NumberField::set_step(int)
+void NumberField::set_stretch(int)
+void NumberField::set_value(int)
+void NumberField::set_visible(bool)
+void ProgressBar::destroy()
+void ProgressBar::onContextMenu(IntIntCallback@)
+void ProgressBar::onDropped(StringStringIntIntCallback@)
+void ProgressBar::onWheel(IntCallback@)
+void ProgressBar::setFocus()
+void ProgressBar::set_dropTypes(const string[]&in)
+void ProgressBar::set_enabled(bool)
+void ProgressBar::set_maximum(int64)
+void ProgressBar::set_stretch(int)
+void ProgressBar::set_value(int64)
+void ProgressBar::set_visible(bool)
+void Services::destroy()
+void Services::onChanged(StringBoolCallback@)
+void Services::onMessage(StringStringCallback@)
+void Services::register(const string&in)
+void Services::send(const string&in, const string&in)
+void Services::unregister(const string&in)
+void Services::unwatch(const string&in)
+void Services::watch(const string&in)
+void Shell::act(int, const string&in)
+void Shell::destroy()
+void Shell::grabKey(int, int)
+void Shell::onKeyGrabbed(IntIntCallback@)
+void Shell::onWindowChanged(IntStringListCallback@)
+void Shell::onWindowClosed(IntCallback@)
+void Shell::onWorkAreaChanged(RectCallback@)
+void Shell::programStarting(int)
+void Shell::showWindowMenu(int, int, int)
+void Slider::destroy()
+void Slider::onChanged(IntCallback@)
+void Slider::onContextMenu(IntIntCallback@)
+void Slider::onDropped(StringStringIntIntCallback@)
+void Slider::onReleased(IntCallback@)
+void Slider::onWheel(IntCallback@)
+void Slider::setFocus()
+void Slider::set_direction(const string&in)
+void Slider::set_dropTypes(const string[]&in)
+void Slider::set_enabled(bool)
+void Slider::set_maximum(int)
+void Slider::set_minimum(int)
+void Slider::set_step(int)
+void Slider::set_stretch(int)
+void Slider::set_value(int)
+void Slider::set_visible(bool)
+void Spacer::destroy()
+void Spacer::onContextMenu(IntIntCallback@)
+void Spacer::onDropped(StringStringIntIntCallback@)
+void Spacer::onWheel(IntCallback@)
+void Spacer::setFocus()
+void Spacer::set_dropTypes(const string[]&in)
+void Spacer::set_enabled(bool)
+void Spacer::set_size(int)
+void Spacer::set_stretch(int)
+void Spacer::set_visible(bool)
+void Splitter::destroy()
+void Splitter::onContextMenu(IntIntCallback@)
+void Splitter::onDropped(StringStringIntIntCallback@)
+void Splitter::onWheel(IntCallback@)
+void Splitter::setFocus()
+void Splitter::set_direction(const string&in)
+void Splitter::set_dropTypes(const string[]&in)
+void Splitter::set_enabled(bool)
+void Splitter::set_minFirst(int)
+void Splitter::set_minSecond(int)
+void Splitter::set_position(int)
+void Splitter::set_stretch(int)
+void Splitter::set_visible(bool)
+void StatusBar::destroy()
+void StatusBar::onContextMenu(IntIntCallback@)
+void StatusBar::onDropped(StringStringIntIntCallback@)
+void StatusBar::onWheel(IntCallback@)
+void StatusBar::setField(int, const string&in)
+void StatusBar::setFocus()
+void StatusBar::set_dropTypes(const string[]&in)
+void StatusBar::set_enabled(bool)
+void StatusBar::set_stretch(int)
+void StatusBar::set_visible(bool)
+void TabPage::destroy()
+void TabPage::onContextMenu(IntIntCallback@)
+void TabPage::onDropped(StringStringIntIntCallback@)
+void TabPage::onWheel(IntCallback@)
+void TabPage::setFocus()
+void TabPage::set_direction(const string&in)
+void TabPage::set_dropTypes(const string[]&in)
+void TabPage::set_enabled(bool)
+void TabPage::set_margin(int)
+void TabPage::set_spacing(int)
+void TabPage::set_stretch(int)
+void TabPage::set_title(const string&in)
+void TabPage::set_visible(bool)
+void Tabs::destroy()
+void Tabs::onChanged(IntCallback@)
+void Tabs::onContextMenu(IntIntCallback@)
+void Tabs::onDropped(StringStringIntIntCallback@)
+void Tabs::onWheel(IntCallback@)
+void Tabs::setFocus()
+void Tabs::set_current(int)
+void Tabs::set_dropTypes(const string[]&in)
+void Tabs::set_enabled(bool)
+void Tabs::set_stretch(int)
+void Tabs::set_visible(bool)
+void Terminal::clear()
+void Terminal::destroy()
+void Terminal::onContextMenu(IntIntCallback@)
+void Terminal::onDropped(StringStringIntIntCallback@)
+void Terminal::onSized(IntIntCallback@)
+void Terminal::onTyped(StringCallback@)
+void Terminal::onWheel(IntCallback@)
+void Terminal::setFocus()
+void Terminal::set_dropTypes(const string[]&in)
+void Terminal::set_enabled(bool)
+void Terminal::set_stretch(int)
+void Terminal::set_visible(bool)
+void Terminal::write(const string&in)
+void TextEdit::copy()
+void TextEdit::cut()
+void TextEdit::destroy()
+void TextEdit::goToLine(int)
+void TextEdit::insert(const string&in)
+void TextEdit::markSaved()
+void TextEdit::onChanged(Callback@)
+void TextEdit::onContextMenu(IntIntCallback@)
+void TextEdit::onCursorMoved(IntIntCallback@)
+void TextEdit::onDropped(StringStringIntIntCallback@)
+void TextEdit::onWheel(IntCallback@)
+void TextEdit::paste()
+void TextEdit::redo()
+void TextEdit::selectAll()
+void TextEdit::setFocus()
+void TextEdit::set_dropTypes(const string[]&in)
+void TextEdit::set_enabled(bool)
+void TextEdit::set_readOnly(bool)
+void TextEdit::set_stretch(int)
+void TextEdit::set_text(const string&in)
+void TextEdit::set_visible(bool)
+void TextEdit::undo()
+void Timer::destroy()
+void Timer::onTimeout(Callback@)
+void Timer::set_interval(int)
+void Timer::set_repeat(bool)
+void Timer::start()
+void Timer::stop()
+void ToolBar::addSeparator()
+void ToolBar::destroy()
+void ToolBar::onContextMenu(IntIntCallback@)
+void ToolBar::onDropped(StringStringIntIntCallback@)
+void ToolBar::onWheel(IntCallback@)
+void ToolBar::setFocus()
+void ToolBar::set_dropTypes(const string[]&in)
+void ToolBar::set_enabled(bool)
+void ToolBar::set_stretch(int)
+void ToolBar::set_visible(bool)
+void ToolButton::click()
+void ToolButton::destroy()
+void ToolButton::onClicked(Callback@)
+void ToolButton::onContextMenu(IntIntCallback@)
+void ToolButton::onDropped(StringStringIntIntCallback@)
+void ToolButton::onWheel(IntCallback@)
+void ToolButton::setFocus()
+void ToolButton::set_dropTypes(const string[]&in)
+void ToolButton::set_enabled(bool)
+void ToolButton::set_icon(const string&in)
+void ToolButton::set_stretch(int)
+void ToolButton::set_text(const string&in)
+void ToolButton::set_visible(bool)
+void TrayIcon::destroy()
+void TrayIcon::onActivated(StringCallback@)
+void TrayIcon::onAvailabilityChanged(BoolCallback@)
+void TrayIcon::onScrolled(IntCallback@)
+void TrayIcon::set_category(const string&in)
+void TrayIcon::set_icon(const string&in)
+void TrayIcon::set_toolTip(const string&in)
+void TrayIcon::set_visible(bool)
+void TreeView::addRoot(const string&in)
+void TreeView::clear()
+void TreeView::collapse(const string&in)
+void TreeView::destroy()
+void TreeView::expand(const string&in)
+void TreeView::onActivated(StringCallback@)
+void TreeView::onContextMenu(IntIntCallback@)
+void TreeView::onCurrentChanged(StringCallback@)
+void TreeView::onDropped(StringStringIntIntCallback@)
+void TreeView::onExpanding(StringCallback@)
+void TreeView::onWheel(IntCallback@)
+void TreeView::setChildren(const string&in, const string[]&in)
+void TreeView::setFocus()
+void TreeView::setHasChildren(const string&in, bool)
+void TreeView::set_current(const string&in)
+void TreeView::set_dropTypes(const string[]&in)
+void TreeView::set_enabled(bool)
+void TreeView::set_stretch(int)
+void TreeView::set_visible(bool)
+void Widget::destroy()
+void Widget::onContextMenu(IntIntCallback@)
+void Widget::onDropped(StringStringIntIntCallback@)
+void Widget::onWheel(IntCallback@)
+void Widget::setFocus()
+void Widget::set_dropTypes(const string[]&in)
+void Widget::set_enabled(bool)
+void Widget::set_stretch(int)
+void Widget::set_visible(bool)
+void Window::close()
+void Window::destroy()
+void Window::maximize()
+void Window::minimize()
+void Window::onActivated(BoolCallback@)
+void Window::onCloseRequested(Callback@)
+void Window::onClosed(Callback@)
+void Window::onResized(IntIntCallback@)
+void Window::onWindowMenuChosen(Callback@)
+void Window::raise()
+void Window::restore()
+void Window::set_above(bool)
+void Window::set_buttons(bool)
+void Window::set_frame(bool)
+void Window::set_height(int)
+void Window::set_icon(const string&in)
+void Window::set_level(const string&in)
+void Window::set_margin(int)
+void Window::set_minHeight(int)
+void Window::set_minWidth(int)
+void Window::set_modal(bool)
+void Window::set_owner(Window@)
+void Window::set_placement(const string&in)
+void Window::set_pointer(const string&in)
+void Window::set_reserve(int)
+void Window::set_resizable(bool)
+void Window::set_shaded(bool)
+void Window::set_spacing(int)
+void Window::set_title(const string&in)
+void Window::set_titleBar(bool)
+void Window::set_width(int)
+void Window::set_windowMenuItem(const string&in)
+void Window::show()
+bool Button::get_centered() const
+string Label::get_align() const
+string Label::get_frame() const
+void Button::set_centered(bool)
+void Label::set_align(const string&in)
+void Label::set_frame(const string&in)

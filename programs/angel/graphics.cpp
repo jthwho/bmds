@@ -5,9 +5,10 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * Graphics and input (devplan/scripting.md step 4): `Window` and `Image`, both drawn on with
+ * Graphics and input (devplan/scripting.md step 4): `Screen` and `Image`, both drawn on with
  * the same methods (lines, rectangles, circles, polygons, text, images), colours as 0xRRGGBB,
- * the keyboard and the mouse, and a frame loop for games (`Game`, `Window::run`).
+ * the keyboard and the mouse, and a frame loop for games (`Game`, `Screen::run`). A screen was
+ * `Window` until the GUI's window took the name (devplan/guiprograms.md §13).
  *
  * A window is drawn immediately, as QBasic's screen was: drawing goes to a picture of the
  * script's (24-bit, so a colour read back is the colour drawn), and a thread of the runtime
@@ -1702,7 +1703,7 @@ namespace angel {
                       "Event::repeat");
 
                 check(engine->RegisterObjectType("Image", 0, asOBJ_REF), "Image");
-                check(engine->RegisterObjectType("Window", 0, asOBJ_REF), "Window");
+                check(engine->RegisterObjectType("Screen", 0, asOBJ_REF), "Screen");
                 check(engine->RegisterInterface("Game"), "Game");
                 behaviour(engine, "Image", asBEHAVE_FACTORY, "Image@ f(int width, int height)", imageBlank,
                           "A blank (black) image to draw on.");
@@ -1717,42 +1718,42 @@ namespace angel {
                        "Pixels of this colour aren't drawn when the image is.");
                 method(engine, "Image", "void opaque()", imageOpaque, "Every pixel is drawn again.");
 
-                behaviour(engine, "Window", asBEHAVE_FACTORY,
-                          "Window@ f(const string &in title = \"Angel\", int width = 640, int height = 480, bool "
+                behaviour(engine, "Screen", asBEHAVE_FACTORY,
+                          "Screen@ f(const string &in title = \"Angel\", int width = 640, int height = 480, bool "
                           "fullScreen = false)",
-                          windowOpen, "Opens a window to draw on (up to 1280 x 720); full screen if asked.");
-                behaviour(engine, "Window", asBEHAVE_ADDREF, "void f()", pictureAddRef, nullptr);
-                behaviour(engine, "Window", asBEHAVE_RELEASE, "void f()", pictureRelease, nullptr);
-                registerDrawing(engine, "Window");
-                method(engine, "Window", "void title(const string &in)", windowTitle, "Changes the window's title.");
-                method(engine, "Window", "bool closed()", windowClosed,
+                          windowOpen, "Opens a screen: a window to draw on (up to 1280 x 720); full screen if asked.");
+                behaviour(engine, "Screen", asBEHAVE_ADDREF, "void f()", pictureAddRef, nullptr);
+                behaviour(engine, "Screen", asBEHAVE_RELEASE, "void f()", pictureRelease, nullptr);
+                registerDrawing(engine, "Screen");
+                method(engine, "Screen", "void title(const string &in)", windowTitle, "Changes the window's title.");
+                method(engine, "Screen", "bool closed()", windowClosed,
                        "The user closed the window. (A script that never asks ends when its window is closed.)");
-                method(engine, "Window", "void frame()", windowFrame,
+                method(engine, "Screen", "void frame()", windowFrame,
                        "Shows what was drawn and waits for the screen's next frame: once round an animation's loop.");
-                method(engine, "Window", "string key()", windowKey,
+                method(engine, "Screen", "string key()", windowKey,
                        "Waits for a key: a character (\"a\", \"A\", \" \"), or a name (\"Enter\", \"Up\", \"F1\"...).");
-                method(engine, "Window", "string keyNow()", windowKeyNow,
+                method(engine, "Screen", "string keyNow()", windowKeyNow,
                        "A key pressed (as key()), or \"\" without waiting.");
-                method(engine, "Window", "bool keyDown(const string &in key)", windowKeyDown,
+                method(engine, "Screen", "bool keyDown(const string &in key)", windowKeyDown,
                        "The key is held down now: \"a\", \"Space\", \"Left\", \"Shift\"...");
-                method(engine, "Window", "int mouseX()", windowMouseX, "Where the mouse is across the window.");
-                method(engine, "Window", "int mouseY()", windowMouseY, "Where the mouse is down the window.");
-                method(engine, "Window", "bool mouseDown(int button = 1)", windowMouseDown,
+                method(engine, "Screen", "int mouseX()", windowMouseX, "Where the mouse is across the window.");
+                method(engine, "Screen", "int mouseY()", windowMouseY, "Where the mouse is down the window.");
+                method(engine, "Screen", "bool mouseDown(int button = 1)", windowMouseDown,
                        "A mouse button is held down: 1 left, 2 right, 3 middle.");
-                method(engine, "Window", "int mouseWheel()", windowMouseWheel,
+                method(engine, "Screen", "int mouseWheel()", windowMouseWheel,
                        "The wheel's turns since last asked (positive: away from you).");
-                method(engine, "Window", "Event@ waitEvent()", windowWaitEvent,
+                method(engine, "Screen", "Event@ waitEvent()", windowWaitEvent,
                        "Waits for the next event (a key, the mouse, Close).");
-                method(engine, "Window", "Event@ nextEvent()", windowNextEvent,
+                method(engine, "Screen", "Event@ nextEvent()", windowNextEvent,
                        "The next event, or null if none is waiting.");
-                method(engine, "Window", "void pointer(bool visible)", windowPointer,
+                method(engine, "Screen", "void pointer(bool visible)", windowPointer,
                        "Shows or hides the mouse pointer over the window.");
-                method(engine, "Window", "void run(Game@ game, uint ticksPerSecond = 60)", windowRun,
+                method(engine, "Screen", "void run(Game@ game, uint ticksPerSecond = 60)", windowRun,
                        "Runs a game until the window closes or stop(): its event(Event@) for each event, tick() so "
                        "many times a second, and draw() after them (each only if it has one): the picture is drawn "
                        "again only when a tick or an event may have changed it. A tick() declared bool returns "
                        "false when nothing changed.");
-                method(engine, "Window", "void stop()", windowStop, "Ends run().");
+                method(engine, "Screen", "void stop()", windowStop, "Ends run().");
                 return;
         }
 

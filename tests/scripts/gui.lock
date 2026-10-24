@@ -326,3 +326,9 @@ event Shell.keyGrabbed(Int, Int) on
 property Widget.geometry Rect RO
 event Widget.contextMenu(Int, Int) off
 event Widget.wheel(Int) off
+# Step 5a (2026-10-23): what angel's calculator wanted
+property Button.centered Bool RW
+property Label.align Atom RW
+values Label.align left center right
+property Label.frame Atom RW
+values Label.frame none field status sunken raised

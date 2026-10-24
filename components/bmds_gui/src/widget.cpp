@@ -242,6 +242,13 @@ void Label::setFrame(Bevel::Style style) {
         return;
 }
 
+void Label::clearFrame() {
+        if (!_framed) return;
+        _framed = false;
+        update();
+        return;
+}
+
 void Label::setHighlighted(bool highlighted) {
         if (highlighted == _highlighted) return;
         _highlighted = highlighted;

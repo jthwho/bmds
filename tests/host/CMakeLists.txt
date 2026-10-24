@@ -293,8 +293,10 @@ target_compile_definitions(bmds_angelscript PUBLIC AS_MAX_PORTABILITY AS_FLOAT_L
 target_compile_options(bmds_angelscript PRIVATE -std=gnu++20 -fno-exceptions -fno-rtti -w)
 file(GLOB BMDS_ANGEL_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT}/programs/angel/*.cpp)
 # The drawing is libbmdsgame's; a window on the host is only its picture (no ANGEL_BMDS).
+# The GUI's client (libbmdsgui) too: a host has no GUI service, so scripts' GUI objects can't be
+# made there, but the bindings are registered (--api, the lock).
 add_executable(angel ${BMDS_ANGEL_SOURCES} ${BMDS_ROOT}/sdk/game/canvas.c ${BMDS_ROOT}/sdk/game/shapes.c
-        ${BMDS_ROOT}/sdk/game/text.c ${BMDS_ROOT}/sdk/game/font16.c)
+        ${BMDS_ROOT}/sdk/game/text.c ${BMDS_ROOT}/sdk/game/font16.c ${BMDS_ROOT}/sdk/gui/gui.c)
 target_include_directories(angel PRIVATE ${BMDS_ROOT}/sdk/include)
 target_link_libraries(angel PRIVATE bmds_angelscript pthread m)
 bmds_target_options(angel)

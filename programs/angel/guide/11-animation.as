@@ -7,7 +7,7 @@
 //
 // Steer the blue square with the arrow keys to catch the yellow coin. Close the window to stop.
 
-Window w("Catch the coin", 640, 480);
+Screen w("Catch the coin", 640, 480);
 
 int x = 300, y = 220;  // the player's top-left corner
 int size = 40;

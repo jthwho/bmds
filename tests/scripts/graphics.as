@@ -1,5 +1,5 @@
 // Drawing on a window (on the host, only its picture) and on images; colours read back exactly.
-Window w("Test", 64, 48);
+Screen w("Test", 64, 48);
 println(w.width() + "x" + w.height());
 w.clear(Color::Navy);
 println(w.pixel(0, 0) == Color::Navy);

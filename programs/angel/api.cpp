@@ -137,6 +137,23 @@ namespace angel {
                 return;
         }
 
+        void methodAux(asIScriptEngine *engine, const char *type, const char *decl, asGENFUNC_t function, void *aux,
+                       const char *help) {
+                const int r = engine->RegisterObjectMethod(type, decl, asFUNCTION(function), asCALL_GENERIC, aux);
+                check(r, decl);
+                rememberFunction(engine, r, help);
+                return;
+        }
+
+        void behaviourAux(asIScriptEngine *engine, const char *type, asEBehaviours behaviour, const char *decl,
+                          asGENFUNC_t function, void *aux, const char *help) {
+                const int r = engine->RegisterObjectBehaviour(type, behaviour, decl, asFUNCTION(function),
+                                                              asCALL_GENERIC, aux);
+                check(r, decl);
+                rememberFunction(engine, r, help);
+                return;
+        }
+
         void property(asIScriptEngine *engine, const char *decl, void *address, const char *help) {
                 const int r = engine->RegisterGlobalProperty(decl, address);
                 check(r, decl);

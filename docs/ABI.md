@@ -36,7 +36,7 @@ Kernel internals — C++ classes, driver interfaces, internal headers under `com
 
 - Any change touching `sdk/` or the syscall table must state **"ABI:"** in the commit message with a one-line description of the change (e.g. `ABI: add bmds_gfx_blit (slot 42)`).
 - **ABI lock tests** verify syscall slot numbers, struct sizes, and field offsets. These tests are append-only: a failing ABI test means the change is wrong, not the test.
-- **The script API's lock** (`tests/scripts/api.lock`, checked against `angel --api` by the host tests) holds every declaration scripts see. Lines are never changed or removed; new API is appended to it. Upgrading AngelScript is an ABI change, taken only when the script corpus (`tests/scripts`) and the examples still compile and behave the same.
+- **The script API's lock** (`tests/scripts/api.lock`, checked against `angel --api` by the host tests) holds every declaration scripts see. Lines are never changed or removed; new API is appended to it. (Once, before any release, by the user's decision: the game surface `Window` became `Screen` on 2026-10-23, its lines edited in place, when the GUI's window took the name: `devplan/guiprograms.md` §13.) Upgrading AngelScript is an ABI change, taken only when the script corpus (`tests/scripts`) and the examples still compile and behave the same.
 - A small corpus of **compatibility test programs** built against older SDK versions is kept and run against new kernels (`tests/compat/v1/`, kept exactly as built; `tools/bmds-compat` runs it on a board, the host tests check it loads).
 
 ## Design Decisions
