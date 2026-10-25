@@ -391,3 +391,9 @@ GUI_PROP(Label, align, Atom, RW)
 GUI_VALUES(Label, align, left, center, right)
 GUI_PROP(Label, frame, Atom, RW)
 GUI_VALUES(Label, frame, none, field, status, sunken, raised)
+
+/* ---- Step 5b (2026-10-24): a dialog's owner, the window it blocks while it is open (as a modal
+ * window blocks its owner) */
+GUI_PROP(MessageBox, owner, Id, RW)
+GUI_PROP(FileDialog, owner, Id, RW)
+GUI_PROP(ColorDialog, owner, Id, RW)

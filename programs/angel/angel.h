@@ -115,6 +115,19 @@ namespace angel {
         // script gets what it names, before it is built. Each class once.
         void registerGuiClasses(asIScriptEngine *engine, const char *const *texts, const size_t *lengths, size_t count);
 
+        // An angel Image (graphics.cpp, opaque here) for the GUI (gui.cpp), which sends its pixels
+        // as an icon's: a reference taken or let go, its size, and a number its drawing changes.
+        struct ImageInfo {
+                        int      width;
+                        int      height;
+                        uint32_t generation;
+        };
+        void      imageAddRef(void *image);
+        void      imageRelease(void *image);
+        ImageInfo imageInfo(void *image);
+        // Its pixels as 0xAARRGGBB into @p out (width × height), transparent where it is keyed.
+        void imageArgb(void *image, uint32_t *out);
+
         // At the script's end (gui.cpp): with a GUI window shown, the GUI's loop runs until it
         // closes (`app.run()`'s); then the connection is closed.
         void finishGui(asIScriptEngine *engine);

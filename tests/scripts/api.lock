@@ -1404,3 +1404,29 @@ string Label::get_frame() const
 void Button::set_centered(bool)
 void Label::set_align(const string&in)
 void Label::set_frame(const string&in)
+# 2026-10-24: the GUI step 5b: images as icons (angel's Image), dialogs' owners, the one-line dialogs
+Image@ Button::get_iconImage() const
+Image@ MenuItem::get_iconImage() const
+Image@ ToolButton::get_iconImage() const
+Image@ TrayIcon::get_iconImage() const
+Image@ Window::get_iconImage() const
+Window@ ColorDialog::get_owner() const
+Window@ FileDialog::get_owner() const
+Window@ MessageBox::get_owner() const
+bool ask(const string&in, const string&in = "")
+string askText(const string&in, const string&in = "", const string&in = "")
+string chooseFile(const string&in = "")
+string chooseSaveFile(const string&in = "", const string&in = "")
+void Button::set_iconImage(Image@)
+void ColorDialog::set_owner(Window@)
+void DetailsView::setIconImage(int, Image@)
+void FileDialog::set_owner(Window@)
+void IconView::setIconImage(int, Image@)
+void ItemView::setIconImage(int, Image@)
+void ListView::setIconImage(int, Image@)
+void MenuItem::set_iconImage(Image@)
+void MessageBox::set_owner(Window@)
+void ToolButton::set_iconImage(Image@)
+void TrayIcon::set_iconImage(Image@)
+void Window::set_iconImage(Image@)
+void alert(const string&in, const string&in = "")

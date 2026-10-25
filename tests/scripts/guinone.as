@@ -1,5 +1,5 @@
 // The GUI's bindings without a display (the host has none): a script using them builds, and
-// making an object raises "No GUI here" (devplan/guiprograms.md §13).
+// making an object or asking with a dialog raises "No GUI here" (devplan/guiprograms.md §13).
 void build() {
         Window w("Test", 200, 100);
         Box row(w, "across");
@@ -20,4 +20,20 @@ try {
         build();
 } catch {
         println(getExceptionInfo());
+}
+// The one-line dialogs (5b) raise the same; an image property's type is angel's Image.
+try {
+        alert("hello");
+} catch {
+        println(getExceptionInfo());
+}
+try {
+        println(chooseFile());
+} catch {
+        println(getExceptionInfo());
+}
+void icons(Button@ b) {
+        Image i(16, 16);
+        @b.iconImage = i;
+        Image@ back = b.iconImage;
 }

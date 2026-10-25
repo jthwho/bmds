@@ -861,6 +861,10 @@ namespace {
                         explicit SpacerWidget(Widget *parent) : Widget(parent) { setStretch(1); }
 
                         GuiSize sizeHint() const override { return GuiSize{size, size}; }
+                        // Its own background: a box fills only the gaps between its children.
+                        void paint(Painter &painter) override {
+                                (void)painter.fill(geometry(), painter.palette().color(WindowPalette::Role::Face));
+                        }
 
                         uint16_t size = 0;
         };
@@ -2065,6 +2069,50 @@ namespace {
                 return Ok;
         }
 
+        // ---- A dialog's owner (step 5b): the window it blocks while it is open, as a modal window
+        // blocks its owner (its widgets disabled; activated, it brings the dialog up). Each dialog's
+        // data has one.
+
+        struct DialogOwner {
+                        uint32_t   id = 0;           // the owner window's object (0: none)
+                        bool       blocking = false; // its block taken
+                        GuiWindow *window = nullptr; // the dialog's window while it is open
+        };
+
+        // Window object @p ownerId's modal block taken (@p block) or let go.
+        void blockOwner(GuiConnection &connection, uint32_t ownerId, bool block) {
+                GuiObject *owner = connection.find(ownerId);
+                if (owner == nullptr || owner->window == nullptr) return;
+                if (block) {
+                        ++owner->blocked;
+                } else if (owner->blocked > 0) {
+                        --owner->blocked;
+                }
+                if (owner->window->column() != nullptr) owner->window->column()->setEnabled(owner->blocked == 0);
+                return;
+        }
+        // @p d's dialog is open (its window @p window) or not (null): its owner blocked meanwhile.
+        void dialogOpen(GuiObject &o, DialogOwner &d, GuiWindow *window) {
+                d.window = window;
+                const bool block = window != nullptr && d.id != 0;
+                if (block == d.blocking) return;
+                d.blocking = block;
+                blockOwner(*o.connection, d.id, block);
+                return;
+        }
+        GuiStatus setDialogOwner(GuiObject &o, DialogOwner &d, const Value &v) {
+                const uint32_t id = uint32_t(v.number);
+                if (id != 0) {
+                        const GuiObject *owner = o.connection->find(id);
+                        if (owner == nullptr) return GuiStatus(GuiProtocol::ErrorCode::BadId);
+                        if (owner->window == nullptr) return BadMatch;
+                }
+                GuiWindow *window = d.window;
+                dialogOpen(o, d, nullptr); // the old owner let go
+                d.id = id;
+                dialogOpen(o, d, window);
+                return Ok;
+        }
         // ---- MessageBox: the toolkit's, opened by `open`; answered or let go with the object
 
         constexpr const char *KindNames[] = {"information", "warning", "error", "question"};
@@ -2072,6 +2120,7 @@ namespace {
         constexpr const char *AnswerNames[] = {"ok", "cancel", "yes", "no"};
 
         struct BoxData {
+                        DialogOwner owner;
                         MessageBox *box = nullptr;
                         uint8_t     kind = 0;
                         uint8_t     buttons = 0;
@@ -2115,8 +2164,10 @@ namespace {
                 return Value::atom(GuiAtoms::intern(ButtonsNames[dataOf<BoxData>(o)->buttons]));
         }
         void boxAnswered(void *arg, MessageBox::Answer answer) {
-                auto &o = *static_cast<GuiObject *>(arg);
-                dataOf<BoxData>(o)->box = nullptr; // it frees itself
+                auto    &o = *static_cast<GuiObject *>(arg);
+                BoxData *d = dataOf<BoxData>(o);
+                d->box = nullptr; // it frees itself
+                dialogOpen(o, d->owner, nullptr);
                 const size_t i = size_t(answer);
                 const Value  v = Value::atom(GuiAtoms::intern(i < 4 ? AnswerNames[i] : "cancel"));
                 o.connection->emit(o, "answered", Args(&v, 1));
@@ -2133,11 +2184,19 @@ namespace {
                                          d->text.view(), MessageBox::Buttons(d->buttons), boxAnswered, &o);
                 if (err.isError()) return NoMem;
                 d->box = box;
+                dialogOpen(o, d->owner, box);
                 return Ok;
+        }
+        GuiStatus set_MessageBox_owner(GuiObject &o, const Value &v) {
+                return setDialogOwner(o, dataOf<BoxData>(o)->owner, v);
+        }
+        Value get_MessageBox_owner(GuiObject &o) {
+                return Value::id(dataOf<BoxData>(o)->owner.id);
         }
         void disposeBox(GuiObject &o) {
                 BoxData *d = dataOf<BoxData>(o);
                 if (d != nullptr && d->box != nullptr) d->box->abandon();
+                if (d != nullptr) dialogOpen(o, d->owner, nullptr);
                 freeData<BoxData>(o);
                 return;
         }
@@ -2153,6 +2212,7 @@ namespace {
         constexpr const char *ModeNames[] = {"open", "openMany", "save", "folder"};
 
         struct FileData {
+                        DialogOwner owner;
                         FileDialog *dialog = nullptr;
                         uint8_t     mode = 0;
                         String      title{MemSpace::Psram};
@@ -2160,7 +2220,8 @@ namespace {
                         String      fileName{MemSpace::Psram};
                         String      filters{MemSpace::Psram}; // "name\npatterns\n" each
         };
-        void dropFileDialog(FileData *d) {
+        void dropFileDialog(GuiObject &o, FileData *d) {
+                dialogOpen(o, d->owner, nullptr);
                 if (d->dialog == nullptr) return;
                 d->dialog->~FileDialog();
                 Memory::free(d->dialog);
@@ -2194,6 +2255,12 @@ namespace {
         Value get_FileDialog_fileName(GuiObject &o) {
                 return Value::string(dataOf<FileData>(o)->fileName.view());
         }
+        GuiStatus set_FileDialog_owner(GuiObject &o, const Value &v) {
+                return setDialogOwner(o, dataOf<FileData>(o)->owner, v);
+        }
+        Value get_FileDialog_owner(GuiObject &o) {
+                return Value::id(dataOf<FileData>(o)->owner.id);
+        }
         GuiStatus call_FileDialog_addFilter(GuiObject &o, Args args, Value &) {
                 if (args[0].text.indexOf('\n') != StringView::NPos || args[1].text.indexOf('\n') != StringView::NPos)
                         return BadValue;
@@ -2207,6 +2274,7 @@ namespace {
                 auto     &o = *static_cast<GuiObject *>(arg);
                 FileData *d = dataOf<FileData>(o);
                 (void)d->folder.assign(dialog.folder());
+                dialogOpen(o, d->owner, nullptr);
                 const bool  accepted = result == FileDialog::Accepted;
                 const Value v[] = {Value::boolean(accepted), makeStrings(o, accepted ? dialog.count() : 0,
                                                                          [&](size_t i) { return dialog.path(i); })};
@@ -2219,7 +2287,7 @@ namespace {
                         d->dialog->activate();
                         return Ok;
                 }
-                dropFileDialog(d); // made again: its mode and title are its constructor's
+                dropFileDialog(o, d); // made again: its mode and title are its constructor's
                 void *mem = Memory::alloc(MemSpace::Psram, sizeof(FileDialog));
                 if (mem == nullptr) return NoMem;
                 d->dialog =
@@ -2238,13 +2306,14 @@ namespace {
                 if (!d->fileName.isEmpty()) (void)d->dialog->setFileName(d->fileName.view());
                 d->dialog->setFinished(fileFinished, &o);
                 if (d->dialog->open().isError()) {
-                        dropFileDialog(d);
+                        dropFileDialog(o, d);
                         return NoMem;
                 }
+                dialogOpen(o, d->owner, d->dialog);
                 return Ok;
         }
         void disposeFileDialog(GuiObject &o) {
-                if (o.data != nullptr) dropFileDialog(dataOf<FileData>(o));
+                if (o.data != nullptr) dropFileDialog(o, dataOf<FileData>(o));
                 freeData<FileData>(o);
                 return;
         }
@@ -2258,11 +2327,13 @@ namespace {
         // ---- ColorDialog
 
         struct ColorData {
+                        DialogOwner  owner;
                         ColorDialog *dialog = nullptr;
                         String       title{MemSpace::Psram};
                         uint32_t     color = 0;
         };
-        void dropColorDialog(ColorData *d) {
+        void dropColorDialog(GuiObject &o, ColorData *d) {
+                dialogOpen(o, d->owner, nullptr);
                 if (d->dialog == nullptr) return;
                 d->dialog->~ColorDialog();
                 Memory::free(d->dialog);
@@ -2282,6 +2353,12 @@ namespace {
         Value get_ColorDialog_color(GuiObject &o) {
                 return colorValue(dataOf<ColorData>(o)->color);
         }
+        GuiStatus set_ColorDialog_owner(GuiObject &o, const Value &v) {
+                return setDialogOwner(o, dataOf<ColorData>(o)->owner, v);
+        }
+        Value get_ColorDialog_owner(GuiObject &o) {
+                return Value::id(dataOf<ColorData>(o)->owner.id);
+        }
         void colorChanged(void *arg, ColorDialog &, uint32_t rgb) {
                 auto       &o = *static_cast<GuiObject *>(arg);
                 const Value v = colorValue(rgb);
@@ -2293,6 +2370,7 @@ namespace {
                 ColorData *d = dataOf<ColorData>(o);
                 const bool accepted = result == ColorDialog::Accepted;
                 if (accepted) d->color = static_cast<ColorDialog &>(dialog).color();
+                dialogOpen(o, d->owner, nullptr);
                 const Value v[] = {Value::boolean(accepted), colorValue(d->color)};
                 o.connection->emit(o, "finished", Args(v, 2));
                 return;
@@ -2303,20 +2381,21 @@ namespace {
                         d->dialog->activate();
                         return Ok;
                 }
-                dropColorDialog(d);
+                dropColorDialog(o, d);
                 void *mem = Memory::alloc(MemSpace::Psram, sizeof(ColorDialog));
                 if (mem == nullptr) return NoMem;
                 d->dialog = ::new (mem) ColorDialog(o.connection->application(), d->title.view());
                 d->dialog->setChanged(colorChanged, &o);
                 d->dialog->setFinished(colorFinished, &o);
                 if (d->dialog->open(d->color).isError()) {
-                        dropColorDialog(d);
+                        dropColorDialog(o, d);
                         return NoMem;
                 }
+                dialogOpen(o, d->owner, d->dialog);
                 return Ok;
         }
         void disposeColorDialog(GuiObject &o) {
-                if (o.data != nullptr) dropColorDialog(dataOf<ColorData>(o));
+                if (o.data != nullptr) dropColorDialog(o, dataOf<ColorData>(o));
                 freeData<ColorData>(o);
                 return;
         }
@@ -2325,6 +2404,15 @@ namespace {
                 if (makeData<ColorData>(o) == nullptr) return NoMem;
                 o.dispose = disposeColorDialog;
                 return Ok;
+        }
+
+        // A dialog's owner, or null (not a dialog).
+        DialogOwner *dialogOwnerOf(GuiObject &o) {
+                if (o.data == nullptr) return nullptr;
+                if (isClassNamed(&o, "MessageBox")) return &dataOf<BoxData>(o)->owner;
+                if (isClassNamed(&o, "FileDialog")) return &dataOf<FileData>(o)->owner;
+                if (isClassNamed(&o, "ColorDialog")) return &dataOf<ColorData>(o)->owner;
+                return nullptr;
         }
 
         // ---- Timer: the connection's application's timers (shared with its widgets')
@@ -3927,7 +4015,14 @@ void ClientWindow::activeChanged() {
         // Blocked by a modal window: that one comes up and takes the keys (the window manager
         // has no owner relation to keep it above, §7).
         if (isActive() && _object.blocked > 0) {
-                if (ClientWindow *over = _object.connection->modalOver(_object.id); over != nullptr) {
+                GuiWindow *over = _object.connection->modalOver(_object.id);
+                for (GuiObject *o : _object.connection->objects()) {
+                        if (over != nullptr) break;
+                        const DialogOwner *d = dialogOwnerOf(*o);
+                        if (d != nullptr && d->id == _object.id && d->window != nullptr && d->window->isShown())
+                                over = d->window;
+                }
+                if (over != nullptr) {
                         over->activate();
                         return;
                 }
@@ -3976,14 +4071,7 @@ void ClientWindow::updateBlock() {
         const bool block = isShown() && modal && ownerId != 0;
         if (block == _blocking) return;
         _blocking = block;
-        GuiObject *owner = _object.connection->find(ownerId);
-        if (owner == nullptr || owner->window == nullptr) return;
-        if (block) {
-                ++owner->blocked;
-        } else if (owner->blocked > 0) {
-                --owner->blocked;
-        }
-        if (owner->window->column() != nullptr) owner->window->column()->setEnabled(owner->blocked == 0);
+        blockOwner(*_object.connection, ownerId, block);
         return;
 }
 

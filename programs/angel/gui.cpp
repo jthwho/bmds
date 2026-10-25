@@ -15,6 +15,11 @@
  * or the script's end), not until the script lets go of it: a button made in a function stays in
  * its window. Callbacks run nested in the script's context, as a `Game`'s methods do; after the
  * script's end, in a context of their own.
+ *
+ * An image property (`iconImage`) takes angel's own `Image`: its pixels are sent as a GUI image
+ * the first time it is used, and again when it has been drawn on since. The one-line dialogs
+ * (`alert()`, `ask()`, `askText()`, `chooseFile()`, `chooseSaveFile()`) wait for their answer,
+ * serving the GUI's other events and the timers meanwhile, the script's window blocked.
  */
 
 #include <new>
@@ -46,7 +51,8 @@ namespace angel {
                                 Rect,
                                 Color,
                                 List,
-                                Bytes
+                                Bytes,
+                                Picture // not the schema's: an Id naming an image (angel's Image)
                         };
 
                         struct ClassDef {
@@ -142,10 +148,16 @@ namespace angel {
                 bool bound(const gt::ClassDef &c) {
                         return strcmp(c.name, "Image") != 0;
                 }
-                // An Id member's script type: an image's (angel's Image, 5b: not bound yet), a window's
-                // owner, else any GUI object.
+                // An Id member that names an image (`iconImage`, `setIconImage`): angel's Image.
+                bool imageMember(const char *member) {
+                        return strstr(member, "mage") != nullptr;
+                }
+                Tag effective(Tag tag, const char *member) {
+                        return tag == gt::Id && imageMember(member) ? gt::Picture : tag;
+                }
+                // An Id member's script type: an image's, a window's owner, else any GUI object.
                 const char *idType(const char *member) {
-                        if (strstr(member, "mage") != nullptr) return nullptr;
+                        if (imageMember(member)) return "Image@";
                         if (strcmp(member, "owner") == 0) return "Window@";
                         return "GuiObject@";
                 }
@@ -178,6 +190,7 @@ namespace angel {
                                 const gt::ClassDef *cls = nullptr;
                                 bool                alive = true;
                                 bool                shown = false; // a window's, as last seen
+                                uint32_t            shownAt = 0;   // when it was last shown (a count)
                                 Handler            *handlers = nullptr;
                                 uint32_t            handlerCount = 0;
 
@@ -205,6 +218,9 @@ namespace angel {
                 size_t            objectCapacity = 0;
                 bool              quitting = false;
                 bool              looping = false;
+                bool              quitCalled = false;   // app.quit() since run() last started
+                uint32_t          showCount = 0;        // windows' show()s, to find the last
+                char             *lastFolder = nullptr; // where the file dialogs were last
 
                 GuiRef *find(uint32_t id) {
                         for (size_t i = 0; i < objectCount; ++i)
@@ -304,6 +320,74 @@ namespace angel {
                         return gui;
                 }
 
+                // ---- Images: angel's Image as a GUI image, made at its first use and sent again when it
+                // was drawn on since, kept until the runtime's end (a reference to the Image each)
+
+                struct Icon {
+                                void    *image = nullptr;
+                                uint32_t id = 0;
+                                uint32_t generation = 0;
+                                int      width = 0; // as sent (0: not yet)
+                                int      height = 0;
+                };
+                Icon  *icons = nullptr;
+                size_t iconCount = 0;
+                size_t iconCapacity = 0;
+
+                constexpr int MaxIcon = 512; // the protocol's most, each way
+
+                // The GUI image showing @p image, its pixels up to date; 0 (an exception raised) if none.
+                uint32_t iconOf(void *image) {
+                        const ImageInfo info = imageInfo(image);
+                        if (info.width > MaxIcon || info.height > MaxIcon) {
+                                raise("An icon is at most %d pixels each way, not %d x %d", MaxIcon, info.width,
+                                      info.height);
+                                return 0;
+                        }
+                        Icon *icon = nullptr;
+                        for (size_t i = 0; i < iconCount && icon == nullptr; ++i)
+                                if (icons[i].image == image) icon = &icons[i];
+                        if (icon == nullptr) {
+                                if (iconCount == iconCapacity) {
+                                        const size_t capacity = iconCapacity != 0 ? iconCapacity * 2 : 8;
+                                        auto *grown = static_cast<Icon *>(realloc(icons, capacity * sizeof(Icon)));
+                                        if (grown == nullptr) {
+                                                raise("Out of memory for an icon");
+                                                return 0;
+                                        }
+                                        icons = grown;
+                                        iconCapacity = capacity;
+                                }
+                                const uint32_t id = bmds_gui_new(gui, "Image", 0);
+                                remember("Image", "new");
+                                if (id == 0) {
+                                        raise("Can't make an icon");
+                                        return 0;
+                                }
+                                imageAddRef(image);
+                                icon = &icons[iconCount++];
+                                *icon = Icon{image, id, 0, 0, 0};
+                        }
+                        if (icon->width != info.width || icon->height != info.height ||
+                            icon->generation != info.generation) {
+                                auto *argb = static_cast<uint32_t *>(
+                                        malloc(size_t(info.width) * size_t(info.height) * sizeof(uint32_t)));
+                                if (argb == nullptr) {
+                                        raise("Out of memory for a %d x %d icon", info.width, info.height);
+                                        return 0;
+                                }
+                                imageArgb(image, argb);
+                                (void)bmds_gui_put_image(gui, icon->id, uint32_t(info.width), uint32_t(info.height),
+                                                         argb);
+                                remember("Image", "pixels");
+                                free(argb);
+                                icon->width = info.width;
+                                icon->height = info.height;
+                                icon->generation = info.generation;
+                        }
+                        return icon->id;
+                }
+
                 // ---- What each registration does: one for each member of the schema, shared by the
                 // classes that have it (a parent's member on each child)
 
@@ -357,6 +441,12 @@ namespace angel {
                                         auto          *o = static_cast<GuiRef *>(gen->GetArgObject(asUINT(arg)));
                                         const uint32_t id = o != nullptr && o->alive ? o->id : 0;
                                         if (o != nullptr) o->release(); // the argument's reference
+                                        return bmds_gui_id(id);
+                                }
+                                case gt::Picture: {
+                                        void          *image = gen->GetArgObject(asUINT(arg));
+                                        const uint32_t id = image != nullptr ? iconOf(image) : 0;
+                                        if (image != nullptr) imageRelease(image); // the argument's reference
                                         return bmds_gui_id(id);
                                 }
                                 case gt::List: {
@@ -416,6 +506,14 @@ namespace angel {
                                         gen->SetReturnAddress(o);
                                         break;
                                 }
+                                case gt::Picture: {
+                                        void *image = nullptr;
+                                        for (size_t i = 0; i < iconCount && image == nullptr; ++i)
+                                                if (icons[i].id == uint32_t(v.number)) image = icons[i].image;
+                                        if (image != nullptr) imageAddRef(image);
+                                        gen->SetReturnAddress(image);
+                                        break;
+                                }
                                 case gt::List: gen->SetReturnAddress(listOf(v)); break;
                                 default: break;
                         }
@@ -466,29 +564,34 @@ namespace angel {
                         auto                *b = static_cast<Binding *>(gen->GetAuxiliary());
                         const gt::MethodDef *m = b->method;
                         GuiRef              *o = self(gen);
+                        const Tag            result = effective(m->result, m->name);
                         if (o == nullptr) {
-                                if (m->result != gt::None) returnNothing(m->result, gen);
+                                if (result != gt::None) returnNothing(result, gen);
                                 return;
                         }
                         bmds_gui_value_t args[6];
                         const char     **strings[6] = {};
-                        for (uint8_t i = 0; i < m->count; ++i) args[i] = toValue(m->args[i], gen, i, strings[i]);
+                        for (uint8_t i = 0; i < m->count; ++i)
+                                args[i] = toValue(effective(m->args[i], m->name), gen, i, strings[i]);
                         // A window shown or closed by the script: the loop runs while one is shown.
                         if (strcmp(o->cls->name, "Window") == 0) {
-                                if (strcmp(m->name, "show") == 0) o->shown = true;
+                                if (strcmp(m->name, "show") == 0) {
+                                        o->shown = true;
+                                        o->shownAt = ++showCount;
+                                }
                                 if (strcmp(m->name, "close") == 0) o->shown = false;
                         }
                         const uint32_t name = b->atomOf();
-                        if (m->result == gt::None) {
+                        if (result == gt::None) {
                                 (void)bmds_gui_call(gui, o->id, name, args, m->count, nullptr);
                                 remember(b->cls, b->name);
                         } else {
                                 bmds_gui_value_t r;
                                 remember(b->cls, b->name, true);
                                 if (bmds_gui_call(gui, o->id, name, args, m->count, &r) == 0)
-                                        returnValue(m->result, gen, r);
+                                        returnValue(result, gen, r);
                                 else
-                                        returnNothing(m->result, gen);
+                                        returnNothing(result, gen);
                         }
                         for (const char **s : strings) free(s);
                         return;
@@ -825,6 +928,7 @@ namespace angel {
                         }
                         looping = true;
                         quitting = false;
+                        quitCalled = false;
                         bool wasShown = false;
                         for (;;) {
                                 const int wait = runTimers();
@@ -860,6 +964,7 @@ namespace angel {
                 }
                 void appQuit(asIScriptGeneric *) {
                         quitting = true;
+                        quitCalled = true;
                 }
                 void appAfter(asIScriptGeneric *gen) {
                         gen->SetReturnDWord(uint32_t(startTimer(
@@ -875,10 +980,220 @@ namespace angel {
 
                 int appObject; // `app`'s address: the type has no state of its own
 
+                // ---- The one-line dialogs: each made, opened and waited for; the script's window they
+                // belong to (its active one, else the last shown) blocked meanwhile
+
+                // Serves the GUI's events and the timers until an event of one of @p ids (a dialog's own
+                // objects) comes. @return Its index in @p ids, the event in @p out (valid until the next
+                // call on the connection); -1 at app.quit() or the connection's end.
+                int waitFor(const uint32_t *ids, size_t count, bmds_gui_event_t &out) {
+                        for (;;) {
+                                const int wait = runTimers();
+                                if (quitting) return -1;
+                                const int r = bmds_gui_next_event(gui, &out, wait);
+                                if (r < 0) return -1;
+                                if (r == 0) continue;
+                                for (size_t i = 0; i < count; ++i)
+                                        if (out.source == ids[i]) return int(i);
+                                dispatch(out);
+                                if (quitting) return -1;
+                        }
+                }
+
+                GuiRef *ownerWindow() {
+                        GuiRef        *latest = nullptr;
+                        const uint32_t active = bmds_gui_atom(gui, "active");
+                        for (size_t i = 0; i < objectCount; ++i) {
+                                GuiRef *o = objects[i];
+                                if (!o->shown || strcmp(o->cls->name, "Window") != 0) continue;
+                                bmds_gui_value_t v;
+                                if (bmds_gui_get(gui, o->id, &active, 1, &v) == 0 && v.number != 0) return o;
+                                if (latest == nullptr || o->shownAt > latest->shownAt) latest = o;
+                        }
+                        return latest;
+                }
+
+                // One of a dialog's objects (not the script's: not kept), in @p parent (0: none).
+                uint32_t dialogObject(const char *cls, uint32_t parent, const char *what) {
+                        const uint32_t id = bmds_gui_new(gui, cls, parent);
+                        remember(what, cls);
+                        if (id == 0) raise("Can't make the %s's %s", what, cls);
+                        return id;
+                }
+                void setNamed(uint32_t id, const char *name, bmds_gui_value_t v, const char *what) {
+                        (void)bmds_gui_set_named(gui, id, name, v);
+                        remember(what, name);
+                        return;
+                }
+                void setAtom(uint32_t id, const char *name, const char *value, const char *what) {
+                        setNamed(id, name, bmds_gui_atom_value(bmds_gui_atom(gui, value)), what);
+                        return;
+                }
+                void callNamed(uint32_t id, const char *name, const char *what) {
+                        (void)bmds_gui_call_named(gui, id, name, nullptr, 0, nullptr);
+                        remember(what, name);
+                        return;
+                }
+                // The dialog's title: @p title, else its owner's.
+                void setTitle(uint32_t id, const String *title, GuiRef *owner, const char *what) {
+                        if (title->length() != 0) {
+                                setNamed(id, "title", bmds_gui_string(title->cStr()), what);
+                                return;
+                        }
+                        bmds_gui_value_t v;
+                        if (owner == nullptr || bmds_gui_get_named(gui, owner->id, "title", &v) != 0) return;
+                        const String copy(v.text != nullptr ? v.text : "", v.length);
+                        setNamed(id, "title", bmds_gui_string(copy.cStr()), what);
+                        return;
+                }
+
+                // A message box of @p kind with @p buttons: the answer's name ("" if none).
+                void messageBox(asIScriptGeneric *gen, const char *what, const char *kind, const char *buttons,
+                                String &answer) {
+                        if (connection() == nullptr) return;
+                        GuiRef        *owner = ownerWindow();
+                        const uint32_t id = dialogObject("MessageBox", 0, what);
+                        if (id == 0) return;
+                        setAtom(id, "kind", kind, what);
+                        setAtom(id, "buttons", buttons, what);
+                        setNamed(id, "text",
+                                 bmds_gui_string(static_cast<const String *>(gen->GetArgAddress(0))->cStr()), what);
+                        setTitle(id, static_cast<const String *>(gen->GetArgAddress(1)), owner, what);
+                        if (owner != nullptr) setNamed(id, "owner", bmds_gui_id(owner->id), what);
+                        callNamed(id, "open", what);
+                        bmds_gui_event_t e;
+                        int              r;
+                        do r = waitFor(&id, 1, e);
+                        while (r == 0 && !bmds_gui_event_is(gui, &e, "answered"));
+                        if (r == 0 && e.count != 0) {
+                                const char *name = bmds_gui_atom_name(gui, uint32_t(e.values[0].number));
+                                if (name != nullptr) answer.assign(name, strlen(name));
+                        }
+                        (void)bmds_gui_destroy(gui, id);
+                        remember(what, "destroy");
+                        return;
+                }
+                void alertCall(asIScriptGeneric *gen) {
+                        String answer;
+                        messageBox(gen, "alert", "information", "ok", answer);
+                }
+                void askCall(asIScriptGeneric *gen) {
+                        String answer;
+                        messageBox(gen, "ask", "question", "yesNo", answer);
+                        gen->SetReturnByte(strcmp(answer.cStr(), "yes") == 0);
+                }
+
+                // askText(): a window of its own, modal over the script's: the prompt, a line to edit,
+                // OK and Cancel. "" if cancelled.
+                void askTextCall(asIScriptGeneric *gen) {
+                        String *result = new (gen->GetAddressOfReturnLocation()) String();
+                        if (connection() == nullptr) return;
+                        const char    *what = "askText";
+                        GuiRef        *owner = ownerWindow();
+                        const uint32_t win = dialogObject("Window", 0, what);
+                        if (win == 0) return;
+                        setTitle(win, static_cast<const String *>(gen->GetArgAddress(2)), owner, what);
+                        setNamed(win, "width", bmds_gui_int(320), what);
+                        setNamed(win, "margin", bmds_gui_int(10), what);
+                        setNamed(win, "spacing", bmds_gui_int(8), what);
+                        setNamed(win, "resizable", bmds_gui_bool(0), what);
+                        setNamed(win, "buttons", bmds_gui_bool(0), what); // a dialog's: the close box alone
+                        if (owner != nullptr) {
+                                setNamed(win, "owner", bmds_gui_id(owner->id), what);
+                                setNamed(win, "modal", bmds_gui_bool(1), what);
+                        }
+                        const uint32_t label = dialogObject("Label", win, what);
+                        setNamed(label, "text",
+                                 bmds_gui_string(static_cast<const String *>(gen->GetArgAddress(0))->cStr()), what);
+                        const uint32_t edit = dialogObject("LineEdit", win, what);
+                        setNamed(edit, "text",
+                                 bmds_gui_string(static_cast<const String *>(gen->GetArgAddress(1))->cStr()), what);
+                        const uint32_t row = dialogObject("Box", win, what);
+                        setAtom(row, "direction", "across", what);
+                        setNamed(row, "spacing", bmds_gui_int(6), what);
+                        const uint32_t space = dialogObject("Spacer", row, what);
+                        setNamed(space, "stretch", bmds_gui_int(1), what);
+                        const uint32_t ok = dialogObject("Button", row, what);
+                        setNamed(ok, "text", bmds_gui_string("&OK"), what);
+                        setNamed(ok, "centered", bmds_gui_bool(1), what);
+                        const uint32_t cancel = dialogObject("Button", row, what);
+                        setNamed(cancel, "text", bmds_gui_string("&Cancel"), what);
+                        setNamed(cancel, "centered", bmds_gui_bool(1), what);
+                        callNamed(win, "show", what);
+                        callNamed(edit, "selectAll", what);
+                        callNamed(edit, "setFocus", what);
+                        // The answer: Enter in the line, OK, Cancel or the close box (the window's other
+                        // events, as `resized`, aren't).
+                        const uint32_t   ids[] = {win, edit, ok, cancel};
+                        bmds_gui_event_t e;
+                        int              which;
+                        do {
+                                which = waitFor(ids, 4, e);
+                        } while ((which == 0 && !bmds_gui_event_is(gui, &e, "closed")) ||
+                                 (which == 1 && !bmds_gui_event_is(gui, &e, "accepted")) ||
+                                 (which >= 2 && !bmds_gui_event_is(gui, &e, "clicked")));
+                        if (which == 1 || which == 2) {
+                                bmds_gui_value_t v;
+                                if (bmds_gui_get_named(gui, edit, "text", &v) == 0 && v.text != nullptr)
+                                        result->assign(v.text, v.length);
+                        }
+                        if (which != 0) callNamed(win, "close", what);
+                        (void)bmds_gui_destroy(gui, win);
+                        remember(what, "destroy");
+                        return;
+                }
+
+                // A file dialog in @p mode: the path chosen, "" if none. It opens where the last one was.
+                void fileDialog(asIScriptGeneric *gen, const char *what, const char *mode, const String *title,
+                                const String *name) {
+                        String *result = new (gen->GetAddressOfReturnLocation()) String();
+                        if (connection() == nullptr) return;
+                        GuiRef        *owner = ownerWindow();
+                        const uint32_t id = dialogObject("FileDialog", 0, what);
+                        if (id == 0) return;
+                        setAtom(id, "mode", mode, what);
+                        if (title->length() != 0) setNamed(id, "title", bmds_gui_string(title->cStr()), what);
+                        if (lastFolder != nullptr) setNamed(id, "folder", bmds_gui_string(lastFolder), what);
+                        if (name != nullptr && name->length() != 0)
+                                setNamed(id, "fileName", bmds_gui_string(name->cStr()), what);
+                        if (owner != nullptr) setNamed(id, "owner", bmds_gui_id(owner->id), what);
+                        callNamed(id, "open", what);
+                        bmds_gui_event_t e;
+                        int              r;
+                        do r = waitFor(&id, 1, e);
+                        while (r == 0 && !bmds_gui_event_is(gui, &e, "finished"));
+                        if (r == 0 && e.count >= 2 && e.values[0].number != 0) {
+                                bmds_gui_value_t path;
+                                if (bmds_gui_list_item(&e.values[1], 0, &path) == 0 && path.text != nullptr)
+                                        result->assign(path.text, path.length);
+                                bmds_gui_value_t folder;
+                                if (bmds_gui_get_named(gui, id, "folder", &folder) == 0 && folder.text != nullptr) {
+                                        char *copy = static_cast<char *>(malloc(folder.length + 1));
+                                        if (copy != nullptr) {
+                                                memcpy(copy, folder.text, folder.length);
+                                                copy[folder.length] = '\0';
+                                                free(lastFolder);
+                                                lastFolder = copy;
+                                        }
+                                }
+                        }
+                        (void)bmds_gui_destroy(gui, id);
+                        remember(what, "destroy");
+                        return;
+                }
+                void chooseFileCall(asIScriptGeneric *gen) {
+                        fileDialog(gen, "chooseFile", "open", static_cast<const String *>(gen->GetArgAddress(0)),
+                                   nullptr);
+                }
+                void chooseSaveFileCall(asIScriptGeneric *gen) {
+                        fileDialog(gen, "chooseSaveFile", "save", static_cast<const String *>(gen->GetArgAddress(1)),
+                                   static_cast<const String *>(gen->GetArgAddress(0)));
+                }
+
                 // ---- Registration
 
                 // A type's script spelling: what a getter returns, what a setter or an argument takes,
-                // what a callback is given. Null: not bound (an image's Id until 5b).
+                // what a callback is given.
                 const char *returnType(Tag tag, const char *member) {
                         switch (tag) {
                                 case gt::Int: return "int";
@@ -961,7 +1276,6 @@ namespace angel {
                                         const gt::PropDef &p = gt::Props[i];
                                         if (strcmp(p.cls, c->name) != 0 || !claim('p', p.name)) continue;
                                         const char *type = returnType(p.tag, p.name);
-                                        if (type == nullptr) continue; // not bound yet
                                         Binding *b = &bindings[i];
                                         if (p.readable) {
                                                 decl.clear();
@@ -981,17 +1295,11 @@ namespace angel {
                                 for (size_t i = 0; i < MethodCount; ++i) {
                                         const gt::MethodDef &m = gt::Methods[i];
                                         if (strcmp(m.cls, c->name) != 0 || !claim('m', m.name)) continue;
-                                        const char *result = returnType(m.result, m.name);
-                                        bool        ok = result != nullptr;
                                         decl.clear();
-                                        decl.appendf("%s %s(", result != nullptr ? result : "void", m.name);
-                                        for (uint8_t a = 0; a < m.count && ok; ++a) {
-                                                const char *type = argType(m.args[a], m.name);
-                                                ok = type != nullptr;
-                                                decl.appendf("%s%s", a != 0 ? ", " : "", type != nullptr ? type : "");
-                                        }
+                                        decl.appendf("%s %s(", returnType(m.result, m.name), m.name);
+                                        for (uint8_t a = 0; a < m.count; ++a)
+                                                decl.appendf("%s%s", a != 0 ? ", " : "", argType(m.args[a], m.name));
                                         decl.append(")");
-                                        if (!ok) continue; // an argument not bound yet
                                         help.clear();
                                         help.appendf("%s's %s() (the GUI's)%s.", m.cls, m.name,
                                                      m.result != gt::None ? ": waits for the answer" : "");
@@ -1030,7 +1338,7 @@ namespace angel {
                 for (size_t i = 0; i < PropCount; ++i) {
                         bindings[i].cls = gt::Props[i].cls;
                         bindings[i].name = gt::Props[i].name;
-                        bindings[i].tag = gt::Props[i].tag;
+                        bindings[i].tag = effective(gt::Props[i].tag, gt::Props[i].name);
                 }
                 for (size_t i = 0; i < MethodCount; ++i) {
                         bindings[PropCount + i].cls = gt::Methods[i].cls;
@@ -1104,6 +1412,22 @@ namespace angel {
                 method(engine, "App", "void stop(int timer)", appStop, "Stops a timer (after() or every()'s).");
                 property(engine, "App app", &appObject,
                          "The program's GUI: its loop (run(), quit()) and timers (after(), every()).");
+
+                // The one-line dialogs.
+                def(engine, "void alert(const string &in text, const string &in title = \"\")", alertCall,
+                    "Shows text in a message box (the GUI's) and waits for OK. The title is the script's "
+                    "window's unless given.");
+                def(engine, "bool ask(const string &in question, const string &in title = \"\")", askCall,
+                    "Asks a question (the GUI's message box): true for Yes, false for No.");
+                def(engine,
+                    "string askText(const string &in prompt, const string &in text = \"\", const string &in title "
+                    "= \"\")",
+                    askTextCall, "Asks for a line of text (text to start from): what was typed, \"\" if cancelled.");
+                def(engine, "string chooseFile(const string &in title = \"\")", chooseFileCall,
+                    "Asks for a file to open (the GUI's file dialog): its path, \"\" if cancelled.");
+                def(engine, "string chooseSaveFile(const string &in name = \"\", const string &in title = \"\")",
+                    chooseSaveFileCall,
+                    "Asks where to save a file (name: the one suggested): its path, \"\" if cancelled.");
                 return;
         }
 
@@ -1207,12 +1531,19 @@ namespace angel {
 
         void finishGui(asIScriptEngine *engine) {
                 theEngine = engine;
-                if (gui != nullptr && anyShown()) loop();
+                if (gui != nullptr && anyShown() && !quitCalled) loop(); // app.quit(): the script is done
                 return;
         }
 
         void releaseGui() {
                 for (Timer &t : timers) stopTimer(t.id);
+                for (size_t i = 0; i < iconCount; ++i) imageRelease(icons[i].image);
+                free(icons);
+                icons = nullptr;
+                iconCount = 0;
+                iconCapacity = 0;
+                free(lastFolder);
+                lastFolder = nullptr;
                 while (objectCount != 0) forget(objects[objectCount - 1]->id);
                 free(objects);
                 objects = nullptr;

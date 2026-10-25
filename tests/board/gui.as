@@ -1,6 +1,7 @@
 // The GUI's bindings on the board (devplan/guiprograms.md §13): properties of each type, a list,
 // a 64-bit number, an event coming back to its callback, timers and the loop, destroy(), a
-// destroyed object's use. Run with `angel tests/board/gui.as`; it prints "gui.as: ok".
+// destroyed object's use; an Image as an icon, a dialog's owner (5b). Run with
+// `angel tests/board/gui.as`; it prints "gui.as: ok".
 
 int failures = 0;
 void check(bool ok, const string &in what) {
@@ -31,6 +32,31 @@ bar.value = 5000000000;
 check(bar.value == 5000000000, "a 64-bit property");
 Widget@ asWidget = button;
 check(asWidget.enabled, "a button as a Widget");
+
+// An Image as an icon: read back as the same Image; drawn on and set again, its pixels sent again.
+Image icon(16, 16);
+icon.fillRect(0, 0, 16, 16, Color::Red);
+@button.iconImage = icon;
+check(button.iconImage is icon, "an icon read back as its Image");
+icon.fillRect(4, 4, 8, 8, Color::Blue);
+@button.iconImage = icon;
+@w.iconImage = icon;
+check(w.iconImage is icon, "a window's icon");
+@button.iconImage = null;
+check(button.iconImage is null, "no icon");
+bool tooBig = false;
+try {
+        @button.iconImage = Image(600, 20);
+} catch {
+        tooBig = true;
+}
+check(tooBig, "an icon over 512 pixels raises");
+
+// A dialog's owner: the window it blocks while it is open.
+MessageBox message;
+@message.owner = w;
+check(message.owner is w, "a dialog's owner");
+message.destroy();
 
 int clicked = 0;
 button.onClicked(function() { clicked++; });

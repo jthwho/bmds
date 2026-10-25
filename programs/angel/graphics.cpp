@@ -1660,6 +1660,30 @@ namespace angel {
                 return;
         }
 
+        void imageAddRef(void *image) {
+                static_cast<Image *>(image)->addRef();
+                return;
+        }
+        void imageRelease(void *image) {
+                static_cast<Image *>(image)->release();
+                return;
+        }
+        ImageInfo imageInfo(void *image) {
+                const Image *i = static_cast<Image *>(image);
+                return ImageInfo{i->canvas.width, i->canvas.height, i->generation};
+        }
+        void imageArgb(void *image, uint32_t *out) {
+                const Image *i = static_cast<Image *>(image);
+                for (int y = 0; y < i->canvas.height; ++y) {
+                        const uint8_t *p = i->canvas.pixels + size_t(y) * i->canvas.stride;
+                        for (int x = 0; x < i->canvas.width; ++x, p += Bpp) {
+                                const uint32_t rgb = p[0] | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16; // BGR24
+                                *out++ = i->keyed && rgb == i->key ? 0u : 0xff000000u | rgb;
+                        }
+                }
+                return;
+        }
+
         void registerGraphics(asIScriptEngine *engine) {
                 check(engine->SetDefaultNamespace("Color"), "namespace Color");
                 for (size_t i = 0; i < sizeof(colors) / sizeof(colors[0]); ++i) {

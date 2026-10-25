@@ -2,7 +2,8 @@
 
 Status: **steps 1-3 built** (2026-10-22; §9-§11): the protocol, the classes, pictures and the
 clipboard. **Step 4 built** (§12). **Step 5 under way** (§13): 5a built (angel's GUI
-classes, `app`, callbacks; `Screen` for games); next 5b. The user agreed with the shape (2026-10-22): the
+classes, `app`, callbacks; `Screen` for games), 5b built (the one-line dialogs, icons from
+angel's `Image`, the notes example); next 5c. The user agreed with the shape (2026-10-22): the
 toolkit as a service (P1), names (P2), and **a wire protocol in the spirit of X11's** between
 programs and the service (P8), so that applications can also run on another machine. This plan
 revises `gui.md` G1 and fills in `windows.md` §6 ("ABI (later)").
@@ -1645,3 +1646,55 @@ registrations in its heap, one object per GUI object made.
   linked); angel's text is 1.05 MB.
 - **Not yet:** the debugger stopping in a callback after the script's end (its own context isn't
   debugged); a `Screen`'s events in `app.run()` (5c).
+
+**5b, as built (2026-10-24):**
+- **The one-line dialogs** (globals, registered always: they name no class): `alert(text, title
+  = "")`, `ask(question, title = "")` (true for Yes), `askText(prompt, text = "", title = "")`
+  (what was typed, "" if cancelled), `chooseFile(title = "")` and `chooseSaveFile(name = "",
+  title = "")` (a path, "" if cancelled; a fifth, since saving wants its own). Each makes its
+  objects itself (not kept in the registry), opens them, and waits: the loop's work (events to
+  the script's other objects, the timers) goes on meanwhile, so `app.quit()` in a timer ends the
+  wait. A dialog belongs to the script's active window, else the one shown last: its title is
+  that window's unless given, and that window is blocked until the answer.
+  - `alert` and `ask` are the service's `MessageBox`; the file dialogs its `FileDialog`, opening
+    where the last one was. `askText` is a window angel builds (a label, a line, OK and Cancel;
+    modal over its owner, no minimize or maximize box): the toolkit has no such dialog, and
+    making one from the classes costs no ABI.
+  - A wait matches its answer by the event's name: a window says `resized` as it is shown, and
+    the first try took that for the close box (askText returned "" at once).
+- **A dialog's owner** (the service, appended: `MessageBox.owner`, `FileDialog.owner`,
+  `ColorDialog.owner`): the toolkit's message box and dialogs don't block other windows, so a
+  modal block had to be the service's. While one is open its owner's widgets are disabled, as a
+  modal window's owner's are (one `blockOwner()` now serves both), and activating the owner
+  brings the dialog up. Clicking into the blocked notes window left the focus on the question,
+  and typing went nowhere.
+- **Images:** an `Id` member that names an image (`iconImage`, `ItemView.setIconImage`) takes
+  angel's `Image@`, assigned as handles are (`@button.iconImage = picture;`). The first use
+  makes a GUI `Image` and sends its pixels (ARGB, transparent where the image is keyed); drawn on
+  since (its generation counted), it is sent again at the next use. The runtime keeps each GUI
+  image, and a reference to its `Image`, until the end; the getter gives the same `Image` back.
+  More than 512 pixels either way raises. `graphics.cpp` lends `gui.cpp` an opaque view of an
+  `Image` (`imageInfo()`, `imageArgb()`).
+- **The notes example** (`programs/angel/examples/notes.as`, in the ROM): a menu bar with
+  shortcuts, a toolbar and a window icon drawn by the script, a `TextEdit`, a status bar with the
+  file and the cursor's place; New, Open, Save, Save As, Go to Line (askText), About (alert),
+  and the close box asking first (`onCloseRequested`).
+- **Found on the way:**
+  - The service's `Spacer` painted nothing. A box paints only the gaps between its children, so a
+    spacer showed whatever was there before (the desktop, a caret's stale pixels). It paints the
+    face now.
+  - A script that called `app.quit()` and then ended with a window still shown went back into the
+    loop at its end (`finishGui()`); `app.quit()` now means the script is done with it.
+  - A status field 140 pixels wide clipped "Line 2, column 12" to "...column 1". It looked stale.
+- **Tried on the board:**
+  - Notes: two lines typed, the title `*` and the cursor's field following. Ctrl+G asked, and 1
+    went to line 1. Ctrl+S opened the save dialog; saved to `/tmp/notes.txt`, both lines in the
+    file. Ctrl+N cleared. Ctrl+O opened in `/tmp`, and the file came back. An edit, then the close
+    box asked: No kept the window, Yes ended the script.
+  - `alert` showed the window's title and blocked the window.
+  - `tests/board/gui.as` gained an icon read back as its `Image`, set again after drawing, none,
+    one over 512 pixels raising, and a dialog's owner. It passes. Free memory over 25 runs moved
+    both ways with the board's other tasks, with no steady growth.
+  - The host corpus: `guinone.as` asks with a dialog and raises "No GUI here".
+- **Size:** angel's text is 1,059,044 bytes (was about 1.05 MB); the service's part is a few
+  hundred bytes.

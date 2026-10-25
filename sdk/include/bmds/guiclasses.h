@@ -1261,6 +1261,24 @@ static inline int bmds_label_set_frame(bmds_gui_t *gui, uint32_t id, const char 
 static inline int bmds_label_get_frame(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
         return bmds_gui_get_named(gui, id, "frame", out);
 }
+static inline int bmds_message_box_set_owner(bmds_gui_t *gui, uint32_t id, uint32_t value) {
+        return bmds_gui_set_named(gui, id, "owner", bmds_gui_id(value));
+}
+static inline int bmds_message_box_get_owner(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "owner", out);
+}
+static inline int bmds_file_dialog_set_owner(bmds_gui_t *gui, uint32_t id, uint32_t value) {
+        return bmds_gui_set_named(gui, id, "owner", bmds_gui_id(value));
+}
+static inline int bmds_file_dialog_get_owner(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "owner", out);
+}
+static inline int bmds_color_dialog_set_owner(bmds_gui_t *gui, uint32_t id, uint32_t value) {
+        return bmds_gui_set_named(gui, id, "owner", bmds_gui_id(value));
+}
+static inline int bmds_color_dialog_get_owner(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "owner", out);
+}
 
 #ifdef __cplusplus
 }
