@@ -2598,8 +2598,12 @@ namespace {
                         void setSurface(CanvasSurface *surface) {
                                 if (_surface != nullptr) _surface->detach();
                                 _surface = surface;
-                                if (_surface != nullptr)
+                                if (_surface != nullptr) {
                                         _surface->attach(_object.connection->application(), surfaceChanged, this);
+                                        // Its own picture isn't shown again: PutPixels draws nowhere now.
+                                        Memory::free(_pixels);
+                                        _pixels = nullptr;
+                                }
                                 update();
                                 return;
                         }
@@ -2637,6 +2641,7 @@ namespace {
                         // PutPixels' rectangle, cut to the picture (drawn for a size it no longer has:
                         // the client draws again on `resized`). @return The part kept.
                         Rect clip(int x, int y, int w, int h) const {
+                                if (_pixels == nullptr) return Rect(); // a surface shows instead
                                 const int right = x + w < int(_width) ? x + w : int(_width);
                                 const int bottom = y + h < int(_height) ? y + h : int(_height);
                                 if (x < 0) x = 0;
@@ -2694,7 +2699,8 @@ namespace {
                         uint16_t preferredHeight = 0;
 
                 protected:
-                        // A new size: a new picture, white until the client draws it (told `resized`).
+                        // A new size: a new picture, white until the client draws it (told `resized`);
+                        // none while a surface shows (the client makes another at the new size).
                         void resized() override {
                                 const Rect g = geometry();
                                 if (g.width == _width && g.height == _height) return;
@@ -2702,7 +2708,10 @@ namespace {
                                 _pixels = nullptr;
                                 _width = _height = 0;
                                 const size_t count = size_t(g.width) * g.height;
-                                if (count != 0) {
+                                if (count != 0 && _surface != nullptr) {
+                                        _width = g.width;
+                                        _height = g.height;
+                                } else if (count != 0) {
                                         _pixels = static_cast<uint16_t *>(Memory::alloc(MemSpace::Psram, count * 2));
                                         if (_pixels != nullptr) {
                                                 std::memset(_pixels, 0xff, count * 2);
@@ -3757,6 +3766,22 @@ namespace {
                         for (const FrameName &f : FrameNames)
                                 if (f.style == style) name = f.name;
                 return Value::atom(GuiAtoms::intern(StringView(name)));
+        }
+
+        // ---- Step 5c: a button drawn checked (a palette's tool chosen)
+
+        GuiStatus set_Button_checked(GuiObject &o, const Value &v) {
+                button(o)->setChecked(v.number != 0);
+                return Ok;
+        }
+        Value get_Button_checked(GuiObject &o) {
+                return Value::boolean(button(o)->isChecked());
+        }
+        GuiStatus set_ToolButton_checked(GuiObject &o, const Value &v) {
+                return set_Button_checked(o, v);
+        }
+        Value get_ToolButton_checked(GuiObject &o) {
+                return get_Button_checked(o);
         }
 
         // ---- The schema's tables, from classes.def

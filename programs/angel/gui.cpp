@@ -18,19 +18,29 @@
  *
  * An image property (`iconImage`) takes angel's own `Image`: its pixels are sent as a GUI image
  * the first time it is used, and again when it has been drawn on since. The one-line dialogs
- * (`alert()`, `ask()`, `askText()`, `chooseFile()`, `chooseSaveFile()`) wait for their answer,
- * serving the GUI's other events and the timers meanwhile, the script's window blocked.
+ * (`alert()`, `ask()`, `askText()`, `chooseFile()`, `chooseSaveFile()`, `chooseColor()`) wait for
+ * their answer, serving the GUI's other events and the timers meanwhile, the script's window blocked.
+ *
+ * A `Canvas` has a `Screen`'s drawing methods (graphics.cpp's), drawn straight into a surface of the
+ * service's and shown by the loop before it waits. The loop also serves the events of screens
+ * given an `onEvent` callback, beside the GUI's.
  */
 
+#include <errno.h>
 #include <new>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include <bmds/gui.h>
 #include "../../thirdparty/angelscript/add_on/scriptarray/scriptarray.h"
 #include "angel.h"
+
+#ifdef ANGEL_BMDS
+#include <bmds/sys.h>
+#endif
 
 namespace angel {
 
@@ -193,6 +203,7 @@ namespace angel {
                                 uint32_t            shownAt = 0;   // when it was last shown (a count)
                                 Handler            *handlers = nullptr;
                                 uint32_t            handlerCount = 0;
+                                void               *picture = nullptr; // a Canvas's, once drawn on (graphics.cpp's)
 
                                 // Its callbacks let go (destroyed, or the runtime's end).
                                 void dropHandlers() {
@@ -256,6 +267,8 @@ namespace angel {
                                 o->alive = false;
                                 o->shown = false;
                                 o->dropHandlers();
+                                if (o->picture != nullptr) canvasRelease(o->picture); // its surface closed
+                                o->picture = nullptr;
                                 o->release();
                                 break;
                         }
@@ -757,9 +770,88 @@ namespace angel {
                         r->height = int32_t(gen->GetArgDWord(3));
                 }
 
+                // ---- Canvases: drawn as a Screen is (graphics.cpp's pictures), through a surface of the
+                // service's (CANVAS-SURFACE): made at the first drawing, again at each new size
+
+#ifdef ANGEL_BMDS
+                // A canvas's failure, said where it can be: the running script's exception, else stderr.
+                void canvasFailed(const char *what, int error) {
+                        if (asGetActiveContext() != nullptr) {
+                                raise("Can't %s: %s", what, strerror(error));
+                                return;
+                        }
+                        fflush(stdout);
+                        fprintf(stderr, "angel: can't %s: %s\n", what, strerror(error));
+                        return;
+                }
+#endif
+
+                // Canvas @p o's picture shown through a new surface of @p width x @p height.
+                void showCanvas(GuiRef *o, int width, int height) {
+#ifdef ANGEL_BMDS
+                        bmds_surface_config_t config{};
+                        config.size = sizeof(config);
+                        config.width = uint32_t(width + 3) & ~3u; // as a screen's: the 2D-DMA's rows
+                        config.height = uint32_t(height);
+                        config.format = BMDS_PIXEL_BGR24; // as a screen's: a colour reads back as drawn
+                        config.buffers = 2;
+                        const int fd = bmds_gui_canvas_surface_open(gui, o->id, &config);
+                        if (fd < 0) {
+                                // Not laid out after all (its window hidden again): drawn in memory still.
+                                if (errno != EAGAIN) canvasFailed("show a canvas", errno);
+                                return;
+                        }
+                        const int e = canvasShow(o->picture, fd, width, height);
+                        if (e != 0) {
+                                close(fd);
+                                canvasFailed("show a canvas", e);
+                        }
+#else
+                        (void)o;
+                        (void)width;
+                        (void)height;
+#endif
+                        return;
+                }
+
+                int intNamed(uint32_t id, const char *name) {
+                        bmds_gui_value_t v;
+                        return bmds_gui_get_named(gui, id, name, &v) == 0 ? int(v.number) : 0;
+                }
+
+                // The picture a Canvas's drawing methods draw on: made at the first, at the canvas's
+                // size if it has one (its window shown), else at the size it asks for, in memory until
+                // it is laid out.
+                void *canvasOf(void *object) {
+                        auto *o = static_cast<GuiRef *>(object);
+                        if (!o->alive || gui == nullptr) {
+                                raise("This Canvas was destroyed");
+                                return nullptr;
+                        }
+                        if (o->picture != nullptr) return o->picture;
+                        int        width = intNamed(o->id, "width"), height = intNamed(o->id, "height");
+                        const bool laidOut = width > 0 && height > 0;
+                        if (!laidOut) {
+                                width = intNamed(o->id, "preferredWidth");
+                                height = intNamed(o->id, "preferredHeight");
+                                if (width <= 0 || height <= 0) {
+                                        raise("This canvas has no size yet: show its window first, or give it a "
+                                              "preferredWidth and preferredHeight");
+                                        return nullptr;
+                                }
+                        }
+                        o->picture = canvasMake(width, height);
+                        if (o->picture != nullptr && laidOut) showCanvas(o, width, height);
+                        return o->picture;
+                }
+                constexpr CanvasHooks canvasHooks = {canvasOf};
+
                 // ---- Calling the script back
 
-                void call(asIScriptFunction *fn, const gt::EventDef *event, const bmds_gui_event_t *e) {
+                // Calls @p fn with event @p e's values (as @p event has them), or with @p object (a
+                // screen's Event), or with nothing.
+                void call(asIScriptFunction *fn, const gt::EventDef *event, const bmds_gui_event_t *e,
+                          void *object = nullptr) {
                         asIScriptContext *active = asGetActiveContext();
                         asIScriptContext *ctx = active;
                         if (active != nullptr) {
@@ -811,6 +903,7 @@ namespace angel {
                                         default: break;
                                 }
                         }
+                        if (r >= 0 && object != nullptr) r = ctx->SetArgObject(0, object);
                         if (r >= 0) r = ctx->Execute();
                         if (r == asEXECUTION_EXCEPTION) {
                                 fflush(stdout);
@@ -834,6 +927,13 @@ namespace angel {
                         o->addRef(); // a callback may destroy it
                         if (strcmp(o->cls->name, "Window") == 0 && bmds_gui_event_is(gui, &e, "closed"))
                                 o->shown = false;
+                        // A canvas drawn on: its picture at the new size before the script hears of it.
+                        if (o->picture != nullptr && e.count >= 2 && bmds_gui_event_is(gui, &e, "resized")) {
+                                int width = 0, height = 0;
+                                canvasSize(o->picture, width, height);
+                                const int w = int(e.values[0].number), h = int(e.values[1].number);
+                                if (w > 0 && h > 0 && (w != width || h != height)) showCanvas(o, w, h);
+                        }
                         for (uint32_t i = 0; i < o->handlerCount; ++i) {
                                 if (o->handlers[i].atom != e.name || o->handlers[i].fn == nullptr) continue;
                                 asIScriptFunction *fn = o->handlers[i].fn;
@@ -919,6 +1019,36 @@ namespace angel {
                         return next < 0 ? -1 : int(next > 60000 ? 60000 : next);
                 }
 
+                // A screen's event called back (Screen.onEvent). @return False if none was waiting.
+                bool serveScreen() {
+                        asIScriptFunction *fn = nullptr;
+                        void              *event = nullptr;
+                        if (!nextScreenEvent(fn, event)) return false;
+                        call(fn, nullptr, nullptr, event);
+                        fn->Release();
+                        screenEventRelease(event);
+                        return true;
+                }
+
+                // What was drawn on canvases shown, then waits up to @p wait ms (-1: for ever) for the
+                // GUI's next event, serving the screens' meanwhile. @return 1 (an event in @p e), 0
+                // (none in time, or a screen's called back), -1 (the connection ended).
+                int nextEvent(bmds_gui_event_t &e, int wait) {
+                        presentCanvases();
+                        if (serveScreen()) return 0;
+                        const int screens = screenEventFd();
+                        if (gui != nullptr) {
+                                const int r = bmds_gui_next_event(gui, &e, screens < 0 ? wait : 0);
+                                if (r != 0 || screens < 0) return r;
+                        }
+                        struct pollfd fds[2];
+                        nfds_t        n = 0;
+                        if (gui != nullptr) fds[n++] = {bmds_gui_fd(gui), POLLIN, 0};
+                        if (screens >= 0) fds[n++] = {screens, POLLIN, 0};
+                        if (poll(fds, n, wait) <= 0 || gui == nullptr || fds[0].revents == 0) return 0;
+                        return bmds_gui_next_event(gui, &e, 0);
+                }
+
                 // Until app.quit(), or until no window is shown once one was (or, with no windows and no
                 // GUI, until the timers are done).
                 void loop() {
@@ -933,18 +1063,15 @@ namespace angel {
                         for (;;) {
                                 const int wait = runTimers();
                                 if (quitting) break;
-                                if (anyShown())
+                                const bool screens = screensServed();
+                                if (anyShown() || screens)
                                         wasShown = true;
                                 else if (wasShown)
                                         break;
-                                if (gui == nullptr) {
-                                        if (wait < 0) break; // nothing left to wait for
-                                        (void)poll(nullptr, 0, wait);
-                                        continue;
-                                }
-                                if (wait < 0 && objectCount == 0) break;
+                                if (gui == nullptr && wait < 0 && !screens) break; // nothing left to wait for
+                                if (gui != nullptr && wait < 0 && objectCount == 0 && !screens) break;
                                 bmds_gui_event_t e;
-                                const int        r = bmds_gui_next_event(gui, &e, wait);
+                                const int        r = nextEvent(e, wait);
                                 if (r < 0) {
                                         fflush(stdout);
                                         fprintf(stderr, "angel: the GUI's connection ended\n");
@@ -990,7 +1117,7 @@ namespace angel {
                         for (;;) {
                                 const int wait = runTimers();
                                 if (quitting) return -1;
-                                const int r = bmds_gui_next_event(gui, &out, wait);
+                                const int r = nextEvent(out, wait);
                                 if (r < 0) return -1;
                                 if (r == 0) continue;
                                 for (size_t i = 0; i < count; ++i)
@@ -1188,6 +1315,35 @@ namespace angel {
                 void chooseSaveFileCall(asIScriptGeneric *gen) {
                         fileDialog(gen, "chooseSaveFile", "save", static_cast<const String *>(gen->GetArgAddress(1)),
                                    static_cast<const String *>(gen->GetArgAddress(0)));
+                }
+
+                // chooseColor(): the GUI's colour dialog, starting at @p color; that colour if cancelled.
+                void chooseColorCall(asIScriptGeneric *gen) {
+                        const char *what = "chooseColor";
+                        uint32_t    color = gen->GetArgDWord(0) & 0xffffffu;
+                        if (connection() == nullptr) {
+                                gen->SetReturnDWord(color);
+                                return;
+                        }
+                        GuiRef        *owner = ownerWindow();
+                        const uint32_t id = dialogObject("ColorDialog", 0, what);
+                        if (id == 0) {
+                                gen->SetReturnDWord(color);
+                                return;
+                        }
+                        setNamed(id, "color", bmds_gui_color(color), what);
+                        setTitle(id, static_cast<const String *>(gen->GetArgAddress(1)), owner, what);
+                        if (owner != nullptr) setNamed(id, "owner", bmds_gui_id(owner->id), what);
+                        callNamed(id, "open", what);
+                        bmds_gui_event_t e;
+                        int              r;
+                        do r = waitFor(&id, 1, e);
+                        while (r == 0 && !bmds_gui_event_is(gui, &e, "finished"));
+                        if (r == 0 && e.count >= 2 && e.values[0].number != 0)
+                                color = uint32_t(e.values[1].number) & 0xffffffu;
+                        (void)bmds_gui_destroy(gui, id);
+                        remember(what, "destroy");
+                        gen->SetReturnDWord(color);
                 }
 
                 // ---- Registration
@@ -1428,6 +1584,9 @@ namespace angel {
                 def(engine, "string chooseSaveFile(const string &in name = \"\", const string &in title = \"\")",
                     chooseSaveFileCall,
                     "Asks where to save a file (name: the one suggested): its path, \"\" if cancelled.");
+                def(engine, "uint chooseColor(uint color = 0, const string &in title = \"\")", chooseColorCall,
+                    "Asks for a colour (the GUI's colour dialog), starting at color: the one chosen, color if "
+                    "cancelled.");
                 return;
         }
 
@@ -1471,6 +1630,7 @@ namespace angel {
                         done[ci] = true;
                         registerMembers(engine, c);
                         const char *T = c.name;
+                        if (strcmp(T, "Canvas") == 0) registerCanvasDrawing(engine, T, &canvasHooks);
                         method(engine, T, "void destroy()", destroyObject,
                                "Destroys a GUI object, and the objects in it (a window's widgets).");
                         // As its parents and as GuiObject.
@@ -1531,7 +1691,8 @@ namespace angel {
 
         void finishGui(asIScriptEngine *engine) {
                 theEngine = engine;
-                if (gui != nullptr && anyShown() && !quitCalled) loop(); // app.quit(): the script is done
+                // app.quit(): the script is done.
+                if (((gui != nullptr && anyShown()) || screensServed()) && !quitCalled) loop();
                 return;
         }
 

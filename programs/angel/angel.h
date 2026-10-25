@@ -128,6 +128,31 @@ namespace angel {
         // Its pixels as 0xAARRGGBB into @p out (width × height), transparent where it is keyed.
         void imageArgb(void *image, uint32_t *out);
 
+        // A GUI canvas drawn as a Screen is (graphics.cpp's pictures, gui.cpp's Canvas). Its drawing
+        // methods find their picture through the hooks (their auxiliary pointer): given the
+        // script's object, the picture, or null with an exception raised.
+        struct CanvasHooks {
+                        void *(*picture)(void *object);
+        };
+        void registerCanvasDrawing(asIScriptEngine *engine, const char *type, const CanvasHooks *hooks);
+        // A canvas's picture in memory, white, until it has a surface; null with an exception raised.
+        void *canvasMake(int width, int height);
+        // Shown through surface @p fd (taken: its buffers @p width x @p height) from now on, the
+        // picture so far copied over. @return 0, or the error (@p fd not taken).
+        int  canvasShow(void *picture, int fd, int width, int height);
+        void canvasSize(void *picture, int &width, int &height);
+        void canvasRelease(void *picture);
+        // What was drawn on the canvases since, shown (the GUI's loop, before it waits).
+        void presentCanvases();
+
+        // Screens whose events the GUI's loop serves (`Screen.onEvent`): the fd that wakes it (-1:
+        // none yet), the next event (a callback referenced and an Event, false if none), whether
+        // any is still open or has events to call back.
+        int  screenEventFd();
+        bool nextScreenEvent(asIScriptFunction *&callback, void *&event);
+        void screenEventRelease(void *event);
+        bool screensServed();
+
         // At the script's end (gui.cpp): with a GUI window shown, the GUI's loop runs until it
         // closes (`app.run()`'s); then the connection is closed.
         void finishGui(asIScriptEngine *engine);

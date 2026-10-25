@@ -1279,6 +1279,18 @@ static inline int bmds_color_dialog_set_owner(bmds_gui_t *gui, uint32_t id, uint
 static inline int bmds_color_dialog_get_owner(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
         return bmds_gui_get_named(gui, id, "owner", out);
 }
+static inline int bmds_button_set_checked(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "checked", bmds_gui_bool(value));
+}
+static inline int bmds_button_get_checked(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "checked", out);
+}
+static inline int bmds_tool_button_set_checked(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "checked", bmds_gui_bool(value));
+}
+static inline int bmds_tool_button_get_checked(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "checked", out);
+}
 
 #ifdef __cplusplus
 }

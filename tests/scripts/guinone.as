@@ -37,3 +37,22 @@ void icons(Button@ b) {
         @b.iconImage = i;
         Image@ back = b.iconImage;
 }
+// A canvas has a Screen's drawing methods, a screen's events a callback in the loop, and colours
+// a dialog of their own (5c); a screen's part is what is drawn on it.
+try {
+        println(chooseColor(Color::Red));
+} catch {
+        println(getExceptionInfo());
+}
+void drawing(Canvas@ c, Screen@ s) {
+        c.fillRect(0, 0, 10, 10, Color::Red);
+        c.text(2, 2, "hi", Color::Black);
+        Image@ part = c.part(0, 0, 4, 4);
+        c.image(part, 10, 10);
+        uint p = c.pixel(1, 1) + c.width;
+        s.onEvent(function(e) { println(e.key); });
+}
+Screen s("part", 20, 20);
+s.fillRect(0, 0, 5, 5, Color::Red);
+Image@ grabbed = s.part(0, 0, 8, 8);
+println("a screen's part: " + (grabbed.pixel(2, 2) == Color::Red) + " " + (grabbed.pixel(6, 6) == Color::Black));

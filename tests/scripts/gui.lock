@@ -336,3 +336,6 @@ values Label.frame none field status sunken raised
 property MessageBox.owner Id RW
 property FileDialog.owner Id RW
 property ColorDialog.owner Id RW
+# Step 5c (2026-10-25): a button drawn checked (a palette's tool chosen)
+property Button.checked Bool RW
+property ToolButton.checked Bool RW

@@ -501,8 +501,8 @@ namespace {
                 // Windows stay up, the picture to be seen, until closed.
                 fflush(stdout);
                 angel::finishSound();
+                angel::finishGui(engine); // its windows (and screens it serves) served until the last closes
                 angel::waitForWindows();
-                angel::finishGui(engine); // its windows served until the last closes
                 return status;
         }
 

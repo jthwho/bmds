@@ -465,8 +465,10 @@ Plan: [`input.md`](input.md).
   surface renamed `Screen`; every class from `classes.def`, `app` with its loop and timers,
   `onEvent` callbacks, errors with their script line; the calculator example); 5b done: the
   one-line dialogs (`alert`, `ask`, `askText`, `chooseFile`, `chooseSaveFile`; a dialog's
-  `owner` blocked while it is open), angel's `Image` as icons, the notes example. Next: 5c,
-  `Canvas` drawn as a `Screen` is and the paint example.
+  `owner` blocked while it is open), angel's `Image` as icons, the notes example; 5c done: a
+  `Canvas` drawn with a `Screen`'s methods through its surface, `Screen.onEvent` in `app.run()`,
+  `chooseColor`, `checked` buttons, the painter patching pictures off the 4-pixel columns, and
+  the paint example with a Tools window. Step 5 done. Next: step 6, angel's service bindings.
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

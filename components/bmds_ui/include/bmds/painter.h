@@ -155,11 +155,12 @@ class Painter {
                  * @brief Copies a picture's @p width × @p height B, G, R pixels (the
                  *        surface's order; @p stride bytes a row, a multiple of 3; PSRAM
                  *        or internal RAM) to (@p x, @p y), what of it shows, by the
-                 *        2D-DMA: no CPU a pixel (`devplan/images.md` §4b). @p x (made
-                 *        the surface's) and @p width are on 4-pixel columns; it may lie
-                 *        partly off the surface. Returns once copied: the picture may
-                 *        change after.
-                 * @return The first error so far (`Invalid`: off the columns, a bad stride).
+                 *        2D-DMA: no CPU a pixel (`devplan/images.md` §4b) for its whole
+                 *        4-pixel columns. A picture off the columns (a widget in a margin)
+                 *        has its edges' few columns patched (`Surface::patch()`: two jobs
+                 *        for each 320 rows of an edge). It may lie partly off the surface.
+                 *        Returns once copied: the picture may change after.
+                 * @return The first error so far (`Invalid`: a bad stride).
                  * @blocking The copy.
                  */
                 Error pixels(int x, int y, const uint8_t *bgr, size_t stride, uint16_t width, uint16_t height);
@@ -248,6 +249,10 @@ class Painter {
                         return;
                 }
                 Error copyPixels(int x, int y, const uint8_t *data, size_t stride, uint16_t width, uint16_t height,
+                                 bool rgb565);
+                // Writes @p edge (surface coordinates, any x and width) of the picture at (@p sx,
+                // @p sy) by Surface::patch(), in each clip piece.
+                void patchPixels(const Rect &edge, int32_t sx, int32_t sy, const uint8_t *data, size_t stride,
                                  bool rgb565);
                 static Rect                    bounds(Span<const Rect> rects);
                 Rect                           local(const Rect &r) const;

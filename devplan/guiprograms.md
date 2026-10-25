@@ -1,9 +1,10 @@
 # GUI Programs: the Toolkit for Every Program, and Angel's Bindings to the Whole System
 
 Status: **steps 1-3 built** (2026-10-22; §9-§11): the protocol, the classes, pictures and the
-clipboard. **Step 4 built** (§12). **Step 5 under way** (§13): 5a built (angel's GUI
-classes, `app`, callbacks; `Screen` for games), 5b built (the one-line dialogs, icons from
-angel's `Image`, the notes example); next 5c. The user agreed with the shape (2026-10-22): the
+clipboard. **Step 4 built** (§12). **Step 5 built** (§13): 5a (angel's GUI classes, `app`,
+callbacks; `Screen` for games), 5b (the one-line dialogs, icons from angel's `Image`, the notes
+example), 5c (a `Canvas` drawn as a `Screen` is, screens' events in `app.run()`, the paint
+example); next step 6, angel's service bindings. The user agreed with the shape (2026-10-22): the
 toolkit as a service (P1), names (P2), and **a wire protocol in the spirit of X11's** between
 programs and the service (P8), so that applications can also run on another machine. This plan
 revises `gui.md` G1 and fills in `windows.md` §6 ("ABI (later)").
@@ -1698,3 +1699,72 @@ registrations in its heap, one object per GUI object made.
   - The host corpus: `guinone.as` asks with a dialog and raises "No GUI here".
 - **Size:** angel's text is 1,059,044 bytes (was about 1.05 MB); the service's part is a few
   hundred bytes.
+
+**5c, as built (2026-10-25):**
+- **A `Canvas` drawn as a `Screen` is:** the canvas class has every drawing method a `Screen`
+  and an `Image` have (`clear`, `plot`, `pixel`, lines, shapes, `floodFill`, `text`, `image`,
+  `clip`, `save`), and `part()` (a new `Image` of what is drawn; `Screen` has it too). Its size
+  is its `width` and `height` properties, so it has no `width()` methods. graphics.cpp's drawing
+  functions find their picture through a hook given as the registration's auxiliary pointer
+  (`CanvasHooks`, gui.cpp's `canvasOf()`); a destroyed canvas raises, its drawing going to a
+  scratch picture.
+  - **Its picture:** made at the first drawing, BGR24 as a screen's (a colour reads back as it was
+    drawn). Laid out (its window shown), it is a surface of the service's (`CANVAS-SURFACE`, two
+    buffers, its width rounded up to 4); before that, a picture in memory at its
+    `preferredWidth` x `preferredHeight` (none: "no size yet" raised), white as the service's
+    canvas is. At each `resized` the runtime opens a surface of the new size before the script
+    hears of it, the picture so far copied over and the rest white.
+  - **Shown by the loop:** drawing marks the canvases; before the loop waits (`app.run()`, a
+    dialog's wait) each canvas drawn on presents its held buffer and takes the other. Drawing in a
+    loop that never returns to `app.run()` isn't shown, as in any toolkit.
+  - **The shared drawing:** `Window` (a screen) became `Surface`, the buffers, their damage, the
+    2D-DMA's fills, copies and registered images, and presenting; `Window` keeps its thread,
+    events and pacing on it, and `CanvasPicture` is the other `Surface`.
+  - **The service** lets go of a canvas's own RGB565 picture while a surface shows it (a 640 x 436
+    canvas's is 558 KB of PSRAM); `PutPixels` to it draws nowhere then.
+- **A screen's events in `app.run()`:** `Screen.onEvent(EventCallback@)` hands each event (Close
+  too) to a callback while the loop runs, beside the GUI's. The screen's thread writes to a pipe
+  the loop polls with the connection (which works with no GUI connection at all), and a screen
+  served so counts as a window shown: the loop ends once neither is open. With one at the
+  script's end, the loop runs then (`finishGui()` now comes before `waitForWindows()`, which skips
+  served screens).
+- **`chooseColor(color = 0, title = "")`:** the service's `ColorDialog`, owned and waited for as
+  the other one-line dialogs; `color` back if cancelled.
+- **The schema, appended:** `Button.checked` and `ToolButton.checked` (drawn pressed in: a
+  palette's chosen tool). The toolkit had `Button::setChecked()` already.
+- **Found on the way: canvases off the 4-pixel columns showed nothing.** `Painter::pixels()` and
+  `pixels565()` refused an x or a width off the display's 4-pixel columns (`Surface::Align`, the
+  2D-DMA's rows in PSRAM) with `Invalid`, and the canvas widget ignored it. A canvas in a window's
+  6-pixel margin (the paint example's palette) stayed white; the main canvas, at an aligned x,
+  worked. The painter now copies the whole columns by one job and patches the edges' few
+  columns (`Surface::patch()`, a surface row's bytes at a time). Noted in
+  `docs/platforms/esp32p4.md`.
+- **The paint example** (`programs/angel/examples/paint.as`, replacing the single-screen one): the
+  picture on a canvas in a window with a menu bar (New, Open, Save, Save As, Quit; Undo, which
+  swaps with the kept picture, and Clear; Window ▸ Tools; About) and a status bar (the file, the
+  pointer's place, the size). A Tools window beside it (placed from both windows' `placement`):
+  seven tools as tool buttons with drawn icons, the chosen one checked (pencil, brush, line,
+  rectangle, ellipse, fill, eraser); the colours as cells drawn on a small canvas (left button
+  the first colour, right the second); both shown on another; More... (`chooseColor()`); a size
+  slider. A shape follows the pointer by putting back its last place from the kept picture,
+  clipped, and drawing again.
+- **Tried on the board:**
+  - Paint: a pencil stroke, a red brush stroke, a blue rectangle, a lime ellipse and a yellow fill
+    all drew; Undo took the fill back; the eraser with the right button cut the rectangle; More...
+    opened at the first colour and teal came back; maximized to 1272 x 624 the picture stayed;
+    Window ▸ Tools brought the palette back over it; size 19 drew a thick brush and line; the
+    close box asked, and Yes ended it.
+  - A canvas saved to PNG and loaded back as an `Image`: 200 x 120, its pixels as drawn.
+  - A screen served in `app.run()`: clicks drew where they were, its Close called back and
+    `app.quit()` ended the loop. A script with only a screen and `onEvent` ran its loop at its end
+    and ended when the screen closed.
+  - `tests/board/gui.as` gained a canvas drawn before it is shown and through its surface, its
+    picture kept when it is laid out, `part()`, `resized`, one with no size raising, a destroyed
+    one raising, and `checked`. It passes; 20 runs left internal RAM unchanged, PSRAM 380 bytes
+    down after the first ten and unchanged after the next ten.
+  - The host corpus: `guinone.as` builds a canvas's drawing and a screen's `onEvent`, and takes
+    a screen's `part()`.
+- **Size:** angel's text is 1,066,414 bytes (+7.4 KB).
+- **Not yet:** a canvas over a remote connection (no surface there): step 8 sends its damage by
+  `PutPixels`. The palette isn't kept above its picture's window (the window manager has no
+  owned-window stacking), so a maximized picture covers it until Window ▸ Tools.

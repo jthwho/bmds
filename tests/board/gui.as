@@ -1,7 +1,7 @@
 // The GUI's bindings on the board (devplan/guiprograms.md §13): properties of each type, a list,
 // a 64-bit number, an event coming back to its callback, timers and the loop, destroy(), a
-// destroyed object's use; an Image as an icon, a dialog's owner (5b). Run with
-// `angel tests/board/gui.as`; it prints "gui.as: ok".
+// destroyed object's use; an Image as an icon, a dialog's owner (5b); a Canvas drawn as a Screen
+// is, a button checked (5c). Run with `angel tests/board/gui.as`; it prints "gui.as: ok".
 
 int failures = 0;
 void check(bool ok, const string &in what) {
@@ -58,6 +58,33 @@ MessageBox message;
 check(message.owner is w, "a dialog's owner");
 message.destroy();
 
+// A button drawn checked.
+button.checked = true;
+check(button.checked, "a button checked");
+button.checked = false;
+check(!button.checked, "a button not checked");
+
+// A Canvas drawn as a Screen is: in memory at the size it asks for until it is laid out, then
+// through its surface, the picture so far copied over.
+Canvas canvas(column);
+canvas.preferredWidth = 80;
+canvas.preferredHeight = 30;
+canvas.stretch = 0;
+canvas.fillRect(0, 0, 10, 10, Color::Red);
+check(canvas.pixel(5, 5) == Color::Red, "a canvas drawn before it is shown");
+check(canvas.pixel(20, 20) == Color::White, "a canvas starts white");
+int canvasResized = 0;
+canvas.onResized(function(int width, int height) { canvasResized++; });
+Canvas sizeless(column);
+bool noSize = false;
+try {
+        sizeless.plot(0, 0, Color::Black);
+} catch {
+        noSize = true;
+}
+check(noSize, "a canvas with no size yet raises");
+sizeless.destroy();
+
 int clicked = 0;
 button.onClicked(function() { clicked++; });
 w.show();
@@ -78,6 +105,12 @@ app.every(50, function() {
         check(clicked == 11, "the clicks' callbacks (" + clicked + ")");
         Rect g = label.geometry;
         check(g.width > 0 && g.height > 0, "a widget's geometry");
+        check(canvasResized >= 1, "a canvas's resized");
+        check(canvas.pixel(5, 5) == Color::Red, "a canvas's picture kept when it is shown");
+        canvas.fillCircle(40, 15, 8, Color::Blue);
+        check(canvas.pixel(40, 15) == Color::Blue, "a canvas drawn through its surface");
+        Image@ part = canvas.part(0, 0, 10, 10);
+        check(part.pixel(5, 5) == Color::Red, "a canvas's part");
         w.close(); // the last window shown: the loop ends
 });
 int late = app.after(5000, function() {
@@ -97,5 +130,13 @@ try {
         raised = true;
 }
 check(raised, "a destroyed object's use raises");
+canvas.destroy();
+raised = false;
+try {
+        canvas.plot(0, 0, Color::Black);
+} catch {
+        raised = true;
+}
+check(raised, "a destroyed canvas's drawing raises");
 w.destroy();
 if (failures == 0) println("gui.as: ok");

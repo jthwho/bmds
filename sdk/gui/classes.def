@@ -397,3 +397,8 @@ GUI_VALUES(Label, frame, none, field, status, sunken, raised)
 GUI_PROP(MessageBox, owner, Id, RW)
 GUI_PROP(FileDialog, owner, Id, RW)
 GUI_PROP(ColorDialog, owner, Id, RW)
+
+/* ---- Step 5c (2026-10-25): what angel's paint wanted: a button drawn checked (pressed in), a
+ * palette's tool chosen */
+GUI_PROP(Button, checked, Bool, RW)
+GUI_PROP(ToolButton, checked, Bool, RW)

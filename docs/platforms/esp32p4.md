@@ -239,6 +239,11 @@ until silicon v3; then test again.
 - **In one 2D-DMA job, the transmit side can read ahead of the receive side's writes:** a piece that
   reads what an earlier piece of the same job writes (a read-modify-write of an edge, a scroll)
   may read the old pixels. Run the job before.
+- **Copies into the display's PSRAM buffers take x and widths in 4-pixel columns** (rows of RGB888
+  start and end on 4 bytes; `Surface::Align`). A picture off the columns isn't copied at all:
+  `Painter::pixels()` refused it with `Invalid`, so a canvas in a window's 6-pixel margin showed
+  nothing while one at an aligned x worked (it cost a debugging round, 2026-10-25). Its edges'
+  few columns are now patched (`Surface::patch()`: read, changed and written back by two jobs).
 - **What PSRAM takes, with the 720p scan reading 166 MB/s:** the 2D-DMA writes ~150 MB/s
   (RGB565 widened to RGB888: 50 Mpixel/s, a 1280×720 frame in 18.3 ms, over a 60 Hz frame's
   16.7 ms). The CPU reads it at only ~70-80 MB/s through the cache (doubling 640×360 RGB565

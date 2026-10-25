@@ -316,117 +316,62 @@ namespace angel {
 
 #endif
 
-                // ---- Window
+                // ---- Surfaces: pictures drawn straight into a surface's buffers (a Screen's, a GUI
+                // canvas's)
 
-                class Window;
-                Window *openWindows[8];
-
-                // A script that calls frame() is shown only by frame() (and when it waits for input),
-                // so an animation never shows a frame half drawn; what it draws and leaves unshown
-                // this long (it stopped calling frame()) is shown anyway. A script that never calls
-                // frame() is shown as it draws, as QBasic's screen was. The time runs from the first
-                // drawing not yet shown, not from the last frame(): a script that waited a while for
-                // a key and then redraws mustn't have its clear() shown before the rest.
-                constexpr int64_t FramePacedNs = 100000000LL;
-
-                // On BMDS a window is drawn straight into its surface's buffers: one is held to draw
-                // on, the presenter shows it and takes the next, which is brought up to date (by the
-                // 2D-DMA, from the newest shown) the first time it is drawn on, less what that drawing
-                // paints whole (clear() brings nothing over). On the host a window is a picture.
-                constexpr uint32_t Buffers = 3;
+                // On BMDS a surface is drawn straight into its buffers: one is held to draw on, and
+                // presenting shows it and takes the next, which is brought up to date (by the 2D-DMA,
+                // from the newest shown) the first time it is drawn on, less what that drawing paints
+                // whole (clear() brings nothing over). A screen has three, presented by a thread of its
+                // own; a canvas two, presented by the GUI's loop. Without a surface (the host's screen,
+                // a canvas not laid out yet) it is a picture in memory.
+                constexpr uint32_t Buffers = 3; // at most
 
                 // A 2D-DMA job costs ~150 µs whatever its size (docs/platforms/esp32p4.md): a fill
                 // smaller than this many bytes is the CPU's (a 74 x 74 square, at 3 bytes a pixel).
                 constexpr uint64_t DmaFillBytes = 16 * 1024;
 
-                class Window : public Picture {
+                class Surface : public Picture {
                         public:
-                                ~Window() override;
-
-                                // Opens it, or returns nullptr with the message raised.
-                                static Window *open(const char *title, int width, int height, bool fullScreen);
+                                ~Surface() override;
 
                                 bmds_canvas_t *begin(const bmds_rect_t *covered) override;
                                 void           end() override;
                                 void           fill(bmds_canvas_t *c, const bmds_rect_t &r, uint32_t pixel) override;
                                 void           setClip(const bmds_rect_t *r) override;
-                                void           checkClose() override {
-                                        if (_closed && !_closeWatched) {
-                                                restoreTerminal();
-                                                exit(0);
-                                        }
-                                }
 
-                                bool closed() {
-                                        _closeWatched = true;
-                                        return _closed;
-                                }
-                                void setTitle(const char *title);
-                                void showPointer(bool visible);
-                                void frame();
-                                // The next event, waiting (or not) for one; false if none.
-                                bool next(RawEvent &e, bool wait, bool keysOnly);
-                                bool keyDown(const char *name);
-                                int  mouseX() const { return _mouseX; }
-                                int  mouseY() const { return _mouseY; }
-                                bool mouseDown(int button) const {
-                                        return button >= 1 && button <= 8 && (_buttons & (1u << (button - 1))) != 0;
-                                }
-                                int takeWheel() {
-                                        const int w = _wheel;
-                                        _wheel = 0;
-                                        return w;
-                                }
-                                void watchClose() { _closeWatched = true; }
-                                bool closeWatched() const { return _closeWatched; }
-                                void setCloseWatched(bool watched) { _closeWatched = watched; }
-                                bool isClosed() const { return _closed; }
-                                // At the script's end: shown until the user closes it.
-                                void waitUntilClosed();
-                                // Waits until an event is waiting, the window closes, or the monotonic
-                                // clock reaches @p deadlineNs (run()'s next tick), whichever is first.
-                                void waitForEvent(int64_t deadlineNs);
+                        protected:
+                                Surface() = default;
 
-                                bool running = false;
-
-                        private:
-                                Window() = default;
+                                // After a drawing, the lock let go: @p first if it is the first not yet shown.
+                                virtual void drawn(bool first) { (void)first; }
 #ifdef ANGEL_BMDS
-                                static void *presenter(void *arg);
-                                void         wake();
-                                void         requestPresent();
-                                void         readEvents();
-                                void         present();
-                                void         push(const RawEvent &e);
-                                void         catchUp(const bmds_rect_t *covered);
-                                bool dma(uint32_t source, uint32_t from, const bmds_rect_t *rects, uint32_t count);
-                                bool         drawImageFast(Image &image, int x, int y) override;
-                                int          registeredSlot(Image &image); // its slot for the 2D-DMA, or -1
-#else
-                                uint8_t *_picture = nullptr;
+                                // With the lock held and no buffer to draw on: waits for one (false: none).
+                                virtual bool awaitBuffer() = 0;
+                                // Takes surface @p fd's @p count buffers for a @p width x @p height
+                                // picture, one acquired (waiting at most @p acquireMs) to draw on; the
+                                // images registered with the last surface let go. The lock held. @return 0,
+                                // or the error (nothing changed).
+                                int attach(int fd, int width, int height, uint32_t count, int acquireMs);
+                                // Shows the held buffer if it was drawn on, and takes the next. @return The
+                                // frame it shows in, or -1 (nothing shown, or no frame told).
+                                int32_t present();
+                                bool    dma(uint32_t source, uint32_t from, const bmds_rect_t *rects, uint32_t count);
+                                void    catchUp(const bmds_rect_t *covered);
+                                bool    drawImageFast(Image &image, int x, int y) override;
+                                int     registeredSlot(Image &image); // its slot for the 2D-DMA, or -1
+                                void    dropImages();
 #endif
 
                                 pthread_mutex_t _mutex = PTHREAD_MUTEX_INITIALIZER;
                                 pthread_cond_t _changed = PTHREAD_COND_INITIALIZER; // shown, a buffer, an event, closed
                                 uint32_t       _generation = 0;                     // drawings so far
                                 uint32_t       _shown = 0;                          // of them, shown
-                                bool           _closed = false;
-                                bool           _closeWatched = false;
-                                RawEvent       _queue[QueueSize];
-                                int            _head = 0, _count = 0;
-                                uint8_t        _keys[32] = {};
-                                int            _mouseX = 0, _mouseY = 0;
-                                uint32_t       _buttons = 0;
-                                int            _wheel = 0;
+                                bool            _quit = false;
 #ifdef ANGEL_BMDS
-                                int           _fd = -1;
-                                int           _wakeRead = -1, _wakeWrite = -1;
-                                bool          _wakePending = false;
-                                bool          _presentRequested = false;
-                                int64_t       _lastFrameNs = 0; // the script's last frame() (0: none yet)
-                                int64_t       _unshownNs = 0;   // the first drawing not yet shown (0: none)
-                                bool          _quit = false;
-                                bool          _noDma = false;
+                                int     _fd = -1;       // -1: no surface (the picture is in memory)
+                                int64_t _unshownNs = 0; // the first drawing not yet shown (0: none)
+                                bool    _noDma = false;
                                 // Images registered for the 2D-DMA to copy from: each held, with its
                                 // generation as registered and when it was last drawn (to replace the
                                 // least recently used).
@@ -438,9 +383,7 @@ namespace angel {
                                 DmaImage      _dmaImages[BMDS_SURFACE_IMAGES];
                                 uint32_t      _dmaClock = 0;
                                 bool          _noImageDma = false;
-                                int64_t       _closeDeadlineNs = 0;
-                                pthread_t     _thread{};
-                                bool          _threadStarted = false;
+                                uint32_t      _bufferCount = 0;
                                 bmds_canvas_t _buffers[Buffers]{}; // their damage: drawn since shown
                                 bmds_canvas_t _missing[Buffers]{}; // their damage: what each lacks of the newest
                                 int32_t       _current = -1;       // held, to draw on (-1: being swapped)
@@ -448,137 +391,70 @@ namespace angel {
 #endif
                 };
 
-                Window::~Window() {
+                Surface::~Surface() {
 #ifdef ANGEL_BMDS
-                        if (_threadStarted) {
-                                pthread_mutex_lock(&_mutex);
-                                _quit = true;
-                                pthread_mutex_unlock(&_mutex);
-                                wake();
-                                pthread_join(_thread, nullptr);
-                        }
                         if (_fd >= 0) close(_fd);
-                        for (DmaImage &d : _dmaImages)
-                                if (d.image != nullptr) d.image->release();
-                        if (_wakeRead >= 0) close(_wakeRead);
-                        if (_wakeWrite >= 0) close(_wakeWrite);
-#else
-                        free(_picture);
+                        dropImages();
 #endif
-                        for (Window *&w : openWindows)
-                                if (w == this) w = nullptr;
                 }
 
-                Window *Window::open(const char *title, int width, int height, bool fullScreen) {
-                        if (width < 1 || height < 1 || width > 1280 || height > 720) {
-                                raise("A window is 1 to 1280 pixels across and 1 to 720 down, not %d x %d", width,
-                                      height);
-                                return nullptr;
-                        }
-                        int slot = -1;
-                        for (int i = 0; i < 8; ++i)
-                                if (openWindows[i] == nullptr) slot = i;
-                        if (slot < 0) {
-                                raise("Too many windows (at most 8)");
-                                return nullptr;
-                        }
-                        Window *w = new Window();
+                void Surface::end() {
+                        ++_generation;
+                        bool first = false;
 #ifdef ANGEL_BMDS
-                        bmds_surface_config_t config{};
-                        config.size = sizeof(config);
-                        config.width = uint32_t(width + 3) & ~3u; // the surface's: a multiple of 4
-                        config.height = uint32_t(height);
-                        config.format = Format;
-                        config.buffers = Buffers;
-                        config.flags = fullScreen ? BMDS_SURFACE_FULL_SCREEN : 0;
-                        config.title = title[0] != 0 ? title : nullptr;
-                        w->_fd = bmds_surface_open(&config);
-                        if (w->_fd < 0) {
-                                const int e = -w->_fd;
-                                w->_fd = -1;
-                                delete w;
-                                if (e == BMDS_ENODEV)
-                                        raise("There is no screen to open a window on");
-                                else
-                                        raise("Can't open a window: %s", strerror(e));
-                                return nullptr;
+                        if (_unshownNs == 0 && _current >= 0 && _fd >= 0 && _buffers[_current].damage_count != 0) {
+                                _unshownNs = monotonicNs();
+                                first = true;
                         }
-                        fcntl(w->_fd, F_SETFD, FD_CLOEXEC);
-                        uint32_t buffers = 0;
-                        for (uint32_t i = 0; i < Buffers; ++i) {
-                                bmds_surface_buffer_t b{};
-                                b.size = sizeof(b);
-                                b.index = i;
-                                if (bmds_surface_buffer(w->_fd, &b) != 0) break;
-                                bmds_canvas_init(&w->_buffers[i], b.pixels, b.stride, width, height, Format);
-                                bmds_canvas_init(&w->_missing[i], b.pixels, b.stride, width, height, Format);
-                                ++buffers;
-                        }
-                        int pipeFds[2];
-                        if (buffers != Buffers || pipe2(pipeFds, O_CLOEXEC | O_NONBLOCK) != 0) {
-                                delete w;
-                                raise("Can't open a window: %s", strerror(errno));
-                                return nullptr;
-                        }
-                        bmds_canvas_init(&w->canvas, w->_buffers[0].pixels, w->_buffers[0].stride, width, height,
-                                         Format);
-                        w->_wakeRead = pipeFds[0];
-                        w->_wakeWrite = pipeFds[1];
-                        w->_current = bmds_surface_acquire(w->_fd, -1);
-                        pthread_attr_t attr;
-                        pthread_attr_init(&attr);
-                        pthread_attr_setstacksize(&attr, 16384);
-                        const int r = w->_current < 0 ? -w->_current : pthread_create(&w->_thread, &attr, presenter, w);
-                        pthread_attr_destroy(&attr);
-                        if (r != 0) {
-                                delete w;
-                                raise("Can't open a window: %s", strerror(r));
-                                return nullptr;
-                        }
-                        w->_threadStarted = true;
 #else
-                        (void)title;
-                        (void)fullScreen;
-                        w->_picture = static_cast<uint8_t *>(calloc(size_t(width) * height, Bpp));
-                        if (w->_picture == nullptr) {
-                                delete w;
-                                raise("Out of memory for a %d x %d window", width, height);
-                                return nullptr;
-                        }
-                        bmds_canvas_init(&w->canvas, w->_picture, uint32_t(width) * Bpp, width, height, Format);
+                        _shown = _generation; // nothing to wait for
 #endif
-                        openWindows[slot] = w;
-                        return w;
+                        pthread_mutex_unlock(&_mutex);
+                        drawn(first);
+                        return;
                 }
 
 #ifdef ANGEL_BMDS
-                bmds_canvas_t *Window::begin(const bmds_rect_t *covered) {
+                bmds_canvas_t *Surface::begin(const bmds_rect_t *covered) {
                         pthread_mutex_lock(&_mutex);
-                        while (_current < 0 && !_quit) pthread_cond_wait(&_changed, &_mutex);
+                        if (_fd < 0) return &canvas;
+                        while (_current < 0 && !_quit)
+                                if (!awaitBuffer()) break;
+                        if (_current < 0) return &canvas; // none came: drawn where nothing shows it
                         catchUp(covered);
                         return &_buffers[_current];
                 }
 
-                void Window::end() {
-                        ++_generation;
-                        // The presenter is woken to show it at once (a script that doesn't call
-                        // frame()), or, paced by frame(), only by the first drawing not yet shown, to
-                        // start its clock for showing it anyway: not by every call (a game's frame is
-                        // dozens of them).
-                        bool first = false;
-                        if (_unshownNs == 0 && _current >= 0 && _buffers[_current].damage_count != 0) {
-                                _unshownNs = monotonicNs();
-                                first = true;
+                int Surface::attach(int fd, int width, int height, uint32_t count, int acquireMs) {
+                        bmds_canvas_t buffers[Buffers]{};
+                        for (uint32_t i = 0; i < count; ++i) {
+                                bmds_surface_buffer_t b{};
+                                b.size = sizeof(b);
+                                b.index = i;
+                                if (bmds_surface_buffer(fd, &b) != 0) return errno != 0 ? errno : EIO;
+                                bmds_canvas_init(&buffers[i], b.pixels, b.stride, width, height, Format);
                         }
-                        const bool paced = _lastFrameNs != 0;
-                        pthread_mutex_unlock(&_mutex);
-                        if (!paced || first) wake();
-                        return;
+                        const int32_t current = bmds_surface_acquire(fd, acquireMs);
+                        if (current < 0) return -current;
+                        dropImages();
+                        _fd = fd;
+                        _bufferCount = count;
+                        for (uint32_t i = 0; i < count; ++i) {
+                                _buffers[i] = buffers[i];
+                                _missing[i] = buffers[i];
+                        }
+                        _current = current;
+                        _newest = -1;
+                        _noDma = false;
+                        _noImageDma = false;
+                        _unshownNs = 0;
+                        bmds_canvas_init(&canvas, buffers[0].pixels, buffers[0].stride, width, height, Format);
+                        return 0;
                 }
 
                 // Copies or fills @p count rectangles of the held buffer by the 2D-DMA (false: the
                 // kernel has none; the caller uses the CPU).
-                bool Window::dma(uint32_t source, uint32_t from, const bmds_rect_t *rects, uint32_t count) {
+                bool Surface::dma(uint32_t source, uint32_t from, const bmds_rect_t *rects, uint32_t count) {
                         if (_noDma || count == 0) return !_noDma;
                         bmds_surface_piece_t pieces[BMDS_CANVAS_MAX_DAMAGE];
                         for (uint32_t i = 0; i < count; ++i)
@@ -594,7 +470,7 @@ namespace angel {
                 }
 
                 // The held buffer brought up to the newest shown, but for what @p covered paints.
-                void Window::catchUp(const bmds_rect_t *covered) {
+                void Surface::catchUp(const bmds_rect_t *covered) {
                         bmds_canvas_t &missing = _missing[_current];
                         if (missing.damage_count == 0) return;
                         if (covered != nullptr) {
@@ -618,7 +494,7 @@ namespace angel {
                         return;
                 }
 
-                void Window::fill(bmds_canvas_t *c, const bmds_rect_t &r, uint32_t pixel) {
+                void Surface::fill(bmds_canvas_t *c, const bmds_rect_t &r, uint32_t pixel) {
                         // Cut to the clip, then one piece for the 2D-DMA.
                         const int64_t x0 = r.x > c->clip.x ? r.x : c->clip.x, y0 = r.y > c->clip.y ? r.y : c->clip.y;
                         const int64_t rx1 = int64_t(r.x) + r.width, ry1 = int64_t(r.y) + r.height;
@@ -627,7 +503,7 @@ namespace angel {
                         const int64_t x1 = rx1 < cx1 ? rx1 : cx1, y1 = ry1 < cy1 ? ry1 : cy1;
                         if (x1 <= x0 || y1 <= y0) return;
                         const bmds_rect_t piece = {int32_t(x0), int32_t(y0), uint32_t(x1 - x0), uint32_t(y1 - y0)};
-                        if (uint64_t(piece.width) * piece.height * Bpp >= DmaFillBytes &&
+                        if (_fd >= 0 && c != &canvas && uint64_t(piece.width) * piece.height * Bpp >= DmaFillBytes &&
                             dma(BMDS_BLIT_FILL, pixel, &piece, 1))
                                 bmds_canvas_damage(c, &piece);
                         else
@@ -640,14 +516,15 @@ namespace angel {
                 // back once, again only after it changes), then copied in one job. A full-window
                 // image by the CPU was ~30 ms (PSRAM to PSRAM); small ones and see-through ones stay
                 // the CPU's (the 2D-DMA has no key).
-                bool Window::drawImageFast(Image &image, int x, int y) {
+                bool Surface::drawImageFast(Image &image, int x, int y) {
                         const bmds_canvas_t &from = image.canvas;
-                        if (_noDma || _noImageDma || image.keyed ||
-                            uint64_t(from.width) * from.height * Bpp < DmaFillBytes)
-                                return false;
                         pthread_mutex_lock(&_mutex);
+                        const bool        none = _fd < 0;
                         const bmds_rect_t clip = canvas.clip;
                         pthread_mutex_unlock(&_mutex);
+                        if (none || _noDma || _noImageDma || image.keyed ||
+                            uint64_t(from.width) * from.height * Bpp < DmaFillBytes)
+                                return false;
                         const int64_t x0 = x > clip.x ? x : clip.x, y0 = y > clip.y ? y : clip.y;
                         const int64_t ix1 = int64_t(x) + from.width, iy1 = int64_t(y) + from.height;
                         const int64_t cx1 = int64_t(clip.x) + clip.width, cy1 = int64_t(clip.y) + clip.height;
@@ -655,8 +532,12 @@ namespace angel {
                         if (x1 <= x0 || y1 <= y0) return true; // nothing of it shows
                         const int slot = registeredSlot(image);
                         if (slot < 0) return false;
-                        const bmds_rect_t    r = {int32_t(x0), int32_t(y0), uint32_t(x1 - x0), uint32_t(y1 - y0)};
-                        bmds_canvas_t       *c = begin(&r);
+                        const bmds_rect_t r = {int32_t(x0), int32_t(y0), uint32_t(x1 - x0), uint32_t(y1 - y0)};
+                        bmds_canvas_t    *c = begin(&r);
+                        if (c == &canvas) { // no buffer to draw on
+                                end();
+                                return true;
+                        }
                         bmds_surface_piece_t piece = {r.x, r.y, r.width, r.height, int32_t(x0 - x), int32_t(y0 - y)};
                         const bmds_surface_blit_t blit = {
                                 sizeof(blit), uint32_t(_current), BMDS_BLIT_IMAGE, uint32_t(slot), 1, &piece};
@@ -674,7 +555,7 @@ namespace angel {
                         return true;
                 }
 
-                int Window::registeredSlot(Image &image) {
+                int Surface::registeredSlot(Image &image) {
                         int slot = -1;
                         for (uint32_t i = 0; i < BMDS_SURFACE_IMAGES; ++i)
                                 if (_dmaImages[i].image == &image) slot = int(i);
@@ -711,14 +592,325 @@ namespace angel {
                         return slot;
                 }
 
-                void Window::setClip(const bmds_rect_t *r) {
+                void Surface::dropImages() {
+                        for (DmaImage &d : _dmaImages) {
+                                if (d.image != nullptr) d.image->release();
+                                d = DmaImage{};
+                        }
+                        return;
+                }
+
+                void Surface::setClip(const bmds_rect_t *r) {
                         pthread_mutex_lock(&_mutex);
                         bmds_canvas_set_clip(&canvas, r);
-                        for (bmds_canvas_t &b : _buffers) bmds_canvas_set_clip(&b, r);
+                        for (uint32_t i = 0; i < _bufferCount; ++i) bmds_canvas_set_clip(&_buffers[i], r);
                         pthread_mutex_unlock(&_mutex);
                         return;
                 }
 
+                int32_t Surface::present() {
+                        pthread_mutex_lock(&_mutex);
+                        const uint32_t generation = _generation;
+                        if (_fd < 0 || _current < 0 || _buffers[_current].damage_count == 0) {
+                                _shown = generation; // drawn nothing that shows
+                                _unshownNs = 0;
+                                pthread_cond_broadcast(&_changed);
+                                pthread_mutex_unlock(&_mutex);
+                                return -1;
+                        }
+                        bmds_canvas_t &held = _buffers[_current];
+                        bmds_rect_t    damage[BMDS_CANVAS_MAX_DAMAGE];
+                        const uint32_t count = held.damage_count;
+                        memcpy(damage, held.damage, sizeof(bmds_rect_t) * count);
+                        bmds_canvas_damage_clear(&held);
+                        bmds_surface_present_t p{};
+                        p.size = sizeof(p);
+                        p.index = uint32_t(_current);
+                        p.damage = damage;
+                        p.damage_count = count;
+                        const int32_t frame = bmds_surface_present(_fd, &p);
+                        _newest = _current;
+                        for (uint32_t b = 0; b < _bufferCount; ++b)
+                                if (int32_t(b) != _newest)
+                                        for (uint32_t i = 0; i < count; ++i)
+                                                bmds_canvas_damage(&_missing[b], &damage[i]);
+                        // The next buffer (a third is free at once; the drawing waits only if not).
+                        _current = bmds_surface_acquire(_fd, 0);
+                        if (_current < 0) {
+                                pthread_mutex_unlock(&_mutex);
+                                const int32_t next = bmds_surface_acquire(_fd, 100);
+                                pthread_mutex_lock(&_mutex);
+                                _current = next;
+                        }
+                        _shown = generation;
+                        _unshownNs = 0;
+                        pthread_cond_broadcast(&_changed);
+                        pthread_mutex_unlock(&_mutex);
+                        return frame;
+                }
+#else
+                bmds_canvas_t *Surface::begin(const bmds_rect_t *covered) {
+                        (void)covered;
+                        pthread_mutex_lock(&_mutex);
+                        return &canvas;
+                }
+
+                void Surface::fill(bmds_canvas_t *c, const bmds_rect_t &r, uint32_t pixel) {
+                        bmds_canvas_fill(c, r.x, r.y, int32_t(r.width), int32_t(r.height), pixel);
+                        return;
+                }
+
+                void Surface::setClip(const bmds_rect_t *r) {
+                        bmds_canvas_set_clip(&canvas, r);
+                        return;
+                }
+#endif
+
+                // ---- Window (a Screen)
+
+                class Window;
+                Window *openWindows[8];
+
+                // A script that calls frame() is shown only by frame() (and when it waits for input),
+                // so an animation never shows a frame half drawn; what it draws and leaves unshown
+                // this long (it stopped calling frame()) is shown anyway. A script that never calls
+                // frame() is shown as it draws, as QBasic's screen was. The time runs from the first
+                // drawing not yet shown, not from the last frame(): a script that waited a while for
+                // a key and then redraws mustn't have its clear() shown before the rest.
+                constexpr int64_t FramePacedNs = 100000000LL;
+
+                // Where a screen's thread tells the GUI's loop that a screen it serves has events
+                // (`onEvent`): a pipe, made at the first such screen.
+                int screenWake[2] = {-1, -1};
+
+                class Window : public Surface {
+                        public:
+                                ~Window() override;
+
+                                // Opens it, or returns nullptr with the message raised.
+                                static Window *open(const char *title, int width, int height, bool fullScreen);
+
+                                void checkClose() override {
+                                        if (_closed && !_closeWatched) {
+                                                restoreTerminal();
+                                                exit(0);
+                                        }
+                                }
+
+                                bool closed() {
+                                        _closeWatched = true;
+                                        return _closed;
+                                }
+                                void setTitle(const char *title);
+                                void showPointer(bool visible);
+                                void frame();
+                                // The next event, waiting (or not) for one; false if none.
+                                bool next(RawEvent &e, bool wait, bool keysOnly);
+                                bool keyDown(const char *name);
+                                int  mouseX() const { return _mouseX; }
+                                int  mouseY() const { return _mouseY; }
+                                bool mouseDown(int button) const {
+                                        return button >= 1 && button <= 8 && (_buttons & (1u << (button - 1))) != 0;
+                                }
+                                int takeWheel() {
+                                        const int w = _wheel;
+                                        _wheel = 0;
+                                        return w;
+                                }
+                                void watchClose() { _closeWatched = true; }
+                                bool closeWatched() const { return _closeWatched; }
+                                void setCloseWatched(bool watched) { _closeWatched = watched; }
+                                bool isClosed() const { return _closed; }
+                                // At the script's end: shown until the user closes it.
+                                void waitUntilClosed();
+                                // Waits until an event is waiting, the window closes, or the monotonic
+                                // clock reaches @p deadlineNs (run()'s next tick), whichever is first.
+                                void waitForEvent(int64_t deadlineNs);
+                                // The callback the GUI's loop calls with each event (a reference taken;
+                                // null: none), and it (not referenced), for the loop.
+                                void setOnEvent(asIScriptFunction *fn);
+                                bool hasEvents() {
+                                        pthread_mutex_lock(&_mutex);
+                                        const bool any = _count > 0;
+                                        pthread_mutex_unlock(&_mutex);
+                                        return any;
+                                }
+                                asIScriptFunction *onEvent() const { return _onEvent; }
+
+                                bool running = false;
+
+                        protected:
+                                void drawn(bool first) override;
+#ifdef ANGEL_BMDS
+                                bool awaitBuffer() override {
+                                        pthread_cond_wait(&_changed, &_mutex); // the presenter takes one
+                                        return true;
+                                }
+#endif
+
+                        private:
+                                Window() = default;
+#ifdef ANGEL_BMDS
+                                static void *presenter(void *arg);
+                                void         wake();
+                                void         requestPresent();
+                                void         readEvents();
+                                void         push(const RawEvent &e);
+                                void         show();
+#else
+                                uint8_t *_picture = nullptr;
+#endif
+
+                                bool               _closed = false;
+                                bool               _closeWatched = false;
+                                RawEvent           _queue[QueueSize];
+                                int                _head = 0, _count = 0;
+                                uint8_t            _keys[32] = {};
+                                int                _mouseX = 0, _mouseY = 0;
+                                uint32_t           _buttons = 0;
+                                int                _wheel = 0;
+                                asIScriptFunction *_onEvent = nullptr;
+#ifdef ANGEL_BMDS
+                                int       _wakeRead = -1, _wakeWrite = -1;
+                                bool      _wakePending = false;
+                                bool      _presentRequested = false;
+                                int64_t   _lastFrameNs = 0; // the script's last frame() (0: none yet)
+                                int64_t   _closeDeadlineNs = 0;
+                                pthread_t _thread{};
+                                bool      _threadStarted = false;
+#endif
+                };
+
+                Window::~Window() {
+#ifdef ANGEL_BMDS
+                        if (_threadStarted) {
+                                pthread_mutex_lock(&_mutex);
+                                _quit = true;
+                                pthread_mutex_unlock(&_mutex);
+                                wake();
+                                pthread_join(_thread, nullptr);
+                        }
+                        if (_wakeRead >= 0) close(_wakeRead);
+                        if (_wakeWrite >= 0) close(_wakeWrite);
+#else
+                        free(_picture);
+#endif
+                        if (_onEvent != nullptr) _onEvent->Release();
+                        for (Window *&w : openWindows)
+                                if (w == this) w = nullptr;
+                }
+
+                Window *Window::open(const char *title, int width, int height, bool fullScreen) {
+                        if (width < 1 || height < 1 || width > 1280 || height > 720) {
+                                raise("A window is 1 to 1280 pixels across and 1 to 720 down, not %d x %d", width,
+                                      height);
+                                return nullptr;
+                        }
+                        int slot = -1;
+                        for (int i = 0; i < 8; ++i)
+                                if (openWindows[i] == nullptr) slot = i;
+                        if (slot < 0) {
+                                raise("Too many windows (at most 8)");
+                                return nullptr;
+                        }
+                        Window *w = new Window();
+#ifdef ANGEL_BMDS
+                        bmds_surface_config_t config{};
+                        config.size = sizeof(config);
+                        config.width = uint32_t(width + 3) & ~3u; // the surface's: a multiple of 4
+                        config.height = uint32_t(height);
+                        config.format = Format;
+                        config.buffers = Buffers;
+                        config.flags = fullScreen ? BMDS_SURFACE_FULL_SCREEN : 0;
+                        config.title = title[0] != 0 ? title : nullptr;
+                        const int fd = bmds_surface_open(&config);
+                        if (fd < 0) {
+                                delete w;
+                                if (-fd == BMDS_ENODEV)
+                                        raise("There is no screen to open a window on");
+                                else
+                                        raise("Can't open a window: %s", strerror(-fd));
+                                return nullptr;
+                        }
+                        fcntl(fd, F_SETFD, FD_CLOEXEC);
+                        int       pipeFds[2];
+                        const int e = w->attach(fd, width, height, Buffers, -1);
+                        if (e != 0) close(fd);
+                        if (e != 0 || pipe2(pipeFds, O_CLOEXEC | O_NONBLOCK) != 0) {
+                                delete w;
+                                raise("Can't open a window: %s", strerror(e != 0 ? e : errno));
+                                return nullptr;
+                        }
+                        w->_wakeRead = pipeFds[0];
+                        w->_wakeWrite = pipeFds[1];
+                        pthread_attr_t attr;
+                        pthread_attr_init(&attr);
+                        pthread_attr_setstacksize(&attr, 16384);
+                        const int r = pthread_create(&w->_thread, &attr, presenter, w);
+                        pthread_attr_destroy(&attr);
+                        if (r != 0) {
+                                delete w;
+                                raise("Can't open a window: %s", strerror(r));
+                                return nullptr;
+                        }
+                        w->_threadStarted = true;
+#else
+                        (void)title;
+                        (void)fullScreen;
+                        w->_picture = static_cast<uint8_t *>(calloc(size_t(width) * height, Bpp));
+                        if (w->_picture == nullptr) {
+                                delete w;
+                                raise("Out of memory for a %d x %d window", width, height);
+                                return nullptr;
+                        }
+                        bmds_canvas_init(&w->canvas, w->_picture, uint32_t(width) * Bpp, width, height, Format);
+#endif
+                        openWindows[slot] = w;
+                        return w;
+                }
+
+                void Window::drawn(bool first) {
+#ifdef ANGEL_BMDS
+                        // The presenter is woken to show it at once (a script that doesn't call
+                        // frame()), or, paced by frame(), only by the first drawing not yet shown, to
+                        // start its clock for showing it anyway: not by every call (a game's frame is
+                        // dozens of them).
+                        const bool paced = _lastFrameNs != 0;
+                        if (!paced || first) wake();
+#else
+                        (void)first;
+#endif
+                        return;
+                }
+
+                void Window::setOnEvent(asIScriptFunction *fn) {
+#ifdef ANGEL_BMDS
+                        if (fn != nullptr && screenWake[0] < 0 && pipe2(screenWake, O_CLOEXEC | O_NONBLOCK) != 0) {
+                                screenWake[0] = screenWake[1] = -1;
+                                fn->Release();
+                                raise("Can't serve the screen's events: %s", strerror(errno));
+                                return;
+                        }
+#endif
+                        pthread_mutex_lock(&_mutex);
+                        asIScriptFunction *old = _onEvent;
+                        _onEvent = fn;
+                        if (fn != nullptr) _closeWatched = true; // its Close goes to the callback
+                        const bool waiting = fn != nullptr && _count > 0;
+                        pthread_mutex_unlock(&_mutex);
+                        if (old != nullptr) old->Release();
+#ifdef ANGEL_BMDS
+                        if (waiting) {
+                                const char b = 1;
+                                (void)write(screenWake[1], &b, 1);
+                        }
+#else
+                        (void)waiting;
+#endif
+                        return;
+                }
+
+#ifdef ANGEL_BMDS
                 void Window::wake() {
                         pthread_mutex_lock(&_mutex);
                         const bool send = !_wakePending;
@@ -736,29 +928,6 @@ namespace angel {
                         _presentRequested = true;
                         pthread_mutex_unlock(&_mutex);
                         wake();
-                        return;
-                }
-#else
-                bmds_canvas_t *Window::begin(const bmds_rect_t *covered) {
-                        (void)covered;
-                        pthread_mutex_lock(&_mutex);
-                        return &canvas;
-                }
-
-                void Window::end() {
-                        ++_generation;
-                        _shown = _generation; // nothing to wait for
-                        pthread_mutex_unlock(&_mutex);
-                        return;
-                }
-
-                void Window::fill(bmds_canvas_t *c, const bmds_rect_t &r, uint32_t pixel) {
-                        bmds_canvas_fill(c, r.x, r.y, int32_t(r.width), int32_t(r.height), pixel);
-                        return;
-                }
-
-                void Window::setClip(const bmds_rect_t *r) {
-                        bmds_canvas_set_clip(&canvas, r);
                         return;
                 }
 #endif
@@ -974,49 +1143,19 @@ namespace angel {
                                 }
                         }
                         pthread_cond_broadcast(&_changed);
+                        // The GUI's loop told, if it serves this screen's events.
+                        const bool served = _onEvent != nullptr && _count > 0;
                         pthread_mutex_unlock(&_mutex);
+                        if (served) {
+                                const char b = 1;
+                                (void)write(screenWake[1], &b, 1);
+                        }
                         return;
                 }
 
                 // Shows the held buffer if it was drawn on, and takes the next to draw on.
-                void Window::present() {
-                        pthread_mutex_lock(&_mutex);
-                        const uint32_t generation = _generation;
-                        if (_current < 0 || _buffers[_current].damage_count == 0) {
-                                _shown = generation; // drawn nothing that shows
-                                _unshownNs = 0;
-                                pthread_cond_broadcast(&_changed);
-                                pthread_mutex_unlock(&_mutex);
-                                return;
-                        }
-                        bmds_canvas_t &held = _buffers[_current];
-                        bmds_rect_t    damage[BMDS_CANVAS_MAX_DAMAGE];
-                        const uint32_t count = held.damage_count;
-                        memcpy(damage, held.damage, sizeof(bmds_rect_t) * count);
-                        bmds_canvas_damage_clear(&held);
-                        bmds_surface_present_t p{};
-                        p.size = sizeof(p);
-                        p.index = uint32_t(_current);
-                        p.damage = damage;
-                        p.damage_count = count;
-                        const int32_t frame = bmds_surface_present(_fd, &p);
-                        _newest = _current;
-                        for (uint32_t b = 0; b < Buffers; ++b)
-                                if (int32_t(b) != _newest)
-                                        for (uint32_t i = 0; i < count; ++i)
-                                                bmds_canvas_damage(&_missing[b], &damage[i]);
-                        // The next buffer (the third is free at once; the drawing waits only if not).
-                        _current = bmds_surface_acquire(_fd, 0);
-                        if (_current < 0) {
-                                pthread_mutex_unlock(&_mutex);
-                                const int32_t next = bmds_surface_acquire(_fd, 100);
-                                pthread_mutex_lock(&_mutex);
-                                _current = next;
-                        }
-                        _shown = generation;
-                        _unshownNs = 0;
-                        pthread_cond_broadcast(&_changed);
-                        pthread_mutex_unlock(&_mutex);
+                void Window::show() {
+                        const int32_t frame = present();
                         // Paced on the display: the next present after this one's frame has begun.
                         if (frame >= 0) {
                                 bmds_surface_wait_t wait{sizeof(bmds_surface_wait_t), uint32_t(frame), 100};
@@ -1072,16 +1211,126 @@ namespace angel {
                                 pthread_mutex_unlock(&w->_mutex);
                                 if (quit) break;
                                 if (give) _exit(0);
-                                if (show) w->present();
+                                if (show) w->show();
                         }
                         return nullptr;
                 }
 #endif
 
+                // ---- A GUI canvas's picture (gui.cpp's Canvas, drawn with a Screen's methods)
+
+                // Two buffers: presenting waits for the other only while the service paints it.
+                constexpr uint32_t CanvasBuffers = 2;
+
+                bool canvasesDrawn = false; // since the GUI's loop last presented them
+
+                class CanvasPicture : public Surface {
+                        public:
+                                ~CanvasPicture() override {
+                                        for (CanvasPicture **p = &first; *p != nullptr; p = &(*p)->_next)
+                                                if (*p == this) {
+                                                        *p = _next;
+                                                        break;
+                                                }
+                                        free(_own);
+                                }
+
+                                // A picture in memory (no surface yet), white; nullptr if there's no memory.
+                                static CanvasPicture *make(int width, int height) {
+                                        const size_t bytes = size_t(width) * size_t(height) * Bpp;
+                                        auto        *pixels = static_cast<uint8_t *>(malloc(bytes));
+                                        if (pixels == nullptr) return nullptr;
+                                        memset(pixels, 0xff, bytes);
+                                        auto *c = new CanvasPicture();
+                                        c->_own = pixels;
+                                        bmds_canvas_init(&c->canvas, pixels, uint32_t(width) * Bpp, width, height,
+                                                         Format);
+                                        c->_next = first;
+                                        first = c;
+                                        return c;
+                                }
+
+#ifdef ANGEL_BMDS
+                                // Shown through surface @p fd (its buffers @p width x @p height) from now
+                                // on: the picture so far copied over, the rest white. @return 0, or the
+                                // error (the caller closes @p fd).
+                                int show(int fd, int width, int height) {
+                                        pthread_mutex_lock(&_mutex);
+                                        // The picture so far: the held buffer brought up to date, or memory's.
+                                        if (_fd >= 0 && _current < 0) (void)awaitBuffer();
+                                        if (_fd >= 0 && _current >= 0) catchUp(nullptr);
+                                        const bmds_canvas_t *from = _fd < 0         ? &canvas
+                                                                    : _current >= 0 ? &_buffers[_current]
+                                                                                    : nullptr;
+                                        bmds_game_image_t    old{};
+                                        if (from != nullptr) {
+                                                old.pixels = from->pixels;
+                                                old.stride = from->stride;
+                                                old.width = from->width;
+                                                old.height = from->height;
+                                                old.format = Format;
+                                        }
+                                        const int oldFd = _fd;
+                                        const int e = attach(fd, width, height, CanvasBuffers, 1000);
+                                        if (e != 0) {
+                                                pthread_mutex_unlock(&_mutex);
+                                                return e;
+                                        }
+                                        bmds_canvas_t &held = _buffers[_current];
+                                        bmds_canvas_fill(&held, 0, 0, width, height,
+                                                         bmds_canvas_pixel(&held, 0xffffff));
+                                        if (from != nullptr) bmds_canvas_blit(&held, 0, 0, &old, nullptr);
+                                        if (oldFd >= 0) close(oldFd); // the old buffers, copied from, go
+                                        free(_own);
+                                        _own = nullptr;
+                                        pthread_mutex_unlock(&_mutex);
+                                        canvasesDrawn = true;
+                                        return 0;
+                                }
+                                using Surface::present;
+#endif
+
+                                static CanvasPicture *first; // every canvas's picture
+                                CanvasPicture        *next() const { return _next; }
+
+                        protected:
+                                void drawn(bool firstUnshown) override {
+                                        (void)firstUnshown;
+                                        canvasesDrawn = true;
+                                        return;
+                                }
+#ifdef ANGEL_BMDS
+                                bool awaitBuffer() override {
+                                        pthread_mutex_unlock(&_mutex);
+                                        const int32_t b = bmds_surface_acquire(_fd, 1000);
+                                        pthread_mutex_lock(&_mutex);
+                                        if (b >= 0) _current = b;
+                                        return b >= 0;
+                                }
+#endif
+
+                        private:
+                                CanvasPicture() = default;
+
+                                uint8_t       *_own = nullptr; // the picture in memory, until it has a surface
+                                CanvasPicture *_next = nullptr;
+                };
+                CanvasPicture *CanvasPicture::first = nullptr;
+
                 // ---- Bindings
 
+                // Drawn on where nothing shows it: a destroyed canvas's (its exception raised).
+                Picture *scratch() {
+                        static Image *nowhere = Image::make(1, 1);
+                        return nowhere;
+                }
+
+                // The picture a drawing method draws on: its object, or a GUI canvas's (its hooks').
                 Picture *picture(asIScriptGeneric *gen) {
-                        return static_cast<Picture *>(gen->GetObject());
+                        const auto *hooks = static_cast<const CanvasHooks *>(gen->GetAuxiliary());
+                        if (hooks == nullptr) return static_cast<Picture *>(gen->GetObject());
+                        auto *p = static_cast<Picture *>(hooks->picture(gen->GetObject()));
+                        return p != nullptr ? p : scratch();
                 }
                 Window *window(asIScriptGeneric *gen) {
                         Window *w = static_cast<Window *>(gen->GetObject());
@@ -1370,6 +1619,25 @@ namespace angel {
                         part->key = p->key;
                         gen->SetReturnAddress(part);
                 }
+                // A screen's or a canvas's part: what is drawn there now (the buffer held, brought up to date).
+                void drawnPart(asIScriptGeneric *gen) {
+                        Image *part = checkedImage(argInt(gen, 2), argInt(gen, 3));
+                        if (part == nullptr) return;
+                        {
+                                Drawing           d(gen);
+                                bmds_game_image_t src{};
+                                src.pixels = d.canvas()->pixels;
+                                src.stride = d.canvas()->stride;
+                                src.width = d.canvas()->width;
+                                src.height = d.canvas()->height;
+                                src.format = Format;
+                                const bmds_rect_t from = {argInt(gen, 0), argInt(gen, 1), uint32_t(argInt(gen, 2)),
+                                                          uint32_t(argInt(gen, 3))};
+                                bmds_canvas_blit(&part->canvas, 0, 0, &src, &from);
+                        }
+                        bmds_canvas_damage_clear(&part->canvas);
+                        gen->SetReturnAddress(part);
+                }
                 void imageTransparent(asIScriptGeneric *gen) {
                         Picture *p = picture(gen);
                         p->keyed = true;
@@ -1542,6 +1810,10 @@ namespace angel {
                 void windowStop(asIScriptGeneric *gen) {
                         static_cast<Window *>(gen->GetObject())->running = false;
                 }
+                void windowOnEvent(asIScriptGeneric *gen) {
+                        // The argument's reference: kept as the callback's.
+                        window(gen)->setOnEvent(static_cast<asIScriptFunction *>(gen->GetArgObject(0)));
+                }
 
                 // ---- Colours
 
@@ -1596,56 +1868,59 @@ namespace angel {
                         gen->SetReturnDWord(out);
                 }
 
-                // The methods both Window and Image have.
-                void registerDrawing(asIScriptEngine *engine, const char *type) {
-                        method(engine, type, "int width() const", width, "The width in pixels.");
-                        method(engine, type, "int height() const", height, "The height in pixels.");
-                        method(engine, type, "void clear(uint color = Color::Black)", clear,
-                               "Fills it all with a colour (black).");
-                        method(engine, type, "void plot(int x, int y, uint color)", plot,
-                               "Sets one pixel (QBasic's PSET).");
-                        method(engine, type, "uint pixel(int x, int y) const", pixelAt,
-                               "The colour of one pixel, as drawn (QBasic's POINT); black outside.");
-                        method(engine, type, "void line(int x1, int y1, int x2, int y2, uint color)", line,
-                               "A line from one point to another, both ends included.");
-                        method(engine, type, "void rect(int x, int y, int width, int height, uint color)", rect,
-                               "A rectangle's outline, its top left at (x, y).");
-                        method(engine, type, "void fillRect(int x, int y, int width, int height, uint color)", fillRect,
-                               "A filled rectangle.");
-                        method(engine, type,
-                               "void fillRect(int x, int y, int width, int height, uint color, float opacity)",
-                               fillRectOpacity, "A see-through rectangle: opacity 0 (none) to 1 (solid).");
-                        method(engine, type, "void circle(int x, int y, int radius, uint color)", circle,
-                               "A circle's outline around (x, y).");
-                        method(engine, type, "void fillCircle(int x, int y, int radius, uint color)", fillCircle,
-                               "A filled circle.");
-                        method(engine, type, "void ellipse(int x, int y, int radiusX, int radiusY, uint color)",
-                               ellipse, "An ellipse's outline around (x, y): its radii across and down.");
-                        method(engine, type, "void fillEllipse(int x, int y, int radiusX, int radiusY, uint color)",
-                               fillEllipse, "A filled ellipse.");
-                        method(engine, type, "void polygon(const array<int> &in points, uint color)", polygon,
-                               "A shape's outline through the points {x1, y1, x2, y2, ...}, closed.");
-                        method(engine, type, "void fillPolygon(const array<int> &in points, uint color)", fillPolygon,
-                               "A filled shape through the points {x1, y1, x2, y2, ...}.");
-                        method(engine, type, "void floodFill(int x, int y, uint color)", floodFill,
-                               "Fills the area of one colour around (x, y) with another (QBasic's PAINT).");
-                        method(engine, type, "int text(int x, int y, const ?&in value, uint color, int scale = 1)",
-                               text,
-                               "Writes a value (text, a number...) with its top left at (x, y), each letter 8 x 16 "
-                               "pixels times "
-                               "scale; its width.");
-                        method(engine, type, "void image(Image@ image, int x, int y)", drawImage,
-                               "Draws an image with its top left at (x, y), leaving out its transparent pixels.");
-                        method(engine, type, "void image(Image@ image, int x, int y, int width, int height)",
-                               drawImageScaled, "Draws an image stretched to a size (negative: mirrored).");
-                        method(engine, type,
-                               "void imageRotated(Image@ image, int x, int y, float degrees, float scale = 1)",
-                               drawImageRotated, "Draws an image turned clockwise and scaled, centred on (x, y).");
-                        method(engine, type, "void clip(int x, int y, int width, int height)", clip,
-                               "Drawing changes only this rectangle from now on.");
-                        method(engine, type, "void clip()", noClip, "Drawing may change all of it again.");
-                        method(engine, type, "void save(const string &in path)", save,
-                               "Writes the picture to a PNG file.");
+                // The methods Screen, Image and the GUI's Canvas have (a canvas's through @p hooks: its
+                // size is its properties).
+                void registerDrawing(asIScriptEngine *engine, const char *type, const CanvasHooks *hooks = nullptr) {
+                        void      *aux = const_cast<CanvasHooks *>(hooks);
+                        const auto add = [engine, aux](const char *t, const char *decl, asGENFUNC_t fn,
+                                                       const char *help) {
+                                methodAux(engine, t, decl, fn, aux, help);
+                        };
+                        if (hooks == nullptr) {
+                                add(type, "int width() const", width, "The width in pixels.");
+                                add(type, "int height() const", height, "The height in pixels.");
+                        }
+                        add(type, "void clear(uint color = Color::Black)", clear,
+                            "Fills it all with a colour (black).");
+                        add(type, "void plot(int x, int y, uint color)", plot, "Sets one pixel (QBasic's PSET).");
+                        add(type, "uint pixel(int x, int y) const", pixelAt,
+                            "The colour of one pixel, as drawn (QBasic's POINT); black outside.");
+                        add(type, "void line(int x1, int y1, int x2, int y2, uint color)", line,
+                            "A line from one point to another, both ends included.");
+                        add(type, "void rect(int x, int y, int width, int height, uint color)", rect,
+                            "A rectangle's outline, its top left at (x, y).");
+                        add(type, "void fillRect(int x, int y, int width, int height, uint color)", fillRect,
+                            "A filled rectangle.");
+                        add(type, "void fillRect(int x, int y, int width, int height, uint color, float opacity)",
+                            fillRectOpacity, "A see-through rectangle: opacity 0 (none) to 1 (solid).");
+                        add(type, "void circle(int x, int y, int radius, uint color)", circle,
+                            "A circle's outline around (x, y).");
+                        add(type, "void fillCircle(int x, int y, int radius, uint color)", fillCircle,
+                            "A filled circle.");
+                        add(type, "void ellipse(int x, int y, int radiusX, int radiusY, uint color)", ellipse,
+                            "An ellipse's outline around (x, y): its radii across and down.");
+                        add(type, "void fillEllipse(int x, int y, int radiusX, int radiusY, uint color)", fillEllipse,
+                            "A filled ellipse.");
+                        add(type, "void polygon(const array<int> &in points, uint color)", polygon,
+                            "A shape's outline through the points {x1, y1, x2, y2, ...}, closed.");
+                        add(type, "void fillPolygon(const array<int> &in points, uint color)", fillPolygon,
+                            "A filled shape through the points {x1, y1, x2, y2, ...}.");
+                        add(type, "void floodFill(int x, int y, uint color)", floodFill,
+                            "Fills the area of one colour around (x, y) with another (QBasic's PAINT).");
+                        add(type, "int text(int x, int y, const ?&in value, uint color, int scale = 1)", text,
+                            "Writes a value (text, a number...) with its top left at (x, y), each letter 8 x 16 "
+                            "pixels times "
+                            "scale; its width.");
+                        add(type, "void image(Image@ image, int x, int y)", drawImage,
+                            "Draws an image with its top left at (x, y), leaving out its transparent pixels.");
+                        add(type, "void image(Image@ image, int x, int y, int width, int height)", drawImageScaled,
+                            "Draws an image stretched to a size (negative: mirrored).");
+                        add(type, "void imageRotated(Image@ image, int x, int y, float degrees, float scale = 1)",
+                            drawImageRotated, "Draws an image turned clockwise and scaled, centred on (x, y).");
+                        add(type, "void clip(int x, int y, int width, int height)", clip,
+                            "Drawing changes only this rectangle from now on.");
+                        add(type, "void clip()", noClip, "Drawing may change all of it again.");
+                        add(type, "void save(const string &in path)", save, "Writes the picture to a PNG file.");
                         return;
                 }
 
@@ -1653,7 +1928,8 @@ namespace angel {
 
         void waitForWindows() {
                 for (Window *w : openWindows) {
-                        if (w == nullptr || w->isClosed()) continue;
+                        if (w == nullptr || w->isClosed() || w->onEvent() != nullptr)
+                                continue; // served: the GUI's loop's
                         w->watchClose();
                         w->waitUntilClosed();
                 }
@@ -1681,6 +1957,100 @@ namespace angel {
                                 *out++ = i->keyed && rgb == i->key ? 0u : 0xff000000u | rgb;
                         }
                 }
+                return;
+        }
+
+        void registerCanvasDrawing(asIScriptEngine *engine, const char *type, const CanvasHooks *hooks) {
+                registerDrawing(engine, type, hooks);
+                methodAux(engine, type, "Image@ part(int x, int y, int width, int height)", drawnPart,
+                          const_cast<CanvasHooks *>(hooks), "A new image of a rectangle of what is drawn.");
+                return;
+        }
+
+        void *canvasMake(int width, int height) {
+                if (width < 1 || height < 1 || width > MaxSize || height > MaxSize) {
+                        raise("A canvas is drawn on at 1 to %d pixels each way, not %d x %d", MaxSize, width, height);
+                        return nullptr;
+                }
+                CanvasPicture *c = CanvasPicture::make(width, height);
+                if (c == nullptr) raise("Out of memory for a %d x %d canvas", width, height);
+                return c;
+        }
+
+        int canvasShow(void *picture, int fd, int width, int height) {
+#ifdef ANGEL_BMDS
+                return static_cast<CanvasPicture *>(picture)->show(fd, width, height);
+#else
+                (void)picture;
+                (void)fd;
+                (void)width;
+                (void)height;
+                return ENOSYS;
+#endif
+        }
+
+        void canvasSize(void *picture, int &width, int &height) {
+                const CanvasPicture *c = static_cast<CanvasPicture *>(picture);
+                width = c->canvas.width;
+                height = c->canvas.height;
+                return;
+        }
+
+        void canvasRelease(void *picture) {
+                static_cast<CanvasPicture *>(picture)->release();
+                return;
+        }
+
+        void presentCanvases() {
+#ifdef ANGEL_BMDS
+                if (!canvasesDrawn) return;
+                canvasesDrawn = false;
+                for (CanvasPicture *c = CanvasPicture::first; c != nullptr; c = c->next()) (void)c->present();
+#endif
+                return;
+        }
+
+        int screenEventFd() {
+                return screenWake[0];
+        }
+
+        bool nextScreenEvent(asIScriptFunction *&callback, void *&event) {
+#ifdef ANGEL_BMDS
+                if (screenWake[0] >= 0) { // what woke the loop, taken
+                        char drain[16];
+                        while (read(screenWake[0], drain, sizeof(drain)) > 0) {}
+                }
+                for (Window *w : openWindows) {
+                        if (w == nullptr || w->onEvent() == nullptr) continue;
+                        RawEvent e;
+                        if (!w->next(e, false, false)) continue;
+                        callback = w->onEvent();
+                        callback->AddRef();
+                        event = new Event(e);
+                        if (screenWake[1] >= 0) { // more may wait: the loop comes back for them
+                                const char b = 1;
+                                (void)write(screenWake[1], &b, 1);
+                        }
+                        return true;
+                }
+#else
+                (void)callback;
+                (void)event;
+#endif
+                return false;
+        }
+
+        bool screensServed() {
+#ifdef ANGEL_BMDS
+                for (Window *w : openWindows)
+                        if (w != nullptr && w->onEvent() != nullptr && (!w->isClosed() || w->hasEvents()))
+                                return true; // open, or its Close not yet called back
+#endif
+                return false;
+        }
+
+        void screenEventRelease(void *event) {
+                static_cast<Event *>(event)->release();
                 return;
         }
 
@@ -1728,6 +2098,7 @@ namespace angel {
 
                 check(engine->RegisterObjectType("Image", 0, asOBJ_REF), "Image");
                 check(engine->RegisterObjectType("Screen", 0, asOBJ_REF), "Screen");
+                check(engine->RegisterFuncdef("void EventCallback(Event@ event)"), "EventCallback");
                 check(engine->RegisterInterface("Game"), "Game");
                 behaviour(engine, "Image", asBEHAVE_FACTORY, "Image@ f(int width, int height)", imageBlank,
                           "A blank (black) image to draw on.");
@@ -1778,6 +2149,11 @@ namespace angel {
                        "again only when a tick or an event may have changed it. A tick() declared bool returns "
                        "false when nothing changed.");
                 method(engine, "Screen", "void stop()", windowStop, "Ends run().");
+                method(engine, "Screen", "void onEvent(EventCallback@ callback)", windowOnEvent,
+                       "Calls back with each of the screen's events (Close too) while app.run() runs, beside the "
+                       "GUI's (null: no more). A screen served so counts as a window shown.");
+                method(engine, "Screen", "Image@ part(int x, int y, int width, int height)", drawnPart,
+                       "A new image of a rectangle of what is drawn.");
                 return;
         }
 

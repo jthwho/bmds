@@ -318,31 +318,108 @@ Error Painter::copyPixels(int x, int y, const uint8_t *data, size_t stride, uint
         const Surface::Source source = rgb565 ? Surface::Source::Rgb565 : Surface::Source::Bgr24;
         const size_t          pixel = rgb565 ? 2 : Surface::BytesPerPixel;
         const int32_t         sx = int32_t(x) + _originX, sy = int32_t(y) + _originY;
-        if ((uint32_t(sx) & AlignMask) != 0 || (width & AlignMask) != 0 || data == nullptr || stride % pixel != 0 ||
-            stride < size_t(width) * pixel) {
+        if (data == nullptr || stride % pixel != 0 || stride < size_t(width) * pixel) {
                 note(Error::Invalid);
                 return _error;
         }
-        // What of it is on the surface (cut in fours across: x, the width and the surface's are).
+        // What of it is on the surface.
         const int32_t left = sx < 0 ? 0 : sx, top = sy < 0 ? 0 : sy;
         int32_t       right = sx + int32_t(width), bottom = sy + int32_t(height);
-        if (right > int32_t(_surface.width())) right = int32_t(_surface.width()) & ~int32_t(AlignMask);
+        if (right > int32_t(_surface.width())) right = int32_t(_surface.width());
         if (bottom > int32_t(_surface.height())) bottom = _surface.height();
         if (right <= left || bottom <= top) return _error;
-        const Rect to{uint16_t(left), uint16_t(top), uint16_t(right - left), uint16_t(bottom - top)};
-        bool       shown = false;
-        for (const Rect &piece : _clip) shown |= piece.intersects(to);
-        if (!shown) return _error;
-        const uint8_t *from = data + size_t(top - sy) * stride + size_t(left - sx) * pixel;
-        ++_calls;
-        Error err = _surface.startBlit(to, from, stride, _clip, source, _timeoutMs);
-        if (err.isOk()) err = _surface.wait(_timeoutMs); // the caller's picture is free to change after
-        if (err.isOk()) {                                // the strip's copies are done too
-                _tools.stripHalf = 0;
-                _tools.stripColumn = 0;
+        // Its whole 4-pixel columns copied by the 2D-DMA; the few columns at either edge patched.
+        const int32_t innerLeft = int32_t((uint32_t(left) + AlignMask) & ~AlignMask);
+        const int32_t innerRight = int32_t(uint32_t(right) & ~AlignMask);
+        if (innerRight > innerLeft) {
+                const Rect to{uint16_t(innerLeft), uint16_t(top), uint16_t(innerRight - innerLeft),
+                              uint16_t(bottom - top)};
+                bool       shown = false;
+                for (const Rect &piece : _clip) shown |= piece.intersects(to);
+                if (shown) {
+                        const uint8_t *from = data + size_t(top - sy) * stride + size_t(innerLeft - sx) * pixel;
+                        ++_calls;
+                        Error err = _surface.startBlit(to, from, stride, _clip, source, _timeoutMs);
+                        if (err.isOk()) err = _surface.wait(_timeoutMs); // the caller's picture may change after
+                        if (err.isOk()) {                                // the strip's copies are done too
+                                _tools.stripHalf = 0;
+                                _tools.stripColumn = 0;
+                        }
+                        note(err);
+                }
         }
-        note(err);
+        if (innerRight <= innerLeft) {
+                patchPixels(Rect{uint16_t(left), uint16_t(top), uint16_t(right - left), uint16_t(bottom - top)}, sx, sy,
+                            data, stride, rgb565);
+        } else {
+                if (left < innerLeft)
+                        patchPixels(
+                                Rect{uint16_t(left), uint16_t(top), uint16_t(innerLeft - left), uint16_t(bottom - top)},
+                                sx, sy, data, stride, rgb565);
+                if (innerRight < right)
+                        patchPixels(Rect{uint16_t(innerRight), uint16_t(top), uint16_t(right - innerRight),
+                                         uint16_t(bottom - top)},
+                                    sx, sy, data, stride, rgb565);
+        }
         return _error;
+}
+
+namespace {
+
+        // A picture's part written into a patched rectangle (Surface::patch()'s patcher).
+        struct PatchSource {
+                        const uint8_t *from;   // the rectangle's first pixel in the picture
+                        size_t         stride; // the picture's bytes a row
+                        uint16_t       width;
+                        uint16_t       height;
+                        bool           rgb565;
+        };
+
+        void copyIntoPatch(void *arg, uint8_t *pixels, size_t stride) {
+                const auto &p = *static_cast<const PatchSource *>(arg);
+                for (uint16_t row = 0; row < p.height; ++row) {
+                        const uint8_t *s = p.from + size_t(row) * p.stride;
+                        uint8_t       *d = pixels + size_t(row) * stride;
+                        for (uint16_t i = 0; i < p.width; ++i, d += 3) {
+                                if (p.rgb565) {
+                                        const uint32_t v = uint32_t(s[0]) | uint32_t(s[1]) << 8;
+                                        const uint32_t r = v >> 11, g = (v >> 5) & 0x3f, b = v & 0x1f;
+                                        d[0] = uint8_t(b << 3 | b >> 2);
+                                        d[1] = uint8_t(g << 2 | g >> 4);
+                                        d[2] = uint8_t(r << 3 | r >> 2);
+                                        s += 2;
+                                } else {
+                                        d[0] = s[0];
+                                        d[1] = s[1];
+                                        d[2] = s[2];
+                                        s += 3;
+                                }
+                        }
+                }
+                return;
+        }
+
+} // namespace
+
+void Painter::patchPixels(const Rect &edge, int32_t sx, int32_t sy, const uint8_t *data, size_t stride, bool rgb565) {
+        const size_t pixel = rgb565 ? 2 : Surface::BytesPerPixel;
+        for (const Rect &piece : _clip) {
+                const Rect r = piece.intersected(edge);
+                if (r.isEmpty()) continue;
+                // A patch is at most a surface row's bytes: its 4-pixel groups, a row each.
+                const uint32_t span =
+                        ((uint32_t(r.x) + r.width + AlignMask) & ~AlignMask) - (uint32_t(r.x) & ~AlignMask);
+                const uint32_t rows = uint32_t(_surface.stride() / (span * Surface::BytesPerPixel));
+                for (uint16_t y = r.y; y < r.y + r.height && rows != 0;) {
+                        const uint16_t n = uint16_t(r.y + r.height - y < int(rows) ? r.y + r.height - y : rows);
+                        PatchSource    p{data + size_t(y - sy) * stride + size_t(r.x - sx) * pixel, stride, r.width, n,
+                                      rgb565};
+                        ++_calls;
+                        note(_surface.patch(Rect{r.x, y, r.width, n}, copyIntoPatch, &p, _timeoutMs));
+                        y = uint16_t(y + n);
+                }
+        }
+        return;
 }
 
 Error Painter::image(int x, int y, const Icon &icon, uint32_t bg) {
