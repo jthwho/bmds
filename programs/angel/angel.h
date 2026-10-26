@@ -153,6 +153,42 @@ namespace angel {
         void screenEventRelease(void *event);
         bool screensServed();
 
+        // ---- The loop's other sources (gui.cpp): descriptors `app.run()` and a dialog's wait poll
+        // beside the GUI's (devplan/guiprograms.md §14). The owner keeps the struct (registered by
+        // its address) and its descriptor non-blocking: `ready` runs when it is readable, and may
+        // run when it isn't. `hold` may change at any time.
+        enum class LoopHold : uint8_t {
+                Nothing,  // the loop doesn't wait for it alone
+                Run,      // app.run() runs while it is registered (a setting watched)
+                RunAndEnd // also runs the loop at the script's end (a process's callbacks)
+        };
+        struct LoopSource {
+                        int fd;
+                        void (*ready)(LoopSource *source);
+                        void    *context;
+                        LoopHold hold;
+        };
+        // @return False (an exception raised) when 64 are registered already.
+        bool addLoopSource(LoopSource *source);
+        void removeLoopSource(LoopSource *source);
+        // A script function called with these values (nested in the script's context, or in the
+        // GUI's own after the script's end), as the GUI's events are.
+        struct CallArg {
+                        const char *text; // a string's bytes (null: an int)
+                        size_t      length;
+                        int32_t     number;
+        };
+        void callScript(asIScriptFunction *fn, const CallArg *args, size_t count);
+
+        // ---- The services (services.cpp, process.cpp; §14): settings, processes, the system.
+        void registerServices(asIScriptEngine *engine);
+        void registerProcess(asIScriptEngine *engine);
+        // Before the engine is shut down: their callbacks and watches let go.
+        void releaseServices();
+        void releaseProcesses();
+        // The script's path as it was given (args[0]), or null.
+        const char *scriptPath();
+
         // At the script's end (gui.cpp): with a GUI window shown, the GUI's loop runs until it
         // closes (`app.run()`'s); then the connection is closed.
         void finishGui(asIScriptEngine *engine);

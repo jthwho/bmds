@@ -113,6 +113,7 @@
 #include <netinet/tcp.h>
 #include <linux/ptp_clock.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/timex.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -775,6 +776,15 @@ static int mem(void) {
                (unsigned)fast.free_bytes, (unsigned)fast.total_bytes, (unsigned)psram.program_bytes,
                (unsigned)psram.program_blocks);
         free(p);
+        /* munmap by a length short of its last page's end frees the whole mapping, as Linux's
+           does (musl unmaps a zone file by its size). The first mapping makes the list. */
+        void *m = mmap(NULL, 100, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(m != MAP_FAILED && munmap(m, 100) == 0);
+        CHECK(bmds_mem_info(0, &psram) == 0);
+        const uint32_t before = psram.program_bytes;
+        m = mmap(NULL, 100, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        CHECK(m != MAP_FAILED && munmap(m, 100) == 0);
+        CHECK(bmds_mem_info(0, &psram) == 0 && psram.program_bytes == before);
         return 0;
 }
 

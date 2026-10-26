@@ -468,7 +468,11 @@ Plan: [`input.md`](input.md).
   `owner` blocked while it is open), angel's `Image` as icons, the notes example; 5c done: a
   `Canvas` drawn with a `Screen`'s methods through its surface, `Screen.onEvent` in `app.run()`,
   `chooseColor`, `checked` buttons, the painter patching pictures off the 4-pixel columns, and
-  the paint example with a Tools window. Step 5 done. Next: step 6, angel's service bindings.
+  the paint example with a Tools window. Step 5 done. Step 6 designed (§14), in three parts; 6a
+  done: `Setting` (read, set, declared, watched, saved), `Process` (pipes, callbacks in the loop,
+  ends by `SIGCHLD`), `system`, `DateTime` in any zone, `appDir()`/`dataDir()`, the loop's other
+  sources, the System example; the SDK's `munmap` freeing a mapping by a short length. Next: 6b
+  (files watched, file types; pads and actions on a `Screen`).
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

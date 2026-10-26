@@ -151,6 +151,10 @@ namespace angel {
                 return;
         }
 
+        const char *scriptPath() {
+                return argumentCount > 0 ? argumentValues[0] : nullptr;
+        }
+
         void releaseArguments() {
                 if (arguments != nullptr) arguments->Release();
                 arguments = nullptr;

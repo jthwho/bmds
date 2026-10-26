@@ -850,17 +850,40 @@ namespace angel {
 
                 // Calls @p fn with event @p e's values (as @p event has them), or with @p object (a
                 // screen's Event), or with nothing.
+                // A context to call the script in: the running one's state pushed (@p nested), or the
+                // GUI's own after the script's end. @return Null if there's none.
+                asIScriptContext *beginCall(bool &nested) {
+                        asIScriptContext *ctx = asGetActiveContext();
+                        nested = ctx != nullptr;
+                        if (nested) return ctx->PushState() < 0 ? nullptr : ctx;
+                        if (ownContext == nullptr) ownContext = theEngine->CreateContext();
+                        return ownContext;
+                }
+
+                // The call made (@p r: its arguments' result so far): an exception ends the script.
+                void endCall(asIScriptContext *ctx, bool nested, int r) {
+                        if (r >= 0) r = ctx->Execute();
+                        if (r == asEXECUTION_EXCEPTION) {
+                                fflush(stdout);
+                                reportException(ctx);
+                                restoreTerminal();
+                                exit(1);
+                        }
+                        if (nested) {
+                                const asEContextState state = ctx->GetState();
+                                ctx->PopState();
+                                if (state == asEXECUTION_ABORTED) ctx->Abort();
+                        } else {
+                                ctx->Unprepare();
+                        }
+                        return;
+                }
+
                 void call(asIScriptFunction *fn, const gt::EventDef *event, const bmds_gui_event_t *e,
                           void *object = nullptr) {
-                        asIScriptContext *active = asGetActiveContext();
-                        asIScriptContext *ctx = active;
-                        if (active != nullptr) {
-                                if (ctx->PushState() < 0) return;
-                        } else {
-                                if (ownContext == nullptr) ownContext = theEngine->CreateContext();
-                                ctx = ownContext;
-                                if (ctx == nullptr) return;
-                        }
+                        bool              nested = false;
+                        asIScriptContext *ctx = beginCall(nested);
+                        if (ctx == nullptr) return;
                         int           r = ctx->Prepare(fn);
                         String        strings[6];
                         ScriptRect    rects[6];
@@ -904,20 +927,7 @@ namespace angel {
                                 }
                         }
                         if (r >= 0 && object != nullptr) r = ctx->SetArgObject(0, object);
-                        if (r >= 0) r = ctx->Execute();
-                        if (r == asEXECUTION_EXCEPTION) {
-                                fflush(stdout);
-                                reportException(ctx);
-                                restoreTerminal();
-                                exit(1);
-                        }
-                        if (active != nullptr) {
-                                const asEContextState state = ctx->GetState();
-                                ctx->PopState();
-                                if (state == asEXECUTION_ABORTED) ctx->Abort();
-                        } else {
-                                ctx->Unprepare();
-                        }
+                        endCall(ctx, nested, r);
                         return;
                 }
 
@@ -1030,22 +1040,57 @@ namespace angel {
                         return true;
                 }
 
+                // ---- The loop's other sources (angel.h), registered by their owners' structs
+
+                constexpr size_t MaxSources = 64;
+                LoopSource      *sources[MaxSources];
+                size_t           sourceCount = 0;
+
+                bool registered(const LoopSource *source) {
+                        for (size_t i = 0; i < sourceCount; ++i)
+                                if (sources[i] == source) return true;
+                        return false;
+                }
+
+                // The most any source holds the loop for.
+                LoopHold sourcesHold() {
+                        LoopHold most = LoopHold::Nothing;
+                        for (size_t i = 0; i < sourceCount; ++i)
+                                if (uint8_t(sources[i]->hold) > uint8_t(most)) most = sources[i]->hold;
+                        return most;
+                }
+
                 // What was drawn on canvases shown, then waits up to @p wait ms (-1: for ever) for the
-                // GUI's next event, serving the screens' meanwhile. @return 1 (an event in @p e), 0
-                // (none in time, or a screen's called back), -1 (the connection ended).
+                // GUI's next event, serving the screens' and the other sources meanwhile. @return 1 (an
+                // event in @p e), 0 (none in time, or something else served), -1 (the connection ended).
                 int nextEvent(bmds_gui_event_t &e, int wait) {
                         presentCanvases();
                         if (serveScreen()) return 0;
-                        const int screens = screenEventFd();
+                        const int  screens = screenEventFd();
+                        const bool alone = screens < 0 && sourceCount == 0; // the connection's the only one
                         if (gui != nullptr) {
-                                const int r = bmds_gui_next_event(gui, &e, screens < 0 ? wait : 0);
-                                if (r != 0 || screens < 0) return r;
+                                const int r = bmds_gui_next_event(gui, &e, alone ? wait : 0);
+                                if (r != 0 || alone) return r;
                         }
-                        struct pollfd fds[2];
+                        struct pollfd fds[2 + MaxSources];
+                        LoopSource   *polled[MaxSources];
                         nfds_t        n = 0;
                         if (gui != nullptr) fds[n++] = {bmds_gui_fd(gui), POLLIN, 0};
                         if (screens >= 0) fds[n++] = {screens, POLLIN, 0};
-                        if (poll(fds, n, wait) <= 0 || gui == nullptr || fds[0].revents == 0) return 0;
+                        const nfds_t first = n;
+                        const size_t count = sourceCount;
+                        for (size_t i = 0; i < count; ++i) {
+                                polled[i] = sources[i];
+                                fds[n++] = {sources[i]->fd, POLLIN, 0};
+                        }
+                        if (poll(fds, n, wait) <= 0) return 0;
+                        for (size_t i = 0; i < count; ++i) {
+                                // One an earlier source's callback took away isn't called.
+                                if (fds[first + i].revents == 0 || !registered(polled[i])) continue;
+                                polled[i]->ready(polled[i]);
+                                if (quitting) return 0;
+                        }
+                        if (gui == nullptr || fds[0].revents == 0) return 0;
                         return bmds_gui_next_event(gui, &e, 0);
                 }
 
@@ -1068,8 +1113,10 @@ namespace angel {
                                         wasShown = true;
                                 else if (wasShown)
                                         break;
-                                if (gui == nullptr && wait < 0 && !screens) break; // nothing left to wait for
-                                if (gui != nullptr && wait < 0 && objectCount == 0 && !screens) break;
+                                // Nothing left to wait for.
+                                const bool held = screens || sourcesHold() != LoopHold::Nothing;
+                                if (gui == nullptr && wait < 0 && !held) break;
+                                if (gui != nullptr && wait < 0 && objectCount == 0 && !held) break;
                                 bmds_gui_event_t e;
                                 const int        r = nextEvent(e, wait);
                                 if (r < 0) {
@@ -1692,11 +1739,52 @@ namespace angel {
         void finishGui(asIScriptEngine *engine) {
                 theEngine = engine;
                 // app.quit(): the script is done.
-                if (((gui != nullptr && anyShown()) || screensServed()) && !quitCalled) loop();
+                if (((gui != nullptr && anyShown()) || screensServed() || sourcesHold() == LoopHold::RunAndEnd) &&
+                    !quitCalled)
+                        loop();
+                return;
+        }
+
+        bool addLoopSource(LoopSource *source) {
+                if (registered(source)) return true;
+                if (sourceCount == MaxSources) {
+                        raise("Too many things watched at once (%u)", unsigned(MaxSources));
+                        return false;
+                }
+                sources[sourceCount++] = source;
+                return true;
+        }
+
+        void removeLoopSource(LoopSource *source) {
+                for (size_t i = 0; i < sourceCount; ++i) {
+                        if (sources[i] != source) continue;
+                        sources[i] = sources[--sourceCount];
+                        return;
+                }
+                return;
+        }
+
+        void callScript(asIScriptFunction *fn, const CallArg *args, size_t count) {
+                bool              nested = false;
+                asIScriptContext *ctx = beginCall(nested);
+                if (ctx == nullptr) return;
+                String strings[4];
+                int    r = count <= 4 ? ctx->Prepare(fn) : asINVALID_ARG;
+                for (size_t i = 0; r >= 0 && i < count; ++i) {
+                        if (args[i].text == nullptr) {
+                                r = ctx->SetArgDWord(asUINT(i), uint32_t(args[i].number));
+                        } else {
+                                strings[i].assign(args[i].text, args[i].length);
+                                r = ctx->SetArgAddress(asUINT(i), &strings[i]);
+                        }
+                }
+                endCall(ctx, nested, r);
                 return;
         }
 
         void releaseGui() {
+                releaseProcesses();
+                releaseServices();
                 for (Timer &t : timers) stopTimer(t.id);
                 for (size_t i = 0; i < iconCount; ++i) imageRelease(icons[i].image);
                 free(icons);

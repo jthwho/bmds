@@ -1281,6 +1281,8 @@ static int take_mapping(void *addr, size_t len, mapping_t *out) {
 
 static long do_munmap(void *addr, size_t len) {
         mapping_t m;
+        /* In whole pages, as Linux counts it: musl unmaps a zone file by its size. */
+        len = (len + 4095) & ~(size_t)4095;
         if (!take_mapping(addr, len, &m)) return 0;
         map_write_back(&m);
         if (m.fd >= 0) (void)bmds_close(m.fd);

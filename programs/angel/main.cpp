@@ -440,6 +440,8 @@ namespace {
                 angel::registerSound(engine);
                 angel::registerNetwork(engine);
                 angel::registerGui(engine);
+                angel::registerServices(engine); // after the GUI: its callbacks' funcdefs
+                angel::registerProcess(engine);
                 return engine;
         }
 

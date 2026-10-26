@@ -22,6 +22,7 @@
 #include <math.h>
 #include <new>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1166,6 +1167,11 @@ namespace angel {
 
                 void *Window::presenter(void *arg) {
                         Window *w = static_cast<Window *>(arg);
+                        // A process's end is the script's thread's to hear (process.cpp's SIGCHLD).
+                        sigset_t child;
+                        sigemptyset(&child);
+                        sigaddset(&child, SIGCHLD);
+                        pthread_sigmask(SIG_BLOCK, &child, nullptr);
                         for (;;) {
                                 struct pollfd fds[2] = {{w->_fd, POLLIN, 0}, {w->_wakeRead, POLLIN, 0}};
                                 pthread_mutex_lock(&w->_mutex);

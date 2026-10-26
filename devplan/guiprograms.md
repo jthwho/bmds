@@ -4,7 +4,8 @@ Status: **steps 1-3 built** (2026-10-22; §9-§11): the protocol, the classes, p
 clipboard. **Step 4 built** (§12). **Step 5 built** (§13): 5a (angel's GUI classes, `app`,
 callbacks; `Screen` for games), 5b (the one-line dialogs, icons from angel's `Image`, the notes
 example), 5c (a `Canvas` drawn as a `Screen` is, screens' events in `app.run()`, the paint
-example); next step 6, angel's service bindings. The user agreed with the shape (2026-10-22): the
+example). **Step 6** designed (§14), in three parts: 6a built (settings, processes, the system,
+dates, the folders); next 6b (files, pads and actions). The user agreed with the shape (2026-10-22): the
 toolkit as a service (P1), names (P2), and **a wire protocol in the spirit of X11's** between
 programs and the service (P8), so that applications can also run on another machine. This plan
 revises `gui.md` G1 and fills in `windows.md` §6 ("ABI (later)").
@@ -1768,3 +1769,122 @@ registrations in its heap, one object per GUI object made.
 - **Not yet:** a canvas over a remote connection (no surface there): step 8 sends its damage by
   `PutPixels`. The palette isn't kept above its picture's window (the window manager has no
   owned-window stacking), so a maximized picture covers it until Window ▸ Tools.
+
+## 14. Step 6 design: angel's service bindings (2026-10-25)
+
+§4e's table in three commits, as step 5 was. Four of its rows are done already: 5a bound every
+class of the schema, so `Notification`, `TrayIcon`, `Services`, `Shell` and `Clipboard` are
+there, and `app.after()`/`app.every()` are the timers.
+- **6a:** settings, processes, the system, the application folders; and the loop's other sources
+  under all of them.
+- **6b:** files (a folder watched, file types and their applications), gamepads and actions on a
+  `Screen`.
+- **6c:** audio (`AudioPlayer`, the mixer's volume, MIDI ports) and speech (voices, rate, pitch,
+  done).
+
+**6a's design:**
+- **The loop's other sources** (gui.cpp): descriptors `app.run()` and a dialog's wait poll beside
+  the GUI's connection and the screens' pipe, each with a function the loop calls when it is
+  readable, and whether it keeps the loop running (a process with callbacks, a setting or the
+  network watched). With no GUI connection the loop serves them too, so the host runs processes'
+  callbacks. Callbacks with values go through gui.cpp's one way of calling the script (nested in
+  the script's context, or its own context after the script's end), shared with the events.
+- **`Setting`** (on `sysconf_find`, `get`, `info`, `set`, `next`, `declare`, `watch`):
+  - `Setting(key)` names one; `exists` says whether it is there. `value` reads it (`""` if
+    not) and is set (checked by the system: "Can't set ...: not a number" raised; not saved).
+    `defaultValue`, `help`, `type` (`bool`, `int`, `string`, `color`, `enum`, `path`, `paths`,
+    `secret`), `choices` (an enum's words, `|` between), `isDefault`, `isSaved`, `changed` (not
+    what a reboot gives).
+  - `save()`, `revert()` (to the saved value, else the default), `reset()` (to the default,
+    not saved).
+  - **An application's own:** `Setting(key, type, defaultValue, help = "")` declares it
+    (`sysconf_declare`: `owner/name` keys, kept until reboot; a saved value applies at once).
+    The type is a word as above, `int MIN MAX`, or an enum's words (`small|medium|large`).
+  - `onChanged(StringCallback@)`: the new value, in the loop (a watch descriptor per setting).
+  - `settings(prefix = "")`: the keys under a prefix. `setting(key)` stays.
+- **`Process`** (musl's `posix_spawn` with file actions, `waitpid`, `kill`, `pipe2`):
+  - `Process(command)` runs a shell command line (`/bin/sh -c`, as `run()` does);
+    `Process(program, arguments)` runs a program by name on the `PATH` with no shell.
+  - Its input, output and errors are pipes. `write(text)`, `closeInput()`. `read()` gives what
+    has come so far (no wait), `readLine()` waits for a line, `readAll()` until the output ends;
+    `readErrors()` likewise for the errors. `wait()` waits for it to end, keeping what it wrote
+    meanwhile (so a full pipe doesn't hang it), and gives the exit status.
+  - `pid`, `running`, `exitStatus` (-1 while running; 128 + N if killed by signal N, as `run()`
+    gives), `signal(sig = 15)`.
+  - `onOutput(StringCallback@)`, `onErrors(StringCallback@)`, `onExit(IntCallback@)`: in the
+    loop, the output before the exit. The callbacks are let go at the exit (no cycles kept).
+  - **Ends learnt without polling:** a `SIGCHLD` handler (`SA_RESTART`) writes to a pipe the loop
+    polls, while any process is started; each tracked process is asked with `WNOHANG`. A process
+    let go while running is still reaped. Writing to one that ended raises (`SIGPIPE` ignored
+    around the write only, so children don't inherit it ignored).
+- **`system`** (an object, as `app` is): `hostName`, `userName`, `board`, `version`, `cores`,
+  `cpuMhz` (`system_info`); `memoryTotal`, `memoryFree`, `programMemory` (`mem_info`);
+  `cpuLoad` (0 to 1, the cores' busy time since the last time it was asked, the first time
+  since boot; -1 when CPU time isn't counted: `stats_read`); `online`, `address` (`net_info`),
+  `onNetworkChanged(Callback@)` (`net_watch`).
+- **`DateTime`** (a value type, musl's `localtime_r` with `TZ` switched for a zone, so names use
+  the zone database with its history): `DateTime()` now, `DateTime(seconds, zone = "")`,
+  `DateTime(year, month, day, hour = 0, minute = 0, second = 0, zone = "")`; `year`, `month`,
+  `day`, `hour`, `minute`, `second`, `weekday` (0 Sunday), `yearDay`, `seconds` (Unix time),
+  `offset` (seconds east of UTC), `zone` (its abbreviation); `inZone(zone)`, `format(pattern)`
+  (`strftime`'s). `""` is the program's zone (`TZ`, the kernel's).
+- **Application folders:** `appDir()` is `BMDS_APP_DIR`, or the script's own folder when it isn't
+  in an application; `dataDir()` is `bmds_app_data_dir()`, or `$HOME/.local/share/NAME` (the
+  script's name without `.as`) for a script outside one, made if it isn't there.
+- **Tests:** the host corpus runs a process with callbacks in `app.run()`, reads and writes one,
+  `wait()`s, and takes dates in named and POSIX zones (the host's zone database); settings and
+  `system` build there and give empty answers. `tests/board/services.as` declares, sets, watches,
+  saves nothing and reverts a setting of its own, runs processes, reads `system` and dates.
+
+**6a, as built (2026-10-25):**
+- **The loop's other sources** (gui.cpp, angel.h's `LoopSource`): up to 64 descriptors polled with
+  the connection and the screens' pipe, each with a function called when it is readable and a
+  `LoopHold`: `Nothing`, `Run` (`app.run()` waits for it: a watched setting, the network) or
+  `RunAndEnd` (also runs the loop at the script's end: a process with callbacks). With no GUI
+  connection the loop polls them alone, so the host runs processes' callbacks. `callScript()`
+  calls the script with ints and strings through the events' own path (`beginCall`/`endCall`,
+  split out of `call()`).
+- **`Setting`** (services.cpp) as designed. A watched setting is kept (a reference) until
+  `onChanged(null)`, so one made in a function is still heard. The declared type's words:
+  `bool`, `int`, `int MIN MAX`, `string`, `color`, `path`, `paths`, `secret`, or an enum's words.
+  On the host there are no settings: `exists` is false, setting one raises "No setting".
+- **`Process`** (process.cpp): `read(most)`, `readLine()`, `readAll()`, `eof()`, `ready(ms)`,
+  `write()`, `writeLine()` as `Socket` has them (so `read()` waits for some, unlike the design's
+  word); `readErrors()` doesn't wait. Callbacks get whole
+  lines. Every process started is kept until it has ended, its pipes have ended and its
+  callbacks have run (a list of 32); one let go of that has ended, or only the list holds, is
+  dropped at the next start, so a script starting processes in its own loop doesn't fill it. The
+  screens' presenter threads block `SIGCHLD`, so only the script's thread is interrupted.
+- **Found on the board: a program has 16 descriptors.** A process holds three until it ends;
+  starting one needs six for a moment. The fourth process in one test failed with `EMFILE` while
+  an ended one still held its input pipe: a process's input is now closed as soon as it is known
+  to have ended.
+- **`system`, `DateTime`, the folders** as designed, but for `system.address`, left out:
+  `localAddress()` (the network step's) gives it. `system.userName` is `USER` or `LOGNAME`
+  (on the host also `getpwuid()`, kept off the board: 2 KB of passwd and nscd code). `cpuLoad`
+  compares the `cpu.coreN.busy_us` totals (`stats_read`) with the last call's. `DateTime`'s `%Z`
+  is put in before `strftime()`: musl's names only a zone pointer into its own tables, so a copy
+  printed nothing. `toString()` makes `println(date)` work.
+- **Found: the SDK leaked a page per zone switch.** musl unmaps a zone file by its size, and the
+  SDK's `munmap` (`sdk/crt/linux.c`) freed a mapping only when the length covered its whole
+  last page, so each switch kept 4 KB until the program ended (200 dates in Tokyo: 1.6 MB). The
+  length is now rounded up to pages, as Linux does; `progtest mem` checks it.
+- **The System example** (`programs/angel/examples/system.as`): the host, CPU, load, memory and
+  network (refreshed each second; `onNetworkChanged`), a clock in a zone kept as the example's
+  own setting (declared, saved when changed), and a command line whose output and errors come in
+  line by line, with its exit status in the status bar.
+- **Tried on the board:**
+  - `tests/board/services.as` passes: a system setting read; one declared, set, refused outside
+    its limits and outside its enum, declared again, watched (a change from a timer called back
+    in the loop), reverted and reset, nothing saved; processes read, written, given arguments,
+    missing, signalled, written to after their end, 40 in turn, and called back in the loop; the
+    system's names, memory, load and network; the epoch, Moscow's 1990 summer time from the
+    database's history, a date made in Berlin, POSIX rules; the script's folders. PSRAM over 15
+    further runs moved by 36 bytes.
+  - The System example: `ls /` and a failing command's output and errors in the window, "Exit
+    status 0"; the zone set to Asia/Tokyo showed JST and was saved, came back at the next
+    start, and emptied again (taken out of the store).
+  - The host corpus: `services.as` (processes with callbacks in `app.run()` with no GUI, dates in
+    named zones and POSIX rules, normalised dates, no settings).
+- **Size:** angel's text is 1,102,322 bytes (+35.9 KB: services.cpp 16 KB, process.cpp 10 KB,
+  musl's `posix_spawn`, `strftime`, `mktime` and the rest).

@@ -1462,3 +1462,78 @@ void Canvas::rect(int, int, int, int, uint)
 void Canvas::save(const string&in)
 void Screen::onEvent(EventCallback@)
 void ToolButton::set_checked(bool)
+# 2026-10-25: the services step 6a (devplan/guiprograms.md §14): Setting, settings(), Process, system,
+# DateTime, appDir(), dataDir().
+DateTime DateTime::inZone(const string&in) const
+DateTime::DateTime()
+DateTime::DateTime(int, int, int, int = 0, int = 0, int = 0, const string&in = "")
+DateTime::DateTime(int64, const string&in = "")
+Process@ Process(const string&in)
+Process@ Process(const string&in, const string[]&in)
+Setting@ Setting(const string&in)
+Setting@ Setting(const string&in, const string&in, const string&in, const string&in = "")
+System system
+bool Process::eof()
+bool Process::get_running() const
+bool Process::ready(int = 0)
+bool Setting::get_changed() const
+bool Setting::get_exists() const
+bool Setting::get_isDefault() const
+bool Setting::get_isSaved() const
+bool System::get_online() const
+class Process
+class Setting
+class System
+float System::get_cpuLoad() const
+int DateTime::get_day() const
+int DateTime::get_hour() const
+int DateTime::get_minute() const
+int DateTime::get_month() const
+int DateTime::get_offset() const
+int DateTime::get_second() const
+int DateTime::get_weekday() const
+int DateTime::get_year() const
+int DateTime::get_yearDay() const
+int Process::get_exitStatus() const
+int Process::get_pid() const
+int Process::wait()
+int System::get_cores() const
+int System::get_cpuMhz() const
+int64 DateTime::get_seconds() const
+int64 System::get_memoryFree() const
+int64 System::get_memoryTotal() const
+int64 System::get_programMemory() const
+string DateTime::format(const string&in = "%Y-%m-%d %H:%M:%S") const
+string DateTime::get_zone() const
+string DateTime::toString() const
+string Process::read(int = 4096)
+string Process::readAll()
+string Process::readErrors()
+string Process::readLine()
+string Setting::get_choices() const
+string Setting::get_defaultValue() const
+string Setting::get_help() const
+string Setting::get_key() const
+string Setting::get_type() const
+string Setting::get_value() const
+string System::get_board() const
+string System::get_hostName() const
+string System::get_userName() const
+string System::get_version() const
+string appDir()
+string dataDir()
+string[]@ settings(const string&in = "")
+value DateTime
+void Process::closeInput()
+void Process::onErrors(StringCallback@)
+void Process::onExit(IntCallback@)
+void Process::onOutput(StringCallback@)
+void Process::signal(int = 15)
+void Process::write(const ?&in)
+void Process::writeLine(const ?&in)
+void Setting::onChanged(StringCallback@)
+void Setting::reset()
+void Setting::revert()
+void Setting::save()
+void Setting::set_value(const string&in)
+void System::onNetworkChanged(Callback@)
