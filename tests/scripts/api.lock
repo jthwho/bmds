@@ -1575,3 +1575,60 @@ void Controls::set_activeSet(const string&in)
 void FolderWatch::onChanged(IntCallback@)
 void FolderWatch::stop()
 void openFile(const string&in)
+# 2026-10-25: the services step 6c (devplan/guiprograms.md §14): AudioPlayer, mixer, Voice, voices(),
+# MidiPort, midiPorts().
+AudioPlayer@ AudioPlayer(const string&in)
+MidiPort@ MidiPort(const string&in)
+Mixer mixer
+Voice@ Voice(const string&in = "")
+bool AudioPlayer::get_loop() const
+bool AudioPlayer::get_playing() const
+bool Mixer::get_muted() const
+bool Voice::get_speaking() const
+class AudioPlayer
+class MidiPort
+class Mixer
+class Voice
+float AudioPlayer::get_duration() const
+float AudioPlayer::get_position() const
+float AudioPlayer::get_volume() const
+int AudioPlayer::get_bitrate() const
+int AudioPlayer::get_channels() const
+int AudioPlayer::get_rate() const
+int MidiPort::get_number() const
+int Mixer::get_volume() const
+int Voice::get_pitch() const
+int Voice::get_speed() const
+int Voice::get_volume() const
+string AudioPlayer::get_codec() const
+string AudioPlayer::tag(const string&in) const
+string MidiPort::get_name() const
+string Voice::get_name() const
+string[]@ AudioPlayer::tagNames() const
+string[]@ midiPorts()
+string[]@ voices()
+void AudioPlayer::onFinished(Callback@)
+void AudioPlayer::pause()
+void AudioPlayer::play()
+void AudioPlayer::set_loop(bool)
+void AudioPlayer::set_position(float)
+void AudioPlayer::set_volume(float)
+void AudioPlayer::stop()
+void AudioPlayer::wait()
+void MidiPort::close()
+void MidiPort::control(int, int, int)
+void MidiPort::noteOff(int, int)
+void MidiPort::noteOn(int, int, int = 100)
+void MidiPort::onMessage(IntIntIntCallback@)
+void MidiPort::program(int, int)
+void MidiPort::send(int, int = 0, int = 0)
+void Mixer::set_muted(bool)
+void Mixer::set_volume(int)
+void Voice::onSaid(StringCallback@)
+void Voice::say(const string&in)
+void Voice::set_pitch(int)
+void Voice::set_speed(int)
+void Voice::set_volume(int)
+void Voice::speak(const string&in)
+void Voice::stop()
+void Voice::wait()

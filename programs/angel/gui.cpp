@@ -1829,6 +1829,7 @@ namespace angel {
                 releaseProcesses();
                 releaseServices();
                 releaseFolders();
+                releaseAudio();
                 for (Timer &t : timers) stopTimer(t.id);
                 for (size_t i = 0; i < iconCount; ++i) imageRelease(icons[i].image);
                 free(icons);

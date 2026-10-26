@@ -5,8 +5,8 @@ clipboard. **Step 4 built** (§12). **Step 5 built** (§13): 5a (angel's GUI cla
 callbacks; `Screen` for games), 5b (the one-line dialogs, icons from angel's `Image`, the notes
 example), 5c (a `Canvas` drawn as a `Screen` is, screens' events in `app.run()`, the paint
 example). **Step 6** designed (§14), in three parts: 6a built (settings, processes, the system,
-dates, the folders); 6b built (folders watched, file types, opening files, pads and actions); next
-6c (audio and speech). The user agreed with the shape (2026-10-22): the
+dates, the folders); 6b built (folders watched, file types, opening files, pads and actions); 6c
+built (players, the mixer, voices, MIDI ports). Next: step 7 (the guide). The user agreed with the shape (2026-10-22): the
 toolkit as a service (P1), names (P2), and **a wire protocol in the spirit of X11's** between
 programs and the service (P8), so that applications can also run on another machine. This plan
 revises `gui.md` G1 and fills in `windows.md` §6 ("ABI (later)").
@@ -1989,3 +1989,80 @@ there, and `app.after()`/`app.every()` are the timers.
   - Snake: W turned the snake up, the hint read "Space to play again", Space started again.
 - **Size:** angel's text is 1,114,488 bytes (+12.2 KB: `folders.cpp` 2.8 KB, the pads, actions
   and `controls` in graphics.cpp, `openFile()`).
+
+**6c's design (2026-10-25):** on calls that exist (`audio_decode`, `/dev/dsp`, `audio_speak`,
+`/dev/midiN`, the `audio/` settings); nothing new in the kernel.
+- **Playing in the background:** a player and a speaking voice each pump on a thread of their own
+  (the decoder's or the speaker's reads into `/dev/dsp`, as libbmdsgame's music does), started
+  when they begin and joined when they end. The threads touch no script object: they tell the
+  loop through one pipe all of them share (a `LoopSource`), and the callbacks run there. Each
+  holds two descriptors while it sounds (the source and the stream).
+- **`AudioPlayer`** (`audio_decode`: WAV, MP3, Vorbis, FLAC, MIDI through the synth):
+  `AudioPlayer(path)` opens and reads the header (raises: "Can't play 'x': ..."); `play()`
+  (again after `pause()` resumes; after the end starts over), `pause()`, `stop()` (back to the
+  start), `wait()` (until it ends; raises if it loops); `playing`, `position` (seconds; set: a
+  seek, exact as the decoder's `lseek` is), `duration` (-1 if unknown), `volume` (0 to 1, the
+  stream's gain in dB), `loop`; `codec`, `rate`, `channels`, `bitrate`; `tag(name)` (`TITLE`,
+  `ARTIST`...; `""` if none) and `tagNames()`; `onFinished(Callback@)` at its end (not at a
+  `stop()`). A playing player is kept until it ends, so `AudioPlayer("a.mp3").play()` is heard;
+  at the script's end every player stops (`wait()` hears one out). The position is the device's:
+  the frames it has played since the last seek (`audio_status`), not what was decoded ahead.
+- **The mixer:** `mixer.volume` (dB, -60 to 0) and `mixer.muted` of the default device
+  (`audio/default`'s `audio/DEV/volume`, `/mute`), changed as the panel's control changes them
+  but not saved: the saved level is the user's.
+- **Speech:** `Voice(name = "")` (the default voice, `speech/voice`; raises if there is no such
+  voice); `name`, `speed` (percent, 20 to 500), `pitch` (50 to 200), `volume` (1 to 500);
+  `speak(text)` queues the text and returns, `say(text)` waits until it has been heard,
+  `stop()`, `wait()`, `speaking`; `onSaid(StringCallback@)` with each text once heard (each one
+  ended with a NUL and the stream drained before the next). `voices()`: the voices in
+  `speech/path`'s directories (`NAME_ta.bin`). `say()` stays. On the host nothing is heard, but
+  `speak()`'s texts are told said in the loop, so the corpus tests the callbacks.
+- **MIDI ports:** `midiPorts()` (their names, `midiN`'s order); `MidiPort(name)` (by name or
+  `midiN`) reads the port's source and writes to its destination as events
+  (`BMDS_MIDI_EVENTS`); `name`, `number`; `send(status, data1 = 0, data2 = 0)`,
+  `noteOn(channel, note, velocity = 100)`, `noteOff(channel, note)`, `control(channel,
+  controller, value)`, `program(channel, program)` (channels 1 to 16, as players count them);
+  `onMessage(IntIntIntCallback@)` (status, data1, data2; real-time and SysEx bytes skipped) in
+  the loop; `close()`.
+- **Not now:** a script's own virtual port (`/dev/midinew`), recording, real-time audio from a
+  script (a script's callbacks can't keep a period's deadline).
+- **The example:** `player.as`: a window with a file chosen (`chooseFile`), play, pause, stop, a
+  position slider, the volume, the tags; a voice reading the title.
+- **Tests:** the corpus: a voice's `speak()` texts told said in order (host), `voices()` and
+  `midiPorts()` empty, the errors. `tests/board/audio.as`: a WAV made by the test (a tone),
+  played, paused, sought, waited for, its finish called back; its tags; a voice speaking two
+  texts in the loop; the wavetable port sent a note; the mixer read (and set and put back).
+
+**6c, as built (2026-10-25):**
+- **`audio.cpp`** as designed. A player's thread reads the decoder in 1024-frame pieces into a
+  half-second stream; a voice's writes each text and its NUL to the speaker, writes the samples
+  as they come, and drains the stream before telling the text heard, so each `onSaid` comes when
+  it has been heard, not made. The threads share the object's lock with the script and one pipe
+  to the loop; `settle()` joins a thread that ended. A stop or a seek drops what is queued, joins
+  the thread, and drops once more: the thread may have written a piece after the first drop,
+  before it saw the stop, and a seek's new position would otherwise play after it.
+- **Kept while sounding:** at most 16 players and 16 voices. A script that never runs the loop
+  still lets go of those that ended (swept when the list is full), unless a callback is still to
+  come. `wait()` hears one out and tells nothing.
+- **MIDI ports** are opened for the sides they have: a synth's port has only a destination, and
+  opening it to read is refused (`ENOTSUP`), so `RDWR`, then `WRONLY`, then `RDONLY`. Programs'
+  notes (`/dev/midi`) come out of `system`'s source, so a script hears angel's own `noteOn()`
+  there (on channel 2, angel's).
+- **`player.as`**: open, play and pause, stop, a position slider (sought when let go of), the
+  volume, the tags (`TITLE`, `ARTIST`) and the codec in the status bar, "Read the title" by a
+  `Voice`; a file can be given on the command line.
+- **Tried on the board** (the staged angel; nothing in the kernel changed, nothing flashed):
+  - `tests/board/audio.as` passes: a WAV it makes, played (the position between 0.1 and 0.6 s
+    after 0.4 s), paused (still), sought to 0.5 s, waited for (at 1.0 s), played again with its
+    end called back, looped past its length, `wait()` on a loop refused, stopped back at 0, let go
+    of while playing; a text refused; `t.ogg`'s format, length and tags (Vorbis, 44.1 kHz,
+    stereo, 139 kb/s, 30 s, `ENCODER`); the voices (`en-US`), one not there refused, two texts
+    told in order in the loop, `say()`, `stop()`; the ports (`system`, `wavetable`), a note to the
+    synth, angel's notes heard on `system`, a port and a channel refused; the mixer's volume
+    changed and put back (the user's saved 0 dB still the state).
+  - A first run of each part made the kernel's lasting state (speech and audio 14.5 KB of
+    internal RAM, the MIDI ports 8.5 KB); three runs after that left internal RAM where it was.
+  - `player.as` on `t.ogg`: playing, the position moving, paused with Alt+P, the title read.
+  - The corpus: `audio.as` (a voice's texts told in order with no audio, the limits, no voices,
+    ports, players or mixer on the host).
+- **Size:** angel's text is 1,134,720 bytes (+20.2 KB: `audio.cpp` 20 KB).

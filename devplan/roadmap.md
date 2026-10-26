@@ -474,7 +474,9 @@ Plan: [`input.md`](input.md).
   sources, the System example; the SDK's `munmap` freeing a mapping by a short length. 6b done:
   `fs_watch` (slot 126, the VFS's folder watches for programs) and `FolderWatch`, `fileType()`,
   `openFile()` (the panel's new `open` service), gamepads and actions on a `Screen` (`controls`),
-  Snake steering by actions. Next: 6c (audio and speech).
+  Snake steering by actions. 6c done: `AudioPlayer` (decoded files played on a thread, paused,
+  sought, tags), `mixer`, `Voice` (speech in the background, each text told when heard),
+  `MidiPort`, the player example. Step 6 done. Next: step 7 (the guide).
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

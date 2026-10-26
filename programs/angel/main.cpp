@@ -443,6 +443,7 @@ namespace {
                 angel::registerServices(engine); // after the GUI: its callbacks' funcdefs
                 angel::registerProcess(engine);
                 angel::registerFolders(engine);
+                angel::registerAudio(engine);
                 return engine;
         }
 

@@ -1,0 +1,9 @@
+voice '' 100 100 100
+The speed 10 isn't 20 to 500
+said: [one][two][three] speaking false
+after say: [one][two][three]
+voices 0, ports 0
+mixer 0 false
+No mixer here (-10 dB)
+Playing 'music.mp3' needs BMDS
+No MIDI port 'wavetable' here

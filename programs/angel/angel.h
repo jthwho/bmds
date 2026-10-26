@@ -189,6 +189,9 @@ namespace angel {
         // Folders watched and files' types (folders.cpp; §14, 6b), after the GUI's funcdefs.
         void registerFolders(asIScriptEngine *engine);
         void releaseFolders();
+        // Audio and speech (audio.cpp; §14, 6c): players, the mixer, voices, MIDI ports.
+        void registerAudio(asIScriptEngine *engine);
+        void releaseAudio();
         // The script's path as it was given (args[0]), or null.
         const char *scriptPath();
         // The application's folder (BMDS_APP_DIR), else the script's own; "" if neither is known.
