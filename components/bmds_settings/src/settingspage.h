@@ -57,7 +57,9 @@ class EditorSet {
                         List,
                         Color,
                         Secret,
-                        Mode, // a choice of modes, and Custom's field
+                        Mode,          // a choice of modes, and Custom's field
+                        Pattern,       // the desktop's patterns as a grid (under the row)
+                        PatternColors, // its colors and palettes
                 };
 
                 /** @brief One setting's editor. */
@@ -72,6 +74,7 @@ class EditorSet {
                                 Button                   *extra = nullptr;   // Choose..., a secret's Remove
                                 LineEdit                 *custom = nullptr;  // a mode's Custom field
                                 FormSection              *section = nullptr; // the heading over it
+                                Widget                   *below = nullptr;   // the pattern grid: the form's, under it
                                 char                      star[16] = {};     // what its row's `*` stood for
                                 SysConf::Id               id = SysConf::NoId;
                                 Config::Type              type = Config::Type::String;

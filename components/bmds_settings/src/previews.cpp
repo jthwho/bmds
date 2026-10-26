@@ -12,6 +12,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <bmds/font.h>
+#include <bmds/patternfiles.h>
 #include <bmds/sysconf.h>
 
 #include "previews.h"
@@ -71,6 +72,23 @@ namespace {
                 return;
         }
 
+        // A pattern tiled from a corner of the window's (@p dx, @p dy): the preview's, not the window's.
+        class Shifted final : public Backdrop {
+                public:
+                        Shifted(const TiledPattern &pattern, int dx, int dy) : _pattern(pattern), _dx(dx), _dy(dy) {}
+
+                        void make(int x, int y, uint16_t width, uint16_t height, uint8_t *out,
+                                  size_t stride) const override {
+                                _pattern.make(x - _dx, y - _dy, width, height, out, stride);
+                                return;
+                        }
+
+                private:
+                        const TiledPattern &_pattern;
+                        int                 _dx;
+                        int                 _dy;
+        };
+
         void fill(Painter &p, int x, int y, int w, int h, uint32_t rgb, const Rect &limit) {
                 if (w <= 0 || h <= 0) return;
                 const Rect r = Rect{uint16_t(x), uint16_t(y), uint16_t(w), uint16_t(h)}.intersected(limit);
@@ -112,7 +130,30 @@ PalettePreview::PalettePreview(Widget *parent) : Widget(parent) {
 
 void PalettePreview::reload() {
         read(Themes::system(), _c, Roles);
+        // The desktop's pattern, as the panel shows it.
+        _pattern.reset();
+        String wallpaper(MemSpace::Psram), name(MemSpace::Psram), colors(MemSpace::Psram);
+        if (SysConf::get(StringView(PatternFiles::WallpaperKey), wallpaper).isOk() && wallpaper.view() == "pattern" &&
+            SysConf::get(StringView(PatternFiles::PatternKey), name).isOk() &&
+            SysConf::get(StringView(PatternFiles::ColorsKey), colors).isOk()) {
+                const Result<int32_t> scale = SysConf::getInt(StringView(PatternFiles::ScaleKey));
+                PatternFiles::Bytes   file;
+                if (PatternFiles::load(name.view(), file).isOk())
+                        (void)_pattern.load(file.bytes(), colors.view(), scale.isOk() ? unsigned(scale.value()) : 1,
+                                            _c[P::Desktop]);
+        }
         update();
+        return;
+}
+
+// The desktop: the pattern on the 4-pixel columns inside it, the color at its few edge columns.
+void PalettePreview::desktop(Painter &p, const Rect &g) {
+        (void)p.fill(g, _c[P::Desktop]);
+        if (!_pattern.isValid()) return;
+        const int left = (g.x + 3) & ~3, right = int(g.right()) & ~3;
+        if (right <= left) return;
+        const Shifted shifted(_pattern, g.x, g.y);
+        (void)shifted.paint(p, Rect{uint16_t(left), g.y, uint16_t(right - left), g.height});
         return;
 }
 
@@ -160,7 +201,7 @@ void PalettePreview::window(Painter &p, const Rect &r, bool active, const char *
 
 void PalettePreview::paint(Painter &p) {
         const Rect &g = geometry();
-        (void)p.fill(g, _c[P::Desktop]);
+        desktop(p, g);
         const int w = g.width;
         window(p, Rect{uint16_t(g.x + 12), uint16_t(g.y + 10), uint16_t(w * 2 / 5), 92}, false, "Inactive");
         const Rect active{uint16_t(g.x + w / 4), uint16_t(g.y + 26), uint16_t(w * 5 / 8), 118};

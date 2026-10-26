@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+# Makes the desktop's patterns (devplan/wallpaper.md §4g): palette PNGs in rom/patterns, staged
+# as /rom/share/patterns. Each tiles seamlessly; its PLTE is the "Original" palette and its
+# tEXt "Palette:NAME" chunks are its other built-in palettes (#rrggbb, ; between).
+#
+#   tools/mkpatterns [OUT]     (default: rom/patterns)
+#
+# Run by hand after a pattern changes; the PNGs are committed (Git LFS: .gitattributes), so
+# building needs no Pillow. Fixed seeds: the same PNGs every run. Patterns no longer made here
+# are removed from OUT.
+#
+# Our own designs: the old desktops' patterns are the inspiration, never their bitmaps or names.
+
+import math
+import os
+import random
+import struct
+import sys
+import zlib
+
+from PIL import Image, ImageDraw, PngImagePlugin
+
+AUTHOR = "BMDS"
+LICENSE = "MIT"
+
+
+def rgb(text):
+        return tuple(int(text[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def trim_palette(path, count):
+        """Pillow pads PLTE to the bit depth's 2^bits entries: cut back to the colors there are,
+        so Settings offers only those."""
+        data = open(path, "rb").read()
+        out = bytearray(data[:8])
+        at = 8
+        while at < len(data):
+                length = struct.unpack(">I", data[at:at + 4])[0]
+                kind = data[at + 4:at + 8]
+                body = data[at + 8:at + 8 + length]
+                if kind == b"PLTE":
+                        body = body[:3 * count]
+                out += struct.pack(">I", len(body)) + kind + body
+                out += struct.pack(">I", zlib.crc32(kind + body) & 0xffffffff)
+                at += 12 + length
+        open(path, "wb").write(bytes(out))
+
+
+class Pattern:
+        """A pattern: its name, size, palettes (the first is PLTE), and what draws it."""
+
+        def __init__(self, name, width, height, palettes, draw):
+                self.name = name
+                self.width = width
+                self.height = height
+                self.palettes = palettes  # [(name, ["#rrggbb", ...]), ...]
+                self.draw = draw
+
+        def image(self):
+                img = Image.new("P", (self.width, self.height), 0)
+                flat = []
+                for c in self.palettes[0][1]:
+                        flat.extend(rgb(c))
+                img.putpalette(flat)
+                self.draw(img)
+                return img
+
+        def save(self, out):
+                img = self.image()
+                info = PngImagePlugin.PngInfo()
+                info.add_text("Author", AUTHOR)
+                info.add_text("License", LICENSE)
+                for name, colors in self.palettes[1:]:
+                        info.add_text("Palette:" + name, ";".join(colors))
+                count = len(self.palettes[0][1])
+                bits = 1 if count <= 2 else 2 if count <= 4 else 4 if count <= 16 else 8
+                path = os.path.join(out, self.name + ".png")
+                img.save(path, pnginfo=info, optimize=True, bits=bits)
+                trim_palette(path, count)
+                return path
+
+
+# ---- The patterns
+
+def draw_checks(img):
+        # 8x8: squares of 4.
+        px = img.load()
+        for y in range(8):
+                for x in range(8):
+                        px[x, y] = ((x // 4) ^ (y // 4)) & 1
+
+
+def draw_truchet(img):
+        # 64x64: 16-pixel cells, each with two quarter rings joining its sides' middles in one of
+        # two turns, so every cell meets its neighbours (the tile's edges too). A ring: a light
+        # band edged in a dark one.
+        rnd = random.Random(1)
+        cell = 16
+        r = cell / 2
+        turns = [[rnd.random() < 0.5 for _ in range(img.width // cell)] for _ in range(img.height // cell)]
+        px = img.load()
+        for y in range(img.height):
+                for x in range(img.width):
+                        lx, ly = x % cell + 0.5, y % cell + 0.5
+                        if turns[y // cell][x // cell]:
+                                corners = [(0, 0), (cell, cell)]
+                        else:
+                                corners = [(cell, 0), (0, cell)]
+                        off = min(abs(math.hypot(lx - cx, ly - cy) - r) for cx, cy in corners)
+                        px[x, y] = 1 if off < 1.6 else 2 if off < 2.6 else 0
+
+
+def draw_starfield(img):
+        # 256x256: stars of three brightnesses, a few with a cross of light; wrapped at the edges.
+        rnd = random.Random(7)
+        px = img.load()
+        w, h = img.width, img.height
+        for _ in range(260):
+                px[rnd.randrange(w), rnd.randrange(h)] = 1
+        for _ in range(70):
+                px[rnd.randrange(w), rnd.randrange(h)] = 2
+        for _ in range(12):
+                x, y = rnd.randrange(w), rnd.randrange(h)
+                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                        px[(x + dx) % w, (y + dy) % h] = 2
+                px[x, y] = 3
+
+
+PATTERNS = [
+        Pattern("checks", 8, 8,
+                [("Original", ["#7a8fa6", "#5c708a"]),
+                 ("Mint", ["#a8d8c0", "#86b8a0"]),
+                 ("Sand", ["#d8c8a0", "#bca880"])],
+                draw_checks),
+        Pattern("truchet", 64, 64,
+                [("Original", ["#3c5a78", "#a8c4dc", "#2c445c"]),
+                 ("Ember", ["#3a1c14", "#f08040", "#24100a"]),
+                 ("Moss", ["#26402c", "#a8d090", "#18301e"])],
+                draw_truchet),
+        Pattern("starfield", 256, 256,
+                [("Original", ["#060a1c", "#4a5680", "#a0aad0", "#ffffff"]),
+                 ("Amber", ["#140a00", "#6a4000", "#c08000", "#ffc040"]),
+                 ("Phosphor", ["#001004", "#106020", "#30c050", "#a0ffb0"])],
+                draw_starfield),
+]
+
+
+def main():
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(root, "rom", "patterns")
+        os.makedirs(out, exist_ok=True)
+        made = set()
+        for p in PATTERNS:
+                path = p.save(out)
+                made.add(os.path.basename(path))
+                print("%s: %dx%d, %d bytes" % (path, p.width, p.height, os.path.getsize(path)))
+        for name in os.listdir(out):
+                if name.endswith(".png") and name not in made:
+                        os.remove(os.path.join(out, name))
+                        print("removed " + name)
+
+
+if __name__ == "__main__":
+        main()

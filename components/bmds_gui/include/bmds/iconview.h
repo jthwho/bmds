@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <bmds/backdrop.h>
 #include <bmds/config.h>
 #include <bmds/icongrid.h>
 #include <bmds/itemview.h>
@@ -56,6 +57,14 @@ class IconView : public ItemView {
 
                 /** @brief Sets the colours: the background's and the names' (a folder window's light face; the desktop's). */
                 void setColors(WindowPalette::Role background, WindowPalette::Role text);
+
+                /**
+                 * @brief Draws the view on @p backdrop instead of its background color (null: the
+                 *        color), the icons blended over it and the names on boxes of the background
+                 *        color (the desktop's pattern, `devplan/wallpaper.md` §4e). @p backdrop must
+                 *        outlive its use here.
+                 */
+                void setBackdrop(const Backdrop *backdrop);
 
                 /**
                  * @brief On the grid: each row in the cell of @p wanted it wants if it can
@@ -130,6 +139,7 @@ class IconView : public ItemView {
                 Arrangement          _arrangement = Arrangement::Flow;
                 WindowPalette::Role  _background = WindowPalette::Role::FaceHighlight;
                 WindowPalette::Role  _text = WindowPalette::Role::FaceText;
+                const Backdrop      *_backdrop = nullptr;
                 uint16_t             _columns = 1; // flowing: per line; on the grid: the grid's
                 uint16_t             _gridRows = 1;
                 List<IconGrid::Cell> _cells{MemSpace::Psram};

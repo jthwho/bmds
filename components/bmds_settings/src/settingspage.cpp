@@ -26,6 +26,7 @@
 #include <bmds/netstatus.h>
 
 #include "pagestatus.h"
+#include "patterneditors.h"
 #include "previews.h"
 #include "settingspage.h"
 #include "settingswindow.h"
@@ -128,6 +129,10 @@ EditorSet::Binding *EditorSet::add(FormLayout &form, SysConf::Id id, const Row &
                 b.kind = Kind::Secret;
         } else if (row.editor == SettingsTable::Editor::Mode && b.type == Config::Type::String) {
                 b.kind = Kind::Mode;
+        } else if (row.editor == SettingsTable::Editor::Pattern && b.type == Config::Type::String) {
+                b.kind = Kind::Pattern;
+        } else if (row.editor == SettingsTable::Editor::PatternColors && b.type == Config::Type::String) {
+                b.kind = Kind::PatternColors;
         } else if (row.editor == SettingsTable::Editor::Slider && b.type == Config::Type::Int) {
                 b.kind = Kind::Slider;
         } else if (b.type == Config::Type::Bool) {
@@ -237,14 +242,31 @@ EditorSet::Binding *EditorSet::add(FormLayout &form, SysConf::Id id, const Row &
                         b.custom->setVisible(false);
                         break;
                 }
+                case Kind::Pattern: {
+                        // The current one's name and the folder in the row; the grid under it, the form's.
+                        b.aside = Widget::create<Label>(field);
+                        b.extra = Widget::create<Button>(field, "Open Folder");
+                        b.editor = Widget::create<PatternChooser>(&form, &form, _window);
+                        b.below = b.editor;
+                        if (b.aside != nullptr) b.aside->setStretch(1);
+                        if (b.aside == nullptr || b.extra == nullptr) b.editor = nullptr;
+                        break;
+                }
+                case Kind::PatternColors: {
+                        auto *colors = Widget::create<PatternColors>(field, _window);
+                        if (colors != nullptr && colors->build().isError()) {
+                                colors->destroy();
+                                colors = nullptr;
+                        }
+                        if (colors != nullptr) colors->setStretch(1);
+                        b.editor = colors;
+                        break;
+                }
         }
         b.save = Widget::create<Button>(field, "Save");
         b.revert = Widget::create<Button>(field, "Revert");
-        if (b.editor == nullptr || b.save == nullptr || b.revert == nullptr) {
-                fr->destroy();
-                return nullptr;
-        }
-        if (_bindings.append(b).isError()) {
+        if (b.editor == nullptr || b.save == nullptr || b.revert == nullptr || _bindings.append(b).isError()) {
+                if (b.below != nullptr) b.below->destroy();
                 fr->destroy();
                 return nullptr;
         }
@@ -291,6 +313,8 @@ EditorSet::Binding *EditorSet::add(FormLayout &form, SysConf::Id id, const Row &
                         bound.custom->setFocusLost(textTaken, &bound);
                         bound.custom->setCancelled(textCancelled, &bound);
                         break;
+                case Kind::Pattern:
+                case Kind::PatternColors: break; // they set the settings themselves
         }
         // A label's mnemonic gives the keys to its editor.
         Widget *buddy = bound.editor;
@@ -380,6 +404,14 @@ void EditorSet::load(Binding &b) {
                         }
                         break;
                 }
+                case Kind::Pattern: {
+                        static_cast<PatternChooser *>(b.editor)->reload();
+                        char         label[64];
+                        const size_t n = SettingsTable::labelOf(v, Span<char>(label, sizeof(label)));
+                        b.aside->setText(StringView(label, n));
+                        break;
+                }
+                case Kind::PatternColors: static_cast<PatternColors *>(b.editor)->reload(); break;
         }
         marks(b);
         return;
@@ -544,6 +576,8 @@ void EditorSet::buttonClicked(void *arg, Button &button) {
                 w.setPassword(); // the dialog sets it
         } else if (&button == b->extra && b->kind == Kind::Secret) {
                 b->set->commit(*b, StringView(), Apply::AndSave); // the password removed
+        } else if (&button == b->extra && b->kind == Kind::Pattern) {
+                PatternSettings::openFolder(w);
         } else if (&button == b->extra && b->row->editor == SettingsTable::Editor::Zone) {
                 w.chooseZone(b->id, (b->row->flags & SettingsTable::Empty) != 0, labelOf(*b));
         } else if (&button == b->extra) {
@@ -666,6 +700,7 @@ void SettingsPage::applyConditions() {
                 const bool on = SettingsTable::applies(b.row->when, StringView(b.star), registryValue, nullptr);
                 if (b.formRow->isVisible() == on) continue;
                 b.formRow->setVisible(on);
+                if (b.below != nullptr) b.below->setVisible(on);
                 moved = true;
         }
         if (!moved) return;
@@ -757,6 +792,15 @@ bool SettingsPage::changed(SysConf::Id id) {
                 showTheme();
         }
         applyConditions(); // a row's condition may have changed with it
+        // The desktop's: the pattern's editors and the preview read them all (a pattern chosen sets
+        // its colors too; the desktop color shows through).
+        const StringView key = id == SysConf::NoId ? StringView() : SysConf::keyOf(id);
+        if (id == SysConf::NoId || key.startsWith(StringView("panel/desktop/")) ||
+            key == StringView("wm/palette/desktop")) {
+                for (EditorSet::Binding &b : _editors.bindings())
+                        if (b.kind == Kind::Pattern || b.kind == Kind::PatternColors) _editors.load(b);
+                if (_systemPreview && _preview != nullptr) static_cast<PalettePreview *>(_preview)->reload();
+        }
         if (id == SysConf::NoId) {
                 _editors.loadAll();
                 return true;

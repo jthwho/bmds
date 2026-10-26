@@ -16,6 +16,7 @@
 #include <bmds/iconview.h>
 #include <bmds/itemmodel.h>
 #include <bmds/list.h>
+#include <bmds/tiledpattern.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -27,6 +28,7 @@ BMDS_NAMESPACE_BEGIN
  *        double click), moved (dragged to other cells), renamed, or the menu
  *        asked for (a right click), and asked for drags and drops
  *        (`devplan/clipboard.md` §5e): its own icons dropped on its grid move there.
+ *        Behind them: the color, or a tiled pattern (`devplan/wallpaper.md`).
  *
  * The icons are selected as any item view's: Ctrl, Shift, a rubber band.
  *
@@ -184,6 +186,19 @@ class DesktopWindow final : public GuiWindow {
                 /** @brief Returns true if item @p item's icon is dimmed. */
                 bool isItemDimmed(size_t item) const { return item < _icons.size() && _icons[item].dimmed; }
 
+                /**
+                 * @brief Shows @p file (a PNG) tiled as the wallpaper, as `TiledPattern::load()` takes
+                 *        it; on an error, the color alone.
+                 * @return `TiledPattern::load()`'s.
+                 */
+                Error setPattern(ByteSpan file, StringView colors, unsigned scale);
+
+                /** @brief Shows the desktop's color alone. */
+                void clearPattern();
+
+                /** @brief Returns the pattern (invalid: none). */
+                const TiledPattern &pattern() const { return _pattern; }
+
                 void paint(Painter &painter) override;
 
         protected:
@@ -213,6 +228,8 @@ class DesktopWindow final : public GuiWindow {
                 ListItemModel   _model;
                 IconView       *_view = nullptr; // its child, over the work area
                 List<OwnedIcon> _icons{MemSpace::Psram};
+                TiledPattern    _pattern;
+                uint32_t        _desktopColor = 0; // the palette's when the pattern was blended over it
                 Opened          _opened = nullptr;
                 void           *_openedArg = nullptr;
                 Moved           _moved = nullptr;

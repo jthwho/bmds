@@ -108,4 +108,35 @@ class PasswordDialog final : public Dialog {
                 LineEdit *_second = nullptr;
 };
 
+/**
+ * @brief Asks for a name (`devplan/wallpaper.md` §4f: a palette's, for Save As...): a prompt
+ *        and a field.
+ *
+ * @par Thread Safety
+ * The loop's thread, as the widgets.
+ */
+class NameDialog final : public Dialog {
+        public:
+                explicit NameDialog(GuiApplication &app);
+
+                /** @brief Makes the widgets. @return `Ok` or `NoMem`. */
+                Error build();
+
+                /** @brief Opens it titled @p title, @p prompt before the field, holding @p initial. */
+                Error open(StringView title, StringView prompt, StringView initial);
+
+                /** @brief Returns what was typed, trimmed. */
+                StringView name() const;
+
+                /** @brief `Finished`'s results. */
+                enum Choice : int {
+                        Rejected = 0,
+                        Accepted = 1,
+                };
+
+        private:
+                Label    *_prompt = nullptr;
+                LineEdit *_edit = nullptr;
+};
+
 BMDS_NAMESPACE_END

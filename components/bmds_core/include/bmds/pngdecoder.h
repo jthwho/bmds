@@ -16,6 +16,7 @@
 #include <bmds/memspace.h>
 #include <bmds/result.h>
 #include <bmds/span.h>
+#include <bmds/stringview.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -70,10 +71,28 @@ namespace Png {
         /**
          * @brief Decodes @p file into @p out's top-left corner (at least the image's size), in
          *        its format; into a format without alpha each pixel is blended over
-         *        @p background (0xRRGGBB). Working memory from @p space.
+         *        @p background (0xRRGGBB). Working memory from @p space. A palette image's
+         *        first entries are replaced by @p colors (0xRRGGBB, each keeping its `tRNS`
+         *        alpha; a recolored desktop pattern, `devplan/wallpaper.md` §4b); other kinds
+         *        ignore them.
          * @return `Ok`, `CorruptData`, `NotSupported`, `BufferTooSmall`, `NoMem`.
          */
-        Error decode(ByteSpan file, const ImageBuffer &out, uint32_t background, MemSpace space);
+        Error decode(ByteSpan file, const ImageBuffer &out, uint32_t background, MemSpace space,
+                     Span<const uint32_t> colors = Span<const uint32_t>());
+
+        /**
+         * @brief Reads a palette image's colors (0xRRGGBB) into @p out, as many as fit.
+         * @return How many it has (0: not a palette image); `CorruptData`.
+         */
+        Result<size_t> palette(ByteSpan file, Span<uint32_t> out);
+
+        /**
+         * @brief Reads the next `tEXt` chunk at or after @p at (8 to start: past the signature;
+         *        moved past it): its keyword and its text, as written (Latin-1), views into
+         *        @p file.
+         * @return True if there was one; false after the last (or a damaged chunk).
+         */
+        bool nextText(ByteSpan file, size_t &at, StringView &keyword, StringView &text);
 
         /** @brief Returns the CRC-32 (PNG's, zlib's) of @p data continuing from @p crc (0 to start). */
         uint32_t crc32(ByteSpan data, uint32_t crc = 0);

@@ -51,6 +51,8 @@ class IconView::Canvas {
                 virtual void fill(int x, int y, int w, int h, uint32_t rgb) = 0;
                 virtual void image(int x, int y, const Icon &icon, uint32_t bg) = 0;
                 virtual void text(int x, int y, StringView text, uint32_t fg, uint32_t bg, uint16_t maxWidth) = 0;
+                virtual void         backdrop(const Backdrop &backdrop, int x, int y, int w, int h) = 0;
+                virtual void         imageOver(const Backdrop &backdrop, int x, int y, const Icon &icon) = 0;
                 const WindowPalette *palette = nullptr;
 };
 
@@ -76,6 +78,17 @@ namespace {
 
                         void text(int x, int y, StringView text, uint32_t fg, uint32_t bg, uint16_t maxWidth) override {
                                 (void)_painter.text(x, y, text, Fonts::unscii16, fg, bg, maxWidth);
+                                return;
+                        }
+
+                        void backdrop(const Backdrop &backdrop, int x, int y, int w, int h) override {
+                                const Rect r = cut(x, y, w, h, _clip);
+                                if (!r.isEmpty()) (void)backdrop.paint(_painter, r);
+                                return;
+                        }
+
+                        void imageOver(const Backdrop &backdrop, int x, int y, const Icon &icon) override {
+                                (void)backdrop.paintIcon(_painter, x, y, icon);
                                 return;
                         }
 
@@ -121,6 +134,32 @@ namespace {
                                 return;
                         }
 
+                        void backdrop(const Backdrop &backdrop, int x, int y, int w, int h) override {
+                                const Rect r = cut(x, y, w, h, _clip);
+                                if (!r.isEmpty())
+                                        backdrop.make(r.x, r.y, r.width, r.height,
+                                                      _pixels + size_t(r.y) * _stride + size_t(r.x) * 3, _stride);
+                                return;
+                        }
+
+                        // Over what the picture has there (the backdrop, drawn first).
+                        void imageOver(const Backdrop &, int x, int y, const Icon &icon) override {
+                                const uint16_t width = static_cast<uint16_t>(icon.width & ~3u); // as the painter
+                                for (int r = 0; r < icon.height; ++r)
+                                        for (int c = 0; c < width; ++c) {
+                                                if (x + c < 0 || y + r < 0 ||
+                                                    !_clip.contains(Rect{uint16_t(x + c), uint16_t(y + r), 1, 1}))
+                                                        continue;
+                                                const uint8_t *p =
+                                                        _pixels + size_t(y + r) * _stride + size_t(x + c) * 3;
+                                                const uint32_t under =
+                                                        uint32_t(p[2]) << 16 | uint32_t(p[1]) << 8 | p[0];
+                                                put(uint32_t(x + c), uint32_t(y + r),
+                                                    blendOver(icon.pixels[size_t(r) * icon.width + c], under));
+                                        }
+                                return;
+                        }
+
                 private:
                         void put(uint32_t x, uint32_t y, uint32_t rgb) {
                                 uint8_t *p = _pixels + size_t(y) * _stride + size_t(x) * 3;
@@ -153,6 +192,12 @@ void IconView::setArrangement(Arrangement arrangement) {
 void IconView::setColors(WindowPalette::Role background, WindowPalette::Role text) {
         _background = background;
         _text = text;
+        update();
+        return;
+}
+
+void IconView::setBackdrop(const Backdrop *backdrop) {
+        _backdrop = backdrop;
         update();
         return;
 }
@@ -423,7 +468,11 @@ void IconView::drawRow(Canvas &canvas, size_t row, int offsetX, int offsetY) con
         const Icon          *icon = model() != nullptr ? model()->icon(row, IconSide) : nullptr;
         if (icon != nullptr && icon->isValid() && icon->width <= IconSide && icon->height <= IconSide) {
                 const int ix = (x + (W - icon->width) / 2) & ~3;
-                canvas.image(ix, y + Pad + (IconSide - icon->height) / 2, *icon, background);
+                const int iy = y + Pad + (IconSide - icon->height) / 2;
+                if (_backdrop != nullptr)
+                        canvas.imageOver(*_backdrop, ix, iy, *icon);
+                else
+                        canvas.image(ix, iy, *icon, background);
         }
         if (int(row) == editing()) return;
         Lines l;
@@ -437,7 +486,7 @@ void IconView::drawRow(Canvas &canvas, size_t row, int offsetX, int offsetY) con
         for (uint8_t i = 0; i < l.count; ++i) {
                 const int tw = int(Fonts::unscii16.textWidth(StringView(l.text[i])));
                 const int lx = x + l.x[i] - Pad, ly = y + TextTop + i * LineHeight, lw = tw + 2 * Pad;
-                if (filled) canvas.fill(lx, ly, lw, LineHeight, bg);
+                if (filled || _backdrop != nullptr) canvas.fill(lx, ly, lw, LineHeight, bg); // a box over a backdrop
                 canvas.text(x + l.x[i], ly, StringView(l.text[i]), fg, bg, LineWidth);
                 if (outlined) {
                         // After the text (its rows would cover the top and bottom): an inactive selection
@@ -453,7 +502,11 @@ void IconView::drawRow(Canvas &canvas, size_t row, int offsetX, int offsetY) con
 }
 
 void IconView::drawAll(Canvas &canvas, const Rect &viewport) const {
-        canvas.fill(viewport.x, viewport.y, viewport.width, viewport.height, canvas.palette->color(_background));
+        if (_backdrop != nullptr)
+                canvas.backdrop(*_backdrop, viewport.x, viewport.y, viewport.width, viewport.height);
+        else
+                canvas.fill(viewport.x, viewport.y, viewport.width, viewport.height,
+                            canvas.palette->color(_background));
         const ContentRect seen{scrollX(), scrollY(), viewport.width, viewport.height};
         size_t            first = 0, end = count();
         if (_arrangement == Arrangement::Flow) {

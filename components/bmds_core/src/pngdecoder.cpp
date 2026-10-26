@@ -327,7 +327,39 @@ namespace {
 
 } // namespace
 
-Error Png::decode(ByteSpan file, const ImageBuffer &out, uint32_t background, MemSpace space) {
+Result<size_t> Png::palette(ByteSpan file, Span<uint32_t> out) {
+        Header      h;
+        const Error herr = header(file, h);
+        if (herr.isError()) return makeError<size_t>(herr);
+        if (h.type != Palette) return makeResult(size_t(0));
+        size_t at = 8;
+        for (Chunk c; next(file, at, c).isOk() && c.type != tag("IDAT") && c.type != tag("IEND");) {
+                if (c.type != tag("PLTE")) continue;
+                if (c.length % 3 != 0 || c.length / 3 > 256) break;
+                const size_t n = c.length / 3;
+                for (size_t i = 0; i < n && i < out.size(); ++i)
+                        out[i] = uint32_t(c.data[3 * i]) << 16 | uint32_t(c.data[3 * i + 1]) << 8 | c.data[3 * i + 2];
+                return makeResult(n);
+        }
+        return makeError<size_t>(Error::CorruptData);
+}
+
+bool Png::nextText(ByteSpan file, size_t &at, StringView &keyword, StringView &text) {
+        if (at < 8) at = 8;
+        for (Chunk c; at < file.size() && next(file, at, c).isOk() && c.type != tag("IEND");) {
+                if (c.type != tag("tEXt")) continue;
+                const auto  *chars = reinterpret_cast<const char *>(c.data);
+                const size_t nul = StringView(chars, c.length).indexOf('\0');
+                if (nul == StringView::NPos || nul == 0) continue; // no keyword
+                keyword = StringView(chars, nul);
+                text = StringView(chars + nul + 1, c.length - nul - 1);
+                return true;
+        }
+        return false;
+}
+
+Error Png::decode(ByteSpan file, const ImageBuffer &out, uint32_t background, MemSpace space,
+                  Span<const uint32_t> colors) {
         Header h;
         Error  err = header(file, h);
         if (err.isError()) return err;
@@ -370,6 +402,9 @@ Error Png::decode(ByteSpan file, const ImageBuffer &out, uint32_t background, Me
                 }
         }
         if (compressed == 0 || (h.type == Palette && s.paletteCount == 0)) return Error::CorruptData;
+        if (h.type == Palette)
+                for (size_t i = 0; i < colors.size() && i < s.paletteCount; ++i)
+                        s.palette[i] = (s.palette[i] & 0xff000000u) | (colors[i] & 0x00ffffffu);
         const unsigned bpp = channels(h.type) * h.depth; // bits a pixel
         const unsigned filterBpp = (bpp + 7) / 8;
         const size_t   stride = (size_t(h.width) * bpp + 7) / 8;

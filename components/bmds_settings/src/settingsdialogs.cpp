@@ -244,4 +244,37 @@ Error PasswordDialog::take(const char *&problem) {
         return err;
 }
 
+// ---- NameDialog
+
+NameDialog::NameDialog(GuiApplication &app) : Dialog(app, "Name", 340, 28) {}
+
+Error NameDialog::build() {
+        auto *row = Widget::create<BoxLayout>(content(), BoxLayout::Direction::Horizontal);
+        if (row == nullptr) return Error::NoMem;
+        row->setSpacing(8);
+        _prompt = Widget::create<Label>(row, "&Name:");
+        _edit = Widget::create<LineEdit>(row);
+        if (_prompt == nullptr || _edit == nullptr) return Error::NoMem;
+        _prompt->setBuddy(_edit);
+        _edit->setStretch(1);
+        _edit->setMaxLength(64);
+        (void)addButton("OK", Accepted);
+        (void)addButton("Cancel", Rejected);
+        setCancelResult(Rejected);
+        return Error::Ok;
+}
+
+Error NameDialog::open(StringView title, StringView prompt, StringView initial) {
+        setTitle(title);
+        _prompt->setText(prompt);
+        _edit->setText(initial);
+        const Error err = Dialog::open();
+        if (err.isOk()) setFocusWidget(_edit);
+        return err;
+}
+
+StringView NameDialog::name() const {
+        return _edit->text().trimmed();
+}
+
 BMDS_NAMESPACE_END

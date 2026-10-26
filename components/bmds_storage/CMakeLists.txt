@@ -150,18 +150,21 @@ elseif(NOT BOOTLOADER_BUILD)
         # The gamepads' mappings (devplan/controls.md §7a): SDL's line format, our own entries.
         set(BMDS_ROM_PADS_FILE ${BMDS_ROOT_DIR}/rom/gamepads.txt)
         set(BMDS_ROM_PADS --file share/gamepads.txt=${BMDS_ROM_PADS_FILE})
+        # The desktop's patterns (devplan/wallpaper.md §4g): PNGs made by tools/mkpatterns.
+        file(GLOB BMDS_ROM_PATTERN_FILES CONFIGURE_DEPENDS ${BMDS_ROM_DIR}/patterns/*.png)
+        set(BMDS_ROM_PATTERNS --dir share/patterns=${BMDS_ROM_DIR}/patterns)
         add_custom_command(OUTPUT ${BMDS_ROM_BIN} ${BMDS_ROM_HASH}
                            COMMAND ${BMDS_STORAGE_PYTHON} ${BMDS_MKROM} image ${BMDS_ROM_BIN}
                                    --max-bytes ${BMDS_ROM_PARTITION_BYTES} ${BMDS_ROM_TREE}
                                    --file share/icons/bmds.icons=${BMDS_ROM_OUT}/bmds.icons
                                    --file share/icons/bmds.LICENSES=${BMDS_ROM_OUT}/bmds.LICENSES
                                    ${BMDS_ROM_ZONES} ${BMDS_ROM_LEAP} ${BMDS_ROM_SSH} ${BMDS_ROM_SPEECH}
-                                   ${BMDS_ROM_PADS} --hash-header ${BMDS_ROM_HASH}
+                                   ${BMDS_ROM_PADS} ${BMDS_ROM_PATTERNS} --hash-header ${BMDS_ROM_HASH}
                            DEPENDS ${BMDS_MKROM} ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/bmds.LICENSES
                                    ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
                                    ${BMDS_ROM_SSHFS}/bin/sshfs ${BMDS_ROM_COPYID}/bin/ssh-copy-id
                                    ${BMDS_ROM_ANGEL}/bin/angel ${BMDS_ROM_ANGEL_EXAMPLES} ${BMDS_ROM_TREE_FILES} ${BMDS_ROM_ZONES_FILE} ${BMDS_ROM_LEAP_FILE}
-                                   ${BMDS_ROM_SPEECH_FILES} ${BMDS_ROM_PADS_FILE}
+                                   ${BMDS_ROM_SPEECH_FILES} ${BMDS_ROM_PADS_FILE} ${BMDS_ROM_PATTERN_FILES}
                            VERBATIM)
         target_sources(${COMPONENT_LIB} PRIVATE ${BMDS_ROM_HASH})
         target_include_directories(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})

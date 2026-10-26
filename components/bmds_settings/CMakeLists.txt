@@ -18,6 +18,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_SETTINGS_PURE_SRCS}
                                     src/pagestatus.cpp
+                                    src/patterneditors.cpp
                                     src/settingsapp.cpp
                                     src/settingsdialogs.cpp
                                     src/previews.cpp

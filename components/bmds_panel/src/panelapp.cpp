@@ -45,6 +45,7 @@
 #include <bmds/menulayout.h>
 #include <bmds/messagebox.h>
 #include <bmds/mimeapps.h>
+#include <bmds/patternfiles.h>
 #include <bmds/popupedit.h>
 #include <bmds/programlauncher.h>
 #include <bmds/string.h>
@@ -123,6 +124,23 @@ namespace {
                      "A spacer's width in pixels (0: what is left)", 0, 2000, nullptr, nullptr)
         BMDS_SYSCONF(panelDesktopMenu, "panel/desktop/menu", Config::Type::Bool, "true",
                      "A right click on the desktop opens the launcher's menu", 0, 0, nullptr, nullptr)
+        // The wallpaper (devplan/wallpaper.md §4a).
+        BMDS_SYSCONF(panelDesktopWallpaper, "panel/desktop/wallpaper", Config::Type::Enum, "pattern",
+                     "What the desktop shows: its color (wm/palette/desktop), or a tiled pattern", 0, 0,
+                     "color|pattern", nullptr)
+        BMDS_SYSCONF(panelDesktopPattern, "panel/desktop/pattern", Config::Type::String, "truchet",
+                     "The desktop's pattern: a PNG's name (without .png) in panel/desktop/patterns", 0, 64, nullptr,
+                     nullptr)
+        BMDS_SYSCONF(panelDesktopPatternColors, "panel/desktop/pattern-colors", Config::Type::String, "",
+                     "The pattern's colors: #rrggbb a palette entry, ; between (empty: the file's own)", 0, 255,
+                     nullptr, nullptr)
+        BMDS_SYSCONF(panelDesktopPatternScale, "panel/desktop/pattern-scale", Config::Type::Int, "1",
+                     "Each pattern pixel drawn as N x N screen pixels", 1, 4, nullptr, nullptr)
+        BMDS_SYSCONF(panelDesktopPatterns, "panel/desktop/patterns", Config::Type::Paths,
+                     "/home/Images/DesktopPatterns;/rom/share/patterns",
+                     "Where desktop patterns are found (NAME.png): the first of a name wins", 0, 0, nullptr, nullptr)
+        BMDS_SYSCONF(panelDesktopPalettes, "panel/desktop/palettes", Config::Type::Path, "/home/.config/patterns.conf",
+                     "The patterns' saved palettes (Settings writes them)", 0, 255, nullptr, nullptr)
         // The folder windows' (devplan/filebrowser.md §4h, FB16).
         BMDS_SYSCONF(filesShowHidden, "files/show-hidden", Config::Type::Bool, "false",
                      "Folder windows show hidden files (a leading '.', or the hidden attribute)", 0, 0, nullptr,
@@ -429,6 +447,7 @@ namespace {
                         void        applySettings();
                         void        loadEntries(StringView directories);
                         bool        loadDesktop();
+                        void        applyWallpaper();
                         void        readPlaces(Span<IconGrid::Cell> wanted);
                         bool        findDesktopIcons();
                         const Icon *desktopIcon(const Entry &entry);
@@ -1977,6 +1996,7 @@ namespace {
                                 _desktop->setDragAsked(desktopDragAsked, this);
                                 _desktop->setDropHandlers(desktopDropAsked, desktopDropped, this);
                                 _desktop->setTabOut(desktopTabOut, this);
+                                applyWallpaper();
                                 if (_desktop->show().isError()) say("panel: no desktop window\n");
                         }
                 }
@@ -2107,7 +2127,36 @@ namespace {
                         _desktop->setMenuAsked(!asked.isOk() || asked.value() ? desktopMenu : nullptr, this);
                         // In the new work area, with the new theme's icons.
                         if (moved || themed) (void)loadDesktop();
+                        applyWallpaper();
                 }
+                return;
+        }
+
+        // The desktop's wallpaper from panel/desktop/...: the pattern found first on the path, else
+        // (none, or a bad one: said) the color.
+        void PanelApp::applyWallpaper() {
+                if (_desktop == nullptr) return;
+                if (setting(bmdsConf_panelDesktopWallpaper) != "pattern") {
+                        _desktop->clearPattern();
+                        return;
+                }
+                String     name(MemSpace::Psram), colors(MemSpace::Psram), path(MemSpace::Psram);
+                const bool copied = name.assign(setting(bmdsConf_panelDesktopPattern)).isOk() &&
+                                    colors.assign(setting(bmdsConf_panelDesktopPatternColors)).isOk();
+                const int32_t       scale = intSetting(bmdsConf_panelDesktopPatternScale);
+                PatternFiles::Bytes file;
+                Error               err = copied ? PatternFiles::load(name.view(), file, &path) : Error(Error::NoMem);
+                if (err.isOk()) err = _desktop->setPattern(file.bytes(), colors.view(), unsigned(scale));
+                if (err.isOk()) return;
+                _desktop->clearPattern();
+                char problem[160];
+                if (err == Error::NotExist)
+                        std::snprintf(problem, sizeof(problem), "panel: no desktop pattern %s.png on %s\n", name.cStr(),
+                                      bmdsConf_panelDesktopPatterns.key);
+                else
+                        std::snprintf(problem, sizeof(problem), "panel: the desktop pattern %s: %s\n",
+                                      path.isEmpty() ? name.cStr() : path.cStr(), err.desc());
+                say(problem);
                 return;
         }
 

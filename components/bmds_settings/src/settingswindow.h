@@ -94,6 +94,24 @@ class SettingsWindow final : public GuiWindow {
                 /** @brief Starts @p command (a program and its arguments, spaces between), not waited for. */
                 void run(StringView command);
 
+                /**
+                 * @brief Told of a color asked for: as it changes (@p finished false), then at the
+                 *        end (@p accepted: OK; else Cancel, @p rgb the color it started at).
+                 */
+                using ColorTaken = void (*)(void *arg, uint32_t rgb, bool finished, bool accepted);
+
+                /** @brief Asks for a color, starting at @p rgb, labelled @p label, told to @p fn. */
+                void chooseColorFor(uint32_t rgb, StringView label, ColorTaken fn, void *arg);
+
+                /** @brief Told of a name typed (at OK). */
+                using NameTaken = void (*)(void *arg, StringView name);
+
+                /** @brief Asks for a name in a dialog titled @p title, @p prompt before the field. */
+                void askName(StringView title, StringView prompt, StringView initial, NameTaken fn, void *arg);
+
+                /** @brief Forgets the dialogs' callbacks to @p arg (it is going away). */
+                void forget(void *arg);
+
         protected:
                 void closedByManager() override;
                 bool keyUnused(const KeyEvent &event) override;
@@ -126,6 +144,7 @@ class SettingsWindow final : public GuiWindow {
                 static void confirmTick(void *arg);
                 static void zoneDone(void *arg, Dialog &dialog, int result);
                 static void passwordDone(void *arg, Dialog &dialog, int result);
+                static void nameDone(void *arg, Dialog &dialog, int result);
                 static void tick(void *arg);
 
                 void showGroups(int select); // the sidebar's groups, @p select chosen
@@ -144,6 +163,7 @@ class SettingsWindow final : public GuiWindow {
                 Dialog                         _confirm;
                 ZoneDialog                     _zoneDialog;
                 PasswordDialog                 _passwordDialog;
+                NameDialog                     _nameDialog;
                 const BuiltinProgram::Context &_program;
                 int                            _tickTimer = -1; // while the page's status changes by itself
                 SysConf::Id                    _zoneId = SysConf::NoId;
@@ -169,6 +189,10 @@ class SettingsWindow final : public GuiWindow {
                 SysConf::Id                    _colorId = SysConf::NoId;
                 char                           _pathLabel[64] = {};
                 char                           _colorLabel[64] = {};
+                ColorTaken                     _colorFn = nullptr; // chooseColorFor()'s
+                void                          *_colorArg = nullptr;
+                NameTaken                      _nameFn = nullptr;
+                void                          *_nameArg = nullptr;
 };
 
 BMDS_NAMESPACE_END

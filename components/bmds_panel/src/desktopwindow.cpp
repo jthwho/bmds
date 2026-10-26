@@ -10,6 +10,7 @@
  */
 
 #include <bmds/memory.h>
+#include <bmds/region.h>
 
 #include "desktopwindow.h"
 
@@ -96,9 +97,39 @@ void DesktopWindow::setItemIcon(size_t item, const Icon *icon, bool dimmed) {
         return;
 }
 
-// Around the view (the panel's strip when its window is above): the desktop's colour.
+Error DesktopWindow::setPattern(ByteSpan file, StringView colors, unsigned scale) {
+        _desktopColor = application().windowManager().palette().color(Role::Desktop);
+        const Error err = _pattern.load(file, colors, scale, _desktopColor);
+        if (_view != nullptr) _view->setBackdrop(_pattern.isValid() ? &_pattern : nullptr);
+        update();
+        return err;
+}
+
+void DesktopWindow::clearPattern() {
+        _pattern.reset();
+        if (_view != nullptr) _view->setBackdrop(nullptr);
+        update();
+        return;
+}
+
+// Around the view (the panel's strip when its window is above): the wallpaper. Painted before
+// the view, so a new desktop color is blended into the pattern first.
 void DesktopWindow::paint(Painter &painter) {
-        (void)painter.fill(geometry(), painter.palette().color(Role::Desktop));
+        const uint32_t desktop = painter.palette().color(Role::Desktop);
+        if (_pattern.isValid() && desktop != _desktopColor) {
+                _desktopColor = desktop;
+                _pattern.setBackground(desktop);
+                if (!_pattern.isValid() && _view != nullptr) _view->setBackdrop(nullptr); // no memory
+        }
+        if (!_pattern.isValid()) {
+                (void)painter.fill(geometry(), desktop);
+                return;
+        }
+        Rect   parts[4];
+        size_t n = 1;
+        parts[0] = geometry();
+        if (_view != nullptr) n = subtract(geometry(), _view->geometry(), parts);
+        for (size_t i = 0; i < n; ++i) (void)_pattern.paint(painter, parts[i]);
         return;
 }
 
@@ -110,13 +141,17 @@ void DesktopWindow::activeChanged() {
 void DesktopWindow::drawReference(uint8_t *pixels, size_t stride, uint16_t width, uint16_t height,
                                   const WindowPalette &palette) {
         const uint32_t desktop = palette.color(Role::Desktop);
-        for (uint32_t y = 0; y < height; ++y)
-                for (uint32_t x = 0; x < width; ++x) {
-                        uint8_t *p = pixels + y * stride + x * 3;
-                        p[0] = static_cast<uint8_t>(desktop);
-                        p[1] = static_cast<uint8_t>(desktop >> 8);
-                        p[2] = static_cast<uint8_t>(desktop >> 16);
-                }
+        if (_pattern.isValid()) {
+                _pattern.make(0, 0, width, height, pixels, stride);
+        } else {
+                for (uint32_t y = 0; y < height; ++y)
+                        for (uint32_t x = 0; x < width; ++x) {
+                                uint8_t *p = pixels + y * stride + x * 3;
+                                p[0] = static_cast<uint8_t>(desktop);
+                                p[1] = static_cast<uint8_t>(desktop >> 8);
+                                p[2] = static_cast<uint8_t>(desktop >> 16);
+                        }
+        }
         if (_view != nullptr) _view->drawReference(pixels, stride, width, height, palette);
         return;
 }

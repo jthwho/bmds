@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/tiledpattern.h>
 #include <bmds/widget.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -19,7 +20,8 @@ BMDS_NAMESPACE_BEGIN
  * @brief The window manager's palette on a small desktop (`devplan/controlpanel.md`
  *        §12): an inactive window behind an active one with its title, buttons, a
  *        button, a field, text, disabled text, a selected item, a tooltip and the
- *        pointer, all in the colors set now (`wm/palette/...`).
+ *        pointer, all in the colors set now (`wm/palette/...`), on the desktop's pattern if
+ *        it has one (`devplan/wallpaper.md` §4f).
  *
  * @par Thread Safety
  * As `Widget`.
@@ -39,8 +41,10 @@ class PalettePreview final : public Widget {
                 static constexpr size_t Roles = 25;
 
                 void window(Painter &painter, const Rect &r, bool active, const char *title);
+                void desktop(Painter &painter, const Rect &g);
 
-                uint32_t _c[Roles] = {};
+                uint32_t     _c[Roles] = {};
+                TiledPattern _pattern; // the desktop's (invalid: its color)
 };
 
 /**

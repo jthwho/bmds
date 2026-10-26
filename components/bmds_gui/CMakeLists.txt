@@ -18,9 +18,11 @@ set(BMDS_GUI_PURE_SRCS
         src/itemselection.cpp
         src/lineeditmodel.cpp
         src/linelayout.cpp
+        src/patternpalettes.cpp
         src/scrollmodel.cpp
         src/slidermodel.cpp
         src/tabrow.cpp
+        src/tiledpattern.cpp
         src/trayrow.cpp
         src/treerows.cpp)
 
@@ -28,6 +30,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_GUI_PURE_SRCS}
+                                    src/backdrop.cpp
                                     src/colordialog.cpp
                                     src/combobox.cpp
                                     src/detailsview.cpp
@@ -45,6 +48,7 @@ if(COMMAND idf_component_register)
                                     src/iconview.cpp
                                     src/icontheme.cpp
                                     src/itemview.cpp
+                                    src/patternfiles.cpp
                                     src/lineedit.cpp
                                     src/textedit.cpp
                                     src/findbar.cpp

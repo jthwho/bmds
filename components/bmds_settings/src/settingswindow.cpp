@@ -66,7 +66,8 @@ SettingsWindow::OwnedIcon::~OwnedIcon() {
 SettingsWindow::SettingsWindow(GuiApplication &app, const Config &config, const BuiltinProgram::Context &program)
     : GuiWindow(app, config), _folderDialog(app, FileDialog::Mode::Folder, "Choose a Folder"),
       _fileDialog(app, FileDialog::Mode::Open, "Choose a File"), _colorDialog(app, "Color"),
-      _confirm(app, "Keep This Setting?", 320, 48), _zoneDialog(app), _passwordDialog(app), _program(program) {}
+      _confirm(app, "Keep This Setting?", 320, 48), _zoneDialog(app), _passwordDialog(app), _nameDialog(app),
+      _program(program) {}
 
 SettingsWindow::~SettingsWindow() {
         if (_confirmTimer >= 0) application().stopTimer(_confirmTimer);
@@ -140,6 +141,8 @@ Error SettingsWindow::build() {
         if (Error e = _passwordDialog.build(); e.isError()) return e;
         _zoneDialog.setFinished(zoneDone, this);
         _passwordDialog.setFinished(passwordDone, this);
+        if (Error e = _nameDialog.build(); e.isError()) return e;
+        _nameDialog.setFinished(nameDone, this);
 
         if (Error e = application().watchConfig(StringView(), configChanged, this); e.isError()) return e;
         showGroups(0);
@@ -364,6 +367,7 @@ void SettingsWindow::pathChosen(void *arg, FileDialog &dialog, int result) {
 void SettingsWindow::chooseColor(SysConf::Id id, StringView label) {
         String value(MemSpace::Psram);
         if (SysConf::get(id, value).isError()) return;
+        _colorFn = nullptr;
         _colorId = id;
         std::snprintf(_colorLabel, sizeof(_colorLabel), "%.*s", int(label.size()), label.data());
         if (_colorDialog.open(Conf::toColor(value.view())).isError()) {
@@ -373,8 +377,48 @@ void SettingsWindow::chooseColor(SysConf::Id id, StringView label) {
         return;
 }
 
+void SettingsWindow::chooseColorFor(uint32_t rgb, StringView label, ColorTaken fn, void *arg) {
+        _colorId = SysConf::NoId;
+        _colorFn = fn;
+        _colorArg = arg;
+        std::snprintf(_colorLabel, sizeof(_colorLabel), "%.*s", int(label.size()), label.data());
+        if (_colorDialog.open(rgb).isError()) {
+                _colorFn = nullptr;
+                say("The dialog can't open");
+        }
+        return;
+}
+
+void SettingsWindow::askName(StringView title, StringView prompt, StringView initial, NameTaken fn, void *arg) {
+        _nameFn = fn;
+        _nameArg = arg;
+        if (_nameDialog.open(title, prompt, initial).isError()) {
+                _nameFn = nullptr;
+                say("The dialog can't open");
+        }
+        return;
+}
+
+void SettingsWindow::forget(void *arg) {
+        if (_colorArg == arg) _colorFn = nullptr;
+        if (_nameArg == arg) _nameFn = nullptr;
+        return;
+}
+
+void SettingsWindow::nameDone(void *arg, Dialog &, int result) {
+        auto     *self = static_cast<SettingsWindow *>(arg);
+        NameTaken fn = self->_nameFn;
+        self->_nameFn = nullptr;
+        if (fn != nullptr && result == NameDialog::Accepted) fn(self->_nameArg, self->_nameDialog.name());
+        return;
+}
+
 void SettingsWindow::colorChanged(void *arg, ColorDialog &, uint32_t rgb) {
         auto *self = static_cast<SettingsWindow *>(arg);
+        if (self->_colorFn != nullptr) {
+                self->_colorFn(self->_colorArg, rgb, false, false);
+                return;
+        }
         if (self->_colorId == SysConf::NoId) return;
         char hex[8];
         ColorModel::formatHex(rgb, hex);
@@ -383,7 +427,14 @@ void SettingsWindow::colorChanged(void *arg, ColorDialog &, uint32_t rgb) {
 }
 
 void SettingsWindow::colorDone(void *arg, Dialog &, int result) {
-        auto             *self = static_cast<SettingsWindow *>(arg);
+        auto *self = static_cast<SettingsWindow *>(arg);
+        if (self->_colorFn != nullptr) {
+                ColorTaken fn = self->_colorFn;
+                self->_colorFn = nullptr;
+                const bool ok = result == ColorDialog::Accepted;
+                fn(self->_colorArg, ok ? self->_colorDialog.color() : self->_colorDialog.originalColor(), true, ok);
+                return;
+        }
         const SysConf::Id id = self->_colorId;
         self->_colorId = SysConf::NoId;
         if (id == SysConf::NoId) return;

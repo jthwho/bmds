@@ -40,6 +40,8 @@ namespace SettingsTable {
                 Zone,     ///< A time zone (`devplan/controlpanel.md` §6.4).
                 Mode,     ///< The display's mode (its list, and Custom).
                 Password, ///< A `secret` set through Set Password... (`Password::set()`).
+                Pattern,  ///< The desktop's pattern: a grid of them, each drawn (`devplan/wallpaper.md` §4f).
+                PatternColors, ///< Its colors, and its palettes saved and recalled.
         };
 
         /** @brief A row's flags. */
