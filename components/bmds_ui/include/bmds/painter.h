@@ -206,6 +206,21 @@ class Painter {
                 Error rows(int x, int y, uint16_t width, uint16_t height, uint16_t repeat, bool rgb565, RowMaker make,
                            void *arg);
 
+                /**
+                 * @brief Fills @p rect (x, made the surface's, and width on 4-pixel columns) with a
+                 *        tile repeated across and down: @p width × @p height B, G, R pixels
+                 *        (@p width a multiple of 4; @p stride bytes a row; PSRAM or internal RAM),
+                 *        each row shown @p repeat times down, its top-left pixel at (@p tileX,
+                 *        @p tileY) (the painter's coordinates; @p rect.x minus @p tileX a multiple
+                 *        of 4). What of it shows is copied by the 2D-DMA straight from the tile
+                 *        (`Surface::startTile()`): no CPU a pixel, no strip. Returns once copied:
+                 *        the tile may change after.
+                 * @return The first error so far (`Invalid`: off the columns, a bad tile).
+                 * @blocking The copy.
+                 */
+                Error tiled(const Rect &rect, const uint8_t *bgr, size_t stride, uint16_t width, uint16_t height,
+                            uint16_t repeat, int tileX, int tileY);
+
                 /** @brief Returns the most rows `rows()` takes. */
                 uint16_t stripRows() const { return _tools.height; }
 

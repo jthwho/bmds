@@ -83,6 +83,13 @@ namespace {
                                 return;
                         }
 
+                        bool tile(Tile &out) const override {
+                                if (!_pattern.tile(out)) return false;
+                                out.x += _dx;
+                                out.y += _dy;
+                                return true;
+                        }
+
                 private:
                         const TiledPattern &_pattern;
                         int                 _dx;

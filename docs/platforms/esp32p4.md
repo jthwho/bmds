@@ -211,6 +211,12 @@ until silicon v3; then test again.
   repeats rows down without the CPU copying them (`BlitChain::addRepeated()`, as fills send one
   line a row). Windows scaled up draw this way: a k-th of the strip expanded and written back
   (`devplan/games.md` §24).
+- **A tile in PSRAM copied by block descriptors outruns a fill sent a row a descriptor**
+  (`devplan/wallpaper.md` §6e, 2026-10-26): redrawing the 1280×692 desktop from a pattern's tile
+  in PSRAM, a transmit descriptor for each run of 32 or more rows (`BlitChain::addTiled()`), took
+  52-58 ms of the window manager's drawing; the same area as a solid fill, its colour line in
+  internal RAM sent once a row (a 1280-pixel row fills the 1536-byte line), took 66 ms. Reading
+  the source from PSRAM cost less than the per-row descriptors. Prefer tall blocks.
 - **The PPA's scaler (SRM) interpolates, and is slow** (`devplan/games.md` §10, measured
   2026-10-14 with `display ppa`, the scan running): a 1-pixel checkerboard scaled 2× comes out
   gray (bilinear: its input macro blocks are 18×18 for 16×16, a pixel around), and no register

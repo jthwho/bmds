@@ -18,7 +18,7 @@ import struct
 import sys
 import zlib
 
-from PIL import Image, ImageDraw, PngImagePlugin
+from PIL import Image, PngImagePlugin
 
 AUTHOR = "BMDS"
 LICENSE = "MIT"
@@ -80,15 +80,145 @@ class Pattern:
                 return path
 
 
-# ---- The patterns
+# ---- Helpers: every pattern is a function of (x, y), or drawn with wrapping, so it tiles.
+
+def each(img, fn):
+        px = img.load()
+        for y in range(img.height):
+                for x in range(img.width):
+                        px[x, y] = fn(x, y)
+
+
+def rows(img, art):
+        # A small bitmap as text rows: each character a color index.
+        each(img, lambda x, y: int(art[y][x]))
+
+
+def wrapped(a, b, n):
+        # The shortest distance from a to b on a circle of n.
+        d = abs(a - b) % n
+        return min(d, n - d)
+
+
+def periodic_noise(size, cells, seed):
+        """Smooth value noise on a size x size torus: a lattice of cells x cells random values,
+        interpolated with smoothstep; returns a function (x, y) -> 0..1."""
+        rnd = random.Random(seed)
+        grid = [[rnd.random() for _ in range(cells)] for _ in range(cells)]
+        step = size / cells
+
+        def smooth(t):
+                return t * t * (3 - 2 * t)
+
+        def at(x, y):
+                gx, gy = x / step, y / step
+                x0, y0 = int(gx) % cells, int(gy) % cells
+                x1, y1 = (x0 + 1) % cells, (y0 + 1) % cells
+                tx, ty = smooth(gx - int(gx)), smooth(gy - int(gy))
+                top = grid[y0][x0] * (1 - tx) + grid[y0][x1] * tx
+                bottom = grid[y1][x0] * (1 - tx) + grid[y1][x1] * tx
+                return top * (1 - ty) + bottom * ty
+
+        return at
+
+
+def fractal(size, seed, octaves=((8, 0.55), (16, 0.3), (32, 0.15))):
+        layers = [(periodic_noise(size, cells, seed + i), w) for i, (cells, w) in enumerate(octaves)]
+        return lambda x, y: sum(f(x, y) * w for f, w in layers)
+
+
+BAYER4 = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]
+
+
+def line(px, w, h, x0, y0, x1, y1, color, width=1):
+        # Bresenham, wrapped at the tile's edges; `width` widens it down and right.
+        dx, dy = abs(x1 - x0), -abs(y1 - y0)
+        sx, sy = (1 if x0 < x1 else -1), (1 if y0 < y1 else -1)
+        err = dx + dy
+        while True:
+                for i in range(width):
+                        for j in range(width):
+                                px[(x0 + i) % w, (y0 + j) % h] = color
+                if x0 == x1 and y0 == y1:
+                        break
+                e2 = 2 * err
+                if e2 >= dy:
+                        err += dy
+                        x0 += sx
+                if e2 <= dx:
+                        err += dx
+                        y0 += sy
+
+
+# ---- Classic two-color 8x8 (and a few 16x16)
 
 def draw_checks(img):
         # 8x8: squares of 4.
-        px = img.load()
-        for y in range(8):
-                for x in range(8):
-                        px[x, y] = ((x // 4) ^ (y // 4)) & 1
+        each(img, lambda x, y: ((x // 4) ^ (y // 4)) & 1)
 
+
+def draw_weave(img):
+        # Over and under: a block of rows beside a block of columns, swapped below.
+        def f(x, y):
+                across = ((x // 4) ^ (y // 4)) & 1 == 0
+                return (y % 2 == 0) if across else (x % 2 == 0)
+        each(img, lambda x, y: int(f(x, y)))
+
+
+def draw_bricks(img):
+        # Running bond: mortar (1) above each course, and between bricks offset by half a brick.
+        def f(x, y):
+                if y % 4 == 0:
+                        return 1
+                return 1 if x % 8 == (0 if (y // 4) % 2 == 0 else 4) else 0
+        each(img, f)
+
+
+def draw_diamonds(img):
+        each(img, lambda x, y: 1 if abs(x - 4) + abs(y - 4) <= 2 else 0)
+
+
+def draw_zigzag(img):
+        each(img, lambda x, y: 1 if (y + abs(x - 4)) % 8 < 4 else 0)
+
+
+def draw_dots(img):
+        # A half-drop grid of 2x2 dots.
+        each(img, lambda x, y: 1 if (x % 8 in (1, 2) and y % 8 in (1, 2)) or (x % 8 in (5, 6) and y % 8 in (5, 6))
+             else 0)
+
+
+def draw_parquet(img):
+        def f(x, y):
+                if (x // 4) % 2 == 0:
+                        return 1 if (x + y) % 8 < 4 else 0
+                return 1 if (x - y) % 8 < 4 else 0
+        each(img, f)
+
+
+def draw_scales(img):
+        # 16x16: rows of half circles of radius 8, each row offset by half and overlapping the one
+        # above; an edge (1) round each.
+        px = img.load()
+        w, h = img.width, img.height
+        centers = []
+        for j in range(-2, 4):
+                for i in range(-2, 3):
+                        centers.append((16 * i + (8 if j % 2 else 0), 8 * j))
+        centers.sort(key=lambda c: c[1])
+        for cx, cy in centers:
+                for y in range(cy, cy + 9):
+                        for x in range(cx - 8, cx + 9):
+                                d = math.hypot(x + 0.5 - cx - 0.5, y + 0.5 - cy)
+                                if d <= 8.5:
+                                        px[x % w, y % h] = 1 if d > 7.2 else 0
+
+
+def draw_grid(img):
+        each(img, lambda x, y: 1 if x % 16 == 0 or y % 16 == 0 else 0)
+
+
+# ---- Geometric
 
 def draw_truchet(img):
         # 64x64: 16-pixel cells, each with two quarter rings joining its sides' middles in one of
@@ -110,6 +240,183 @@ def draw_truchet(img):
                         px[x, y] = 1 if off < 1.6 else 2 if off < 2.6 else 0
 
 
+def draw_cubes(img):
+        # 32x48: tumbling blocks in 2:1 isometric: a top (1), a left (0) and a right (2) face.
+        def face(x, y):
+                # The cube whose outline starts at (0, 0): -1 if outside.
+                if abs(x - 16) / 16 + abs(y - 8) / 8 <= 1:
+                        return 1
+                if 0 <= x < 16 and 8 + x / 2 <= y < 24 + x / 2:
+                        return 0
+                if 16 <= x < 32 and 16 - (x - 16) / 2 <= y < 32 - (x - 16) / 2:
+                        return 2
+                return -1
+
+        def f(x, y):
+                for j in range(-2, 3):
+                        for i in range(-2, 3):
+                                ox, oy = 32 * i + (16 if j % 2 else 0), 24 * j
+                                v = face(x + 0.5 - ox, y + 0.5 - oy)
+                                if v >= 0:
+                                        return v
+                return 0
+        each(img, f)
+
+
+def draw_waves(img):
+        # 64x64: stripes 4 wide bent by a sine across, its period the tile's.
+        each(img, lambda x, y: int((y + 6 * math.sin(2 * math.pi * x / 64)) // 4) % 2)
+
+
+def draw_bauhaus(img):
+        # 64x64: four 32-pixel cells: a quarter circle, a half circle, a square with a bar, bars.
+        def cell(x, y, kind):
+                if kind == 0:
+                        return 1 if math.hypot(x + 0.5, y + 0.5) < 28 else 0
+                if kind == 1:
+                        return 2 if y >= 16 and math.hypot(x + 0.5 - 16, y + 0.5 - 32) < 14 else (3 if y < 6 else 0)
+                if kind == 2:
+                        if 6 <= x < 26 and 6 <= y < 26:
+                                return 3
+                        return 2 if 26 <= x < 30 else 0
+                return 1 if (y // 4) % 3 == 0 else 0
+        kinds = [[0, 1], [2, 3]]
+        each(img, lambda x, y: cell(x % 32, y % 32, kinds[y // 32][x // 32]))
+
+
+def hex_cells(w, h, dx, dy):
+        # Centers of a hexagonal lattice tiling a w x h tile: columns dx apart, rows dy apart, odd
+        # rows offset by half; with neighbours past each edge.
+        out = []
+        for j in range(-1, h // dy + 2):
+                for i in range(-1, w // dx + 2):
+                        out.append((i * dx + (dx / 2 if j % 2 else 0), j * dy))
+        return out
+
+
+def nearest_two(cells, x, y):
+        d = sorted((math.hypot(x - cx, y - cy), cx, cy) for cx, cy in cells)
+        return d[0], d[1]
+
+
+def draw_hexagons(img):
+        # 28x48: a honeycomb: each cell (0) lit at its top edge (1), dark between cells (2).
+        cells = hex_cells(img.width, img.height, 28, 24)
+
+        def f(x, y):
+                (d1, cx, cy), (d2, _, _) = nearest_two(cells, x + 0.5, y + 0.5)
+                edge = d2 - d1
+                if edge < 1.6:
+                        return 2
+                if edge < 4 and y + 0.5 < cy:
+                        return 1
+                return 0
+        each(img, f)
+
+
+def draw_triangles(img):
+        # 128x128: 16-pixel squares, each cut on a diagonal (either way), each triangle one of
+        # four shades.
+        rnd = random.Random(3)
+        n = img.width // 16
+        cut = [[rnd.random() < 0.5 for _ in range(n)] for _ in range(n)]
+        shade = [[(rnd.randrange(4), rnd.randrange(4)) for _ in range(n)] for _ in range(n)]
+
+        def f(x, y):
+                i, j = x // 16, y // 16
+                lx, ly = x % 16, y % 16
+                upper = (lx > ly) if cut[j][i] else (lx + ly < 15)
+                return shade[j][i][0 if upper else 1]
+        each(img, f)
+
+
+def draw_arches(img):
+        # 32x32: fans of radius 16 in offset rows, each of rings: gold edges (1) between bands
+        # of the two others; each row over the one behind it.
+        px = img.load()
+        w, h = img.width, img.height
+        centers = []
+        for j in range(-1, 5):
+                for i in range(-1, 3):
+                        centers.append((32 * i + (16 if j % 2 else 0), 16 * j))
+        centers.sort(key=lambda c: c[1])
+        for cx, cy in centers:
+                for y in range(cy - 16, cy + 1):
+                        for x in range(cx - 16, cx + 16):
+                                d = math.hypot(x + 0.5 - cx, y + 0.5 - cy)
+                                if d < 16:
+                                        px[x % w, y % h] = 1 if d % 4 < 1 else (0 if int(d // 4) % 2 else 2)
+
+
+def draw_maze(img):
+        # 128x128: a maze of 16x16 cells, 8 pixels each, dug on a torus (so it continues past the
+        # edges): walls (1) two pixels thick on each cell's top and left where closed.
+        rnd = random.Random(11)
+        n = img.width // 8
+        open_right = [[False] * n for _ in range(n)]
+        open_down = [[False] * n for _ in range(n)]
+        seen = [[False] * n for _ in range(n)]
+        stack = [(0, 0)]
+        seen[0][0] = True
+        while stack:
+                x, y = stack[-1]
+                options = []
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nx, ny = (x + dx) % n, (y + dy) % n
+                        if not seen[ny][nx]:
+                                options.append((dx, dy, nx, ny))
+                if not options:
+                        stack.pop()
+                        continue
+                dx, dy, nx, ny = rnd.choice(options)
+                if dx == 1:
+                        open_right[y][x] = True
+                elif dx == -1:
+                        open_right[ny][nx] = True
+                elif dy == 1:
+                        open_down[y][x] = True
+                else:
+                        open_down[ny][nx] = True
+                seen[ny][nx] = True
+                stack.append((nx, ny))
+
+        def f(x, y):
+                i, j = x // 8, y // 8
+                lx, ly = x % 8, y % 8
+                if lx < 2 and ly < 2:
+                        return 1
+                if ly < 2 and not open_down[(j - 1) % n][i]:
+                        return 1
+                if lx < 2 and not open_right[j][(i - 1) % n]:
+                        return 1
+                return 0
+        each(img, f)
+
+
+def draw_quilt(img):
+        # 64x64: 16-pixel patches: a solid, a half-square triangle or a small check in the three
+        # cloth colors, stitched at their seams (dashes of 3).
+        rnd = random.Random(5)
+        patches = [[(rnd.randrange(3), rnd.randrange(3), rnd.randrange(3)) for _ in range(4)] for _ in range(4)]
+
+        def f(x, y):
+                i, j = x // 16, y // 16
+                lx, ly = x % 16, y % 16
+                if (lx == 0 and ly % 4 < 2) or (ly == 0 and lx % 4 < 2):
+                        return 3
+                kind, a, b = patches[j][i]
+                if b == a:
+                        b = (a + 1) % 3
+                if kind == 0:
+                        return a
+                if kind == 1:
+                        return a if lx > ly else b
+                return a if ((lx // 4) ^ (ly // 4)) & 1 else b
+        each(img, f)
+
+
+# ---- Sci-fi
+
 def draw_starfield(img):
         # 256x256: stars of three brightnesses, a few with a cross of light; wrapped at the edges.
         rnd = random.Random(7)
@@ -126,22 +433,352 @@ def draw_starfield(img):
                 px[x, y] = 3
 
 
+def draw_circuit(img):
+        # 128x128: traces (1) between nodes 8 apart, turning 45 degrees now and then, ending in
+        # pads (2) with holes; vias (3) along some.
+        rnd = random.Random(21)
+        px = img.load()
+        w, h = img.width, img.height
+        n = w // 8
+        used = set()
+        dirs = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
+
+        def pad(cx, cy):
+                for dy in range(-2, 2):
+                        for dx in range(-2, 2):
+                                px[(cx + dx) % w, (cy + dy) % h] = 0 if (dx, dy) in ((-1, -1), (0, -1), (-1, 0), (0, 0)) else 2
+
+        for _ in range(26):
+                x, y = rnd.randrange(n), rnd.randrange(n)
+                if (x, y) in used:
+                        continue
+                d = rnd.randrange(0, 8, 2)  # start straight
+                path = [(x, y)]
+                for _ in range(rnd.randrange(4, 12)):
+                        if rnd.random() < 0.25:
+                                d = (d + rnd.choice((-1, 1))) % 8
+                        nx, ny = (x + dirs[d][0]) % n, (y + dirs[d][1]) % n
+                        if (nx, ny) in used or (nx, ny) in path:
+                                break
+                        x, y = nx, ny
+                        path.append((x, y))
+                if len(path) < 3:
+                        continue
+                used.update(path)
+                for (ax, ay), (bx, by) in zip(path, path[1:]):
+                        # Unwrapped steps: the line drawn from a toward b, wrapping as it goes.
+                        sx = bx - ax if abs(bx - ax) <= 1 else (1 if bx < ax else -1)
+                        sy = by - ay if abs(by - ay) <= 1 else (1 if by < ay else -1)
+                        line(px, w, h, ax * 8 + 4, ay * 8 + 4, ax * 8 + 4 + 8 * sx, ay * 8 + 4 + 8 * sy, 1, 2)
+                pad(path[0][0] * 8 + 5, path[0][1] * 8 + 5)
+                pad(path[-1][0] * 8 + 5, path[-1][1] * 8 + 5)
+                for vx, vy in path[2:-1:3]:
+                        for dx, dy in ((-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)):
+                                px[(vx * 8 + 4 + dx) % w, (vy * 8 + 4 + dy) % h] = 3
+
+
+def draw_tron(img):
+        # 64x64: a bright line (2) every 32 pixels both ways, a dim halo (1) beside it.
+        def f(x, y):
+                ex, ey = wrapped(x, 0, 32), wrapped(y, 0, 32)
+                if ex == 0 or ey == 0:
+                        return 2
+                if ex == 1 or ey == 1:
+                        return 1
+                return 0
+        each(img, lambda x, y: f(x % 32, y % 32))
+
+
+def draw_hexarmour(img):
+        # 40x70: hex plates (0) with dark seams (2), lit along their top (1), rivets (3) near
+        # their corners.
+        cells = hex_cells(img.width, img.height, 40, 35)
+
+        def f(x, y):
+                (d1, cx, cy), (d2, _, _) = nearest_two(cells, x + 0.5, y + 0.5)
+                edge = d2 - d1
+                if edge < 1.5:
+                        return 2
+                for k in range(6):
+                        a = math.pi / 6 + k * math.pi / 3
+                        if math.hypot(x + 0.5 - (cx + 13 * math.cos(a)), y + 0.5 - (cy + 13 * math.sin(a))) < 1.6:
+                                return 3
+                if edge < 3.5 and y + 0.5 < cy:
+                        return 1
+                return 0
+        each(img, f)
+
+
+def draw_scanlines(img):
+        # 12x4: a bright line (2), its glow (1) under it, two dark rows; every third column of
+        # the bright line a step dimmer (the shadow mask).
+        def f(x, y):
+                if y == 0:
+                        return 1 if x % 3 == 2 else 2
+                return 1 if y == 1 else 0
+        each(img, f)
+
+
+GLYPHS = None
+
+
+def glyph_set():
+        # Our own glyphs: 4x6 bitmaps, left-right mirrored halves of random bits, 24 of them.
+        global GLYPHS
+        if GLYPHS is None:
+                rnd = random.Random(13)
+                GLYPHS = []
+                while len(GLYPHS) < 24:
+                        g = [[rnd.random() < 0.5 for _ in range(4)] for _ in range(6)]
+                        if 8 <= sum(map(sum, g)) <= 16:
+                                GLYPHS.append(g)
+        return GLYPHS
+
+
+def draw_glyphs(img):
+        # 128x128: columns of glyphs falling: a bright head (3), then mid (2) and dim (1) behind
+        # it, a column's trail wrapping round.
+        rnd = random.Random(17)
+        px = img.load()
+        glyphs = glyph_set()
+        cols, cells = img.width // 8, img.height // 8
+        for c in range(cols):
+                for _ in range(rnd.choice((1, 1, 2))):
+                        head = rnd.randrange(cells)
+                        trail = rnd.randrange(4, 13)
+                        for k in range(trail):
+                                cell = (head - k) % cells
+                                level = 3 if k == 0 else 2 if k < trail // 2 else 1
+                                g = rnd.choice(glyphs)
+                                for gy in range(6):
+                                        for gx in range(4):
+                                                if g[gy][gx]:
+                                                        px[c * 8 + 2 + gx, cell * 8 + 1 + gy] = level
+
+
+def draw_radar(img):
+        # 128x128: range rings and a crosshair (1) about the middle, a few blips (2).
+        rnd = random.Random(19)
+
+        def f(x, y):
+                d = math.hypot(x + 0.5 - 64, y + 0.5 - 64)
+                if any(abs(d - r) < 0.6 for r in (16, 32, 48, 63)) or x == 64 or y == 64:
+                        return 1
+                return 0
+        each(img, f)
+        px = img.load()
+        for _ in range(6):
+                a, r = rnd.random() * 2 * math.pi, rnd.uniform(8, 60)
+                bx, by = int(64 + r * math.cos(a)), int(64 + r * math.sin(a))
+                for dy in range(2):
+                        for dx in range(2):
+                                px[bx + dx, by + dy] = 2
+
+
+def draw_nebula(img):
+        # 256x256: clouds in five levels (0-4), the steps between them dithered (4x4 ordered),
+        # and stars (5).
+        cloud = fractal(img.width, 31)
+        rnd = random.Random(23)
+
+        def f(x, y):
+                v = (cloud(x, y) - 0.25) * 1.9  # about 0..1
+                v = max(0.0, min(0.999, v)) * 4  # 0..4 levels
+                base = int(v)
+                return min(4, base + (1 if (v - base) * 16 > BAYER4[y % 4][x % 4] else 0))
+        each(img, f)
+        px = img.load()
+        for _ in range(90):
+                px[rnd.randrange(img.width), rnd.randrange(img.height)] = 5
+
+
+def draw_hull(img):
+        # 128x128: deck plating: panels (0) cut again and again, dark seams (2) at their top and
+        # left (the tile's edges among them), lit (1) under and right of a seam; some panels
+        # vents, one band hazard stripes (3 on 2).
+        rnd = random.Random(29)
+        px = img.load()
+        w, h = img.width, img.height
+        panels = []
+
+        def split(x, y, pw, ph, depth):
+                if depth == 0 or (pw < 40 and ph < 40) or (depth < 3 and rnd.random() < 0.3):
+                        panels.append((x, y, pw, ph))
+                        return
+                if pw >= ph:
+                        cut = rnd.randrange(pw // 4, 3 * pw // 4) // 8 * 8 or 8
+                        split(x, y, cut, ph, depth - 1)
+                        split(x + cut, y, pw - cut, ph, depth - 1)
+                else:
+                        cut = rnd.randrange(ph // 4, 3 * ph // 4) // 8 * 8 or 8
+                        split(x, y, pw, cut, depth - 1)
+                        split(x, y + cut, pw, ph - cut, depth - 1)
+
+        split(0, 0, w, h, 5)
+        hazard = max(panels, key=lambda p: p[2] / max(1, p[3]))
+        for (x, y, pw, ph) in panels:
+                kind = 2 if (x, y, pw, ph) == hazard else (1 if rnd.random() < 0.25 else 0)
+                for j in range(ph):
+                        for i in range(pw):
+                                c = 0
+                                if i == 0 or j == 0:
+                                        c = 2
+                                elif i == 1 or j == 1:
+                                        c = 1
+                                elif kind == 2 and 3 <= i < pw - 2 and 3 <= j < ph - 2:
+                                        c = 3 if ((i + j) // 4) % 2 == 0 else 2
+                                elif kind == 1 and 6 <= i < pw - 6 and 6 <= j < ph - 6 and j % 4 < 2:
+                                        c = 2
+                                px[(x + i) % w, (y + j) % h] = c
+
+
+def draw_invaders(img):
+        # 64x64: our own little aliens, 9x8 (a mirrored half of 5x8), on 16-pixel cells in rows
+        # offset by half, a color for each row.
+        rnd = random.Random(37)
+        aliens = []
+        while len(aliens) < 4:
+                half = [[rnd.random() < 0.55 for _ in range(5)] for _ in range(8)]
+                for r in half:
+                        r[4] = r[4] or rnd.random() < 0.3
+                cells = sum(map(sum, half))
+                if 14 <= cells <= 26 and any(half[7]) and any(half[0]):
+                        aliens.append([r + r[3::-1] for r in half])
+        px = img.load()
+        for j in range(4):
+                for i in range(4):
+                        a = aliens[(i + 2 * j) % 4]
+                        ox, oy = i * 16 + (8 if j % 2 else 0) + 3, j * 16 + 4
+                        for y in range(8):
+                                for x in range(9):
+                                        if a[y][x]:
+                                                px[(ox + x) % 64, (oy + y) % 64] = 1 + j % 3
+
+
+# ---- Extras
+
+def draw_terrazzo(img):
+        # 128x128: chips of four colors (1-4), one to three pixels across, on a light base.
+        rnd = random.Random(41)
+        px = img.load()
+        w, h = img.width, img.height
+        for _ in range(170):
+                c = rnd.randrange(1, 5)
+                x, y = rnd.randrange(w), rnd.randrange(h)
+                size = rnd.choice((1, 1, 2, 2, 3))
+                for dy in range(size):
+                        for dx in range(size):
+                                if size < 3 or (dx, dy) not in ((0, 0), (2, 0), (0, 2), (2, 2)):
+                                        px[(x + dx) % w, (y + dy) % h] = c
+
+
+def draw_plaid(img):
+        # 64x64: one sett of stripes both ways, woven as a 2/2 twill: each pixel takes the warp's
+        # color or the weft's by the twill's diagonal.
+        sett = [0] * 16 + [1] * 6 + [2] * 2 + [1] * 6 + [0] * 4 + [3] * 2 + [0] * 4 + [1] * 12 + [3] * 4 + [1] * 8
+        sett = (sett * 2)[:64]
+        each(img, lambda x, y: sett[x] if (x + y) % 4 < 2 else sett[y])
+
+
+def draw_topo(img):
+        # 256x256: contour lines (1) of smooth hills, every fifth an index line (2).
+        hills = fractal(img.width, 43, ((4, 0.6), (8, 0.3), (16, 0.1)))
+        levels = [[int(hills(x, y) * 24) for x in range(img.width)] for y in range(img.height)]
+        w, h = img.width, img.height
+
+        def f(x, y):
+                v = levels[y][x]
+                if v != levels[y][(x + 1) % w] or v != levels[(y + 1) % h][x]:
+                        return 2 if max(v, levels[y][(x + 1) % w], levels[(y + 1) % h][x]) % 5 == 0 else 1
+                return 0
+        each(img, f)
+
+
+def P(name, *colors):
+        return (name, list(colors))
+
+
 PATTERNS = [
-        Pattern("checks", 8, 8,
-                [("Original", ["#7a8fa6", "#5c708a"]),
-                 ("Mint", ["#a8d8c0", "#86b8a0"]),
-                 ("Sand", ["#d8c8a0", "#bca880"])],
-                draw_checks),
-        Pattern("truchet", 64, 64,
-                [("Original", ["#3c5a78", "#a8c4dc", "#2c445c"]),
-                 ("Ember", ["#3a1c14", "#f08040", "#24100a"]),
-                 ("Moss", ["#26402c", "#a8d090", "#18301e"])],
-                draw_truchet),
-        Pattern("starfield", 256, 256,
-                [("Original", ["#060a1c", "#4a5680", "#a0aad0", "#ffffff"]),
-                 ("Amber", ["#140a00", "#6a4000", "#c08000", "#ffc040"]),
-                 ("Phosphor", ["#001004", "#106020", "#30c050", "#a0ffb0"])],
-                draw_starfield),
+        # Classic two-color
+        Pattern("checks", 8, 8, [P("Original", "#7a8fa6", "#5c708a"), P("Mint", "#a8d8c0", "#86b8a0"),
+                                  P("Sand", "#d8c8a0", "#bca880")], draw_checks),
+        Pattern("weave", 8, 8, [P("Original", "#6b7f99", "#4f6077"), P("Linen", "#d9cfbf", "#b8ab95"),
+                                 P("Denim", "#2f4a6e", "#1f3350")], draw_weave),
+        Pattern("bricks", 8, 8, [P("Original", "#9a4a3a", "#c8b8a8"), P("Slate", "#4a5560", "#8a949e"),
+                                  P("Sandstone", "#c89a6a", "#e8d8c0")], draw_bricks),
+        Pattern("diamonds", 8, 8, [P("Original", "#5a6e8a", "#3e4e66"), P("Rose", "#c88a9a", "#a86a7a"),
+                                    P("Olive", "#7a8050", "#5a6038")], draw_diamonds),
+        Pattern("zigzag", 8, 8, [P("Original", "#4a6a5a", "#6a8a7a"), P("Sunset", "#d06040", "#f0a050"),
+                                  P("Mono", "#404040", "#606060")], draw_zigzag),
+        Pattern("dots", 8, 8, [P("Original", "#50607a", "#8090aa"), P("Mint", "#a8d8c0", "#ffffff"),
+                                P("Cherry", "#7a1a2a", "#e05060")], draw_dots),
+        Pattern("parquet", 8, 8, [P("Original", "#7a5a3a", "#9a7a5a"), P("Ash", "#8a8a80", "#aaa9a0"),
+                                   P("Walnut", "#4a3020", "#6a4a30")], draw_parquet),
+        Pattern("scales", 16, 16, [P("Original", "#3a6a7a", "#5a8a9a"), P("Jade", "#2a5a40", "#4a8a60"),
+                                    P("Copper", "#8a4a2a", "#c07a4a")], draw_scales),
+        Pattern("grid", 16, 16, [P("Original", "#e8eef4", "#b8c8d8"), P("Blueprint", "#1a3a6a", "#5a8ac0"),
+                                  P("Engineer", "#f0f0e0", "#a0c0a0")], draw_grid),
+        # Geometric
+        Pattern("truchet", 64, 64, [P("Original", "#3c5a78", "#a8c4dc", "#2c445c"),
+                                     P("Ember", "#3a1c14", "#f08040", "#24100a"),
+                                     P("Moss", "#26402c", "#a8d090", "#18301e")], draw_truchet),
+        Pattern("cubes", 32, 48, [P("Original", "#4a5a7a", "#6a7a9a", "#2e3a52"),
+                                   P("Terracotta", "#b05a3a", "#d0805a", "#7a3a22"),
+                                   P("Marble", "#c8c8c0", "#e8e8e0", "#909088")], draw_cubes),
+        Pattern("waves", 64, 64, [P("Original", "#203040", "#5080a0"), P("Black and white", "#101010", "#f0f0f0"),
+                                   P("Lagoon", "#00405a", "#40c0c0")], draw_waves),
+        Pattern("bauhaus", 64, 64, [P("Original", "#f0e8d8", "#d03020", "#2040a0", "#f0c020"),
+                                     P("Muted", "#e8e0d0", "#a05040", "#405070", "#c0a050")], draw_bauhaus),
+        Pattern("hexagons", 28, 48, [P("Original", "#c09030", "#e0b050", "#806020"),
+                                      P("Basalt", "#404448", "#60666c", "#24282c"),
+                                      P("Mint", "#80c0a0", "#a0e0c0", "#508070")], draw_hexagons),
+        Pattern("triangles", 128, 128, [P("Original", "#2a3a5a", "#3a4e74", "#4e6490", "#6a80aa"),
+                                         P("Autumn", "#5a2a10", "#7a3a18", "#a05a20", "#c88030"),
+                                         P("Glacier", "#c0d8e8", "#a0c0d8", "#80a8c8", "#e0f0f8")], draw_triangles),
+        Pattern("arches", 32, 32, [P("Original", "#1a2a3a", "#c0a060", "#2a4050"),
+                                    P("Rose gold", "#3a2028", "#e0a090", "#5a3038"),
+                                    P("Jade", "#10302a", "#80c0a0", "#204a40")], draw_arches),
+        Pattern("maze", 128, 128, [P("Original", "#1a1a2a", "#5a5a8a"), P("Garden", "#203a20", "#80b060"),
+                                    P("Paper", "#f0ece0", "#504840")], draw_maze),
+        Pattern("quilt", 64, 64, [P("Original", "#a05050", "#507090", "#d0b070", "#f0e8d8"),
+                                   P("Faded", "#b09090", "#90a0b0", "#d0c8a0", "#f0ece4")], draw_quilt),
+        # Sci-fi
+        Pattern("starfield", 256, 256, [P("Original", "#060a1c", "#4a5680", "#a0aad0", "#ffffff"),
+                                         P("Amber", "#140a00", "#6a4000", "#c08000", "#ffc040"),
+                                         P("Phosphor", "#001004", "#106020", "#30c050", "#a0ffb0")], draw_starfield),
+        Pattern("circuit", 128, 128, [P("Original", "#0a2a1a", "#1a6a3a", "#c0a040", "#40c060"),
+                                       P("Blue board", "#0a1a3a", "#1a4a8a", "#c0c0c0", "#60a0e0"),
+                                       P("Retro", "#1a1a10", "#4a4a20", "#d0a030", "#f0d060")], draw_circuit),
+        Pattern("tron", 64, 64, [P("Original", "#05080f", "#0a3a5a", "#30e0ff"), P("Red", "#0f0505", "#5a1010", "#ff4030"),
+                                  P("Synthwave", "#120420", "#5a1a6a", "#ff40c0")], draw_tron),
+        Pattern("hexarmour", 40, 70, [P("Original", "#2a2e34", "#3e444c", "#1a1c20", "#7a8088"),
+                                       P("Desert", "#5a4a30", "#7a6a48", "#3a3020", "#b0a080"),
+                                       P("Navy", "#1a2a3a", "#2a3e52", "#0e1822", "#6a8098")], draw_hexarmour),
+        Pattern("scanlines", 12, 4, [P("Green", "#000a02", "#00240a", "#006a20"),
+                                      P("Amber", "#0a0500", "#2a1600", "#7a5000"),
+                                      P("Paper white", "#0c0c0c", "#222222", "#686868")], draw_scanlines),
+        Pattern("glyphs", 128, 128, [P("Original", "#000a04", "#003a14", "#10a040", "#80ffb0"),
+                                      P("Cyan", "#00080a", "#00303a", "#10a0b0", "#a0f8ff"),
+                                      P("Violet", "#08000a", "#2a1040", "#8040c0", "#e0b0ff")], draw_glyphs),
+        Pattern("radar", 128, 128, [P("Original", "#001008", "#004020", "#00c060"),
+                                     P("Sonar", "#000a14", "#003050", "#20a0d0")], draw_radar),
+        Pattern("nebula", 256, 256, [P("Original", "#05050f", "#1a1040", "#40206a", "#8040a0", "#c080c0", "#ffffff"),
+                                      P("Emerald", "#020a08", "#0a3020", "#1a5a40", "#40a070", "#a0e0b0", "#ffffff")],
+                draw_nebula),
+        Pattern("hull", 128, 128, [P("Original", "#3a3e44", "#4e535a", "#2a2d32", "#d0a020"),
+                                    P("White ship", "#c8ccd0", "#e0e4e8", "#a0a4a8", "#d04030")], draw_hull),
+        Pattern("invaders", 64, 64, [P("Original", "#000010", "#40ff60", "#ff4060", "#40a0ff"),
+                                      P("Mono", "#101010", "#e0e0e0", "#a0a0a0", "#606060")], draw_invaders),
+        # Extras
+        Pattern("terrazzo", 128, 128, [P("Original", "#e8e2d6", "#c05a40", "#40708a", "#d0a040", "#606060"),
+                                        P("Night", "#2a2a2e", "#c05a40", "#40708a", "#d0a040", "#a0a0a0"),
+                                        P("Mint", "#dfeee6", "#e07a6a", "#3a7a6a", "#f0c060", "#7a8a8a")], draw_terrazzo),
+        Pattern("plaid", 64, 64, [P("Red tartan", "#a01818", "#1a2a5a", "#e0c040", "#102010"),
+                                   P("Black watch", "#1a3a2a", "#0a1a3a", "#000000", "#2a4a3a"),
+                                   P("Dress grey", "#c8c8c8", "#606870", "#a01818", "#303030")], draw_plaid),
+        Pattern("topo", 256, 256, [P("Original", "#efe8d4", "#b08a5a", "#7a5030"),
+                                    P("Survey green", "#e4ecd8", "#6a9a5a", "#3a6a3a"),
+                                    P("Night", "#0e1622", "#3a5a7a", "#7aa0c0")], draw_topo),
 ]
 
 

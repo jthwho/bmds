@@ -1,7 +1,8 @@
 # Wallpaper: a solid color or a tiled pattern behind the desktop
 
-Status: **steps 1 and 3 done, checked on the board** (2026-10-25; planned the same day with
-the user). Step 2 (the shipped set) waits; three test patterns stand in. Fills in `gui.md` G9's "A wallpaper, later, is the same window": the panel's desktop
+Status: **steps 1-3 done, checked on the board** (2026-10-25; planned the same day with the
+user). 31 patterns ship; the default is `cubes` (the user's). Since 2026-10-26 the 2D-DMA copies
+the pattern straight from its tile (§6e): faster than the solid color. Fills in `gui.md` G9's "A wallpaper, later, is the same window": the panel's desktop
 window draws it; the window manager doesn't change.
 
 ## 1. Goal
@@ -66,7 +67,7 @@ window draws it; the window manager doesn't change.
   fill when there is no panel, and the backing of icon labels (§4e).
 - **`pattern-colors` is what shows now.** Switching to another pattern sets it to the colors that
   pattern last had (§4c), or empties it (the pattern's own).
-- **The default:** a shipped pattern, picked once the set exists (§4g); `truchet` until then.
+- **The default:** `cubes` (the user's, from the set in §4g).
 
 ### 4b. Pattern files
 
@@ -111,12 +112,12 @@ window draws it; the window manager doesn't change.
 
 ### 4d. Drawing (the panel)
 
-- **`DesktopWindow` keeps the decoded tile** in PSRAM (usually a few KB; §6a has the sizes),
-  scaled across by `pattern-scale` when it is decoded and down when it is drawn.
-- **`paint()` draws the damage with `Painter::rows()`:** the `RowMaker` copies each row's tile row
-  across the piece, starting at `x mod tileWidth`. That is one `memcpy` of the tile's row per
-  repeat, with the 2D-DMA copying the previous piece meanwhile. The damage is widened to 4-pixel
-  columns (overdrawing the desktop costs nothing).
+- **`DesktopWindow` keeps the decoded tile** in PSRAM (§6e has the layout and sizes), scaled by
+  `pattern-scale` when it is decoded.
+- **`paint()` has the 2D-DMA copy the damage straight from the tile** (`Painter::tiled()`, §6e):
+  no CPU a pixel. The damage is widened to 4-pixel columns (overdrawing the desktop costs
+  nothing). Icons are still blended over the pattern in the strip (`Painter::rows()`), and
+  `make()` still makes rows for the window check's reference.
 - **The solid color stays a `fill()`.**
 - **Settings take effect at once:** the panel watches `panel/desktop/` and `wm/palette/desktop`,
   decodes again, and repaints the whole desktop window.
@@ -162,17 +163,18 @@ window draws it; the window manager doesn't change.
   (up to 256×256) so the repeat doesn't show. The board has no generator code.
 - **Our own designs, not copies:** the old Mac, Windows 3.1, Amiga and Atari ST patterns are the
   inspiration. Their bitmaps and names (Scottie, Critters, Paisley, ...) are not used.
-- **A first set (about 20):**
-  - *Classic two-color 8×8:* checks, fine weave, bricks, diamonds, waffle, herringbone, dots,
-    zigzag.
-  - *Geometric:* Truchet arcs, Truchet triangles, isometric cubes, op-art waves, Bauhaus blocks,
-    hex tiles.
-  - *Sci-fi:* starfield (stars of three brightnesses), circuit board (traces and pads), Tron
-    grid, hex armour, CRT scanlines, glyph rain, a radar sweep's rings.
-- **Each with two to four built-in palettes** (`Palette:` chunks), for example a starfield in
-  deep blue, amber terminal and green phosphor.
-- **The default pattern** is picked from the set by the user.
-- **Budget:** about 20 files of 0.3-4 KB, under 60 KB of ROM.
+- **The set (step 2, 2026-10-25; the user looked at each on the board and kept them all):**
+  - *Classic two-color (8×8, 16×16):* checks, weave, bricks, diamonds, zigzag, dots, parquet,
+    scales, grid.
+  - *Geometric:* truchet, cubes (2:1 isometric tumbling blocks), waves, bauhaus, hexagons,
+    triangles, arches, maze (dug on a torus), quilt.
+  - *Sci-fi:* starfield, circuit, tron, hexarmour, scanlines, glyphs (our own 4×6 glyphs),
+    radar, nebula (dithered fractal clouds), hull, invaders (our own aliens).
+  - *Extras:* terrazzo, plaid (a twill-woven sett), topo (contours of smooth hills).
+  - Names fit Settings' grid (10 characters): herringbone became `parquet`, pixelinvaders
+    `invaders`.
+- **Each with one to three built-in palettes** (`Palette:` chunks): 56 in all.
+- **Size:** 31 files, 28.7 KB of ROM (most under 500 bytes; nebula 7.9 KB, topo 6.5 KB).
 
 ## 5. ABI impact
 
@@ -247,8 +249,7 @@ window draws it; the window manager doesn't change.
   Files. Everything survived a reboot.
 - **Measured:** uncovering the whole desktop (1280×692, a window closed): 73-88 ms of drawing
   with the pattern, 53-67 ms with the color (the window manager's totals for those rounds):
-  about 20 ms more, the CPU making 2.6 MB of rows from the tile. A place to win later (the
-  2D-DMA could repeat a band of tile rows).
+  about 20 ms more, the CPU making 2.6 MB of rows from the tile. Done since: §6e.
 - **Found and fixed:** Pillow pads a palette to its bit depth's 2^bits entries, so truchet showed
   a fourth, unused swatch (`tools/mkpatterns` now cuts `PLTE` back); a saved palette with a
   built-in one's colors showed as the built-in one, so Delete never applied (the palette last
@@ -272,3 +273,30 @@ window draws it; the window manager doesn't change.
    (the file, built-in `Palette:` chunks, Save as, Delete, `Current` on a switch), the preview,
    and the folder button.
 4. **Documents:** `gui.md` G9 points here; the roadmap.
+5. **Drawn by the 2D-DMA** (asked 2026-10-26): §6e.
+
+### 6e. Drawn by the 2D-DMA (2026-10-26)
+
+- **`Surface::startTile()`** fills a rectangle with a tile repeated across and down, through the
+  clip, from any column and row of the tile. Each clip piece goes as chunks across (from the
+  tile's column to its end, then whole widths) and bands down, each one receive descriptor; the
+  transmit side is one descriptor for each run of the tile's rows (`BlitChain::addTiled()`, rows
+  wrapping), or one a row when the 2D-DMA repeats each row `scale` times. The tile is written
+  back from the cache once a call.
+- **`Painter::tiled()`** clips to the surface, works out the tile's column and row at the corner,
+  and waits for the copy (the tile may change after, as `pixels()`). **`Backdrop::tile()`** says a
+  backdrop is such a tile; `paint()` uses it when its columns fall on the window's, else makes rows.
+  Settings' preview forwards it, shifted to its corner.
+- **`TiledPattern` keeps the tile as the 2D-DMA copies it:** rows of whole repeats on 4-pixel
+  columns (`unit` = the least multiple of the scaled width that is one), at least 256 pixels
+  (`MinRow`); scaled down too and repeated to at least 32 rows (`MinTall`) while that stays under
+  256,000 bytes (`MaxScaledBytes`), else kept once and repeated by the 2D-DMA. Allocated on
+  128 bytes (the L2 line). Sizes: checks 24 KB, cubes 36 KB, starfield 192 KB; topo at 2x is
+  past the limit (each row repeated): 384 KB.
+- **On the board:** `win check` 0 wrong for topo 1x and 2x, nebula 4x, scanlines 3x (36 wide),
+  hexarmour 3x, hexagons, dots 4x, cubes; the preview drew. Uncovering the whole desktop, the
+  window manager's drawing over the rounds that redrew it: **52-58 ms with a pattern, against
+  87-89 ms before** (the CPU making rows), and 66 ms with the solid color, whose wide fills send
+  their color line a descriptor a row (`fillLine()`: at most 1536 bytes, one 1280-pixel row).
+  Rounds where the panel was busy (`Deferred` counted) left the desktop for later and were
+  left out.

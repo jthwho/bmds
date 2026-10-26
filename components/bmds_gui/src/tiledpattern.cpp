@@ -27,6 +27,8 @@ namespace {
                 return -1;
         }
 
+        constexpr size_t TileAlign = 128; // the L2 cache line: the 2D-DMA reads it from PSRAM
+
         // @p v modulo @p n, never negative.
         uint32_t wrap(int v, uint32_t n) {
                 const int m = v % int(n);
@@ -103,25 +105,41 @@ Error TiledPattern::load(ByteSpan file, StringView colors, unsigned scale, uint3
         return Error::Ok;
 }
 
-// The B, G, R tile from the 0xAARRGGBB pixels: scaled across, its rows repeated to MinRow.
+// The B, G, R tile from the 0xAARRGGBB pixels: scaled across, its rows repeated to MinRow and
+// a multiple of 4; scaled down and repeated to MinTall rows if it stays small enough.
 Error TiledPattern::build() {
         _period = uint16_t(_width * _scale);
-        const uint32_t repeats = (MinRow + _period - 1u) / _period;
-        _rowWidth = uint16_t(_period * repeats);
-        const size_t rowBytes = size_t(_rowWidth) * 3;
-        auto        *tile = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, rowBytes * _height));
+        uint32_t unit = _period; // the least whole repeats on 4-pixel columns
+        while (unit % 4 != 0) unit += _period;
+        _rowWidth = uint16_t(unit * ((MinRow + unit - 1u) / unit));
+        const size_t   rowBytes = size_t(_rowWidth) * 3;
+        const uint32_t tall = uint32_t(_height) * _scale;
+        if (rowBytes * tall <= MaxScaledBytes) {
+                _repeat = 1;
+                _rows = uint16_t(tall * ((MinTall + tall - 1u) / tall));
+        } else {
+                _repeat = _scale;
+                _rows = _height;
+        }
+        auto *tile = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::Psram, rowBytes * _rows, TileAlign));
         if (tile == nullptr) return Error::NoMem;
         uint8_t plain[MaxSide * 3]; // a row, unscaled
-        for (uint32_t y = 0; y < _height; ++y) {
+        for (uint32_t r = 0; r < _rows; ++r) {
+                uint8_t       *row = tile + r * rowBytes;
+                const uint32_t y = _repeat == 1 ? (r % tall) / _scale : r;
+                const uint32_t same = _repeat == 1 ? (r % tall) % _scale : 0;
+                if (r >= tall || same != 0) { // a row made already
+                        std::memcpy(row, tile + size_t(r >= tall ? r % tall : r - same) * rowBytes, rowBytes);
+                        continue;
+                }
                 Pixels::fromArgb(_argb + size_t(y) * _width, _width, plain, PixelFormat::Bgr24, _background);
-                uint8_t *row = tile + y * rowBytes;
                 if (_scale == 1) {
                         std::memcpy(row, plain, size_t(_width) * 3);
                 } else {
                         for (uint32_t x = 0; x < _period; ++x) std::memcpy(row + x * 3, plain + (x / _scale) * 3, 3);
                 }
-                for (uint32_t r = 1; r < repeats; ++r)
-                        std::memcpy(row + size_t(r) * _period * 3, row, size_t(_period) * 3);
+                for (uint32_t at = _period; at < _rowWidth; at += _period)
+                        std::memcpy(row + size_t(at) * 3, row, size_t(_period) * 3);
         }
         Memory::free(_tile);
         _tile = tile;
@@ -141,13 +159,13 @@ void TiledPattern::reset() {
         Memory::free(_tile);
         _argb = nullptr;
         _tile = nullptr;
-        _width = _height = _period = _rowWidth = 0;
-        _scale = 1;
+        _width = _height = _period = _rowWidth = _rows = 0;
+        _repeat = _scale = 1;
         return;
 }
 
 size_t TiledPattern::bytes() const {
-        return (_tile != nullptr ? size_t(_rowWidth) * 3 * _height : 0) +
+        return (_tile != nullptr ? size_t(_rowWidth) * 3 * _rows : 0) +
                (_argb != nullptr ? size_t(_width) * _height * 4 : 0);
 }
 
@@ -156,7 +174,7 @@ void TiledPattern::make(int x, int y, uint16_t width, uint16_t height, uint8_t *
         const size_t   rowBytes = size_t(_rowWidth) * 3;
         const uint32_t phase = wrap(x, _period);
         for (uint32_t r = 0; r < height; ++r) {
-                const uint8_t *row = _tile + size_t(wrap(y + int(r), uint32_t(_height) * _scale) / _scale) * rowBytes;
+                const uint8_t *row = _tile + size_t(wrap(y + int(r), uint32_t(_rows) * _repeat) / _repeat) * rowBytes;
                 uint8_t       *to = out + r * stride;
                 // From the phase to the kept row's end, then whole kept rows.
                 uint32_t from = phase, left = width;
@@ -169,6 +187,12 @@ void TiledPattern::make(int x, int y, uint16_t width, uint16_t height, uint8_t *
                 }
         }
         return;
+}
+
+bool TiledPattern::tile(Tile &out) const {
+        if (_tile == nullptr) return false;
+        out = Tile{_tile, size_t(_rowWidth) * 3, _rowWidth, _rows, _repeat, 0, 0};
+        return true;
 }
 
 BMDS_NAMESPACE_END

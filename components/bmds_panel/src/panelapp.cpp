@@ -128,7 +128,7 @@ namespace {
         BMDS_SYSCONF(panelDesktopWallpaper, "panel/desktop/wallpaper", Config::Type::Enum, "pattern",
                      "What the desktop shows: its color (wm/palette/desktop), or a tiled pattern", 0, 0,
                      "color|pattern", nullptr)
-        BMDS_SYSCONF(panelDesktopPattern, "panel/desktop/pattern", Config::Type::String, "truchet",
+        BMDS_SYSCONF(panelDesktopPattern, "panel/desktop/pattern", Config::Type::String, "cubes",
                      "The desktop's pattern: a PNG's name (without .png) in panel/desktop/patterns", 0, 64, nullptr,
                      nullptr)
         BMDS_SYSCONF(panelDesktopPatternColors, "panel/desktop/pattern-colors", Config::Type::String, "",

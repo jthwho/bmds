@@ -290,6 +290,44 @@ Error Painter::rows(int x, int y, uint16_t width, uint16_t height, uint16_t repe
                 rgb565, repeat);
 }
 
+Error Painter::tiled(const Rect &rect, const uint8_t *bgr, size_t stride, uint16_t width, uint16_t height,
+                     uint16_t repeat, int tileX, int tileY) {
+        const int32_t sx = int32_t(rect.x) + _originX, sy = int32_t(rect.y) + _originY;
+        if (bgr == nullptr || width == 0 || height == 0 || repeat == 0 || (width & AlignMask) != 0 ||
+            (uint32_t(sx) & AlignMask) != 0 || (rect.width & AlignMask) != 0 ||
+            (uint32_t(int32_t(rect.x) - tileX) & AlignMask) != 0) {
+                note(Error::Invalid);
+                return _error;
+        }
+        // What is on the surface (x stays on a column: the surface's width is one).
+        int32_t right = sx + rect.width, bottom = sy + rect.height;
+        if (right > int32_t(_surface.width())) right = _surface.width();
+        if (bottom > int32_t(_surface.height())) bottom = _surface.height();
+        const int32_t left = sx < 0 ? 0 : sx, top = sy < 0 ? 0 : sy;
+        if (rect.isEmpty() || right <= left || bottom <= top) return _error;
+        const Rect to{uint16_t(left), uint16_t(top), uint16_t(right - left), uint16_t(bottom - top)};
+        bool       shown = false;
+        for (const Rect &piece : _clip) shown |= piece.intersects(to);
+        if (!shown) return _error;
+        // The tile's column and row (in repeats) at the top-left corner.
+        const auto wrap = [](int64_t v, uint32_t period) {
+                const int64_t m = v % int64_t(period);
+                return uint32_t(m < 0 ? m + period : m);
+        };
+        const uint32_t      x = wrap(int64_t(left) - _originX - tileX, width);
+        const uint32_t      down = wrap(int64_t(top) - _originY - tileY, uint32_t(height) * repeat);
+        const Surface::Tile tile{bgr, stride, width, height, repeat};
+        ++_calls;
+        Error err = _surface.startTile(to, tile, uint16_t(x), down, _clip, _timeoutMs);
+        if (err.isOk()) err = _surface.wait(_timeoutMs); // the caller's tile may change after
+        if (err.isOk()) {                                // the strip's copies are done too
+                _tools.stripHalf = 0;
+                _tools.stripColumn = 0;
+        }
+        note(err);
+        return _error;
+}
+
 Error Painter::cover(const Rect &rect) {
         const int32_t sx = int32_t(rect.x) + _originX, sy = int32_t(rect.y) + _originY;
         const Rect    on{uint16_t(sx < 0 ? 0 : sx), uint16_t(sy < 0 ? 0 : sy), rect.width, rect.height};

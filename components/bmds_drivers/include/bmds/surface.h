@@ -194,6 +194,27 @@ class Surface {
                 Error startBlit(const Rect &to, const uint8_t *src, size_t srcStride, Span<const Rect> clip,
                                 Source source, uint16_t repeat, uint16_t first, unsigned int timeoutMs);
 
+                /** @brief A picture repeated across and down (`startTile()`). */
+                struct Tile {
+                                const uint8_t *pixels = nullptr; ///< B, G, R (PSRAM or internal RAM).
+                                size_t         stride = 0;       ///< Bytes a row: a multiple of 3.
+                                uint16_t       width = 0;        ///< Pixels across: a multiple of `Align`.
+                                uint16_t       height = 0;       ///< Rows.
+                                uint16_t       repeat = 1;       ///< Times each row is written down.
+                };
+
+                /**
+                 * @brief As `startBlit()`, @p to filled with @p tile repeated across and down:
+                 *        @p to's top-left pixel is @p tile's column @p x (a multiple of `Align`,
+                 *        below its width) of the row written @p down rows into its repeat
+                 *        (row (@p down / repeat) modulo its height). The 2D-DMA reads @p tile
+                 *        again for each repeat: no CPU a pixel, @p tile written back once.
+                 * @return As `blit()`.
+                 * @blocking Only while a swap is pending, or for an earlier job.
+                 */
+                Error startTile(const Rect &to, const Tile &tile, uint16_t x, uint32_t down, Span<const Rect> clip,
+                                unsigned int timeoutMs);
+
                 /**
                  * @brief Says @p rects will be drawn whole (every pixel written) before the next
                  *        `present()`: what of the last present's changes they cover is not copied

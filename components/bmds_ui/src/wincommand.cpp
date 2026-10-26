@@ -869,9 +869,10 @@ namespace {
                            static_cast<unsigned long>(s.rounds), static_cast<unsigned long>(s.pieces),
                            static_cast<unsigned long>(s.redraws), static_cast<unsigned long>(s.calls),
                            static_cast<unsigned long>(s.fallbacks), static_cast<unsigned long>(s.errors));
-                ctx.printf("Drawing:  %llu us a round on average, %lu at most, %lu the last\n",
+                ctx.printf("Drawing:  %llu us a round on average, %lu at most, %lu the last, %llu in all\n",
                            static_cast<unsigned long long>(s.rounds > 0 ? s.roundUs / s.rounds : 0),
-                           static_cast<unsigned long>(s.roundUsMax), static_cast<unsigned long>(s.lastRoundUs));
+                           static_cast<unsigned long>(s.roundUsMax), static_cast<unsigned long>(s.lastRoundUs),
+                           static_cast<unsigned long long>(s.roundUs));
                 ctx.printf("Deferred: %lu redraws (their windows' owners busy)\n",
                            static_cast<unsigned long>(s.deferred));
                 ctx.printf("Jobs:     %lu 2D-DMA jobs on the desktop's surface\n", static_cast<unsigned long>(s.jobs));

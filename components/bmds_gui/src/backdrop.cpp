@@ -54,6 +54,10 @@ namespace {
 Error Backdrop::paint(Painter &painter, const Rect &rect) const {
         if (rect.isEmpty()) return painter.error();
         const int      left = rect.x & ~3, right = (int(rect.right()) + 3) & ~3;
+        Tile           t;
+        if (tile(t) && t.width % 4 == 0 && (left - t.x) % 4 == 0)
+                return painter.tiled(Rect{uint16_t(left), rect.y, uint16_t(right - left), rect.height}, t.pixels,
+                                     t.stride, t.width, t.height, t.repeat, t.x, t.y);
         const uint16_t band = painter.stripRows();
         for (int y = rect.y; y < int(rect.bottom()) && band != 0; y += band) {
                 const uint16_t rows = uint16_t(int(rect.bottom()) - y < band ? int(rect.bottom()) - y : band);

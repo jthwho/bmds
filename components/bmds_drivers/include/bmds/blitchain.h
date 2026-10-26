@@ -115,6 +115,23 @@ class BlitChain {
                                   const Picture &to, uint16_t toX, uint16_t toY, uint16_t width, uint16_t height);
 
                 /**
+                 * @brief As `addRepeated()`, @p from's rows starting again from its first after
+                 *        its last (a tile repeated down): the copy's row i is @p from's row
+                 *        ((@p down + i) / @p repeat) modulo its height. A transmit descriptor for
+                 *        each run of @p from's rows (each row with @p repeat above 1).
+                 * @return As `add()` (`Full` also when the descriptors don't fit).
+                 * @nonblocking
+                 */
+                Error addTiled(const Picture &from, uint16_t fromX, uint32_t down, uint16_t repeat, const Picture &to,
+                               uint16_t toX, uint16_t toY, uint16_t width, uint16_t height);
+
+                /**
+                 * @brief Returns the transmit descriptors `addTiled()` takes for those
+                 *        arguments (@p rows of a picture @p height rows tall).
+                 */
+                static size_t tiledDescriptors(uint16_t rows, uint32_t down, uint16_t repeat, uint16_t height);
+
+                /**
                  * @brief Adds a fill of @p width × @p height pixels at (@p toX,
                  *        @p toY) of @p to with the @p width pixels at @p line
                  *        (in the destination's format, DMA-readable), sent once a

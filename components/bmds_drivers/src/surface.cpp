@@ -650,6 +650,80 @@ Error Surface::startBlit(const Rect &to, const uint8_t *src, size_t srcStride, S
         return batched ? Error::Ok : chain.submit();
 }
 
+Error Surface::startTile(const Rect &to, const Tile &tile, uint16_t x, uint32_t down, Span<const Rect> clip,
+                         unsigned int timeoutMs) {
+        if (!isStarted()) return Error::InvalidState;
+        if (!fits(to) || tile.pixels == nullptr || tile.stride % BytesPerPixel != 0 || tile.width == 0 ||
+            tile.width % Align != 0 || tile.stride < size_t(tile.width) * BytesPerPixel ||
+            tile.stride / BytesPerPixel > UINT16_MAX || tile.height == 0 || tile.repeat == 0 || x >= tile.width ||
+            x % Align != 0)
+                return Error::Invalid;
+        for (const Rect &piece : clip)
+                if (to.intersects(piece) && !fits(to.intersected(piece))) return Error::Invalid;
+        const Deadline deadline(timeoutMs);
+        Rect           pieces[MaxPrepareRects];
+        size_t         n = 0;
+        bool           kept = true;
+        for (const Rect &piece : clip) {
+                const Rect cut = to.intersected(piece);
+                if (cut.isEmpty()) continue;
+                if (n == MaxPrepareRects) {
+                        kept = false;
+                        break;
+                }
+                pieces[n++] = cut;
+        }
+        if (n == 0 && kept) return Error::Ok;
+        Error err = kept ? prepareFor(deadline, Span<const Rect>(pieces, n), Span<const Rect>()) : prepare(deadline);
+        if (err.isOk() && !_batching) err = _chain.wait(remainingMs(deadline));
+        if (err.isError()) return err;
+        const size_t bytes = tile.stride * (tile.height - 1u) + size_t(tile.width) * BytesPerPixel;
+        for (size_t off = 0; off < bytes; off += WriteBackChunk)
+                (void)esp_cache_msync(const_cast<uint8_t *>(tile.pixels) + off,
+                                      bytes - off < WriteBackChunk ? bytes - off : WriteBackChunk,
+                                      ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+        const BlitChain::Picture from{tile.pixels, static_cast<uint16_t>(tile.stride / BytesPerPixel), tile.height,
+                                      uint8_t(BytesPerPixel)};
+        const BlitChain::Picture into = picture(back());
+        // Bands down that a chain takes whole: a run of rows a descriptor, or a row each.
+        const uint32_t band = tile.repeat == 1 ? uint32_t(tile.height) * 32u : 64u;
+        const auto     add = [&](uint16_t fromX, uint32_t at, uint16_t toX, uint16_t toY, uint16_t w, uint16_t h) {
+                Error e = Error::Ok;
+                if (_chain.count() == _chain.capacity())
+                        e = _batching ? runChain(deadline) : _chain.run(remainingMs(deadline));
+                if (e.isOk()) e = _chain.addTiled(from, fromX, at, tile.repeat, into, toX, toY, w, h);
+                if (e == Error::Full) {
+                        e = _batching ? runChain(deadline) : _chain.run(remainingMs(deadline));
+                        if (e.isOk()) e = _chain.addTiled(from, fromX, at, tile.repeat, into, toX, toY, w, h);
+                }
+                return e;
+        };
+        for (const Rect &piece : clip) {
+                const Rect cut = to.intersected(piece);
+                if (cut.isEmpty()) continue;
+                if (_batching) err = coverEdges(cut, deadline);
+                for (uint32_t r = 0; err.isOk() && r < cut.height; r += band) {
+                        const auto     h = static_cast<uint16_t>(cut.height - r < band ? cut.height - r : band);
+                        const uint32_t at = down + uint32_t(cut.y - to.y) + r;
+                        // From the tile's column there to its end, then whole widths.
+                        uint32_t column = (uint32_t(x) + uint32_t(cut.x - to.x)) % tile.width;
+                        for (uint32_t c = 0; err.isOk() && c < cut.width; column = 0) {
+                                const uint32_t w =
+                                        cut.width - c < tile.width - column ? cut.width - c : tile.width - column;
+                                err = add(uint16_t(column), at, uint16_t(cut.x + c), uint16_t(cut.y + r), uint16_t(w),
+                                          h);
+                                c += w;
+                        }
+                }
+                if (err.isError()) {
+                        _chain.clear();
+                        return err;
+                }
+                if (_buffering == Buffering::Double) markDamage(cut);
+        }
+        return _batching ? Error::Ok : _chain.submit();
+}
+
 Error Surface::willDraw(Span<const Rect> rects, unsigned int timeoutMs) {
         if (!isStarted()) return Error::InvalidState;
         for (const Rect &rect : rects)

@@ -30,6 +30,21 @@ struct Icon;
 class Backdrop {
         public:
                 /**
+                 * @brief A picture repeated across and down (`tile()`): @p width × @p height
+                 *        B, G, R pixels, @p stride bytes a row, each row shown @p repeat times
+                 *        down, its top-left pixel at (@p x, @p y) (the window's coordinates).
+                 */
+                struct Tile {
+                                const uint8_t *pixels = nullptr;
+                                size_t         stride = 0;
+                                uint16_t       width = 0;
+                                uint16_t       height = 0;
+                                uint16_t       repeat = 1;
+                                int            x = 0;
+                                int            y = 0;
+                };
+
+                /**
                  * @brief Makes @p width × @p height B, G, R pixels of what is at (@p x, @p y) (the
                  *        window's coordinates) into @p out, @p stride bytes a row.
                  * @hotpath
@@ -37,8 +52,20 @@ class Backdrop {
                 virtual void make(int x, int y, uint16_t width, uint16_t height, uint8_t *out, size_t stride) const = 0;
 
                 /**
+                 * @brief Says the picture @p out this backdrop repeats, for `paint()` to have the
+                 *        2D-DMA copy it as it is (no rows made). Kept unchanged while a paint runs.
+                 * @return False if it is no such picture (the default): `make()` alone.
+                 */
+                virtual bool tile(Tile &out) const {
+                        (void)out;
+                        return false;
+                }
+
+                /**
                  * @brief Draws @p rect (the painter's coordinates, the window's) with it, widened to
-                 *        4-pixel columns (the window at a column).
+                 *        4-pixel columns (the window at a column): its `tile()` copied by the
+                 *        2D-DMA if it has one whose columns fall on the window's, else made a band
+                 *        at a time in the strip.
                  * @return The painter's first error.
                  * @blocking The copies.
                  */

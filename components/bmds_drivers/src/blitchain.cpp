@@ -240,6 +240,42 @@ Error BlitChain::addRepeated(const Picture &from, uint16_t fromX, uint16_t fromY
         return Error::Ok;
 }
 
+size_t BlitChain::tiledDescriptors(uint16_t rows, uint32_t down, uint16_t repeat, uint16_t height) {
+        if (repeat != 1 || height == 0) return rows;
+        const uint32_t start = down % height; // runs: to the picture's end, then whole pictures
+        return rows <= height - start ? 1 : 1 + (uint32_t(rows) - (height - start) + height - 1) / height;
+}
+
+Error BlitChain::addTiled(const Picture &from, uint16_t fromX, uint32_t down, uint16_t repeat, const Picture &to,
+                          uint16_t toX, uint16_t toY, uint16_t width, uint16_t height) {
+        if (_hw == nullptr) return Error::InvalidState;
+        if (repeat == 0 || width == 0 || height == 0 || from.height == 0) return Error::Invalid;
+        const size_t descriptors = tiledDescriptors(height, down, repeat, from.height);
+        if (_rxCount == _max || _txCount + descriptors > _maxTx) return Error::Full;
+        if (!fits(from, fromX, 0, width, from.height) || !fits(to, toX, toY, width, height)) return Error::Invalid;
+        const bool widen = _conversion == Conversion::Rgb565ToRgb888;
+        if (widen ? (from.bytesPerPixel != 2 || to.bytesPerPixel != 3) : from.bytesPerPixel != to.bytesPerPixel)
+                return Error::Invalid;
+        if (_busy && wait(StopTimeoutMs).isError()) return Error::Timeout;
+        Hardware      &hw = *_hw;
+        const uint32_t cycle = uint32_t(from.height) * repeat;
+        uint32_t       pos = down % cycle;
+        for (uint32_t i = 0; i < height; ++_txCount) {
+                const auto row = static_cast<uint16_t>(pos / repeat);
+                // A run of rows to the picture's end, or a row repeated.
+                const uint32_t n =
+                        repeat == 1
+                                ? (height - i < uint32_t(from.height) - row ? height - i : uint32_t(from.height) - row)
+                                : 1;
+                describe(at(hw.tx, _txCount), from, fromX, row, width, uint16_t(n), false, at(hw.tx, _txCount + 1));
+                i += n;
+                pos = (pos + n) % cycle;
+        }
+        describe(at(hw.rx, _rxCount), to, toX, toY, width, height, false, at(hw.rx, _rxCount + 1));
+        ++_rxCount;
+        return Error::Ok;
+}
+
 Error BlitChain::addFill(const uint8_t *line, const Picture &to, uint16_t toX, uint16_t toY, uint16_t width,
                          uint16_t height) {
         return addFill(line, 1, to, toX, toY, width, height);

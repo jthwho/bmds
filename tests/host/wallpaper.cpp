@@ -54,6 +54,42 @@ namespace {
                 return out;
         }
 
+        // What the 2D-DMA copies from the pattern's tile() at (@p x, @p y) (Surface::startTile()).
+        uint32_t fromTile(const bmds::Backdrop::Tile &t, int x, int y) {
+                const auto wrap = [](int v, int n) {
+                        return ((v % n) + n) % n;
+                };
+                const int      row = wrap(y - t.y, int(t.height) * t.repeat) / t.repeat;
+                const int      col = wrap(x - t.x, t.width);
+                const uint8_t *p = t.pixels + size_t(row) * t.stride + size_t(col) * 3;
+                return uint32_t(p[2]) << 16 | uint32_t(p[1]) << 8 | p[0];
+        }
+
+        // The tile's pixels are make()'s everywhere, on 4-pixel columns.
+        void checkTile(const TiledPattern &w, uint16_t width, uint16_t height) {
+                bmds::Backdrop::Tile t;
+                REQUIRE(w.tile(t));
+                CHECK(t.width % 4 == 0);
+                CHECK(t.width >= TiledPattern::MinRow);
+                CHECK(t.stride == size_t(t.width) * 3);
+                const std::vector<uint32_t> want = made(w, -8, -5, width, height);
+                size_t                      wrong = 0;
+                for (uint16_t y = 0; y < height; ++y)
+                        for (uint16_t x = 0; x < width; ++x)
+                                wrong += fromTile(t, x - 8, y - 5) != want[size_t(y) * width + x];
+                CHECK(wrong == 0);
+        }
+
+        std::vector<uint8_t> romPattern(const char *name) {
+                std::vector<uint8_t> file;
+                FILE *f = std::fopen((std::string(BMDS_PNG_DIR) + "/../../../rom/patterns/" + name).c_str(), "rb");
+                if (f == nullptr) return file;
+                int c;
+                while ((c = std::fgetc(f)) != EOF) file.push_back(uint8_t(c));
+                std::fclose(f);
+                return file;
+        }
+
         constexpr uint32_t Red = 0xff0000, Green = 0x00ff00;
 
 } // namespace
@@ -167,6 +203,40 @@ TEST_CASE("TiledPattern: scaled, and what it refuses") {
         CHECK(w.load(bmds::ByteSpan(junk, 3), "", 1, 0).isError());
         CHECK(!w.isValid());
         CHECK(w.bytes() == 0);
+}
+
+TEST_CASE("TiledPattern: the tile the 2D-DMA copies") {
+        const std::vector<uint8_t> file = palettePng();
+        REQUIRE(!file.empty());
+        TiledPattern         w;
+        bmds::Backdrop::Tile t;
+        CHECK(!w.tile(t));
+        // Small: kept scaled down and at least MinTall rows, each shown once.
+        for (unsigned scale = 1; scale <= TiledPattern::MaxScale; ++scale) {
+                REQUIRE(w.load(span(file), "", scale, 0x123456).isOk());
+                REQUIRE(w.tile(t));
+                CHECK(t.repeat == 1);
+                CHECK(t.height >= TiledPattern::MinTall);
+                CHECK(t.height % (2 * scale) == 0);
+                checkTile(w, 600, 80);
+        }
+        // An odd width (hexagons, 28: a multiple of 4 already; scanlines 12 at scale 3 is 36).
+        const std::vector<uint8_t> scan = romPattern("scanlines.png");
+        REQUIRE(!scan.empty());
+        REQUIRE(w.load(span(scan), "", 3, 0).isOk());
+        checkTile(w, 300, 40);
+        // Large: past MaxScaledBytes, rows kept once and shown scale times by the 2D-DMA.
+        const std::vector<uint8_t> topo = romPattern("topo.png");
+        REQUIRE(!topo.empty());
+        REQUIRE(w.load(span(topo), "", 2, 0).isOk());
+        REQUIRE(w.tile(t));
+        CHECK(t.repeat == 2);
+        CHECK(t.height == 256);
+        checkTile(w, 1100, 600);
+        REQUIRE(w.load(span(topo), "", 1, 0).isOk());
+        REQUIRE(w.tile(t));
+        CHECK(t.repeat == 1);
+        checkTile(w, 600, 300);
 }
 
 TEST_CASE("Png: text chunks") {
