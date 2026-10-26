@@ -9,7 +9,7 @@
  * (devplan/windows.md §4f).
  */
 
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -155,13 +155,13 @@ namespace {
                 return bits;
         }
 
-        constexpr Font::Range NarrowRanges[] = {{0x20, 1, 0}}; // a blank: the replacement
-        constexpr uint8_t     NarrowBits[Rows] = {};
-        constexpr Font::Range WideRanges[] = {{IconGlyph::Menu, Icons, 0}};
-        constexpr WideBits    Wide = pack();
+        constexpr BitmapFont::Range NarrowRanges[] = {{0x20, 1, 0}}; // a blank: the replacement
+        constexpr uint8_t           NarrowBits[Rows] = {};
+        constexpr BitmapFont::Range WideRanges[] = {{IconGlyph::Menu, Icons, 0}};
+        constexpr WideBits          Wide = pack();
 
 } // namespace
 
-constinit const Font Fonts::icons16(8, 16, NarrowRanges, NarrowBits, WideRanges, Wide.bytes, 0x20);
+constinit const BitmapFont Fonts::icons16(8, 16, NarrowRanges, NarrowBits, WideRanges, Wide.bytes, 0x20);
 
 BMDS_NAMESPACE_END

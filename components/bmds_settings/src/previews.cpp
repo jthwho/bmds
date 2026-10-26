@@ -11,7 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/patternfiles.h>
 #include <bmds/sysconf.h>
 

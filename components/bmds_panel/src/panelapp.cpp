@@ -33,7 +33,7 @@
 #include <bmds/fileicons.h>
 #include <bmds/foldersettings.h>
 #include <bmds/folderwatches.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiclipboard.h>
 #include <bmds/guiwindow.h>

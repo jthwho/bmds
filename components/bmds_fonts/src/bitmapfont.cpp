@@ -6,12 +6,12 @@
  * See LICENSE file in the project root folder for license information.
  */
 
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/utf8.h>
 
 BMDS_NAMESPACE_BEGIN
 
-bool Font::find(uint32_t codepoint, Glyph &out) const {
+bool BitmapFont::find(uint32_t codepoint, Glyph &out) const {
         for (int wide = 0; wide < 2; ++wide) {
                 const Span<const Range> runs = wide != 0 ? _wide : _narrow;
                 // The last run starting at or before the codepoint.
@@ -36,25 +36,25 @@ bool Font::find(uint32_t codepoint, Glyph &out) const {
         return false;
 }
 
-bool Font::hasGlyph(uint32_t codepoint) const {
+bool BitmapFont::hasGlyph(uint32_t codepoint) const {
         Glyph g;
         return find(codepoint, g);
 }
 
-Glyph Font::lookup(uint32_t codepoint) const {
+Glyph BitmapFont::lookup(uint32_t codepoint) const {
         Glyph g;
         if (find(codepoint, g)) return g;
         find(_replacement, g);
         return g;
 }
 
-uint32_t Font::textWidth(StringView utf8) const {
+uint32_t BitmapFont::textWidth(StringView utf8) const {
         uint32_t width = 0;
         for (size_t i = 0; i < utf8.size();) width += glyph(Utf8::decode(utf8, i)).width;
         return width;
 }
 
-size_t Font::fitting(StringView utf8, uint32_t maxWidth) const {
+size_t BitmapFont::fitting(StringView utf8, uint32_t maxWidth) const {
         uint32_t width = 0;
         size_t   i = 0;
         while (i < utf8.size()) {
@@ -67,7 +67,7 @@ size_t Font::fitting(StringView utf8, uint32_t maxWidth) const {
         return i;
 }
 
-size_t Font::glyphCount() const {
+size_t BitmapFont::glyphCount() const {
         size_t n = 0;
         for (const Range &r : _narrow) n += r.count;
         for (const Range &r : _wide) n += r.count;

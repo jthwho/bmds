@@ -13,7 +13,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/foldermodel.h>
 #include <bmds/iconid.h>
 #include <bmds/icontheme.h>

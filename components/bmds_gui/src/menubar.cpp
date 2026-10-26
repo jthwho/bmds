@@ -10,7 +10,7 @@
 
 #include <cstring>
 #include <bmds/bevel.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/furniturelayout.h>
 #include <bmds/guiwindow.h>
 #include <bmds/menubar.h>

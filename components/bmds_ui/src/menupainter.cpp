@@ -10,7 +10,7 @@
  */
 
 #include <bmds/bevel.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/menulayout.h>
 #include <bmds/mnemonic.h>
 #include <bmds/painter.h>
@@ -90,7 +90,7 @@ void drawMenu(Painter &painter, const MenuLayout &layout, Span<const MenuLayout:
 void Mnemonic::draw(Painter &painter, uint16_t x, uint16_t y, StringView text, size_t at, uint32_t color,
                     uint32_t right) {
         if (at == None || at >= text.size()) return;
-        const Font &font = Fonts::unscii16;
+        const BitmapFont &font = Fonts::unscii16;
         size_t      next = at;
         (void)Utf8::decode(text, next);
         const uint32_t from = x + font.textWidth(text.left(at));

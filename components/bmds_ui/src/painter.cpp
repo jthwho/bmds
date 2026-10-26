@@ -259,7 +259,8 @@ Error Painter::run(int x, int y, uint16_t maxWidth, uint16_t height, Draw draw, 
         return _error;
 }
 
-Error Painter::text(int x, int y, StringView utf8, const Font &font, uint32_t fg, uint32_t bg, uint16_t maxWidth) {
+Error Painter::text(int x, int y, StringView utf8, const BitmapFont &font, uint32_t fg, uint32_t bg,
+                    uint16_t maxWidth) {
         size_t at = 0;
         return run(x, y, maxWidth, font.height(), [&](uint8_t *strip, size_t stride, uint16_t room, bool &more) {
                 size_t         used = 0;
@@ -481,7 +482,7 @@ Error Painter::image(int x, int y, const Icon &icon, uint32_t bg) {
         return _error;
 }
 
-Error Painter::cells(int x, int y, Span<const TextCell> cells, const Font &font, uint16_t maxWidth) {
+Error Painter::cells(int x, int y, Span<const TextCell> cells, const BitmapFont &font, uint16_t maxWidth) {
         size_t at = 0;
         return run(x, y, maxWidth, font.height(), [&](uint8_t *strip, size_t stride, uint16_t room, bool &more) {
                 size_t         used = 0;

@@ -14,7 +14,7 @@
 #include <utility>
 #include <bmds/colordialog.h>
 #include <bmds/combobox.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/memory.h>
 #include <bmds/patternfiles.h>
 #include <bmds/pngdecoder.h>

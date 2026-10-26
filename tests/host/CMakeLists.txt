@@ -88,6 +88,7 @@ add_executable(bmds_host_tests
         memorystream.cpp
         oss.cpp
         ${BMDS_ROOT}/sdk/crt/oss.c
+        fontlibrary.cpp
         fonts.cpp
         game.cpp
         ${BMDS_ROOT}/sdk/game/canvas.c

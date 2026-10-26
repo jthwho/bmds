@@ -9,7 +9,7 @@
  */
 
 #include <cstring>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/menu.h>
 
 BMDS_NAMESPACE_BEGIN

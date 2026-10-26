@@ -12,7 +12,7 @@
 #include <new>
 #include <bmds/bevel.h>
 #include <bmds/combobox.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiwindow.h>
 #include <bmds/inputevent.h>

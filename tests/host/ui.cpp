@@ -14,7 +14,7 @@
 #include <algorithm>
 #include <cstring>
 #include <vector>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/glyphrenderer.h>
 #include <bmds/rect.h>
 #include <bmds/compose.h>
@@ -25,8 +25,8 @@
 #include <bmds/windowpalette.h>
 #include <bmds/windowstack.h>
 
+using bmds::BitmapFont;
 using bmds::ComposePiece;
-using bmds::Font;
 using bmds::Glyph;
 using bmds::Rect;
 using bmds::Region;
@@ -731,7 +731,7 @@ TEST_CASE("WindowPalette: every role named, found by its name, colors kept to 24
 TEST_CASE("GlyphRenderer: the scalar kernel draws each glyph's bits, bold and underlined") {
         using bmds::GlyphRenderer;
         using bmds::TextCell;
-        const Font &font = bmds::Fonts::unscii16;
+        const BitmapFont &font = bmds::Fonts::unscii16;
         CHECK(GlyphRenderer::isSupported(GlyphRenderer::Kernel::Scalar));
         GlyphRenderer      renderer(GlyphRenderer::Kernel::Scalar);
         constexpr size_t   Stride = 64 * 3; // 64 pixels a row
@@ -774,7 +774,7 @@ TEST_CASE("GlyphRenderer: the scalar kernel draws each glyph's bits, bold and un
 TEST_CASE("GlyphRenderer: runs of cells and text match glyph by glyph, cut at the width") {
         using bmds::GlyphRenderer;
         using bmds::TextCell;
-        const Font        &font = bmds::Fonts::unscii16;
+        const BitmapFont  &font = bmds::Fonts::unscii16;
         GlyphRenderer      renderer(GlyphRenderer::Kernel::Scalar);
         constexpr size_t   Pixels = 128, Stride = Pixels * 3;
         alignas(8) uint8_t runOut[Stride * 16], oneOut[Stride * 16];
@@ -942,8 +942,8 @@ TEST_CASE("TerminalView: a view scrolled back shows history lines, then the scre
         CHECK(out[1].codepoint == ' ');
 }
 
-TEST_CASE("Font: unscii-16") {
-        const Font &font = bmds::Fonts::unscii16;
+TEST_CASE("BitmapFont: unscii-16") {
+        const BitmapFont &font = bmds::Fonts::unscii16;
         CHECK(font.width() == 8);
         CHECK(font.height() == 16);
         CHECK(font.glyphCount() > 2000);
@@ -971,8 +971,8 @@ TEST_CASE("Font: unscii-16") {
         for (uint32_t c = 0x20; c < 0x7f; ++c) CHECK(font.hasGlyph(c));
 }
 
-TEST_CASE("Font: the icons, 16 by 16 in the private use area") {
-        const Font &icons = bmds::Fonts::icons16;
+TEST_CASE("BitmapFont: the icons, 16 by 16 in the private use area") {
+        const BitmapFont &icons = bmds::Fonts::icons16;
         CHECK(icons.glyphCount() == 8); // seven icons and a blank
         for (uint32_t cp = bmds::IconGlyph::Menu; cp <= bmds::IconGlyph::Submenu; ++cp) {
                 REQUIRE(icons.hasGlyph(cp));

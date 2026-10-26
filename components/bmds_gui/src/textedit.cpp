@@ -11,7 +11,7 @@
 #include <bmds/textedit.h>
 
 #include <new>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/glyphrenderer.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiclipboard.h>

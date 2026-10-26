@@ -10,7 +10,7 @@
 
 #include <cstdio>
 #include <cstring>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guidrag.h>
 #include <bmds/guiwindow.h>
@@ -91,7 +91,7 @@ void DragPicture::fill(int x, int y, int w, int h, uint32_t rgb) {
 }
 
 void DragPicture::text(int x, int y, StringView text, uint32_t rgb, uint16_t maxWidth) {
-        const Font &f = Fonts::unscii16;
+        const BitmapFont &f = Fonts::unscii16;
         int         at = 0;
         for (size_t i = 0; i < text.size();) {
                 const Glyph g = f.glyph(Utf8::decode(text, i));
@@ -111,7 +111,7 @@ void DragPicture::badge(int right, int top, size_t count) {
         std::snprintf(digits, sizeof(digits), "%u", unsigned(count));
         const int   w = int(std::strlen(digits)) * 8 + 8, h = 18;
         const int   x = right - w;
-        const Font &f = Fonts::unscii16;
+        const BitmapFont &f = Fonts::unscii16;
         // A red pill with white digits, its corners cut.
         for (int r = 0; r < h; ++r)
                 for (int c = 0; c < w; ++c) {

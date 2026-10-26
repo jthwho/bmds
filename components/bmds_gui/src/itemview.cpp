@@ -8,7 +8,7 @@
  * The base of the item views: the selection, the mouse and the keys (devplan/filebrowser.md §4g).
  */
 
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/guiwindow.h>
 #include <bmds/itemview.h>
 #include <bmds/mnemonic.h>

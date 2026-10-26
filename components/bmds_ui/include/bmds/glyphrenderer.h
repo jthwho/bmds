@@ -11,7 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/span.h>
 #include <bmds/stringview.h>
 
@@ -80,7 +80,7 @@ class GlyphRenderer {
                  * @return The pixels written (whole glyphs).
                  * @hotpath
                  */
-                uint16_t drawCells(Span<const TextCell> cells, const Font &font, uint8_t *out, size_t stride,
+                uint16_t drawCells(Span<const TextCell> cells, const BitmapFont &font, uint8_t *out, size_t stride,
                                    uint16_t maxWidth, size_t &used);
 
                 /**
@@ -91,7 +91,7 @@ class GlyphRenderer {
                  * @return The pixels written.
                  * @hotpath
                  */
-                uint16_t drawText(StringView utf8, const Font &font, uint32_t fg, uint32_t bg, uint8_t *out,
+                uint16_t drawText(StringView utf8, const BitmapFont &font, uint32_t fg, uint32_t bg, uint8_t *out,
                                   size_t stride, uint16_t maxWidth, size_t &used);
 
         private:

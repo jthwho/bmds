@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/icon.h>
 #include <bmds/mnemonic.h>
 #include <bmds/rect.h>
@@ -73,7 +73,7 @@ class MenuLayout {
                  *        @p minWidth wide (rounded up to a multiple of 4).
                  * @return `Ok`, or `Full` (more than `MaxItems`).
                  */
-                Error layout(Span<const Item> items, const Font &font, uint16_t minWidth = MinWidth);
+                Error layout(Span<const Item> items, const BitmapFont &font, uint16_t minWidth = MinWidth);
 
                 /** @brief Returns the items laid out. */
                 size_t count() const { return _count; }

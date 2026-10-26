@@ -23,7 +23,7 @@
 #include <bmds/dialog.h>
 #include <bmds/fdtable.h>
 #include <bmds/foldermodel.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/furniture.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiwindow.h>

@@ -10,7 +10,7 @@
 
 #include <cstring>
 #include <new>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/guiapplication.h>
 #include <bmds/lineeditmodel.h>
 #include <bmds/memory.h>
@@ -78,7 +78,7 @@ Result<MessageBox *> MessageBox::open(GuiApplication &app, Kind kind, StringView
         kept[n] = '\0';
         StringView   lines[MaxLines];
         const size_t count = TextWrap::wrap(StringView(kept, n), MaxColumns, Span<StringView>(lines, MaxLines));
-        const Font  &font = Fonts::unscii16;
+        const BitmapFont &font = Fonts::unscii16;
         uint16_t     textWidth = MinTextWidth;
         for (size_t i = 0; i < count; ++i) {
                 const uint32_t w = font.textWidth(lines[i]);

@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/glyphrenderer.h>
 #include <bmds/icon.h>
 #include <bmds/rect.h>
@@ -131,7 +131,7 @@ class Painter {
                  *         surface's, isn't on a 4-pixel column).
                  * @hotpath
                  */
-                Error text(int x, int y, StringView utf8, const Font &font, uint32_t fg, uint32_t bg,
+                Error text(int x, int y, StringView utf8, const BitmapFont &font, uint32_t fg, uint32_t bg,
                            uint16_t maxWidth);
 
                 /**
@@ -140,7 +140,7 @@ class Painter {
                  * @return As `text()`.
                  * @hotpath
                  */
-                Error cells(int x, int y, Span<const TextCell> cells, const Font &font, uint16_t maxWidth);
+                Error cells(int x, int y, Span<const TextCell> cells, const BitmapFont &font, uint16_t maxWidth);
 
                 /**
                  * @brief Draws @p icon with its top-left corner at (@p x, @p y) (x on a

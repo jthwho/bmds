@@ -132,7 +132,7 @@ void GlyphRenderer::draw(const Glyph &glyph, unsigned height, uint8_t flags, uin
         return;
 }
 
-uint16_t GlyphRenderer::drawCells(Span<const TextCell> cells, const Font &font, uint8_t *out, size_t stride,
+uint16_t GlyphRenderer::drawCells(Span<const TextCell> cells, const BitmapFont &font, uint8_t *out, size_t stride,
                                   uint16_t maxWidth, size_t &used) {
         const unsigned height = font.height() < MaxHeight ? font.height() : MaxHeight;
         uint8_t        styled[MaxHeight * 2];
@@ -173,7 +173,7 @@ uint16_t GlyphRenderer::drawCells(Span<const TextCell> cells, const Font &font, 
         return width;
 }
 
-uint16_t GlyphRenderer::drawText(StringView utf8, const Font &font, uint32_t fg, uint32_t bg, uint8_t *out,
+uint16_t GlyphRenderer::drawText(StringView utf8, const BitmapFont &font, uint32_t fg, uint32_t bg, uint8_t *out,
                                  size_t stride, uint16_t maxWidth, size_t &used) {
         const unsigned height = font.height() < MaxHeight ? font.height() : MaxHeight;
         uint16_t       width = 0;

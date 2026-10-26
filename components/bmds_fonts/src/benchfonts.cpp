@@ -10,9 +10,13 @@
 
 #include <cstring>
 #include <bmds/bench.h>
+#include <bmds/font.h>
 #include <bmds/fontface.h>
+#include <bmds/fontlibrary.h>
+#include <bmds/glyphcache.h>
 #include <bmds/memory.h>
 #include <bmds/stopwatch.h>
+#include <bmds/systemfonts.h>
 #include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -134,8 +138,93 @@ namespace {
                 return err;
         }
 
+        // The glyph cache over the same face: a hit, a miss (a render and an allocation), a cached
+        // kerning pair; then a line laid out with the system's library.
+        Error runCache(BenchContext &ctx) {
+                auto [bytes, merr] = Vfs::map(ctx.param("file"), Vfs::Context());
+                if (merr.isError()) return merr == Error::NotExist ? Error(Error::NotSupported) : merr;
+                FontFace face;
+                if (Error err = face.open(bytes); err.isError()) return err;
+                uint16_t glyphs[Count];
+                for (uint32_t c = First; c <= Last; ++c) glyphs[c - First] = face.glyphIndex(c);
+                constexpr uint16_t Id = 0xfffe; // not a library face's
+                Error              err = ctx.measure("miss_us", "us", BenchBetter::Lower, [&](double &out) {
+                        GlyphCache cache(1 << 20);
+                        Stopwatch  watch;
+                        for (uint16_t g : glyphs) {
+                                auto [glyph, e] = cache.acquire(Id, face, g, 13, FontFace::Depth::Gray4, false);
+                                if (e.isError()) return e;
+                                cache.release(glyph);
+                        }
+                        out = double(watch.elapsedUs()) / double(Count);
+                        return Error(Error::Ok);
+                });
+                if (err.isError()) return err;
+                GlyphCache cache(1 << 20);
+                for (uint16_t g : glyphs) {
+                        auto [glyph, e] = cache.acquire(Id, face, g, 13, FontFace::Depth::Gray4, false);
+                        if (e.isError()) return e;
+                        cache.release(glyph);
+                }
+                err = ctx.measure("hit_ns", "ns", BenchBetter::Lower, [&](double &out) {
+                        Stopwatch watch;
+                        for (int round = 0; round < 10; ++round)
+                                for (uint16_t g : glyphs) {
+                                        auto [glyph, e] = cache.acquire(Id, face, g, 13, FontFace::Depth::Gray4, false);
+                                        if (e.isError()) return e;
+                                        cache.release(glyph);
+                                }
+                        out = double(watch.elapsedUs()) * 1000.0 / double(10 * Count);
+                        return Error(Error::Ok);
+                });
+                if (err.isError()) return err;
+                // A run's glyphs found under one lock, as drawing a line does.
+                err = ctx.measure("hit_run_ns", "ns", BenchBetter::Lower, [&](double &out) {
+                        const GlyphCache::Glyph *found[Count];
+                        Stopwatch                watch;
+                        for (int round = 0; round < 10; ++round) {
+                                if (cache.lookup(Id, Span<const uint16_t>(glyphs, Count), 13, FontFace::Depth::Gray4,
+                                                 false, Span<const GlyphCache::Glyph *>(found, Count)) != Count)
+                                        return Error(Error::NotFound);
+                                for (const GlyphCache::Glyph *g : found) cache.release(g);
+                        }
+                        out = double(watch.elapsedUs()) * 1000.0 / double(10 * Count);
+                        return Error(Error::Ok);
+                });
+                if (err.isError()) return err;
+                volatile int sink = 0;
+                int16_t      kern[Count - 1];
+                cache.kerning(Id, face, Span<const uint16_t>(glyphs, Count), Span<int16_t>(kern, Count - 1)); // warm
+                err = ctx.measure("kerning_cached_ns", "ns", BenchBetter::Lower, [&](double &out) {
+                        // The pairs of the run just kerned: the warm table, as text drawn again has.
+                        Stopwatch watch;
+                        for (int round = 0; round < 10; ++round)
+                                cache.kerning(Id, face, Span<const uint16_t>(glyphs, Count),
+                                              Span<int16_t>(kern, Count - 1));
+                        sink = kern[0];
+                        out = double(watch.elapsedUs()) * 1000.0 / double(10 * (Count - 1));
+                        return Error(Error::Ok);
+                });
+                if (err.isError()) return err;
+                auto [font, ferr] = SystemFonts::library().open(StringView("IBM Plex Sans 13"));
+                if (ferr.isError()) return ferr;
+                static constexpr char Line[] = "The quick brown fox jumps over the lazy dog, To AVA Ta Yo.";
+                (void)font.textWidth(Line); // the kerning table warm
+                return ctx.measure("layout_ns", "ns", BenchBetter::Lower, [&](double &out) {
+                        Stopwatch watch;
+                        uint32_t  total = 0;
+                        for (int round = 0; round < 10; ++round) total += font.textWidth(Line);
+                        sink = int(total);
+                        out = double(watch.elapsedUs()) * 1000.0 / double(10 * (sizeof(Line) - 1));
+                        return Error(Error::Ok);
+                });
+        }
+
 } // namespace
 
+BMDS_BENCH_WITH(fontCache, "font.cache", runCache, BenchQuick, RenderParams,
+                "The glyph cache on a TrueType face: a miss, a hit, a cached kerning pair; a line laid out (a "
+                "character)")
 BMDS_BENCH_WITH(fontRender, "font.render", runRender, BenchQuick, RenderParams,
                 "A TrueType face opened, its ASCII glyphs rendered at 13-48 px, kerned and looked up")
 

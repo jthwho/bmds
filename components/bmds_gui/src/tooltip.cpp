@@ -9,7 +9,7 @@
  */
 
 #include <cstring>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/guiapplication.h>
 #include <bmds/tooltip.h>
 #include <bmds/windowstack.h>

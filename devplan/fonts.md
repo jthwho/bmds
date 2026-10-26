@@ -1,6 +1,6 @@
 # Fonts: one font library for the desktop, programs and angel
 
-Status: **step 1 done** (2026-10-26: §6a); planned the same day with the user (§8). Fills the
+Status: **steps 1 and 2 done** (2026-10-26: §6a, §6c); planned the same day with the user (§8). Fills the
 roadmap's "A system font library (planned with the user 2026-10-15)".
 
 ## 1. Goal
@@ -138,8 +138,8 @@ roadmap's "A system font library (planned with the user 2026-10-15)".
   general heap.
 - **Per face:** a table of the first 256 codepoints' glyph indices, so ASCII skips the cmap search.
 - **Kerning pairs are cached too** (found on the board, §6a: 7.7 µs a pair from the font's
-  tables): a fixed table of (face, left, right) to the value in font units, direct-mapped,
-  4,096 entries of 8 bytes (32 KB, PSRAM), so text drawn again costs a hash and a read a pair.
+  tables): a two-way table of 4,096 (face, left, right) pairs to the value in font units (48 KB,
+  PSRAM), read without a lock (§6c), so text drawn again costs a hash and a read a pair.
 - **Stats** for the `font` command (§4h): entries, bytes, hits, misses, renders, evictions.
 
 ### 4d. Drawing
@@ -221,14 +221,14 @@ Everything in §4e, as script calls registered with help lines and locked in `ap
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `font/paths` | Paths | `/rom/share/fonts;${HOME}/Fonts` | Where faces are found |
+| `font/paths` | String (templates aren't paths) | `/rom/share/fonts;${HOME}/Fonts` | Where faces are found |
 | `font/ui` | string | `IBM Plex Sans 13` | The toolkit's text (§4a) |
 | `font/mono` | string | `IBM Plex Mono 13` | Fixed-width text outside the terminal (editors, code) |
 | `font/title` | string | `IBM Plex Sans 13 bold` | Window titles, headings |
 | `font/terminal` | string | `unscii 16` | The terminal's cells |
-| `font/fallback` | string list | (the shipped faces) | Faces tried for a missing glyph |
+| `font/fallback` | string list | `IBM Plex Sans;IBM Plex Mono` | Faces tried for a missing glyph (then unscii) |
 | `font/smooth` | bool | `true` | Smoothing, unless a call says otherwise |
-| `font/contrast` | int | (found on the board) | The 4-bit coverage table's gamma |
+| `font/contrast` | int | (found on the board, step 3) | The 4-bit coverage table's gamma |
 | `font/cache` | int, KB | 512 | The glyph cache's budget |
 
 The sizes are first guesses, settled on the board in step 7; until then the first three say
@@ -333,6 +333,92 @@ picture, for tests and for looking).
 - **Seen on the host** (a line drawn to a picture): smooth text is clean at 11 px and up. Sharp
   TrueType at 11-13 px is ragged, because stb_truetype has no hinting. Smoothing on by default
   and unscii for sharp small text (§2) were the right calls.
+
+### 6b. Step 2, the design (2026-10-26)
+
+- **The bitmap fonts move into `bmds_fonts`**: bmds_ui's `Font` becomes `BitmapFont`
+  (`<bmds/bitmapfont.h>`, 28 uses renamed), with `Fonts::unscii16`, `Fonts::icons16`, the
+  generated unscii table and `IconGlyph`. bmds_ui then requires bmds_fonts. That frees the name
+  `Font` for the library's font, which the Painter takes in step 6.
+- **`FontName`**: `IBM Plex Sans 13 bold italic` or a role with overrides (`ui`, `title 20`).
+  Read from the end: a number is the size, `bold`/`italic`/`regular` the style; the rest is the
+  family. Formatted back the same way.
+- **`GlyphCache`** (one per system, thread-safe, one `Mutex` held only for lookups, inserts and
+  pins):
+  - Key: face, pixel size, depth, made-up bold, glyph. Each entry is allocated from `Psram` on a
+    miss. Allocation happens only on misses, which already cost a render (about 100 µs), never on
+    a hit.
+  - LRU over a 4,096-bucket hash. The budget (`font/cache`) counts entries and their rows. An
+    entry is pinned while it is drawn (`acquire()` / `release()`).
+  - A miss renders outside the lock. Two tasks rendering the same glyph keep the first copy.
+  - It is a `Memory::Reclaimer`: when PSRAM runs short, unpinned glyphs are freed.
+  - Kerning: a direct-mapped table of 4,096 pairs (32 KB, `Psram`, made on first use), looked up
+    a run at a time under one lock.
+  - Stats: entries, bytes, hits, misses, evictions, kerning hits and misses.
+- **`FontLibrary`**:
+  - **Faces:** a table of at most 64, appended to and never reordered, so a face's index is its
+    cache id. The bitmap fonts are faces too (unscii: 16 px and whole multiples). TrueType files
+    come from `font/paths` through a `FontFiles` interface (list a folder, map a file, load one),
+    the VFS on the board and the host's files in tests. `/rom` files are mapped. Other files are
+    read for their names at scan time, then loaded into `Psram` when first opened and kept until
+    memory runs short.
+  - **Style matching:** weight and italic from `OS/2` (added to `FontFace`). A missing bold is
+    made up; italic is never made up.
+  - **Roles, fallback, default size:** roles give a name (§4a); the fallback faces are tried for a
+    missing glyph, then unscii; a name without a size takes 13 px (or a bitmap font's own size).
+- **`Font`**, a handle: a face at a size, style, a bitmap font's scale. Copying it keeps its face
+  loaded.
+  - Pixel metrics (ascent, descent, line height, widest advance), from the face scaled and
+    rounded out.
+  - `layout()`: UTF-8 to positioned glyphs, with fallback faces and kerning, positions in 1/64
+    px snapped per glyph.
+  - `textWidth()` and `fitting()` built on `layout()`.
+- **On the board** (`SystemFonts`): the system's library and cache. The settings of §4h
+  (`font/paths` a String, since templates aren't paths: `/rom/share/fonts;${HOME}/Fonts`, each
+  expanded) are watched and applied. The `font` command (in bmds_ui, which has the PNG writer)
+  offers `list`, `info`, `stats`, `draw` and `rescan`. A `font.cache` bench measures a hit, a
+  miss and laying out a line.
+
+### 6c. Step 2, as built (2026-10-26)
+
+- **As designed (§6b)**, with these details:
+  - **The bitmap fonts moved:** `BitmapFont` is in bmds_fonts; bmds_ui requires it, and
+    `tools/fontconv.py` writes the new name.
+  - **`FontFace`** gained `weight()` and `isItalic()` (`OS/2`, else `head`).
+  - **`Font::Placed`** carries the face or bitmap font drawing each glyph, its cache id, a
+    bitmap font's scale and baseline, and the pen in 1/64 px. The drawing kernels of step 3 take
+    these.
+  - **Faces are found by style:** the family's faces by italic, then by the weight nearest 400 or
+    700.
+- **The cache's hot paths, measured and reworked on the board** (`font.cache`, IBM Plex Sans 13
+  from `/rom`):
+
+  | Metric | First version | As built |
+  |---|---|---|
+  | miss (box, render, allocate), a glyph | 112 µs | 117 µs |
+  | hit, `acquire()` + `release()` | 1,295 ns | 768 ns |
+  | a run's hit (`lookup()`, one lock a run) | | 260 ns |
+  | kerning, a cached pair | 403 ns (mostly misses) | 334 ns |
+  | layout, a character (`textWidth()`) | 1,386 ns | 947 ns |
+
+  - **Hits:** a hit no longer moves its entry. It is marked used, and the eviction sweep gives a
+    used entry a second chance (CLOCK).
+  - **`release()`:** one atomic decrement, no lock.
+  - **Kerning:** read without the lock (a sequence number per pair), two ways per set. The first
+    bench warmed 8,836 pairs into 4,096 slots and so measured misses.
+  - **Layout:** 16.16 fixed point for font units to 1/64 px instead of float. `font.cpp`,
+    `glyphcache.cpp` and `fontface.cpp` are built `-O2`.
+  - **Still to watch:** a 15-character label lays out in about 14 µs. If the toolkit's repaints
+    show it (step 7), the next step is a per-face table of the ASCII advances.
+- **On the board:** the `font` command lists the six Plex faces and unscii, opens the roles (all
+  unscii until step 7), makes up Serif's bold, and draws lines to PNGs, smooth and sharp, with
+  fallback glyphs (∑ → from the Plex fallback faces, ░ from unscii) and unscii doubled.
+- **Size:** bmds_fonts is 84.4 KB of flash, including unscii's 46.4 KB table, which moved from
+  bmds_ui. Step 2's code is about 16 KB, with 1.5 KB of internal RAM for its static objects. The
+  cache's buckets (16 KB) and kerning table (48 KB) are in PSRAM, made on first use.
+- **Tests:** `tests/host/fontlibrary.cpp`: names, the cache (hits, budget, pins, made-up bold,
+  kerning, a run, threads, no memory, no leaks), and the library (scan, styles, roles, fallback,
+  bitmap sizes, layout, loading and letting go).
 
 ## 7. ABI impact
 

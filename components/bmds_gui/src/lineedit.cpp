@@ -9,7 +9,7 @@
  */
 
 #include <bmds/bevel.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiclipboard.h>
 #include <bmds/guiwindow.h>
@@ -118,7 +118,7 @@ Rect LineEdit::textArea() const {
 
 // The lines shown: wrapped as `TextWrap` breaks them, else the one from the first byte shown.
 size_t LineEdit::lines(Line *out) const {
-        const Font      &font = Fonts::unscii16;
+        const BitmapFont &font = Fonts::unscii16;
         const StringView text = drawn();
         const Rect       area = textArea();
         const auto       place = [&](size_t start, size_t end) {
@@ -157,7 +157,7 @@ size_t LineEdit::lineOf(const Line *ls, size_t count, size_t offset) const {
 }
 
 void LineEdit::reveal() {
-        const Font      &font = Fonts::unscii16;
+        const BitmapFont &font = Fonts::unscii16;
         const StringView text = drawn();
         const size_t     cursor = _model.cursor();
         const uint16_t   width = textArea().width;
@@ -196,7 +196,7 @@ void LineEdit::changed() {
 }
 
 size_t LineEdit::offsetAt(const Line &line, int x) const {
-        const Font      &font = Fonts::unscii16;
+        const BitmapFont &font = Fonts::unscii16;
         const StringView text = drawn();
         int              left = line.x;
         size_t           at = line.start;
@@ -223,7 +223,7 @@ size_t LineEdit::offsetAt(int x, int y) const {
 // Up or down a line, to the character nearest the cursor's column; past the first or the last
 // line, to the text's start or end.
 void LineEdit::moveLine(int by, bool select) {
-        const Font  &font = Fonts::unscii16;
+        const BitmapFont &font = Fonts::unscii16;
         Line         ls[MaxLines];
         const size_t n = lines(ls);
         const size_t cursor = _model.cursor();
@@ -344,7 +344,7 @@ void LineEdit::paintRun(Painter &painter, const Line &line, uint16_t y, size_t f
         (void)line;
         const Rect area = textArea();
         if (to <= from || x >= area.right()) return;
-        const Font      &font = Fonts::unscii16;
+        const BitmapFont &font = Fonts::unscii16;
         const StringView piece = drawn().mid(from, to - from);
         const uint32_t   w = font.textWidth(piece);
         const uint16_t   room = static_cast<uint16_t>(area.right() - x);
@@ -364,7 +364,7 @@ void LineEdit::paint(Painter &painter) {
         const uint32_t       selFg = palette.color(Role::HighlightText);
         if (_framed) drawBevel(painter, outer, Bevel::Style::Field);
         (void)painter.fill(in, bg);
-        const Font      &font = Fonts::unscii16;
+        const BitmapFont &font = Fonts::unscii16;
         const Rect       area = textArea();
         const StringView text = drawn();
         Line             ls[MaxLines];

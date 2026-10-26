@@ -17,7 +17,7 @@
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief A glyph's bitmap: `Font::height()` rows, the top one first, each
+ * @brief A glyph's bitmap: `BitmapFont::height()` rows, the top one first, each
  *        `width / 8` bytes with the most significant bit leftmost.
  */
 struct Glyph {
@@ -36,7 +36,7 @@ struct Glyph {
  * @par Thread Safety
  * Immutable: safe from any task.
  */
-class Font {
+class BitmapFont {
         public:
                 /** @brief A run of consecutive codepoints with consecutive glyphs. */
                 struct Range {
@@ -46,17 +46,17 @@ class Font {
                 };
 
                 template <size_t NarrowRuns, size_t NarrowBytes, size_t WideRuns, size_t WideBytes>
-                constexpr Font(uint8_t width, uint8_t height, const Range (&narrow)[NarrowRuns],
-                               const uint8_t (&narrowBits)[NarrowBytes], const Range (&wide)[WideRuns],
-                               const uint8_t (&wideBits)[WideBytes], uint32_t replacement)
+                constexpr BitmapFont(uint8_t width, uint8_t height, const Range (&narrow)[NarrowRuns],
+                                     const uint8_t (&narrowBits)[NarrowBytes], const Range (&wide)[WideRuns],
+                                     const uint8_t (&wideBits)[WideBytes], uint32_t replacement)
                     : _narrow(narrow, NarrowRuns), _wide(wide, WideRuns), _narrowBits(narrowBits), _wideBits(wideBits),
                       _replacement(replacement), _glyphBytes(static_cast<uint16_t>(height * (width / 8))),
                       _width(width), _height(height) {
                         static_assert(NarrowRuns > 0, "a font has narrow glyphs");
                 }
 
-                Font(const Font &) = delete;
-                Font &operator=(const Font &) = delete;
+                BitmapFont(const BitmapFont &) = delete;
+                BitmapFont &operator=(const BitmapFont &) = delete;
 
                 /** @brief Returns the cell width in pixels. */
                 uint8_t width() const { return _width; }
@@ -106,10 +106,10 @@ class Font {
 /** @brief The fonts built in. */
 namespace Fonts {
         /** @brief unscii-16 by Viznut (public domain): 8×16, the system font. */
-        extern const Font unscii16;
+        extern const BitmapFont unscii16;
 
         /** @brief The window manager's icons (`Icon`), 16×16: BMDS's own. */
-        extern const Font icons16;
+        extern const BitmapFont icons16;
 } // namespace Fonts
 
 /** @brief `Fonts::icons16`'s glyphs, in the private use area. Append only. */

@@ -17,7 +17,7 @@
 #include <bmds/bevel.h>
 #include <bmds/clock.h>
 #include <bmds/datetime.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/icon.h>
 #include <bmds/inputevent.h>
 #include <bmds/lineeditmodel.h>

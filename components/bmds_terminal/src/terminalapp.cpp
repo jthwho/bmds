@@ -50,7 +50,7 @@
 #include <bmds/clipboardreader.h>
 #include <bmds/dragdrop.h>
 #include <bmds/fdtable.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/glyphrenderer.h>
 #include <bmds/icontheme.h>
 #include <bmds/memory.h>
@@ -673,7 +673,7 @@ namespace {
         // goes on while rows are drawn: a row written meanwhile is dirty again, for the next round.
         void TerminalApp::draw(Painter &painter) {
                 if (_colorsChanged.exchange(false, std::memory_order_acquire)) readColors();
-                const Font          &font = Fonts::unscii16;
+                const BitmapFont     &font = Fonts::unscii16;
                 const TerminalColors &colors = _colors;
                 uint16_t             columns = 0, rows = 0;
                 size_t               offset = 0;

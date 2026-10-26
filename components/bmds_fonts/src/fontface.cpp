@@ -234,7 +234,7 @@ Error FontFace::open(ByteSpan data) {
                         uint32_t at = 0, length = 0;
         };
         Found tables[] = {{tag("cmap")}, {tag("head")}, {tag("hhea")}, {tag("hmtx")}, {tag("loca")}, {tag("glyf")},
-                          {tag("maxp")}, {tag("name")}, {tag("post")}, {tag("GPOS")}, {tag("kern")}};
+                          {tag("maxp")}, {tag("name")}, {tag("post")}, {tag("GPOS")}, {tag("kern")}, {tag("OS/2")}};
         enum {
                 Cmap,
                 Head,
@@ -246,7 +246,8 @@ Error FontFace::open(ByteSpan data) {
                 Name,
                 Post,
                 Gpos,
-                Kern
+                Kern,
+                Os2
         };
         for (uint32_t i = 0; i < tableCount; ++i) {
                 const uint8_t *r = file.p + 12 + i * 16;
@@ -345,6 +346,16 @@ Error FontFace::open(ByteSpan data) {
         _metrics.maxAdvance = m;
         uint32_t fixedPitch = 0;
         _fixedPitch = Table{file.p + tables[Post].at, tables[Post].length}.u32(12, fixedPitch) && fixedPitch != 0;
+        // The style: OS/2's weight and italic bit, else head's macStyle (bold, italic).
+        const Table os2{file.p + tables[Os2].at, tables[Os2].length};
+        uint16_t    weight = 0, selection = 0, macStyle = 0;
+        if (tables[Os2].at != 0 && os2.u16(4, weight) && os2.u16(62, selection) && weight >= 1 && weight <= 1000) {
+                _weight = weight;
+                _italic = (selection & 1) != 0;
+        } else if (head.u16(44, macStyle)) {
+                _weight = (macStyle & 1) != 0 ? 700 : 400;
+                _italic = (macStyle & 2) != 0;
+        }
 
         // GPOS: the lookups the `kern` features name, each once, in order (types 2 and 9).
         const Table gpos{file.p + _gpos, _gposLength};

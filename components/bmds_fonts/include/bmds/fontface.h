@@ -105,6 +105,12 @@ class FontFace {
                 /** @brief Returns the style's name ("Bold Italic"): the typographic one if given. */
                 StringView style() const { return StringView(_style, _styleLength); }
 
+                /** @brief Returns the weight, 1-1000: 400 regular, 700 bold (`OS/2`, else `head`). */
+                uint16_t weight() const { return _weight; }
+
+                /** @brief Returns true for an italic or oblique face (`OS/2`, else `head`). */
+                bool isItalic() const { return _italic; }
+
                 /** @brief Returns true if the font says every glyph is as wide (`post`). */
                 bool isFixedPitch() const { return _fixedPitch; }
 
@@ -184,6 +190,8 @@ class FontFace {
                 uint16_t _unitsPerEm = 0;
                 bool     _longLoca = false;
                 bool     _fixedPitch = false;
+                bool     _italic = false;
+                uint16_t _weight = 400;
                 uint8_t  _familyLength = 0, _styleLength = 0;
                 char     _family[MaxName + 1] = {};
                 char     _style[MaxName + 1] = {};

@@ -16,7 +16,7 @@
 #include <bmds/bevel.h>
 #include <bmds/deadline.h>
 #include <bmds/display.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/iconid.h>
 #include <bmds/log.h>
 #include <bmds/iconpack.h>

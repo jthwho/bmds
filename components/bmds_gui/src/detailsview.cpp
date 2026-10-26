@@ -10,7 +10,7 @@
 
 #include <bmds/bevel.h>
 #include <bmds/detailsview.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/guiwindow.h>
 
 BMDS_NAMESPACE_BEGIN

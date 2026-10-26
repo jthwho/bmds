@@ -12,7 +12,7 @@
 
 #include <cstdio>
 #include <bmds/fdtable.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/glyphrenderer.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiclipboard.h>

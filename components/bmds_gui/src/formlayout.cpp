@@ -9,7 +9,7 @@
  */
 
 #include <cstring>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/formlayout.h>
 #include <bmds/lineeditmodel.h>
 

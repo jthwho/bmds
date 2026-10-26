@@ -10,7 +10,7 @@
 
 #include <algorithm>
 #include <cstring>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/glyphrenderer.h>
 #include <bmds/guiwindow.h>
 #include <bmds/iconview.h>
@@ -206,7 +206,7 @@ void IconView::setBackdrop(const Backdrop *backdrop) {
 // it does); past two, the second cut and ended with an ellipsis.
 void IconView::lines(size_t row, Lines &out) const {
         constexpr char   Ellipsis[] = "\xe2\x80\xa6"; // U+2026
-        const Font      &font = Fonts::unscii16;
+        const BitmapFont &font = Fonts::unscii16;
         const StringView all = model() != nullptr ? model()->text(row) : StringView();
         StringView       views[3];
         const size_t     n =

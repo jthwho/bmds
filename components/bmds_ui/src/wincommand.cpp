@@ -22,7 +22,7 @@
 #include <bmds/command.h>
 #include <bmds/display.h>
 #include <bmds/bevel.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/glyphrenderer.h>
 #include <bmds/icon.h>
 #include <bmds/iconpack.h>
@@ -418,7 +418,7 @@ namespace {
         // at (@p x, @p y) of its row: @p fg on its glyphs' bits, else @p bg.
         uint32_t textAt(StringView text, uint32_t left, uint32_t top, uint32_t width, uint32_t x, uint32_t y,
                         uint32_t fg, uint32_t bg) {
-                const Font    &font = Fonts::unscii16;
+                const BitmapFont &font = Fonts::unscii16;
                 const uint32_t end = left + width;
                 for (size_t i = 0; i < text.size();) {
                         const Glyph g = font.glyph(Utf8::decode(text, i));
@@ -1056,7 +1056,7 @@ namespace {
                 if (ctx.paramUnsigned("cells", count).isError() || count == 0 || count > MaxCells)
                         return Error::Invalid;
                 const unsigned Cells = unsigned(count), Width = Cells * 8;
-                const Font    &font = Fonts::unscii16;
+                const BitmapFont &font = Fonts::unscii16;
                 const size_t   stride = size_t(Width) * 3, bytes = stride * font.height();
                 // In internal RAM: the shell's stack is in PSRAM.
                 struct Work {

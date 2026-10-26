@@ -22,7 +22,7 @@
 #include <bmds/desktopentry.h>
 #include <bmds/filenamelist.h>
 #include <bmds/formmodels.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/furniturelayout.h>
 #include <bmds/graphlayout.h>
 #include <bmds/icongrid.h>

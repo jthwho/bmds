@@ -25,7 +25,7 @@ namespace {
 
 } // namespace
 
-Error MenuLayout::layout(Span<const Item> items, const Font &font, uint16_t minWidth) {
+Error MenuLayout::layout(Span<const Item> items, const BitmapFont &font, uint16_t minWidth) {
         _count = 0;
         if (items.size() > MaxItems) return Error::Full;
         uint32_t textWidth = 0;

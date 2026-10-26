@@ -20,7 +20,7 @@
 #include <cstdio>
 #include <bmds/bench.h>
 #include <bmds/command.h>
-#include <bmds/font.h>
+#include <bmds/bitmapfont.h>
 #include <bmds/glyphrenderer.h>
 #include <bmds/image.h>
 #include <bmds/imagescaler.h>
