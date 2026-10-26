@@ -141,6 +141,12 @@ namespace angel {
         // picture so far copied over. @return 0, or the error (@p fd not taken).
         int  canvasShow(void *picture, int fd, int width, int height);
         void canvasSize(void *picture, int &width, int &height);
+        // A canvas with no surface (a remote connection's, or on a PC): what is drawn sent by the
+        // GUI's loop as RGB565 pixels through @p send, to GUI canvas @p id; all of it at first.
+        using CanvasSender = void (*)(uint32_t id, int x, int y, int width, int height, const uint16_t *rgb565);
+        void canvasSendTo(void *picture, uint32_t id, CanvasSender send);
+        // Such a canvas's picture at another size (what was drawn kept). @return 0, or an errno.
+        int  canvasResize(void *picture, int width, int height);
         void canvasRelease(void *picture);
         // What was drawn on the canvases since, shown (the GUI's loop, before it waits).
         void presentCanvases();

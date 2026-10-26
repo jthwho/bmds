@@ -60,6 +60,21 @@ namespace {
 
 } // namespace
 
+Error GuiServicePriv::openRemote(FileHandle::Ptr end) {
+        auto [wm, werr] = WindowManager::manager(0);
+        if (werr.isError() || !wm->isRunning()) return Error::NotSupported;
+        size_t slot = GuiService::MaxConnections;
+        for (size_t i = 0; i < GuiService::MaxConnections && slot == GuiService::MaxConnections; ++i) {
+                bool expected = false;
+                if (used[i].compare_exchange_strong(expected, true)) slot = i;
+        }
+        if (slot == GuiService::MaxConnections) return Error::Full;
+        // No client end (no CANVAS-SURFACE), no program (no SHELL), no session: a remote program's.
+        const Error err = GuiConnection::start(std::move(end), nullptr, uint8_t(slot), 0, StringView(), 0);
+        if (err.isError()) used[slot].store(false);
+        return err;
+}
+
 void GuiServicePriv::released(uint8_t slot) {
         if (slot < GuiService::MaxConnections) used[slot].store(false);
         return;

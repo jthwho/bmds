@@ -323,3 +323,86 @@ TEST_CASE("GuiProtocol: the C client and a C++ service agree: setup, names, requ
         service.join();
         bmds_gui_close(gui);
 }
+
+namespace {
+
+        // The scripted service's answer to a Hello: accepted, or refused.
+        void answerHello(Server &server, GP::HelloStatus status) {
+                List<uint8_t> out;
+                GP::Writer    w(out);
+                w.beginAnswer(GP::Kind::Reply, 0, 0);
+                w.u32(uint32_t(status));
+                w.u16(GP::Major);
+                w.u16(GP::Minor);
+                if (status == GP::HelloStatus::Accepted) {
+                        w.u32(0x01000000);
+                        w.u32(0x00ffffff);
+                        w.u32(GP::MaxMessage);
+                        w.u32(0); // no extensions
+                        w.u32(0); // nothing of the display
+                }
+                w.end();
+                server.send(out);
+        }
+
+        constexpr const char *TestCookie = "00112233445566778899aabbccddeeff0123456789abcdeffedcba9876543210";
+
+} // namespace
+
+TEST_CASE("GuiProtocol: another machine: |COMMAND carries the connection, the cookie presented") {
+        // The service's end at fd 7 of the command, which copies both ways between it and the
+        // client's socket pair (its stdin and stdout): a remote display without a TCP port.
+        // Each round its own pair: a round's copier left reading fd 7 ends when it closes.
+        REQUIRE(setenv("BMDS_GUI_COOKIE", TestCookie, 1) == 0);
+        for (GP::HelloStatus status : {GP::HelloStatus::Accepted, GP::HelloStatus::Refused}) {
+                int fds[2]; // close-on-exec: the command gets fd 7 alone (dup2 clears it there)
+                REQUIRE(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) == 0);
+                REQUIRE(dup2(fds[0], 7) == 7);
+                close(fds[0]);
+                Server      server{fds[1], {}};
+                std::thread service([&] {
+                        auto hello = server.next();
+                        CHECK(opcodeOf(hello) == uint16_t(GP::Opcode::Hello));
+                        GP::Reader h = bodyOf(hello);
+                        (void)h.bytes(8);
+                        (void)h.u16();
+                        (void)h.u16();
+                        const uint32_t nameLength = h.u32(), dataLength = h.u32();
+                        const ByteSpan name = h.bytes(nameLength), data = h.bytes(dataLength);
+                        CHECK(StringView(reinterpret_cast<const char *>(name.data()), name.size()) ==
+                              StringView("BMDS-COOKIE-1"));
+                        REQUIRE(data.size() == 32);
+                        CHECK(data[0] == 0x00);
+                        CHECK(data[1] == 0x11);
+                        CHECK(data[31] == 0x10);
+                        CHECK(h.ok());
+                        answerHello(server, status);
+                });
+                errno = 0;
+                bmds_gui_t *gui = bmds_gui_connect("|cat <&7 & exec cat >&7");
+                service.join();
+                if (status == GP::HelloStatus::Accepted) {
+                        REQUIRE(gui != nullptr);
+                        bmds_gui_close(gui); // the command reaped (its stdin ended)
+                } else {
+                        CHECK(gui == nullptr);
+                        CHECK(errno == EACCES);
+                }
+                close(7);
+                close(fds[1]);
+        }
+
+        // No cookie to be found; a display that isn't one; the board's own service from a PC.
+        REQUIRE(setenv("BMDS_GUI_COOKIE", "/nonexistent/cookie", 1) == 0);
+        CHECK(bmds_gui_connect("|true") == nullptr);
+        CHECK(errno == EACCES);
+        REQUIRE(setenv("BMDS_GUI_COOKIE", TestCookie, 1) == 0);
+        CHECK(bmds_gui_connect("no-port") == nullptr);
+        CHECK(errno == EINVAL);
+        CHECK(bmds_gui_connect("example.com:6400") == nullptr); // names aren't resolved
+        CHECK(errno == EINVAL);
+        CHECK(bmds_gui_connect("|exit 0") == nullptr); // nothing answered
+        CHECK(bmds_gui_connect("local") == nullptr);
+        CHECK(errno == ENOTSUP);
+        unsetenv("BMDS_GUI_COOKIE");
+}

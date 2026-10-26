@@ -105,9 +105,18 @@ typedef void (*bmds_gui_error_fn)(void *arg, const bmds_gui_error_t *error);
 typedef struct bmds_gui bmds_gui_t;
 
 /**
- * @brief Connects to @p display: NULL for `BMDS_DISPLAY`'s, else "local" (the board's own
- *        service). Other machines' come with step 8 (devplan/guiprograms.md §4g).
- * @return The connection, or NULL with `errno` set.
+ * @brief Connects to @p display: NULL for `BMDS_GUI_DISPLAY`'s (unset: "local"), else
+ *        - "local": the board's own service (`gui_open`);
+ *        - "HOST:PORT": TCP to a board's service through a forwarded port, `HOST` an IPv4
+ *          address or "localhost" (`ssh -L 6400:localhost:6400 root@board`, then
+ *          "localhost:6400"; the board listens on its loopback while `gui/listen` says so);
+ *        - "|COMMAND": `/bin/sh -c COMMAND` carries the connection on its stdin and stdout, as
+ *          `|ssh -W localhost:6400 root@board` does (no port opened anywhere); reaped at the close.
+ *        Another machine's needs its user's cookie: `BMDS_GUI_COOKIE` (the 64 hex digits, or a
+ *        file holding them), else `$HOME/.config/gui/cookie` (the board's `gui/cookie`, copied).
+ *        (devplan/guiprograms.md §4g, §16.)
+ * @return The connection, or NULL with `errno` set (`EACCES`: no cookie, or not the board's;
+ *         `EINVAL`: not a display; `ENOTSUP`: "local" where there is no GUI service).
  */
 bmds_gui_t *bmds_gui_connect(const char *display);
 

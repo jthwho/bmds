@@ -43,8 +43,6 @@ namespace {
         // those pull in the FreeRTOS timer task, about 2.8 KB of internal RAM.)
         constinit StaticObject<Semaphore> bootDone;
 
-        // Most stages a boot can have (kernel + system); sizes the timing array.
-        constexpr size_t MaxStages = 40;
 
         Error initMemory() {
                 // Every MemSpace the board maps must have backing memory; a
@@ -71,6 +69,9 @@ namespace {
                 {"simd", Simd::setUp}, // PIE's misaligned access on, for good: before any kernel runs
         };
         constexpr size_t StageCount = sizeof(Stages) / sizeof(Stages[0]);
+
+        // Most stages a boot can have (kernel + system); sizes the timing array.
+        constexpr size_t MaxStages = StageCount + Boot::MaxSystemStages;
 
         void printBanner() {
                 const SystemInfo info = System::info();

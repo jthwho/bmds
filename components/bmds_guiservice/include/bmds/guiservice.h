@@ -36,6 +36,13 @@ namespace GuiService {
          */
         Error init(ProgramLauncher &launcher);
 
+        /**
+         * @brief The boot stage `guinet` (after the network): remote programs taken on
+         *        127.0.0.1:`gui/port` while `gui/listen` is `loopback`, followed live
+         *        (`devplan/guiprograms.md` §16).
+         */
+        Error listen();
+
 } // namespace GuiService
 
 BMDS_NAMESPACE_END

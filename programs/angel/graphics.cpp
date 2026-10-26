@@ -1514,6 +1514,34 @@ namespace angel {
                                 static CanvasPicture *first; // every canvas's picture
                                 CanvasPicture        *next() const { return _next; }
 
+                                // Drawn in memory (no surface): what a remote connection's canvas has.
+                                bool inMemory() const { return _own != nullptr; }
+
+                                // The picture in memory at another size: what was drawn kept, the rest
+                                // white, all of it to be sent again. @return 0, or ENOMEM / EINVAL.
+                                int resizeInMemory(int width, int height) {
+                                        if (_own == nullptr || width < 1 || height < 1 || width > MaxSize ||
+                                            height > MaxSize)
+                                                return EINVAL;
+                                        auto *pixels = static_cast<uint8_t *>(malloc(size_t(width) * height * Bpp));
+                                        if (pixels == nullptr) return ENOMEM;
+                                        memset(pixels, 0xff, size_t(width) * height * Bpp);
+                                        const int rows = height < canvas.height ? height : canvas.height;
+                                        const int bytes = (width < canvas.width ? width : canvas.width) * int(Bpp);
+                                        for (int y = 0; y < rows; ++y)
+                                                memcpy(pixels + size_t(y) * width * Bpp,
+                                                       _own + size_t(y) * canvas.stride, size_t(bytes));
+                                        free(_own);
+                                        _own = pixels;
+                                        bmds_canvas_init(&canvas, pixels, uint32_t(width) * Bpp, width, height, Format);
+                                        bmds_canvas_damage_all(&canvas);
+                                        canvasesDrawn = true;
+                                        return 0;
+                                }
+
+                                uint32_t     sendId = 0;       // sent to this GUI canvas by PutPixels (0: not)
+                                CanvasSender sender = nullptr; // how
+
                         protected:
                                 void drawn(bool firstUnshown) override {
                                         (void)firstUnshown;
@@ -2475,12 +2503,62 @@ namespace angel {
                 return;
         }
 
+        void canvasSendTo(void *picture, uint32_t id, CanvasSender send) {
+                auto *c = static_cast<CanvasPicture *>(picture);
+                c->sendId = id;
+                c->sender = send;
+                bmds_canvas_damage_all(&c->canvas); // all of it the first time
+                canvasesDrawn = true;
+                return;
+        }
+
+        int canvasResize(void *picture, int width, int height) {
+                return static_cast<CanvasPicture *>(picture)->resizeInMemory(width, height);
+        }
+
+        namespace {
+
+                // What changed on canvas @p c in memory, sent as RGB565 (the protocol's PutPixels, coded
+                // by the client), the damage then forgotten.
+                void sendCanvas(CanvasPicture *c) {
+                        bmds_canvas_t &cv = c->canvas;
+                        const uint32_t count = cv.damage_count;
+                        bmds_rect_t    rects[BMDS_CANVAS_MAX_DAMAGE];
+                        memcpy(rects, cv.damage, count * sizeof(rects[0]));
+                        cv.damage_count = 0;
+                        for (uint32_t i = 0; i < count; ++i) {
+                                const bmds_rect_t &r = rects[i];
+                                const int          rx = int(r.x), ry = int(r.y), rw = int(r.width), rh = int(r.height);
+                                if (rw <= 0 || rh <= 0) continue;
+                                auto *out = static_cast<uint16_t *>(malloc(size_t(rw) * size_t(rh) * 2));
+                                if (out == nullptr) return;
+                                for (int y = 0; y < rh; ++y) {
+                                        const uint8_t *from = cv.pixels + size_t(ry + y) * cv.stride + size_t(rx) * Bpp;
+                                        uint16_t      *to = out + size_t(y) * size_t(rw);
+                                        for (int x = 0; x < rw; ++x, from += Bpp) // B, G, R bytes
+                                                to[x] = uint16_t((from[2] >> 3) << 11 | (from[1] >> 2) << 5 |
+                                                                 from[0] >> 3);
+                                }
+                                c->sender(c->sendId, rx, ry, rw, rh, out);
+                                free(out);
+                        }
+                        return;
+                }
+
+        } // namespace
+
         void presentCanvases() {
-#ifdef ANGEL_BMDS
                 if (!canvasesDrawn) return;
                 canvasesDrawn = false;
-                for (CanvasPicture *c = CanvasPicture::first; c != nullptr; c = c->next()) (void)c->present();
+                for (CanvasPicture *c = CanvasPicture::first; c != nullptr; c = c->next()) {
+                        if (c->sendId != 0 && c->sender != nullptr && c->inMemory()) {
+                                sendCanvas(c);
+                                continue;
+                        }
+#ifdef ANGEL_BMDS
+                        (void)c->present();
 #endif
+                }
                 return;
         }
 

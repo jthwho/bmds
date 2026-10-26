@@ -117,15 +117,20 @@ namespace {
                 {"controls", bmds::ProgramControls::init}, // programs' actions, changed live
                 {"gui", startGui},                         // programs' windows (gui_open), while the window system runs
                 {"usb", bmds::UsbHost::init},
-                {"usbdev", startUsbDevice},          // usb/device/mode: the console port as a USB device
-                {"net", bmds::EthernetDevice::init}, // eth0 (devplan/network.md)
-                {"ip", bmds::NetStack::init},        // lwIP, lo, and eth0's addresses from sysconf
-                {"ssh", startSsh},                   // dropbear from the card while net/ssh/server is on
-                {"netmounts", startNetMounts},       // net/mounts' filesystems, mounted once the network is up
-                {"netmidi", bmds::NetMidi::init},    // MIDI over the network while midi/net/enabled is on
+                {"usbdev", startUsbDevice},           // usb/device/mode: the console port as a USB device
+                {"net", bmds::EthernetDevice::init},  // eth0 (devplan/network.md)
+                {"ip", bmds::NetStack::init},         // lwIP, lo, and eth0's addresses from sysconf
+                {"ssh", startSsh},                    // dropbear from the card while net/ssh/server is on
+                {"guinet", bmds::GuiService::listen}, // remote programs on the loopback while gui/listen says so
+                {"netmounts", startNetMounts},        // net/mounts' filesystems, mounted once the network is up
+                {"netmidi", bmds::NetMidi::init},     // MIDI over the network while midi/net/enabled is on
                 {"shell", startSerialShell},
                 {"healthy", bmds::Update::confirm}, // the boot got here: kept if it was on probation
         };
+
+        // Past the boot's table, the boot would stop at its first line: found here instead.
+        static_assert(sizeof(SystemStages) / sizeof(SystemStages[0]) <= bmds::Boot::MaxSystemStages,
+                      "more boot stages than Boot::MaxSystemStages");
 
 } // namespace
 

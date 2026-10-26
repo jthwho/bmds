@@ -30,6 +30,9 @@ BMDS_NAMESPACE_BEGIN
  */
 class Boot {
         public:
+                /** @brief The most stages `run()` takes after the kernel's own (the caller checks at build). */
+                static constexpr size_t MaxSystemStages = 48;
+
                 /** @brief One init stage. Stage tables are constexpr (rodata). */
                 struct Stage {
                                 const char *name; ///< Shown in the boot report.

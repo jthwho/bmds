@@ -478,7 +478,9 @@ Plan: [`input.md`](input.md).
   sought, tags), `mixer`, `Voice` (speech in the background, each text told when heard),
   `MidiPort`, the player example. Step 6 done. Step 7 done: the guide's lessons 15-18 (windows
   and buttons, a notes application, two windows, the system's services); Help and completion
-  take the new names from `angel --serve`. Next: step 8 (remote programs).
+  take the new names from `angel --serve`. Step 8 done: remote programs (`gui/listen` on the
+  loopback, the cookie, `HOST:PORT` and `|ssh -W` displays; canvases sent as pixels), measured
+  through SSH from the PC. Next: step 9 (documents).
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

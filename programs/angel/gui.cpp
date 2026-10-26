@@ -325,12 +325,22 @@ namespace angel {
                 // The connection, opened at the first object; null (an exception raised) if there is none.
                 bmds_gui_t *connection() {
                         if (gui != nullptr) return gui;
+                        static int why = 0; // the first attempt's errno (it isn't made again)
                         if (!noGui) {
                                 gui = bmds_gui_connect(nullptr);
                                 if (gui != nullptr) bmds_gui_on_error(gui, onError, nullptr);
                                 noGui = gui == nullptr;
+                                why = gui == nullptr ? errno : 0;
                         }
-                        if (gui == nullptr) raise("No GUI here: the window system isn't running");
+                        if (gui != nullptr) return gui;
+                        // Another machine named (BMDS_GUI_DISPLAY): why it couldn't be reached.
+                        const char *display = getenv("BMDS_GUI_DISPLAY");
+                        if (display != nullptr && display[0] != 0 && strcmp(display, "local") != 0)
+                                raise("Can't reach the GUI at %s: %s", display,
+                                      why == EACCES ? "refused: no cookie, or not its (BMDS_GUI_COOKIE)"
+                                                    : strerror(why));
+                        else
+                                raise("No GUI here: the window system isn't running");
                         return gui;
                 }
 
@@ -787,7 +797,25 @@ namespace angel {
                 }
 #endif
 
-                // Canvas @p o's picture shown through a new surface of @p width x @p height.
+                void putPixels(uint32_t id, int x, int y, int width, int height, const uint16_t *rgb565) {
+                        if (gui != nullptr)
+                                (void)bmds_gui_put_pixels(gui, id, x, y, uint32_t(width), uint32_t(height), rgb565,
+                                                          uint32_t(width));
+                        return;
+                }
+
+                // Canvas @p o with no surface (a remote connection's, or on a PC): its picture at
+                // @p width x @p height, sent by PutPixels as it is drawn.
+                void sendCanvas(GuiRef *o, int width, int height) {
+                        int w = 0, h = 0;
+                        canvasSize(o->picture, w, h);
+                        if ((w != width || h != height) && canvasResize(o->picture, width, height) != 0) return;
+                        canvasSendTo(o->picture, o->id, putPixels);
+                        return;
+                }
+
+                // Canvas @p o's picture shown through a new surface of @p width x @p height, else (no
+                // CANVAS-SURFACE: a remote connection) sent as pixels.
                 void showCanvas(GuiRef *o, int width, int height) {
 #ifdef ANGEL_BMDS
                         bmds_surface_config_t config{};
@@ -797,6 +825,10 @@ namespace angel {
                         config.format = BMDS_PIXEL_BGR24; // as a screen's: a colour reads back as drawn
                         config.buffers = 2;
                         const int fd = bmds_gui_canvas_surface_open(gui, o->id, &config);
+                        if (fd < 0 && errno == ENOTSUP) {
+                                sendCanvas(o, width, height);
+                                return;
+                        }
                         if (fd < 0) {
                                 // Not laid out after all (its window hidden again): drawn in memory still.
                                 if (errno != EAGAIN) canvasFailed("show a canvas", errno);
@@ -808,9 +840,7 @@ namespace angel {
                                 canvasFailed("show a canvas", e);
                         }
 #else
-                        (void)o;
-                        (void)width;
-                        (void)height;
+                        sendCanvas(o, width, height); // a PC's angel: every connection is remote
 #endif
                         return;
                 }

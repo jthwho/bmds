@@ -10,9 +10,10 @@ if(COMMAND idf_component_register)
                                     src/guiatoms.cpp
                                     src/guiclasses.cpp
                                     src/guiconnection.cpp
+                                    src/guilistener.cpp
                                     src/guiservice.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_gui bmds_loader bmds_sysconf bmds_ui)
+                               PRIV_REQUIRES bmds_fs bmds_gui bmds_loader bmds_net bmds_sysconf bmds_ui)
         bmds_target_options(${COMPONENT_LIB})
 endif()

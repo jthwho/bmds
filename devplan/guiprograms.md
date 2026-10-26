@@ -7,7 +7,8 @@ example), 5c (a `Canvas` drawn as a `Screen` is, screens' events in `app.run()`,
 example). **Step 6** designed (§14), in three parts: 6a built (settings, processes, the system,
 dates, the folders); 6b built (folders watched, file types, opening files, pads and actions); 6c
 built (players, the mixer, voices, MIDI ports). **Step 7 built** (§15): the guide's lessons
-15-18. Next: step 8 (remote programs). The user agreed with the shape (2026-10-22): the
+15-18. **Step 8 built** (§16): remote programs (`gui/listen`, the cookie, `HOST:PORT` and
+`|COMMAND` displays). Next: step 9 (documents). The user agreed with the shape (2026-10-22): the
 toolkit as a service (P1), names (P2), and **a wire protocol in the spirit of X11's** between
 programs and the service (P8), so that applications can also run on another machine. This plan
 revises `gui.md` G1 and fills in `windows.md` §6 ("ABI (later)").
@@ -2117,3 +2118,100 @@ unchanged, three things to try) and use only what the lessons before them showed
 - **Tests:** `angel_examples` builds the four with the rest (they have windows, so none runs
   for its output).
 - **Size:** 11.5 KB of text in the ROM.
+
+## 16. Step 8 design: remote programs (2026-10-25)
+
+§4g as designed, with one change: a client may also reach the board through a command's stdin
+and stdout, so a PC needs no listening port.
+- **The board's listener** (bmds_guiservice, `guilistener.cpp`; a boot stage after `ip`):
+  - `gui/listen` (`off` | `loopback`, default `off`) and `gui/port` (1-65535, default 6400),
+    followed live: a thread waits on one semaphore that both the listening socket's readiness
+    and a setting watcher release (no polling). Bound to 127.0.0.1 only (P9).
+  - Each connection is a GUI connection as `gui_open`'s are, from the same slots
+    (`GuiService::MaxConnections`), with no client end (so no `CANVAS-SURFACE`), no program path
+    (so no `SHELL`; `gui/shell-remote` stays unbuilt until a remote shell is wanted) and session
+    0. `TCP_NODELAY`: requests are small and answered.
+- **The cookie:** `gui/cookie` (a path, default `/home/.config/gui/cookie`): 32 random bytes
+  (`Random::fill`) as 64 hex digits and a newline, made when the listener first starts and none
+  is there. A TCP client's `Hello` names `BMDS-COOKIE-1` with the 32 bytes; anything else gets
+  `Refused` and the connection ends. Compared in constant time; read again at each `Hello`, so a
+  replaced file applies at once.
+- **The client** (`libbmdsgui`, both builds; `BMDS_GUI_DISPLAY` or `bmds_gui_connect()`'s
+  argument):
+  - `local` (or empty): `gui_open`, as now (the board only).
+  - `HOST:PORT`: TCP, `HOST` an IPv4 address or `localhost` (no resolver in every GUI program):
+    a forwarded port (`ssh -L 6400:localhost:6400 root@board`), or another board's own loopback.
+  - `|COMMAND`: `/bin/sh -c COMMAND` with a socket pair as its stdin and stdout, the connection
+    through it: `BMDS_GUI_DISPLAY='|ssh -W localhost:6400 root@board'` runs over one SSH session
+    and opens no port anywhere (Dropbear serves `direct-tcpip`). The command is reaped when the
+    connection closes.
+  - The cookie: `BMDS_GUI_COOKIE` (the 64 digits, or a file holding them), else
+    `$HOME/.config/gui/cookie`: the board's own path, so a board reaching its own loopback finds
+    it, and a PC takes a copy: `scp root@board:.config/gui/cookie ~/.config/gui/`.
+- **angel on Linux** is the host build, as today, now connecting: the GUI's classes, dialogs,
+  timers and callbacks work; `Screen` (a local surface) and the board's services (sound, settings,
+  processes) are the PC's, as §4g says. A `Canvas` without `CANVAS-SURFACE` draws through
+  `PutPixels` (angel's fallback, checked).
+- **`REMOTE-FILES` (P12): decided now, built later.** A remote program's file dialog lists the
+  board's files and answers a board path, which the program can't open. Recommendation: keep the
+  extension reserved, document the limit, and build it when someone runs real applications
+  remotely; the guide's lessons and examples don't need it.
+- **Measured:** connecting (the Hello), a `Sync`'s round trip, a window of the calculator built
+  and shown, a 320x240 `PutPixels` canvas frame; each through `|ssh -W` from the PC, and locally
+  on the board for comparison.
+- **Tests:** a host test of the client's display parsing and cookie reading; on the board,
+  `guitest` (local, unchanged) and a remote run from the PC of `examples/calculator.as` and
+  `notes.as`; a wrong cookie and no cookie refused; `gui/listen` turned off refusing new
+  connections (and put back to the user's value).
+
+**Step 8, as built (2026-10-25):**
+- **The listener** (`guilistener.cpp`, 3.2 KB; boot stage `guinet` after `ip`) as designed:
+  `gui/listen`, `gui/port`, `gui/cookie`; its thread runs only while listening is on, waking on
+  one semaphore the socket's readiness and the settings' watcher share. A remote connection is
+  `GuiServicePriv::openRemote()`: a slot, no client end, no program, session 0.
+- **The cookie** as designed; `Hello`'s authentication was there already (empty locally), so a
+  remote client's carries `BMDS-COOKIE-1` and the 32 bytes, and a wrong one is answered
+  `Refused` (status 2), which the client reports as `EACCES`.
+- **The client** (`sdk/gui/gui.c`, +1.6 KB): `local`, `HOST:PORT`, `|COMMAND`, the cookie from
+  `BMDS_GUI_COOKIE` or `$HOME/.config/gui/cookie`. `bmds_gui_connect()`'s documentation says
+  so. A host test runs `|COMMAND` against the scripted service through a shell copying both ways
+  (no TCP port), the cookie checked byte for byte, a refusal, and the errors.
+- **Found:**
+  - **A socket's read times out with `WouldBlock`** (as POSIX's `SO_RCVTIMEO` gives `EAGAIN`),
+    a stream pair's with `Timeout`. The connection's reader took anything but `Timeout` as the
+    client gone, so a remote connection ended after its first 200 ms of quiet; both now mean
+    "nothing yet".
+  - **angel had no canvas without a surface.** My design note said a `Canvas` falls back to
+    `PutPixels`; it didn't: drawn in memory, never shown. Now a canvas that can't have a surface
+    (no `CANVAS-SURFACE`, or angel on a PC) keeps its picture in memory and the GUI's loop sends
+    each changed rectangle as RGB565 (`canvasSendTo()`, `presentCanvases()`), resized in memory
+    when its widget is.
+  - **One stage too many stopped the boot.** `guinet` made 41 stages; `Boot::run()` asserted
+    40 at its first line, so every boot panicked before the crash counter's stage (nothing
+    counted; flashed again in minutes). The limit is now `Boot::MaxSystemStages` (48) and
+    `main.cpp` checks its table against it at build.
+  - **A command started with stdin or stdout closed** could get its socket at fd 0 or 1, where
+    `dup2()` onto itself keeps it close-on-exec; it is moved above fd 2 first.
+  - angel said "No GUI here" for every failure; for another machine it now says why ("Can't
+    reach the GUI at |ssh ...: refused: no cookie, or not its (BMDS_GUI_COOKIE)").
+- **Measured** (`|ssh -W` from the PC over the office LAN, against the board itself):
+
+  | | Remote (PC) | Local (board) |
+  |---|---|---|
+  | Connected, a window made and shown (first round trip) | 540-650 ms (SSH's own setup) | 4-8 ms |
+  | A round trip (a property read) | 4.1-4.4 ms | 0.44-0.46 ms |
+  | A window of 20 buttons built and shown | 18-22 ms | 5-32 ms |
+  | Canvas frames, 320x240 of noise, each delivered | 9.2 a second (about 1.4 MB/s) | 153 a second (a surface) |
+
+  A widget program is as quick remotely as a person can tell; a canvas that changes all over is
+  bounded by SSH's throughput (Dropbear's cipher on the board), and one with runs (a drawing)
+  costs far less.
+- **Tried on the board** (flashed): the calculator from the PC (12 × 3 = 36 by clicks on the
+  board), paint from the PC (its Tools window's swatches and a stroke drawn on its canvas, both
+  through `PutPixels`), closing each ending the PC's process and reaping its `ssh`; a wrong
+  cookie, no cookie and `gui/listen` off refused; angel on the board reaching its own loopback
+  (`127.0.0.1:6400`, the cookie found at its default path); `guitest` (local) passing. Then
+  `gui/listen` reverted (the user's default, `off`) and the test's cookie and folder removed.
+- **`REMOTE-FILES`:** decided as recommended above (reserved, not built); a remote program's
+  file dialog lists the board's files.
+- **Size:** angel's text is 1,137,914 bytes (+3.2 KB); the kernel +3.2 KB (the listener).

@@ -13,11 +13,21 @@
 #include <bmds/gui.h>
 
 #include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
+#include <signal.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+
+extern char **environ;
 
 #ifndef BMDS_GUI_HOST
 #include <bmds/sys.h>
@@ -78,6 +88,7 @@ struct bmds_gui {
                 void             *error_arg;
                 uint8_t          *scratch; /* bmds_gui_strings()'s */
                 size_t            scratch_capacity;
+                pid_t             helper; /* `|COMMAND`'s process (0: none), reaped at the close */
 };
 
 /* ---- Writing */
@@ -427,7 +438,17 @@ static int answer(bmds_gui_t *g, message_t *out) {
 
 /* ---- Connecting */
 
+/* The cookie's length, and the authentication's name a remote connection presents it under. */
+#define COOKIE_BYTES 32u
+static const char cookie_name[] = "BMDS-COOKIE-1";
+
+static bmds_gui_t *connect_fd(int fd, const uint8_t *cookie);
+
 bmds_gui_t *bmds_gui_connect_fd(int fd) {
+        return connect_fd(fd, NULL);
+}
+
+static bmds_gui_t *connect_fd(int fd, const uint8_t *cookie) {
         bmds_gui_t *g = (bmds_gui_t *)calloc(1, sizeof(bmds_gui_t));
         if (g == NULL) {
                 close(fd);
@@ -440,8 +461,16 @@ bmds_gui_t *bmds_gui_connect_fd(int fd) {
         if (err == 0) err = put(g, magic, 8);
         if (err == 0) err = put16(g, MAJOR);
         if (err == 0) err = put16(g, MINOR);
-        if (err == 0) err = put32(g, 0); /* authentication: none locally */
-        if (err == 0) err = put32(g, 0);
+        /* The authentication: none locally; a remote connection's cookie (devplan/guiprograms.md §16). */
+        if (err == 0) err = put32(g, cookie != NULL ? (uint32_t)(sizeof(cookie_name) - 1) : 0u);
+        if (err == 0) err = put32(g, cookie != NULL ? COOKIE_BYTES : 0u);
+        if (err == 0 && cookie != NULL) err = put(g, cookie_name, sizeof(cookie_name) - 1);
+        if (err == 0 && cookie != NULL) {
+                /* Each field 4-aligned: the name's 13 bytes padded. */
+                static const uint8_t pad[3] = {0, 0, 0};
+                err = put(g, pad, (4u - (sizeof(cookie_name) - 1) % 4u) % 4u);
+        }
+        if (err == 0 && cookie != NULL) err = put(g, cookie, COOKIE_BYTES);
         if (err == 0) {
                 /* Hello is sequence 0: end() would count it. */
                 const size_t length = g->out_length - g->request_start;
@@ -467,7 +496,7 @@ bmds_gui_t *bmds_gui_connect_fd(int fd) {
         (void)get32(&r); /* the largest message: ours is the protocol's */
         if (!r.ok || status != 0 || (versions & 0xffffu) != MAJOR || g->id_mask == 0) {
                 bmds_gui_close(g);
-                errno = EPROTO;
+                errno = status == 2u ? EACCES : EPROTO; /* 2: refused (the cookie); its answer is short */
                 return NULL;
         }
         /* Kept for bmds_gui_display(); the current message is let go. */
@@ -478,27 +507,165 @@ bmds_gui_t *bmds_gui_connect_fd(int fd) {
         return g;
 }
 
+/* ---- Other machines (devplan/guiprograms.md §16) */
+
+static int hex_digit(char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+}
+
+/* @p text's first 64 characters as the cookie's bytes. @return 0, or -1 if they aren't hex. */
+static int parse_cookie(const char *text, size_t length, uint8_t *out) {
+        if (length < 2 * COOKIE_BYTES) return -1;
+        for (size_t i = 0; i < COOKIE_BYTES; ++i) {
+                const int hi = hex_digit(text[2 * i]), lo = hex_digit(text[2 * i + 1]);
+                if (hi < 0 || lo < 0) return -1;
+                out[i] = (uint8_t)(hi << 4 | lo);
+        }
+        return 0;
+}
+
+/* The cookie: BMDS_GUI_COOKIE (its digits, or a file holding them), else ~/.config/gui/cookie.
+   @return 0, or -1 with errno (EACCES: none to be found). */
+static int read_cookie(uint8_t *out) {
+        const char *given = getenv("BMDS_GUI_COOKIE");
+        if (given != NULL && parse_cookie(given, strlen(given), out) == 0) return 0;
+        char path[512];
+        if (given != NULL && given[0] != '\0') {
+                snprintf(path, sizeof(path), "%s", given);
+        } else {
+                const char *home = getenv("HOME");
+                snprintf(path, sizeof(path), "%s/.config/gui/cookie", home != NULL ? home : "");
+        }
+        const int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+                errno = EACCES;
+                return -1;
+        }
+        char    text[2 * COOKIE_BYTES];
+        ssize_t got = 0, n;
+        while (got < (ssize_t)sizeof(text) && (n = read(fd, text + got, sizeof(text) - (size_t)got)) > 0) got += n;
+        close(fd);
+        const int r = parse_cookie(text, (size_t)got, out);
+        memset(text, 0, sizeof(text));
+        if (r != 0) errno = EACCES;
+        return r;
+}
+
+/* TCP to HOST:PORT, HOST an IPv4 address or localhost. @return The fd, or -1 with errno. */
+static int open_tcp(const char *display) {
+        const char *colon = strrchr(display, ':');
+        char        host[64];
+        if (colon == NULL || colon == display || (size_t)(colon - display) >= sizeof(host)) {
+                errno = EINVAL;
+                return -1;
+        }
+        memcpy(host, display, (size_t)(colon - display));
+        host[colon - display] = '\0';
+        char      *end = NULL;
+        const long port = strtol(colon + 1, &end, 10);
+        if (*end != '\0' || port < 1 || port > 65535) {
+                errno = EINVAL;
+                return -1;
+        }
+        struct sockaddr_in a;
+        memset(&a, 0, sizeof(a));
+        a.sin_family = AF_INET;
+        a.sin_port = htons((uint16_t)port);
+        if (strcmp(host, "localhost") == 0) {
+                a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        } else if (inet_pton(AF_INET, host, &a.sin_addr) != 1) {
+                errno = EINVAL; /* no resolver here: a forwarded port is on localhost */
+                return -1;
+        }
+        const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (fd < 0) return -1;
+        if (connect(fd, (const struct sockaddr *)&a, sizeof(a)) != 0) {
+                const int e = errno;
+                close(fd);
+                errno = e;
+                return -1;
+        }
+        const int one = 1; /* requests are small and answered: no Nagle */
+        (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        return fd;
+}
+
+/* `/bin/sh -c COMMAND` with a socket pair's other end as its stdin and stdout. @return Our end,
+   or -1 with errno; the process in @p pid. */
+static int open_command(const char *command, pid_t *pid) {
+        int ends[2];
+        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, ends) != 0) return -1;
+        if (ends[1] <= 2) {
+                /* Started without stdin or stdout, the end may be fd 0 or 1: dup2() onto itself would
+                   keep it close-on-exec, and the command would lose it. Moved above them first. */
+                const int moved = fcntl(ends[1], F_DUPFD_CLOEXEC, 3);
+                close(ends[1]);
+                if (moved < 0) {
+                        close(ends[0]);
+                        return -1;
+                }
+                ends[1] = moved;
+        }
+        posix_spawn_file_actions_t actions;
+        int                        err = posix_spawn_file_actions_init(&actions);
+        if (err == 0) err = posix_spawn_file_actions_adddup2(&actions, ends[1], 0);
+        if (err == 0) err = posix_spawn_file_actions_adddup2(&actions, ends[1], 1);
+        char *argv[] = {(char *)"sh", (char *)"-c", (char *)command, NULL};
+        if (err == 0) err = posix_spawn(pid, "/bin/sh", &actions, NULL, argv, environ);
+        posix_spawn_file_actions_destroy(&actions);
+        close(ends[1]);
+        if (err != 0) {
+                close(ends[0]);
+                errno = err;
+                return -1;
+        }
+        return ends[0];
+}
+
 bmds_gui_t *bmds_gui_connect(const char *display) {
         if (display == NULL) display = getenv("BMDS_GUI_DISPLAY");
         if (display == NULL || display[0] == '\0') display = "local";
-#ifndef BMDS_GUI_HOST
         if (strcmp(display, "local") == 0) {
+#ifndef BMDS_GUI_HOST
                 const int32_t fd = bmds_gui_open(0, 0);
                 if (fd < 0) {
                         errno = (int)-fd;
                         return NULL;
                 }
                 return bmds_gui_connect_fd((int)fd);
-        }
+#else
+                errno = ENOTSUP; /* no GUI service here: name another machine */
+                return NULL;
 #endif
-        errno = ENOTSUP; /* other machines: devplan/guiprograms.md step 8 */
-        return NULL;
+        }
+        uint8_t cookie[COOKIE_BYTES];
+        if (read_cookie(cookie) != 0) return NULL;
+        pid_t     helper = 0;
+        const int fd = display[0] == '|' ? open_command(display + 1, &helper) : open_tcp(display);
+        if (fd < 0) {
+                memset(cookie, 0, sizeof(cookie));
+                return NULL;
+        }
+        bmds_gui_t *g = connect_fd(fd, cookie);
+        memset(cookie, 0, sizeof(cookie));
+        if (g == NULL) {
+                const int e = errno;
+                if (helper > 0) (void)waitpid(helper, NULL, 0);
+                errno = e;
+                return NULL;
+        }
+        g->helper = helper;
+        return g;
 }
 
 void bmds_gui_close(bmds_gui_t *g) {
         if (g == NULL) return;
         if (!g->broken) (void)bmds_gui_flush(g);
         close(g->fd);
+        if (g->helper > 0) (void)waitpid(g->helper, NULL, 0); /* its stdin ended: it ends */
         for (size_t i = 0; i < g->atom_count; ++i) free(g->atoms[i].name);
         for (size_t i = 0; i < g->queue_length; ++i) free(g->queue[(g->queue_head + i) % g->queue_capacity].data);
         free(g->atoms);

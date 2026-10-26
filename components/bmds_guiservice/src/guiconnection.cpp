@@ -261,7 +261,8 @@ void GuiConnection::readerMain(void *arg) {
         uint8_t       buf[1024];
         while (!self->_stopping.load(std::memory_order_acquire)) {
                 auto [n, err] = self->_end->read(WritableByteSpan(buf, sizeof(buf)), ReadSliceMs);
-                if (err == Error::Timeout) continue;
+                // Nothing yet: a stream pair says Timeout, a socket WouldBlock (a remote client's).
+                if (err == Error::Timeout || err == Error::WouldBlock) continue;
                 if (err.isError() || n == 0) break; // the client went
                 bool bad = partial.append(Span<const uint8_t>(buf, n)).isError();
                 // Whole messages to the loop, in order.
@@ -386,14 +387,26 @@ void GuiConnection::hello(GP::Reader &body) {
         (void)body.u16(); // the client's minor: ours is answered
         const uint32_t nameLength = body.u32();
         const uint32_t dataLength = body.u32();
-        (void)body.bytes(nameLength); // local: no authentication
-        (void)body.bytes(dataLength);
+        const ByteSpan name = body.bytes(nameLength);
+        const ByteSpan data = body.bytes(dataLength);
         if (!body.ok() || std::memcmp(magic.data(), GP::Magic, sizeof(GP::Magic)) != 0) {
                 stop();
                 return;
         }
         GP::Writer w(_out);
         w.beginAnswer(GP::Kind::Reply, uint16_t(Opcode::Hello), 0);
+        // A local client needs none; a remote one presents the user's cookie (§16).
+        if (_clientEnd == nullptr &&
+            !GuiServicePriv::cookieMatches(StringView(reinterpret_cast<const char *>(name.data()), name.size()),
+                                           data)) {
+                w.u32(uint32_t(GP::HelloStatus::Refused));
+                w.u16(GP::Major);
+                w.u16(GP::Minor);
+                w.end();
+                send();
+                stop();
+                return;
+        }
         if (major != GP::Major) {
                 w.u32(uint32_t(GP::HelloStatus::BadVersion));
                 w.u16(GP::Major);
