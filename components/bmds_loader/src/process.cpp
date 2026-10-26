@@ -11,6 +11,7 @@
 #include <bmds/clock.h>
 #include <bmds/console.h>
 #include <bmds/deadline.h>
+#include <bmds/directorywatch.h>
 #include <bmds/errno.h>
 #include <bmds/fileformat.h>
 #include <bmds/interrupt.h>
@@ -905,6 +906,21 @@ int32_t Process::fileType(const char *path, uint32_t flags, char *out, uint32_t 
         std::memcpy(out, type.data(), type.size());
         out[type.size()] = '\0';
         return static_cast<int32_t>(type.size());
+}
+
+int32_t Process::fsWatch(const char *path, uint32_t flags) {
+        static_assert(BMDS_FS_WATCH_ENTRIES == DirectoryWatch::Entries &&
+                      BMDS_FS_WATCH_CONTENTS == DirectoryWatch::Contents &&
+                      BMDS_FS_WATCH_MOUNTS == DirectoryWatch::Mounts);
+        StringView p;
+        if (int32_t r = this->path(path, p); r < 0) return r;
+        if ((flags & ~BMDS_O_CLOEXEC) != 0) return -BMDS_EINVAL;
+        Result<FileHandle::Ptr> opened = [&] {
+                Mutex::Locker locker(_pathLock, WaitForever);
+                return DirectoryWatch::openFile(p, vfs());
+        }();
+        if (opened.isError()) return fsErrno(opened.error());
+        return addHandle(std::move(opened.value()), flags);
 }
 
 namespace {

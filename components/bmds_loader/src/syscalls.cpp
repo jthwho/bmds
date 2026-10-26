@@ -226,6 +226,11 @@ int32_t bmds_k_file_type(const char *path, uint32_t flags, char *out, uint32_t s
         return call->fileType(path, flags, out, size);
 }
 
+int32_t bmds_k_fs_watch(const char *path, uint32_t flags) {
+        KernelCall call;
+        return call->fsWatch(path, flags);
+}
+
 int32_t bmds_k_sysconf_find(const char *key) {
         KernelCall call;
         return call->sysconfFind(key);

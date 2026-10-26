@@ -407,6 +407,7 @@ namespace {
                         static void savePlaces(void *arg);
                         static void badEntry(void *arg, const char *path);
                         static void  filesMessage(void *arg, ByteSpan message);
+                        static void       openMessage(void *arg, ByteSpan message);
                         static void  filesSettingsChanged(void *arg, SysConf::Id id);
                         static void  reapFolders(void *arg);
                         static void  iconsAsked(void *arg);
@@ -1937,6 +1938,9 @@ namespace {
                 // `files` opens folder windows here (devplan/filebrowser.md FB6).
                 if (_app.registerService("files", filesMessage, this).isError())
                         say("panel: the files service is taken: 'files' won't open windows here\n");
+                // `open` opens files as a double click does (devplan/guiprograms.md §14: angel's openFile()).
+                if (_app.registerService("open", openMessage, this).isError())
+                        say("panel: the open service is taken: programs can't open files here\n");
                 return _app.exec();
         }
 
@@ -2282,6 +2286,19 @@ namespace {
                         const StringView path = end == StringView::NPos ? rest : rest.left(end);
                         rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
                         if (path.startsWith('/')) self->openFolder(path, StringView());
+                }
+                return;
+        }
+
+        // `open`'s paths (absolute, a NUL after each): each opened as a double click opens it.
+        void PanelApp::openMessage(void *arg, ByteSpan message) {
+                auto      *self = static_cast<PanelApp *>(arg);
+                StringView rest(reinterpret_cast<const char *>(message.data()), message.size());
+                while (!rest.isEmpty()) {
+                        const size_t     end = rest.indexOf('\0');
+                        const StringView path = end == StringView::NPos ? rest : rest.left(end);
+                        rest = end == StringView::NPos ? StringView() : rest.mid(end + 1);
+                        if (path.startsWith('/')) self->_actions.open(path);
                 }
                 return;
         }

@@ -1,11 +1,48 @@
 #!/rom/bin/angel
-// Snake: steer with the arrow keys, eat the apples, don't hit the walls or yourself.
-// A game in Screen.run(): tick() moves the snake ten times a second, and draw() shows each move.
-// The sounds are play()'s notes, in the background ("MB") so the game goes on.
+// Snake: steer with the arrow keys (or WASD, or a gamepad), eat the apples, don't hit the walls or
+// yourself. A game in Screen.run(): tick() moves the snake ten times a second, and draw() shows each
+// move. The sounds are play()'s notes, in the background ("MB") so the game goes on.
+//
+// What it can do is declared as actions, each with its keys and pad controls: the system matches
+// them and the game gets the action, so the user can bind other keys (the Controls window) and
+// nothing here changes.
 
 const int CELL = 16;
 const int COLS = 40, ROWS = 28;
 Screen w("Snake", COLS * CELL, ROWS * CELL + 24);
+
+controls.declare("""
+[Action left]
+Label=Turn left
+Keys=Left;A
+Pad=Pad.Left;Pad.LeftX-
+
+[Action right]
+Label=Turn right
+Keys=Right;D
+Pad=Pad.Right;Pad.LeftX+
+
+[Action up]
+Label=Turn up
+Keys=Up;W
+Pad=Pad.Up;Pad.LeftY-
+
+[Action down]
+Label=Turn down
+Keys=Down;S
+Pad=Pad.Down;Pad.LeftY+
+
+[Action again]
+Label=Play again
+Keys=Space;Enter
+Pad=Pad.South;Pad.Start
+""");
+
+// The first key bound to an action, for a hint ("Space").
+string firstKey(const string &in action) {
+        string keys = controls.keys(action);
+        return keys.length() == 0 ? action : keys.split(";")[0].trim();
+}
 
 class Snake : Game {
         int[] xs, ys;      // the body, head first
@@ -37,17 +74,17 @@ class Snake : Game {
         }
 
         void event(Event@ e) {
-                if (e.type != KeyDown) return;
-                if (over && e.key == "Space") {
+                if (e.type != ActionDown) return;
+                if (over && e.action == "again") {
                         Snake fresh;
                         this = fresh; // start again
                         return;
                 }
                 // No turning straight back into yourself.
-                if (e.key == "Left" && dx == 0) { nextDx = -1; nextDy = 0; }
-                if (e.key == "Right" && dx == 0) { nextDx = 1; nextDy = 0; }
-                if (e.key == "Up" && dy == 0) { nextDx = 0; nextDy = -1; }
-                if (e.key == "Down" && dy == 0) { nextDx = 0; nextDy = 1; }
+                if (e.action == "left" && dx == 0) { nextDx = -1; nextDy = 0; }
+                if (e.action == "right" && dx == 0) { nextDx = 1; nextDy = 0; }
+                if (e.action == "up" && dy == 0) { nextDx = 0; nextDy = -1; }
+                if (e.action == "down" && dy == 0) { nextDx = 0; nextDy = 1; }
         }
 
         void tick() {
@@ -80,7 +117,7 @@ class Snake : Game {
                 for (uint i = 0; i < xs.length(); i++)
                         w.fillRect(xs[i] * CELL + 1, ys[i] * CELL + 1, CELL - 2, CELL - 2, i == 0 ? Color::Yellow : Color::Lime);
                 if (over) {
-                        string message = "Game over! Space to play again";
+                        string message = "Game over! " + firstKey("again") + " to play again";
                         w.fillRect(0, ROWS * CELL / 2 - 20, COLS * CELL, 40, Color::Black, 0.7);
                         w.text((COLS * CELL - textWidth(message, 2)) / 2, ROWS * CELL / 2 - 16, message, Color::White, 2);
                 }

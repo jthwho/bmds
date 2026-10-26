@@ -899,6 +899,38 @@ TEST_CASE("Vfs: directory watches") {
         CHECK(root.take() == Change::Contents);
 }
 
+TEST_CASE("Vfs: a directory watch as a file (fs_watch)") {
+        fresh(FsFormat::Fat32);
+        CHECK(Vfs::mkdir("/ram0/p0/dir", Root).isOk());
+        put("/ram0/p0/file", "x");
+        const size_t base = liveObjects();
+        {
+                auto [handle, err] = bmds::DirectoryWatch::openFile("/ram0/p0/dir", Root);
+                REQUIRE(err.isOk());
+                bmds::Stream &stream = handle->stream();
+                uint32_t      bits = 0;
+                auto          span = bmds::WritableByteSpan(reinterpret_cast<uint8_t *>(&bits), sizeof(bits));
+                // Nothing yet: not readable, a read waits its time out.
+                CHECK(stream.readiness() == 0);
+                CHECK(handle->read(span, 5).error() == Error::Timeout);
+                // Changes merged into one record until read.
+                put("/ram0/p0/dir/a", "a");
+                CHECK(stream.readiness() == bmds::Stream::Readable);
+                CHECK(Vfs::mkdir("/ram0/p0/dir/sub", Root).isOk());
+                CHECK(handle->read(span, 5).value() == 4);
+                CHECK(bits == (bmds::DirectoryWatch::Contents | bmds::DirectoryWatch::Entries));
+                CHECK(stream.readiness() == 0);
+                CHECK(handle->read(span.first(3), 5).error() == Error::Invalid);
+                // Another folder's changes aren't its.
+                put("/ram0/p0/other", "o");
+                CHECK(stream.readiness() == 0);
+        }
+        CHECK(liveObjects() == base); // its handle gone, the watch gone
+        CHECK(bmds::DirectoryWatch::openFile("/ram0/p0/file", Root).error() == Error::NotDir);
+        CHECK(bmds::DirectoryWatch::openFile("/ram0/p0/none", Root).error() == Error::NotExist);
+        CHECK(liveObjects() == base);
+}
+
 TEST_CASE("Vfs: FAT lookups kept between changes, and not past one") {
         // devplan/storage.md §3: FatVolume keeps f_stat()'s results until the volume changes.
         for (FsFormat format : {FsFormat::Fat32, FsFormat::ExFat}) {

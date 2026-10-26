@@ -920,9 +920,7 @@ namespace angel {
                 }
 
                 void appDir(asIScriptGeneric *gen) {
-                        const char *dir = getenv("BMDS_APP_DIR");
-                        if (dir == nullptr || *dir == 0) dir = scriptFolder != nullptr ? scriptFolder : "";
-                        returnString(gen, dir);
+                        returnString(gen, applicationFolder());
                 }
 
                 // Makes @p path and the folders above it. @return 0, or an errno.
@@ -964,6 +962,12 @@ namespace angel {
                 }
 
         } // namespace
+
+        const char *applicationFolder() {
+                const char *dir = getenv("BMDS_APP_DIR");
+                if (dir == nullptr || *dir == 0) dir = scriptFolder != nullptr ? scriptFolder : "";
+                return dir;
+        }
 
         void registerServices(asIScriptEngine *engine) {
                 findScriptFolder();

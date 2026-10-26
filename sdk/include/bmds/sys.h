@@ -201,6 +201,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_GUI_OPEN 124u /**< `int32_t gui_open(uint32_t display, uint32_t flags)`: a GUI connection fd. */
 #define BMDS_SYS_GUI_CANVAS_SURFACE                                                                                    \
         125u /**< `int32_t gui_canvas_surface(int32_t conn, uint32_t canvas, const bmds_surface_config_t *c)`. */
+#define BMDS_SYS_FS_WATCH 126u /**< `int32_t fs_watch(const char *path, uint32_t flags)`: a new fd. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -240,6 +241,11 @@ static inline int bmds_sys_has(uint32_t n) {
 
 /** @brief The longest type `file_type` gives, in bytes, without its terminating NUL. */
 #define BMDS_FILE_TYPE_MAX 127u
+
+/** @brief What changed in a folder `fs_watch` watches (bits; appended 2026-10-25). */
+#define BMDS_FS_WATCH_ENTRIES 0x1u  /**< An entry made, removed or renamed; the folder itself renamed or removed. */
+#define BMDS_FS_WATCH_CONTENTS 0x2u /**< A file in it closed after writing (a file made too), or touched. */
+#define BMDS_FS_WATCH_MOUNTS 0x4u   /**< A mount or an unmount: anything may have changed. */
 
 /*
  * The system configuration (appended 2026-10-07, slots 59-65; devplan/sysconf.md §12): typed
@@ -2009,6 +2015,7 @@ typedef int32_t (*bmds_sys_controls_fn)(uint32_t op, void *arg, uint32_t size);
 typedef int32_t (*bmds_sys_fs_serve_fn)(const bmds_fs_serve_t *config);
 typedef int32_t (*bmds_sys_gui_open_fn)(uint32_t display, uint32_t flags);
 typedef int32_t (*bmds_sys_gui_canvas_surface_fn)(int32_t conn, uint32_t canvas, const bmds_surface_config_t *config);
+typedef int32_t (*bmds_sys_fs_watch_fn)(const char *path, uint32_t flags);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -3340,6 +3347,23 @@ static inline int32_t bmds_gui_open(uint32_t display, uint32_t flags) {
 static inline int32_t bmds_gui_canvas_surface(int32_t conn, uint32_t canvas, const bmds_surface_config_t *config) {
         if (!bmds_sys_has(BMDS_SYS_GUI_CANVAS_SURFACE)) return -BMDS_ENOSYS;
         return ((bmds_sys_gui_canvas_surface_fn)bmds_sys->slot[BMDS_SYS_GUI_CANVAS_SURFACE])(conn, canvas, config);
+}
+
+/**
+ * @brief Watches folder @p path (links and `/home` followed): a new descriptor whose read (4
+ *        bytes or more, a multiple of 4) gives one `uint32_t`, what changed in the folder since
+ *        the last read (`BMDS_FS_WATCH_ENTRIES`, `_CONTENTS`, `_MOUNTS`), however many changes
+ *        came. A read waits while nothing changed; `io_poll` reports `BMDS_POLL_IN` when
+ *        something did. Not told: the folders below one renamed or removed, `/dev` gaining a
+ *        device. Closing it ends the watch. (Slot 126, appended 2026-10-25: check
+ *        `bmds_sys_has()`.)
+ * @param flags `BMDS_O_CLOEXEC` or 0.
+ * @return The descriptor, or `-BMDS_ENOENT`, `-BMDS_ENOTDIR`, `-BMDS_EINVAL` (a flag),
+ *         `-BMDS_ENOMEM`, `-BMDS_EMFILE`, `-BMDS_EFAULT`, `-BMDS_ENOSYS` (a system without it).
+ */
+static inline int32_t bmds_fs_watch(const char *path, uint32_t flags) {
+        if (!bmds_sys_has(BMDS_SYS_FS_WATCH)) return -BMDS_ENOSYS;
+        return ((bmds_sys_fs_watch_fn)bmds_sys->slot[BMDS_SYS_FS_WATCH])(path, flags);
 }
 
 /**

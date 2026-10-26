@@ -1,0 +1,17 @@
+true true
+told: 2 1 1 3
+Entries 1, Contents 2, Mounts 4
+stopped: false
+a callback refused: true
+missing: true
+a file: true
+type: ''
+set: play, keys: ''
+set: menu
+The action name 'Fire' isn't a-z, 0-9 and -, at most 32
+The action 'a' is declared twice
+The action 'b' has a bad Id (1 to 65535, one each)
+The action 'a' has a bad Id (1 to 65535, one each)
+The controls' line '[Action a' isn't a group
+No action 'jump' (declared with controls.declare())
+PadDown 7, ActionMove 14

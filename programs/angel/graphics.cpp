@@ -182,17 +182,75 @@ namespace angel {
                         MouseDown,
                         MouseUp,
                         Wheel,
-                        Close
+                        Close,
+                        PadDown, // a gamepad's (§14, 6b)
+                        PadUp,
+                        PadMove,
+                        PadAttached,
+                        PadDetached,
+                        ActionDown, // one of the script's actions (controls.declare())
+                        ActionUp,
+                        ActionMove
                 };
+                constexpr int EventTypes = ActionMove + 1;
+
+                // A pad's controls by their names in controls.conf (the SDK's numbers: BMDS_PAD_SOUTH...,
+                // BMDS_PAD_LEFT_X...).
+                constexpr const char *PadButtons[] = {"South", "East",  "West",  "North",  "L1",   "R1",
+                                                      "L2",    "R2",    "L3",    "R3",     "Up",   "Down",
+                                                      "Left",  "Right", "Start", "Select", "Guide"};
+                constexpr int         PadButtonCount = int(sizeof(PadButtons) / sizeof(PadButtons[0]));
+                constexpr const char *PadAxes[] = {"LeftX", "LeftY", "RightX", "RightY", "L2", "R2"};
+                constexpr int         PadAxisCount = int(sizeof(PadAxes) / sizeof(PadAxes[0]));
+                constexpr int         MaxPads = 4; // whose state is kept (padDown()...)
+
+                int padButton(const char *name) {
+                        for (int i = 0; i < PadButtonCount; ++i)
+                                if (strcmp(name, PadButtons[i]) == 0) return i;
+                        return -1;
+                }
+                int padAxis(const char *name) {
+                        for (int i = 0; i < PadAxisCount; ++i)
+                                if (strcmp(name, PadAxes[i]) == 0) return i;
+                        return -1;
+                }
+
+                // ---- The script's actions (controls.declare(); controls.md §7c): their names and Ids.
+                constexpr size_t MaxActions = 64; // the system's most
+                constexpr size_t MaxActionName = 32;
+                struct ActionName {
+                                uint16_t id;
+                                char     name[MaxActionName + 1];
+                };
+                ActionName actionNames[MaxActions];
+                size_t     actionCount = 0;
+
+                const char *actionName(int id) {
+                        for (size_t i = 0; i < actionCount; ++i)
+                                if (actionNames[i].id == id) return actionNames[i].name;
+                        return "";
+                }
+                int actionId(const char *name) {
+                        for (size_t i = 0; i < actionCount; ++i)
+                                if (strcmp(actionNames[i].name, name) == 0) return actionNames[i].id;
+                        return -1;
+                }
 
                 // What the queue holds.
                 struct RawEvent {
-                                int  type;
-                                char key[16];
-                                char text[8];
-                                int  x, y, button, wheel;
-                                bool repeat;
+                                int   type;
+                                char  key[16];
+                                char  text[8];
+                                int   x, y, button, wheel;
+                                bool  repeat;
+                                int   pad;     // a pad's and an action's: the pad (-1: the keyboard)
+                                int   control; // a pad's: its button or axis; an action's: its Id
+                                float value;
                 };
+
+                bool isPadOrAction(int type) {
+                        return type >= PadDown && type <= ActionMove;
+                }
 
                 // The script's Event: reference counted, its fields read-only properties.
                 struct Event {
@@ -202,10 +260,29 @@ namespace angel {
                                 int    x = 0, y = 0, button = 0, wheel = 0;
                                 bool   repeat = false;
                                 int    refs = 1;
+                                int    pad = -1;
+                                String control;
+                                float  value = 0;
+                                String action;
 
                                 explicit Event(const RawEvent &e)
                                     : type(e.type), key(e.key), text(e.text), x(e.x), y(e.y), button(e.button),
-                                      wheel(e.wheel), repeat(e.repeat) {}
+                                      wheel(e.wheel), repeat(e.repeat) {
+                                        if (!isPadOrAction(type)) return;
+                                        pad = e.pad;
+                                        value = e.value;
+                                        if (type >= ActionDown) {
+                                                const char *name = actionName(e.control);
+                                                action.assign(name, strlen(name));
+                                        } else if (type == PadDown || type == PadUp) {
+                                                if (e.control >= 0 && e.control < PadButtonCount)
+                                                        control.assign(PadButtons[e.control],
+                                                                       strlen(PadButtons[e.control]));
+                                        } else if (type == PadMove) {
+                                                if (e.control >= 0 && e.control < PadAxisCount)
+                                                        control.assign(PadAxes[e.control], strlen(PadAxes[e.control]));
+                                        }
+                                }
                                 void addRef() { ++refs; }
                                 void release() {
                                         if (--refs == 0) delete this;
@@ -718,6 +795,12 @@ namespace angel {
                                         _wheel = 0;
                                         return w;
                                 }
+                                // A pad's state (pads 0 to MaxPads - 1); an action's (its value: 1 or 0 for a
+                                // button, -1 to 1 for an axis).
+                                bool  padDown(int button, int pad);
+                                float padAxis(int axis, int pad);
+                                bool  padAttached(int pad);
+                                float actionValue(int id);
                                 void watchClose() { _closeWatched = true; }
                                 bool closeWatched() const { return _closeWatched; }
                                 void setCloseWatched(bool watched) { _closeWatched = watched; }
@@ -756,6 +839,8 @@ namespace angel {
                                 void         wake();
                                 void         requestPresent();
                                 void         readEvents();
+                                void         padEvent(const bmds_surface_event_t &s, RawEvent &e);
+                                void         actionEvent(const bmds_surface_event_t &s, RawEvent &e);
                                 void         push(const RawEvent &e);
                                 void         show();
 #else
@@ -771,6 +856,18 @@ namespace angel {
                                 uint32_t           _buttons = 0;
                                 int                _wheel = 0;
                                 asIScriptFunction *_onEvent = nullptr;
+                                struct PadState {
+                                                bool     attached;
+                                                uint32_t buttons;
+                                                float    axes[PadAxisCount];
+                                };
+                                PadState _pads[MaxPads] = {};
+                                struct ActionState {
+                                                int   id;
+                                                float value;
+                                };
+                                ActionState _actions[MaxActions] = {}; // those not at rest
+                                size_t      _actionsHeld = 0;
 #ifdef ANGEL_BMDS
                                 int       _wakeRead = -1, _wakeWrite = -1;
                                 bool      _wakePending = false;
@@ -1017,6 +1114,39 @@ namespace angel {
                         return (_keys[a >> 3] & (1u << (a & 7))) != 0 || (_keys[b >> 3] & (1u << (b & 7))) != 0;
                 }
 
+                bool Window::padDown(int button, int pad) {
+                        if (pad < 0 || pad >= MaxPads) return false;
+                        pthread_mutex_lock(&_mutex);
+                        const bool down = (_pads[pad].buttons & (1u << button)) != 0;
+                        pthread_mutex_unlock(&_mutex);
+                        return down;
+                }
+
+                float Window::padAxis(int axis, int pad) {
+                        if (pad < 0 || pad >= MaxPads) return 0;
+                        pthread_mutex_lock(&_mutex);
+                        const float v = _pads[pad].axes[axis];
+                        pthread_mutex_unlock(&_mutex);
+                        return v;
+                }
+
+                bool Window::padAttached(int pad) {
+                        if (pad < 0 || pad >= MaxPads) return false;
+                        pthread_mutex_lock(&_mutex);
+                        const bool there = _pads[pad].attached;
+                        pthread_mutex_unlock(&_mutex);
+                        return there;
+                }
+
+                float Window::actionValue(int id) {
+                        float v = 0;
+                        pthread_mutex_lock(&_mutex);
+                        for (size_t i = 0; i < _actionsHeld; ++i)
+                                if (_actions[i].id == id) v = _actions[i].value;
+                        pthread_mutex_unlock(&_mutex);
+                        return v;
+                }
+
                 void Window::waitForEvent(int64_t deadlineNs) {
 #ifdef ANGEL_BMDS
                         pthread_mutex_lock(&_mutex);
@@ -1064,12 +1194,95 @@ namespace angel {
                                         return;
                                 }
                         }
+                        // An axis's too: its latest value replaces the one waiting, so a stick can't
+                        // push the keys out of the queue.
+                        if (e.type == PadMove || e.type == ActionMove) {
+                                for (int i = _count - 1; i >= 0; --i) {
+                                        RawEvent &w = _queue[(_head + i) % QueueSize];
+                                        if (w.type == e.type && w.control == e.control && w.pad == e.pad) {
+                                                w.value = e.value;
+                                                return;
+                                        }
+                                }
+                        }
                         if (_count == QueueSize) { // full: the oldest goes
                                 _head = (_head + 1) % QueueSize;
                                 --_count;
                         }
                         _queue[(_head + _count) % QueueSize] = e;
                         ++_count;
+                        return;
+                }
+
+                // A pad's control changed, or a pad came or went: its state, and the event.
+                void Window::padEvent(const bmds_surface_event_t &s, RawEvent &e) {
+                        e.pad = int(s.data[0]);
+                        e.control = int(s.data[1]);
+                        e.x = _mouseX;
+                        e.y = _mouseY;
+                        PadState *state = e.pad >= 0 && e.pad < MaxPads ? &_pads[e.pad] : nullptr;
+                        switch (s.flags) {
+                                case BMDS_PAD_BUTTON:
+                                        if (e.control < 0 || e.control >= PadButtonCount) return;
+                                        e.type = s.data[2] != 0 ? PadDown : PadUp;
+                                        e.value = s.data[2] != 0 ? 1.0f : 0.0f;
+                                        if (state != nullptr) {
+                                                if (s.data[2] != 0)
+                                                        state->buttons |= 1u << e.control;
+                                                else
+                                                        state->buttons &= ~(1u << e.control);
+                                        }
+                                        break;
+                                case BMDS_PAD_AXIS:
+                                        if (e.control < 0 || e.control >= PadAxisCount) return;
+                                        e.type = PadMove;
+                                        e.value = float(int32_t(s.data[2])) / 32767.0f;
+                                        if (state != nullptr) state->axes[e.control] = e.value;
+                                        break;
+                                case BMDS_PAD_ATTACHED:
+                                        e.type = PadAttached;
+                                        e.control = -1;
+                                        if (state != nullptr) state->attached = true;
+                                        break;
+                                case BMDS_PAD_DETACHED:
+                                        e.type = PadDetached;
+                                        e.control = -1;
+                                        if (state != nullptr) *state = PadState{};
+                                        break;
+                                default: return;
+                        }
+                        push(e);
+                        return;
+                }
+
+                // One of the script's actions: its state, and the event.
+                void Window::actionEvent(const bmds_surface_event_t &s, RawEvent &e) {
+                        e.control = int(s.data[0]);
+                        e.pad = (s.data[2] & 0xff) == BMDS_SOURCE_PAD ? int(s.data[2] >> 8) : -1;
+                        e.x = _mouseX;
+                        e.y = _mouseY;
+                        switch (s.flags) {
+                                case BMDS_ACTION_PRESS: e.type = ActionDown; break;
+                                case BMDS_ACTION_REPEAT:
+                                        e.type = ActionDown;
+                                        e.repeat = true;
+                                        break;
+                                case BMDS_ACTION_RELEASE: e.type = ActionUp; break;
+                                case BMDS_ACTION_AXIS: e.type = ActionMove; break;
+                                default: return;
+                        }
+                        e.value = e.type == ActionMove ? float(int32_t(s.data[1])) / 32767.0f
+                                                       : (e.type == ActionDown ? 1.0f : 0.0f);
+                        // Its state: kept while not at rest.
+                        size_t i = 0;
+                        while (i < _actionsHeld && _actions[i].id != e.control) ++i;
+                        if (e.value != 0) {
+                                if (i == _actionsHeld && _actionsHeld < MaxActions) ++_actionsHeld;
+                                if (i < _actionsHeld) _actions[i] = ActionState{e.control, e.value};
+                        } else if (i < _actionsHeld) {
+                                _actions[i] = _actions[--_actionsHeld];
+                        }
+                        push(e);
                         return;
                 }
 
@@ -1140,6 +1353,8 @@ namespace angel {
                                                 push(e);
                                                 if (!_closeWatched) _closeDeadlineNs = monotonicNs() + 1000000000LL;
                                                 break;
+                                        case BMDS_EVENT_PAD: padEvent(s, e); break;
+                                        case BMDS_EVENT_ACTION: actionEvent(s, e); break;
                                         default: break;
                                 }
                         }
@@ -1725,6 +1940,259 @@ namespace angel {
                 void windowPointer(asIScriptGeneric *gen) {
                         window(gen)->showPointer(gen->GetArgByte(0) != 0);
                 }
+                // ---- Pads and actions on a Screen
+
+                const char *argText(asIScriptGeneric *gen, asUINT n) {
+                        return static_cast<const String *>(gen->GetArgAddress(n))->cStr();
+                }
+                int buttonArg(asIScriptGeneric *gen) {
+                        const int b = padButton(argText(gen, 0));
+                        if (b < 0)
+                                raise("No pad button '%s' (South, East, West, North, L1, R1, L2, R2, L3, R3, Up, "
+                                      "Down, Left, Right, Start, Select, Guide)",
+                                      argText(gen, 0));
+                        return b;
+                }
+                int axisArg(asIScriptGeneric *gen) {
+                        const int a = padAxis(argText(gen, 0));
+                        if (a < 0) raise("No pad axis '%s' (LeftX, LeftY, RightX, RightY, L2, R2)", argText(gen, 0));
+                        return a;
+                }
+                int actionArg(asIScriptGeneric *gen) {
+                        const int id = actionId(argText(gen, 0));
+                        if (id < 0) raise("No action '%s' (declared with controls.declare())", argText(gen, 0));
+                        return id;
+                }
+                void windowPadDown(asIScriptGeneric *gen) {
+                        const int b = buttonArg(gen);
+                        gen->SetReturnByte(b >= 0 && window(gen)->padDown(b, argInt(gen, 1)));
+                }
+                void windowPadAxis(asIScriptGeneric *gen) {
+                        const int a = axisArg(gen);
+                        gen->SetReturnFloat(a >= 0 ? window(gen)->padAxis(a, argInt(gen, 1)) : 0.0f);
+                }
+                void windowPadAttached(asIScriptGeneric *gen) {
+                        gen->SetReturnByte(window(gen)->padAttached(argInt(gen, 0)));
+                }
+                void windowActionDown(asIScriptGeneric *gen) {
+                        const int id = actionArg(gen);
+                        gen->SetReturnByte(id >= 0 && window(gen)->actionValue(id) != 0);
+                }
+                void windowActionValue(asIScriptGeneric *gen) {
+                        const int id = actionArg(gen);
+                        gen->SetReturnFloat(id >= 0 ? window(gen)->actionValue(id) : 0.0f);
+                }
+
+                // `controls`: the program's actions (bmds_controls).
+                int    controlsObject; // its address: the type has no state of its own
+                String activeSet;
+
+                bool nameChar(char c) {
+                        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+                }
+                // @p line without the blanks around it.
+                void trim(const char *&begin, const char *&end) {
+                        while (begin < end && (*begin == ' ' || *begin == '\t')) ++begin;
+                        while (end > begin && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r')) --end;
+                }
+                bool keyIs(const char *begin, const char *end, const char *key, const char *&value) {
+                        const char *eq = static_cast<const char *>(memchr(begin, '=', size_t(end - begin)));
+                        if (eq == nullptr) return false;
+                        const char *k = begin, *ke = eq;
+                        trim(k, ke);
+                        if (size_t(ke - k) != strlen(key) || memcmp(k, key, size_t(ke - k)) != 0) return false;
+                        value = eq + 1;
+                        return true;
+                }
+
+                // The declaration's actions, each with an Id (one given to those without), into
+                // @p out with their names in @p names; the first set in @p firstSet. False with the
+                // problem raised.
+                bool readDeclaration(const char *text, size_t length, Text &out, ActionName *names, size_t &count,
+                                     String &firstSet, uint8_t *used) {
+                        count = 0;
+                        firstSet.assign("set", 3);
+                        bool        hasId[MaxActions] = {};
+                        const char *end = text + length;
+                        // First the names and the Ids given.
+                        int current = -1; // the action whose group we're in
+                        for (const char *line = text; line < end;) {
+                                const char *nl = static_cast<const char *>(memchr(line, '\n', size_t(end - line)));
+                                const char *le = nl != nullptr ? nl : end;
+                                const char *b = line, *e = le;
+                                line = nl != nullptr ? nl + 1 : end;
+                                trim(b, e);
+                                if (b == e || *b == '#' || *b == ';') continue;
+                                const char *value = nullptr;
+                                if (*b == '[') {
+                                        current = -1;
+                                        static constexpr char Prefix[] = "[Action ";
+                                        if (size_t(e - b) < sizeof(Prefix) ||
+                                            memcmp(b, Prefix, sizeof(Prefix) - 1) != 0)
+                                                continue;
+                                        const char *n = b + sizeof(Prefix) - 1, *ne = e - 1;
+                                        if (*ne != ']') {
+                                                raise("The controls' line '%.*s' isn't a group", int(e - b), b);
+                                                return false;
+                                        }
+                                        const size_t nameLength = size_t(ne - n);
+                                        bool         ok = nameLength > 0 && nameLength <= MaxActionName;
+                                        for (const char *c = n; ok && c < ne; ++c) ok = nameChar(*c);
+                                        if (!ok) {
+                                                raise("The action name '%.*s' isn't a-z, 0-9 and -, at most %u",
+                                                      int(nameLength), n, unsigned(MaxActionName));
+                                                return false;
+                                        }
+                                        for (size_t i = 0; i < count; ++i) {
+                                                if (strlen(names[i].name) == nameLength &&
+                                                    memcmp(names[i].name, n, nameLength) == 0) {
+                                                        raise("The action '%.*s' is declared twice", int(nameLength),
+                                                              n);
+                                                        return false;
+                                                }
+                                        }
+                                        if (count == MaxActions) {
+                                                raise("Too many actions (%u at most)", unsigned(MaxActions));
+                                                return false;
+                                        }
+                                        memcpy(names[count].name, n, nameLength);
+                                        names[count].name[nameLength] = 0;
+                                        names[count].id = 0;
+                                        current = int(count++);
+                                } else if (current >= 0 && keyIs(b, e, "Id", value)) {
+                                        const long id = strtol(value, nullptr, 10);
+                                        if (id < 1 || id > 65535 || used[id / 8] & (1u << (id % 8))) {
+                                                raise("The action '%s' has a bad Id (1 to 65535, one each)",
+                                                      names[current].name);
+                                                return false;
+                                        }
+                                        used[id / 8] |= uint8_t(1u << (id % 8));
+                                        names[current].id = uint16_t(id);
+                                        hasId[current] = true;
+                                } else if (current < 0 && keyIs(b, e, "Sets", value)) {
+                                        const char *v = value, *ve = e;
+                                        trim(v, ve);
+                                        const char *semi = static_cast<const char *>(memchr(v, ';', size_t(ve - v)));
+                                        if (semi != nullptr) ve = semi;
+                                        trim(v, ve);
+                                        if (ve > v) firstSet.assign(v, size_t(ve - v));
+                                }
+                        }
+                        // Then the text again, an Id after the group's line of each without one.
+                        uint32_t next = 1;
+                        size_t   action = 0;
+                        for (const char *line = text; line < end;) {
+                                const char *nl = static_cast<const char *>(memchr(line, '\n', size_t(end - line)));
+                                const char *le = nl != nullptr ? nl : end;
+                                out.append(line, size_t(le - line));
+                                out.append("\n");
+                                const char *b = line, *e = le;
+                                line = nl != nullptr ? nl + 1 : end;
+                                trim(b, e);
+                                if (b == e || *b != '[' || size_t(e - b) < 9 || memcmp(b, "[Action ", 8) != 0) continue;
+                                if (!hasId[action]) {
+                                        while (used[next / 8] & (1u << (next % 8))) ++next;
+                                        used[next / 8] |= uint8_t(1u << (next % 8));
+                                        names[action].id = uint16_t(next);
+                                        out.appendf("Id=%u\n", unsigned(next));
+                                }
+                                ++action;
+                        }
+                        return true;
+                }
+
+                void controlsDeclare(asIScriptGeneric *gen) {
+                        const String &given = *static_cast<const String *>(gen->GetArgAddress(0));
+                        Text          file;
+                        const char   *text = given.data();
+                        size_t        length = given.length();
+                        if (length == 0) { // the application's controls.conf
+                                Text path;
+                                path.appendf("%s/controls.conf", applicationFolder());
+                                FILE *f = fopen(path.data(), "r");
+                                if (f == nullptr) {
+                                        raise("Can't read '%s': %s", path.data(), strerror(errno));
+                                        return;
+                                }
+                                char   chunk[1024];
+                                size_t n;
+                                while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) file.append(chunk, n);
+                                fclose(f);
+                                text = file.data();
+                                length = file.length();
+                        }
+                        Text       out;
+                        ActionName names[MaxActions];
+                        size_t     count = 0;
+                        String     firstSet;
+                        uint8_t   *used = static_cast<uint8_t *>(calloc(65536 / 8, 1)); // the Ids taken
+                        if (used == nullptr) {
+                                raise("Out of memory");
+                                return;
+                        }
+                        const bool read = readDeclaration(text, length, out, names, count, firstSet, used);
+                        free(used);
+                        if (!read) return;
+#ifdef ANGEL_BMDS
+                        const int32_t r = bmds_controls(BMDS_CONTROLS_DECLARE, const_cast<char *>(out.data()),
+                                                        uint32_t(out.length()));
+                        if (r < 0) {
+                                raise("The controls weren't accepted (%s: the system's log says which line)",
+                                      strerror(-r));
+                                return;
+                        }
+#endif
+                        memcpy(actionNames, names, count * sizeof(names[0]));
+                        actionCount = count;
+                        activeSet = firstSet;
+                }
+
+                void controlsActiveSet(asIScriptGeneric *gen) {
+                        new (gen->GetAddressOfReturnLocation()) String(activeSet);
+                }
+                void controlsSetActiveSet(asIScriptGeneric *gen) {
+                        const String &set = *static_cast<const String *>(gen->GetArgAddress(0));
+#ifdef ANGEL_BMDS
+                        const int32_t r = bmds_controls(BMDS_CONTROLS_SET,
+                                                        set.length() != 0 ? const_cast<char *>(set.data()) : nullptr,
+                                                        set.length());
+                        if (r < 0) {
+                                raise("No set of controls '%s'", set.cStr());
+                                return;
+                        }
+#endif
+                        activeSet = set;
+                }
+                // An action's bindings as text ("" if none, and on the host).
+                void controlsBinding(asIScriptGeneric *gen, uint32_t which) {
+                        char      text[128] = "";
+                        const int id = actionArg(gen);
+#ifdef ANGEL_BMDS
+                        if (id >= 0) {
+                                bmds_controls_binding_t b{sizeof(b), uint32_t(id), which, text, sizeof(text)};
+                                if (bmds_controls(BMDS_CONTROLS_BINDING, &b, sizeof(b)) < 0) text[0] = 0;
+                        }
+#else
+                        (void)id;
+                        (void)which;
+#endif
+                        new (gen->GetAddressOfReturnLocation()) String(text);
+                }
+                void controlsKeys(asIScriptGeneric *gen) {
+#ifdef ANGEL_BMDS
+                        controlsBinding(gen, BMDS_BINDING_KEYS);
+#else
+                        controlsBinding(gen, 1);
+#endif
+                }
+                void controlsPad(asIScriptGeneric *gen) {
+#ifdef ANGEL_BMDS
+                        controlsBinding(gen, BMDS_BINDING_PAD);
+#else
+                        controlsBinding(gen, 2);
+#endif
+                }
+
                 void eventAddRef(asIScriptGeneric *gen) {
                         static_cast<Event *>(gen->GetObject())->addRef();
                 }
@@ -2082,9 +2550,13 @@ namespace angel {
                 def(engine, "int textHeight(int scale = 1)", textHeight, "How tall text() writes a line, in pixels.");
 
                 check(engine->RegisterEnum("EventType"), "EventType");
-                static constexpr const char *types[] = {"KeyDown", "KeyUp", "MouseMove", "MouseDown",
-                                                        "MouseUp", "Wheel", "Close"};
-                for (int i = 0; i < 7; ++i) check(engine->RegisterEnumValue("EventType", types[i], i), types[i]);
+                static constexpr const char *types[] = {"KeyDown",    "KeyUp",    "MouseMove",   "MouseDown",
+                                                        "MouseUp",    "Wheel",    "Close",       "PadDown",
+                                                        "PadUp",      "PadMove",  "PadAttached", "PadDetached",
+                                                        "ActionDown", "ActionUp", "ActionMove"};
+                static_assert(sizeof(types) / sizeof(types[0]) == EventTypes);
+                for (int i = 0; i < EventTypes; ++i)
+                        check(engine->RegisterEnumValue("EventType", types[i], i), types[i]);
                 check(engine->RegisterObjectType("Event", 0, asOBJ_REF), "Event");
                 behaviour(engine, "Event", asBEHAVE_ADDREF, "void f()", eventAddRef, nullptr);
                 behaviour(engine, "Event", asBEHAVE_RELEASE, "void f()", eventRelease, nullptr);
@@ -2101,6 +2573,13 @@ namespace angel {
                       "Event::wheel");
                 check(engine->RegisterObjectProperty("Event", "const bool repeat", asOFFSET(Event, repeat)),
                       "Event::repeat");
+                check(engine->RegisterObjectProperty("Event", "const int pad", asOFFSET(Event, pad)), "Event::pad");
+                check(engine->RegisterObjectProperty("Event", "const string control", asOFFSET(Event, control)),
+                      "Event::control");
+                check(engine->RegisterObjectProperty("Event", "const float value", asOFFSET(Event, value)),
+                      "Event::value");
+                check(engine->RegisterObjectProperty("Event", "const string action", asOFFSET(Event, action)),
+                      "Event::action");
 
                 check(engine->RegisterObjectType("Image", 0, asOBJ_REF), "Image");
                 check(engine->RegisterObjectType("Screen", 0, asOBJ_REF), "Screen");
@@ -2158,6 +2637,36 @@ namespace angel {
                 method(engine, "Screen", "void onEvent(EventCallback@ callback)", windowOnEvent,
                        "Calls back with each of the screen's events (Close too) while app.run() runs, beside the "
                        "GUI's (null: no more). A screen served so counts as a window shown.");
+                method(engine, "Screen", "bool padDown(const string &in button, int pad = 0)", windowPadDown,
+                       "A gamepad's button is down (South, East, West, North, L1, R1, L2, R2, L3, R3, Up, Down, "
+                       "Left, Right, Start, Select, Guide); pads 0 to 3.");
+                method(engine, "Screen", "float padAxis(const string &in axis, int pad = 0)", windowPadAxis,
+                       "Where a gamepad's stick is (LeftX, LeftY, RightX, RightY: -1 to 1, right and down positive) "
+                       "or how far a trigger is pressed (L2, R2: 0 to 1).");
+                method(engine, "Screen", "bool padAttached(int pad = 0)", windowPadAttached,
+                       "A gamepad is there (told when the screen has the focus).");
+                method(engine, "Screen", "bool actionDown(const string &in action)", windowActionDown,
+                       "One of the actions (controls.declare()) is held: a key or pad control bound to it.");
+                method(engine, "Screen", "float actionValue(const string &in action)", windowActionValue,
+                       "An action's value: 1 or 0 for a button, -1 to 1 for an axis.");
+
+                check(engine->RegisterObjectType("Controls", 0, asOBJ_REF | asOBJ_NOCOUNT), "Controls");
+                method(engine, "Controls", "void declare(const string &in declaration = \"\")", controlsDeclare,
+                       "Declares the script's actions, controls.conf's text ([Action NAME] groups with Keys= and "
+                       "Pad=; Id= given if left out); \"\" reads controls.conf in appDir(). The user can rebind "
+                       "them.");
+                method(engine, "Controls", "string get_activeSet() const property", controlsActiveSet,
+                       "The set of actions matched (Sets=; the first at the start).");
+                method(engine, "Controls", "void set_activeSet(const string &in set) property", controlsSetActiveSet,
+                       "Chooses the set matched; \"\" for none (every key raw: typing a name).");
+                method(engine, "Controls", "string keys(const string &in action) const", controlsKeys,
+                       "The keys bound to an action, as text (Space; Enter), for hints.");
+                method(engine, "Controls", "string pad(const string &in action) const", controlsPad,
+                       "The pad controls bound to an action, as text (Pad.South).");
+                property(engine, "Controls controls", &controlsObject,
+                         "The script's actions: declared once, matched by the system against keys and pads, given "
+                         "to a Screen as ActionDown, ActionUp and ActionMove events.");
+
                 method(engine, "Screen", "Image@ part(int x, int y, int width, int height)", drawnPart,
                        "A new image of a rectangle of what is drawn.");
                 return;

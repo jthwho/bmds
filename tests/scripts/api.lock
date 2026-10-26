@@ -1537,3 +1537,41 @@ void Setting::revert()
 void Setting::save()
 void Setting::set_value(const string&in)
 void System::onNetworkChanged(Callback@)
+# 2026-10-25: the services step 6b (devplan/guiprograms.md §14): FolderWatch, fileType(), openFile(),
+# gamepads and actions on a Screen, controls.
+Controls controls
+Event::const float value
+Event::const int pad
+Event::const string action
+Event::const string control
+EventType::ActionDown = 12
+EventType::ActionMove = 14
+EventType::ActionUp = 13
+EventType::PadAttached = 10
+EventType::PadDetached = 11
+EventType::PadDown = 7
+EventType::PadMove = 9
+EventType::PadUp = 8
+FolderChange::Contents = 2
+FolderChange::Entries = 1
+FolderChange::Mounts = 4
+FolderWatch@ FolderWatch(const string&in)
+bool FolderWatch::get_watching() const
+bool Screen::actionDown(const string&in)
+bool Screen::padAttached(int = 0)
+bool Screen::padDown(const string&in, int = 0)
+class Controls
+class FolderWatch
+enum FolderChange
+float Screen::actionValue(const string&in)
+float Screen::padAxis(const string&in, int = 0)
+string Controls::get_activeSet() const
+string Controls::keys(const string&in) const
+string Controls::pad(const string&in) const
+string FolderWatch::get_path() const
+string fileType(const string&in)
+void Controls::declare(const string&in = "")
+void Controls::set_activeSet(const string&in)
+void FolderWatch::onChanged(IntCallback@)
+void FolderWatch::stop()
+void openFile(const string&in)

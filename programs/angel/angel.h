@@ -186,8 +186,13 @@ namespace angel {
         // Before the engine is shut down: their callbacks and watches let go.
         void releaseServices();
         void releaseProcesses();
+        // Folders watched and files' types (folders.cpp; §14, 6b), after the GUI's funcdefs.
+        void registerFolders(asIScriptEngine *engine);
+        void releaseFolders();
         // The script's path as it was given (args[0]), or null.
         const char *scriptPath();
+        // The application's folder (BMDS_APP_DIR), else the script's own; "" if neither is known.
+        const char *applicationFolder();
 
         // At the script's end (gui.cpp): with a GUI window shown, the GUI's loop runs until it
         // closes (`app.run()`'s); then the connection is closed.

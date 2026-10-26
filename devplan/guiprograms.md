@@ -5,7 +5,8 @@ clipboard. **Step 4 built** (§12). **Step 5 built** (§13): 5a (angel's GUI cla
 callbacks; `Screen` for games), 5b (the one-line dialogs, icons from angel's `Image`, the notes
 example), 5c (a `Canvas` drawn as a `Screen` is, screens' events in `app.run()`, the paint
 example). **Step 6** designed (§14), in three parts: 6a built (settings, processes, the system,
-dates, the folders); next 6b (files, pads and actions). The user agreed with the shape (2026-10-22): the
+dates, the folders); 6b built (folders watched, file types, opening files, pads and actions); next
+6c (audio and speech). The user agreed with the shape (2026-10-22): the
 toolkit as a service (P1), names (P2), and **a wire protocol in the spirit of X11's** between
 programs and the service (P8), so that applications can also run on another machine. This plan
 revises `gui.md` G1 and fills in `windows.md` §6 ("ABI (later)").
@@ -1888,3 +1889,103 @@ there, and `app.after()`/`app.every()` are the timers.
     named zones and POSIX rules, normalised dates, no settings).
 - **Size:** angel's text is 1,102,322 bytes (+35.9 KB: services.cpp 16 KB, process.cpp 10 KB,
   musl's `posix_spawn`, `strftime`, `mktime` and the rest).
+
+**6b's design (2026-10-25):**
+- **A folder watched: `fs_watch`, slot 126 (new).** The VFS has watched folders for the panel
+  since `filebrowser.md` §4i (`DirectoryWatch`), but no program could ask. The call gives one as a
+  descriptor, as `net_watch` and `sysconf_watch` do:
+  - `int32_t fs_watch(const char *path, uint32_t flags)`: a new descriptor watching folder
+    @p path (links and `/home` followed). `flags`: 0 or `BMDS_O_CLOEXEC`. `-BMDS_ENOENT`,
+    `-BMDS_ENOTDIR`, `-BMDS_EINVAL`, `-BMDS_ENOMEM`, `-BMDS_EMFILE`.
+  - A read (4 bytes or more, a multiple of 4) gives one `uint32_t`: what changed since the last
+    read, as bits: `BMDS_FS_WATCH_ENTRIES` (1: an entry made, removed or renamed; the folder
+    itself renamed or removed), `BMDS_FS_WATCH_CONTENTS` (2: a file in it written and closed, or
+    touched), `BMDS_FS_WATCH_MOUNTS` (4: a mount or an unmount: anything may have changed). It
+    waits while nothing changed; `io_poll` says `BMDS_POLL_IN` when something did. However many
+    changes come, they are one record until read, so a folder filled by a copy is one read again.
+  - Not told, as for the panel: the folders below one renamed or removed, `/dev` gaining a
+    device. Closing it ends the watch. In the kernel: a `Stream` around a `DirectoryWatch`
+    (bmds_fs), its notify releasing a semaphore and waking the pollers.
+- **`FolderWatch`** (angel, files.cpp): `FolderWatch(path)` (raises if it isn't a folder), `path`,
+  `onChanged(IntCallback@)` with the bits as `FolderChange::Entries`, `Contents`, `Mounts`, in the
+  loop (a `LoopSource` holding `app.run()`, as a watched setting does; kept until
+  `onChanged(null)` or `stop()`). On the host, Linux's inotify gives the same bits, so the corpus
+  tests it.
+- **File types:** `fileType(path)` (`file_type`: by the name, else by the first bytes; `""` when it
+  can't be told, and on the host). **Opened with their applications:** `openFile(path)` opens a
+  file as a double click on the desktop does: a folder in a window, a program run, a launcher's
+  command, another file by its type's application (`mimeapps.list`, `filetypes.md`). Only the
+  panel opens files (`filetypes.md` T11), so it answers a new service, **`open`** (the paths,
+  absolute, a NUL after each, as `files` has them; `files` itself shows a file selected in its
+  folder, so it can't be the one). angel sends through the GUI connection's `Services`
+  (`has("open")` first: "Nothing opens files here (start the panel)" raised if no one has it).
+- **Gamepads on a `Screen`:** the surface's `BMDS_EVENT_PAD` events, until now dropped, become
+  `Event`s, and their state is kept for asking:
+  - `EventType` gains `PadDown`, `PadUp`, `PadMove` (an axis), `PadAttached`, `PadDetached`;
+    `Event` gains `pad` (its number; -1 for the keyboard), `control` (a button's or an axis's name,
+    `controls.conf`'s: `South`, `East`, `West`, `North`, `L1`...`R3`, `Up`, `Down`, `Left`, `Right`,
+    `Start`, `Select`, `Guide`; axes `LeftX`, `LeftY`, `RightX`, `RightY`, `L2`, `R2`) and
+    `value` (a float: -1 to 1 for a stick, right and down positive; 0 to 1 for a trigger; 1 or 0
+    for a button).
+  - An axis's moves are coalesced in the queue as the mouse's are (the latest of one axis
+    replaces the one waiting), so a stick can't push the keys out of it.
+  - `padDown(control, pad = 0)`, `padAxis(control, pad = 0)`, `padAttached(pad = 0)`: pads 0-3.
+- **Actions** (`bmds_controls`, `controls.md` §7c): a game declares what it can do, each with keys
+  and pad controls the user may rebind; the system matches them and the game gets the action.
+  - `controls.declare(text = "")`: the declaration (`controls.conf`'s INI), or `""` for
+    `controls.conf` in `appDir()`. An action without `Id=` gets one (angel numbers them), since a
+    script names its actions. Refused: "The controls weren't accepted: ..." with the system's
+    reason where it gives one (the line is in the system log).
+  - `controls.activeSet` (`""`: none, every event raw, for typing a name), `controls.keys(action)`
+    and `controls.pad(action)`: the bindings as text, for hints ("Space to play again").
+  - `EventType` gains `ActionDown` (`repeat` for a held key's repeats), `ActionUp` and
+    `ActionMove` (an axis action); `Event.action` is its name, `value` and `pad` as above.
+    `actionDown(name)` and `actionValue(name)` on the `Screen`.
+  - The host keeps the declaration (its names checked) and binds nothing.
+- **The example:** Snake steers by actions (arrows and WASD, the D-pad and the left stick), its
+  "play again" hint made from the binding.
+- **Tests:** progtest `files` watches a folder (made, written, renamed, removed: each bit; one
+  record for many changes; `ENOTDIR`, `ENOENT`). The corpus's `files` test gains a `FolderWatch`
+  (inotify) and `fileType()`; a `controls` test of declarations. `tests/board/files.as`: a watched
+  folder's changes in the loop, `fileType()` of a text, a folder and a program, a declaration
+  the system accepts. `openFile()`, pads and actions tried by hand.
+
+**6b, as built (2026-10-25):**
+- **`fs_watch`** (slot 126) as designed: `DirectoryWatch::openFile()` (bmds_fs,
+  `directorywatchfile.cpp`, 900 bytes) is the stream; its handle closed, the watch leaves the
+  VFS's list before the rest of the stream goes, since a change in another task may be telling it
+  meanwhile. `Process::fsWatch()` resolves the path with the process's directory, as
+  `file_type` does. The bits are `DirectoryWatch::Change`'s (checked equal at build).
+- **`FolderWatch`, `fileType()`** (angel, `folders.cpp`) as designed; `watching` says whether it
+  was stopped. The host's inotify is mapped to the system's bits: a file made counts when it is
+  closed after writing (`IN_CLOSE_WRITE`), as the system tells it, and a folder made, an entry
+  removed or moved are `Entries`. At most 16 folders watched with callbacks.
+- **`openFile()`** (gui.cpp): the path made absolute and checked, then sent to the panel's `open`
+  service (`PanelApp::openMessage()` calls `FolderActions::open()`, the double click's own).
+- **Pads and actions on a `Screen`** as designed. The surface's events are kept as they were
+  (`RawEvent` gains the pad, the control or the action's Id, the value); an action's name is
+  found as the script takes the event. A stick's or an axis action's waiting event is updated in
+  place, anywhere in the queue. Pad and action state live with the window, under its lock (the
+  presenter thread writes them). `controls.declare()` checks the names (`[a-z0-9-]`, at most 32,
+  each once), the Ids (1 to 65535, each once), and numbers the actions without one past those
+  given; the system checks the rest (an action without `Keys=` is refused).
+- **Snake** declares five actions (four turns: arrows and WASD, the D-pad and the left stick's
+  halves; `again`: Space or Enter, the pad's South or Start); "Game over! Space to play again"
+  takes its key from `controls.keys("again")`.
+- **Tried on the board** (flashed):
+  - `tests/board/files.as` passes: a folder's changes called back (written: `Contents`; a folder
+    made: `Entries`; 20 files written and a folder removed: one call with both), a missing folder
+    and a file refused; the types of a text, a folder, a program, and of nothing; a declaration
+    accepted, its bindings as text (`Left; A`, `Pad.South`), its sets chosen, a set not declared
+    and an action without keys refused. `services.as` still passes.
+  - progtest `files` (built fresh) passes with the watch's checks.
+  - `openFile()` of a text file opened vi on it in a terminal; of `/tmp`, a folder window.
+  - A script printing a `Screen`'s events: the pad attached told as the screen took the focus
+    (`PadAttached`, pad 0); Left and A each pressing `left` once, both held together one press
+    and one release; a held key's repeats not given (no `Repeat=true`); a key axis (`Keys=Down
+    Up`) at -1, 1 and 0; the set emptied releasing what was down; `actionDown()`,
+    `actionValue()`, `padAttached()` following. Pad buttons and sticks were not pressed (no one
+    at the pad): their events take the same path as the attached one.
+  - Snake: W turned the snake up, the hint read "Space to play again", Space started again.
+- **Size:** angel's text is 1,114,488 bytes (+12.2 KB: `folders.cpp` 2.8 KB, the pads, actions
+  and `controls` in graphics.cpp, `openFile()`).

@@ -13,6 +13,7 @@ set(BMDS_FS_SRCS
         src/blockdevice.cpp
         src/blockdevices.cpp
         src/directorywatch.cpp
+        src/directorywatchfile.cpp
         src/etc.cpp
         src/fatfile.cpp
         src/fatfsport.cpp

@@ -12,7 +12,7 @@
  *   progtest env NAME     print $NAME from the environment
  *   progtest tty          print isatty() of fds 0-2
  *   progtest float        a little floating point (FPU state per task)
- *   progtest files DIR    files, directories, descriptors, cwd and their errors, in DIR
+ *   progtest files DIR    files, directories, descriptors, cwd, a watched folder and their errors, in DIR
  *   progtest time         clocks, the time zone, sleeping
  *   progtest sleep MS     sleep MS milliseconds (for Ctrl-C)
  *   progtest term         the terminal on fds 0-2
@@ -204,6 +204,30 @@ static int files(const char *dir) {
         CHECK(getcwd(buf, 2) == NULL && errno == ERANGE);
         CHECK(open("/dev/null", O_WRONLY) >= 0);
         CHECK(stat("/dev/null", &st) == 0 && S_ISCHR(st.st_mode));
+        // A folder watched (fs_watch): nothing until a change; each kind's bit; many changes one record.
+        if (bmds_sys_has(BMDS_SYS_FS_WATCH)) {
+                CHECK(mkdir("pt-watch", 0755) == 0);
+                const int w = bmds_fs_watch("pt-watch", BMDS_O_CLOEXEC);
+                CHECK(w >= 0);
+                struct pollfd pw = {.fd = w, .events = POLLIN};
+                uint32_t      bits = 0;
+                CHECK(poll(&pw, 1, 0) == 0);
+                fd = open("pt-watch/a", O_WRONLY | O_CREAT, 0644);
+                CHECK(fd >= 0 && write(fd, "x", 1) == 1 && close(fd) == 0);
+                CHECK(poll(&pw, 1, 1000) == 1 && (pw.revents & POLLIN) != 0);
+                CHECK(read(w, &bits, sizeof(bits)) == 4 && bits == BMDS_FS_WATCH_CONTENTS);
+                CHECK(poll(&pw, 1, 0) == 0);
+                CHECK(rename("pt-watch/a", "pt-watch/b") == 0 && mkdir("pt-watch/c", 0755) == 0);
+                CHECK(rmdir("pt-watch/c") == 0);
+                CHECK(read(w, &bits, sizeof(bits)) == 4 && bits == BMDS_FS_WATCH_ENTRIES);
+                CHECK(unlink("pt-watch/b") == 0 && rmdir("pt-watch") == 0); // the folder itself
+                CHECK(read(w, &bits, sizeof(bits)) == 4 && (bits & BMDS_FS_WATCH_ENTRIES) != 0);
+                CHECK(read(w, &bits, 3) == -1 && errno == EINVAL);
+                CHECK(close(w) == 0);
+                CHECK(bmds_fs_watch("pt-watch", 0) == -BMDS_ENOENT);
+                CHECK(bmds_fs_watch("/dev/null", 0) == -BMDS_ENOTDIR);
+                CHECK(bmds_fs_watch(".", 0x80000000u) == -BMDS_EINVAL);
+        }
         // Too many directories open at once, then all closed at exit.
         DIR *many[9];
         int  opened = 0;

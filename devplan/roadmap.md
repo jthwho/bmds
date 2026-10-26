@@ -471,8 +471,10 @@ Plan: [`input.md`](input.md).
   the paint example with a Tools window. Step 5 done. Step 6 designed (§14), in three parts; 6a
   done: `Setting` (read, set, declared, watched, saved), `Process` (pipes, callbacks in the loop,
   ends by `SIGCHLD`), `system`, `DateTime` in any zone, `appDir()`/`dataDir()`, the loop's other
-  sources, the System example; the SDK's `munmap` freeing a mapping by a short length. Next: 6b
-  (files watched, file types; pads and actions on a `Screen`).
+  sources, the System example; the SDK's `munmap` freeing a mapping by a short length. 6b done:
+  `fs_watch` (slot 126, the VFS's folder watches for programs) and `FolderWatch`, `fileType()`,
+  `openFile()` (the panel's new `open` service), gamepads and actions on a `Screen` (`controls`),
+  Snake steering by actions. Next: 6c (audio and speech).
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.

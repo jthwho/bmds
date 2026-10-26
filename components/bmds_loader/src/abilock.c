@@ -163,6 +163,9 @@ _Static_assert(BMDS_SYS_CONTROLS == 122, "ABI: slot CONTROLS");
 _Static_assert(BMDS_SYS_FS_SERVE == 123, "ABI: slot FS_SERVE");
 _Static_assert(BMDS_SYS_GUI_OPEN == 124, "ABI: slot GUI_OPEN");
 _Static_assert(BMDS_SYS_GUI_CANVAS_SURFACE == 125, "ABI: slot GUI_CANVAS_SURFACE");
+_Static_assert(BMDS_SYS_FS_WATCH == 126, "ABI: slot FS_WATCH");
+_Static_assert(BMDS_FS_WATCH_ENTRIES == 0x1 && BMDS_FS_WATCH_CONTENTS == 0x2 && BMDS_FS_WATCH_MOUNTS == 0x4,
+               "ABI: fs_watch bits");
 _Static_assert(BMDS_CONTROLS_DECLARE == 1 && BMDS_CONTROLS_SET == 2 && BMDS_CONTROLS_BINDING == 3, "ABI: controls ops");
 _Static_assert(BMDS_ACTION_PRESS == 1 && BMDS_ACTION_RELEASE == 2 && BMDS_ACTION_REPEAT == 3 && BMDS_ACTION_AXIS == 4,
                "ABI: action event flags");

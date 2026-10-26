@@ -229,6 +229,9 @@ class Process {
                 /** @brief `file_type()`: what @p path is (`Vfs::identify()`), its type into @p out. */
                 int32_t fileType(const char *path, uint32_t flags, char *out, uint32_t size);
 
+                /** @brief `fs_watch()`: folder @p path watched, a new descriptor (`DirectoryWatch::openFile()`). */
+                int32_t fsWatch(const char *path, uint32_t flags);
+
                 /** @name The system configuration (`sysconf_*`, `devplan/sysconf.md` §12.2) */
                 ///@{
                 int32_t sysconfFind(const char *key);

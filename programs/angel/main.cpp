@@ -442,6 +442,7 @@ namespace {
                 angel::registerGui(engine);
                 angel::registerServices(engine); // after the GUI: its callbacks' funcdefs
                 angel::registerProcess(engine);
+                angel::registerFolders(engine);
                 return engine;
         }
 

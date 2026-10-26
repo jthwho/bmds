@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #include <bmds/gui.h>
@@ -1257,6 +1258,44 @@ namespace angel {
                         gen->SetReturnByte(strcmp(answer.cStr(), "yes") == 0);
                 }
 
+                // openFile(path): opened as a double click on the desktop opens it, by the service
+                // named `open` (the panel's: devplan/guiprograms.md §14), the path absolute and a NUL
+                // after it.
+                void openFileCall(asIScriptGeneric *gen) {
+                        const char   *what = "openFile";
+                        const String &path = *static_cast<const String *>(gen->GetArgAddress(0));
+                        Text          full;
+                        if (path.cStr()[0] != '/') {
+                                char cwd[512];
+                                if (getcwd(cwd, sizeof(cwd)) == nullptr) {
+                                        raise("Can't open '%s': %s", path.cStr(), strerror(errno));
+                                        return;
+                                }
+                                full.append(cwd);
+                                if (strcmp(cwd, "/") != 0) full.append("/");
+                        }
+                        full.append(path.data(), path.length());
+                        struct stat st;
+                        if (stat(full.data(), &st) != 0) {
+                                raise("Can't open '%s': %s", path.cStr(), strerror(errno));
+                                return;
+                        }
+                        if (connection() == nullptr) return;
+                        const uint32_t id = dialogObject("Services", 0, what);
+                        if (id == 0) return;
+                        bmds_gui_value_t args[2] = {bmds_gui_string("open"),
+                                                    bmds_gui_bytes(full.data(), uint32_t(full.length() + 1))};
+                        bmds_gui_value_t has;
+                        if (bmds_gui_call_named(gui, id, "has", args, 1, &has) != 0 || has.number == 0) {
+                                raise("Nothing opens files here (start the panel)");
+                        } else {
+                                (void)bmds_gui_call_named(gui, id, "send", args, 2, nullptr);
+                                remember(what, "send");
+                        }
+                        (void)bmds_gui_destroy(gui, id);
+                        remember(what, "destroy");
+                }
+
                 // askText(): a window of its own, modal over the script's: the prompt, a line to edit,
                 // OK and Cancel. "" if cancelled.
                 void askTextCall(asIScriptGeneric *gen) {
@@ -1634,6 +1673,10 @@ namespace angel {
                 def(engine, "uint chooseColor(uint color = 0, const string &in title = \"\")", chooseColorCall,
                     "Asks for a colour (the GUI's colour dialog), starting at color: the one chosen, color if "
                     "cancelled.");
+                // Files opened with their applications (the panel's `open` service).
+                def(engine, "void openFile(const string &in path)", openFileCall,
+                    "Opens a file as a double click on the desktop does: by its type's application (a folder in a "
+                    "window, a program run).");
                 return;
         }
 
@@ -1785,6 +1828,7 @@ namespace angel {
         void releaseGui() {
                 releaseProcesses();
                 releaseServices();
+                releaseFolders();
                 for (Timer &t : timers) stopTimer(t.id);
                 for (size_t i = 0; i < iconCount; ++i) imageRelease(icons[i].image);
                 free(icons);

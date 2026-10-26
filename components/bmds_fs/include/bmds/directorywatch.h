@@ -85,6 +85,21 @@ class DirectoryWatch {
                 /** @brief Returns the changes since the last call (`Change` bits), clearing them. @nonblocking */
                 uint8_t takeChanges() { return _changes.exchange(0, std::memory_order_acq_rel); }
 
+                /** @brief Returns true if changes are waiting to be taken. @nonblocking */
+                bool hasChanges() const { return _changes.load(std::memory_order_acquire) != 0; }
+
+                /**
+                 * @brief Opens a watch on folder @p path as a file (the SDK's `fs_watch`,
+                 *        `devplan/guiprograms.md` §14): a read gives the changes since the last
+                 *        read as one `uint32_t` (`Change` bits), waiting while there are none;
+                 *        it is readable (`io_poll`) when there are. Its handle closed, it ends.
+                 *
+                 * Thread-safe; from a task that may use the VFS.
+                 * @return The handle, or `NotDir`, `NotExist` (another error finding the
+                 *         folder), `NoMem`.
+                 */
+                static Result<FileHandle::Ptr> openFile(StringView path, const Vfs::Context &context);
+
                 /** @brief Implementation (directorywatch.cpp): the storage lock held. */
                 struct Access;
 
