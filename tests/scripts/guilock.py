@@ -2,7 +2,7 @@
 # The GUI classes' lock (devplan/guiprograms.md §10): every line of gui.lock must still be in the
 # schema (sdk/gui/classes.def), unchanged: the classes are userspace ABI, append only. A line
 # the schema has that the lock doesn't is new ABI: append it to the lock (the one edit allowed).
-# And bmds/guiclasses.h must be what the generator writes from the schema.
+# And bmds/guiclasses.h and docs/gui-classes.md must be what the generator writes from the schema.
 #
 #   guilock.py ROOT
 
@@ -34,6 +34,12 @@ def main():
         if open(out, encoding="utf-8").read() != open(os.path.join(root, "sdk/include/bmds/guiclasses.h"),
                                                       encoding="utf-8").read():
             print("sdk/include/bmds/guiclasses.h is out of date: run tools/guigen.py header")
+            failures += 1
+        out = os.path.join(scratch, "gui-classes.md")
+        subprocess.run([sys.executable, gen, "doc", schema, out], check=True)
+        if open(out, encoding="utf-8").read() != open(os.path.join(root, "docs/gui-classes.md"),
+                                                      encoding="utf-8").read():
+            print("docs/gui-classes.md is out of date: run tools/guigen.py doc")
             failures += 1
     print("gui lock: %d problem(s)" % failures)
     return 1 if failures else 0

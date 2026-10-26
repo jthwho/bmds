@@ -718,7 +718,8 @@ with `uint32_t size` (`docs/ABI.md`). Built-in programs (the terminal) use the s
 ones once it exists.
 
 Designed in `guiprograms.md` (2026-10-22): the toolkit as a service, with windows resized, levels
-and an asked close; surfaces stay for games.
+and an asked close; surfaces stay for games. Built (steps 1-9, 2026-10-22 to 10-26): the GUI
+protocol, `docs/gui-protocol.md` (every message) and `docs/gui-classes.md` (the classes).
 
 ## 7. Open questions
 

@@ -1,9 +1,10 @@
 # Wallpaper: a solid color or a tiled pattern behind the desktop
 
-Status: **steps 1-3 done, checked on the board** (2026-10-25; planned the same day with the
+Status: **done, checked on the board** (steps 1-5; 2026-10-25, planned the same day with the
 user). 31 patterns ship; the default is `cubes` (the user's). Since 2026-10-26 the 2D-DMA copies
-the pattern straight from its tile (§6e): faster than the solid color. Fills in `gui.md` G9's "A wallpaper, later, is the same window": the panel's desktop
-window draws it; the window manager doesn't change.
+the pattern straight from its tile (§6e), and the solid color is no longer drawn twice (§6f).
+Fills in `gui.md` G9's "A wallpaper, later, is the same window": the panel's desktop window
+draws it; the window manager doesn't change.
 
 ## 1. Goal
 
@@ -272,8 +273,8 @@ window draws it; the window manager doesn't change.
 3. **The Settings app:** the rows, the Pattern and PatternColors editors, the saved palettes
    (the file, built-in `Palette:` chunks, Save as, Delete, `Current` on a switch), the preview,
    and the folder button.
-4. **Documents:** `gui.md` G9 points here; the roadmap.
-5. **Drawn by the 2D-DMA** (asked 2026-10-26): §6e.
+4. **Documents:** `gui.md` G9 points here; the roadmap. Done (2026-10-26).
+5. **Drawn by the 2D-DMA** (asked 2026-10-26): §6e, and the solid colour's cost found (§6f).
 
 ### 6e. Drawn by the 2D-DMA (2026-10-26)
 
@@ -296,7 +297,20 @@ window draws it; the window manager doesn't change.
 - **On the board:** `win check` 0 wrong for topo 1x and 2x, nebula 4x, scanlines 3x (36 wide),
   hexarmour 3x, hexagons, dots 4x, cubes; the preview drew. Uncovering the whole desktop, the
   window manager's drawing over the rounds that redrew it: **52-58 ms with a pattern, against
-  87-89 ms before** (the CPU making rows), and 66 ms with the solid color, whose wide fills send
-  their color line a descriptor a row (`fillLine()`: at most 1536 bytes, one 1280-pixel row).
-  Rounds where the panel was busy (`Deferred` counted) left the desktop for later and were
-  left out.
+  87-89 ms before** (the CPU making rows), and 66 ms with the solid color. That was put down
+  to its wide fills sending a 1280-pixel line a descriptor a row; wrongly (§6f). Rounds where
+  the panel was busy (`Deferred` counted) left the desktop for later and were left out.
+
+### 6f. The solid color, measured (2026-10-26)
+
+- **`display.fillcost`** (a bench, `BenchQuick`): 1280×692 of an off-screen surface, the scan
+  reading surface 0 meanwhile. `Surface::fill()` batched: **15.1 ms**; `startTile()` from a
+  24 KB tile in PSRAM: 24.0 ms; raw chains from a colour's rows in PSRAM: 24.0 ms whether
+  1280 wide by 12 rows a descriptor or 256-pixel chunks; one internal row a descriptor: 15.1 ms.
+  The 2D-DMA's PSRAM reads cost; its descriptors don't. Solid colour rows in PSRAM (tried first,
+  4 slots of 48 KB) made the desktop slower: 100 ms.
+- **The 66 ms was the desktop drawn twice:** `DesktopWindow::paint()` filled its whole window
+  with the colour, and the icon view then filled its viewport (all but the panel's strip) again.
+  With a pattern it already painted only around the view. Now the colour is filled around the
+  view too: uncovering the desktop **35 ms with the solid colour** (from 66), 53 ms with a
+  pattern; `win check` 0 wrong, a colour change repainted the whole desktop.

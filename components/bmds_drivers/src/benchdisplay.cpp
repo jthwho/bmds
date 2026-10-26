@@ -351,6 +351,93 @@ namespace {
                 return err;
         }
 
+        // Filling a desktop's area (1280x692 of an off-screen surface, the scan reading surface 0
+        // meanwhile): the surface's batched fill and tile, then raw chains from a colour's rows in
+        // PSRAM (whole width, or 256-pixel chunks) and from one row in internal RAM.
+        Error runFillCost(BenchContext &ctx) {
+                constexpr uint16_t W = 1280, H = 692, Y = 28, Band = 256, Chunk = 256;
+                constexpr uint16_t WideRows = 12, ChunkRows = 64, TileW = 256, TileH = 32;
+                const size_t       wideBytes = size_t(W) * WideRows * 3, chunkBytes = size_t(Chunk) * ChunkRows * 3;
+                Surface            s;
+                BlitChain          chain;
+                Error              err = s.start(W, 720, Surface::Buffering::Single);
+                if (err.isOk()) err = s.enableBatching(96, 512, 12 * 1024);
+                if (err.isOk()) err = chain.start(BlitChain::Conversion::None, 96, 1024);
+                auto *wide = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::PsramDma, wideBytes, 128));
+                auto *chunk = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::PsramDma, chunkBytes, 128));
+                auto *row = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, size_t(W) * 3, 64));
+                auto *dst = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::PsramDma, size_t(W) * 720 * 3, 128));
+                if (err.isOk() && (wide == nullptr || chunk == nullptr || row == nullptr || dst == nullptr))
+                        err = Error::NoMem;
+                if (err.isOk()) {
+                        std::memset(wide, 0x40, wideBytes);
+                        std::memset(chunk, 0x40, chunkBytes);
+                        std::memset(row, 0x40, size_t(W) * 3);
+                        (void)esp_cache_msync(wide, wideBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                        (void)esp_cache_msync(chunk, chunkBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                        (void)esp_cache_msync(row, size_t(W) * 3, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                }
+                const Rect area{0, Y, W, H};
+                uint32_t   color = 0x204060;
+                if (err.isOk())
+                        err = timeJob(
+                                ctx, "surface_fill_us",
+                                [&] {
+                                        s.beginBatch();
+                                        return s.fill(area, color ^= 0x102030, TimeoutMs);
+                                },
+                                [&] { return s.endBatch(TimeoutMs); });
+                if (err.isOk())
+                        err = timeJob(
+                                ctx, "surface_tile_us",
+                                [&] {
+                                        const Surface::Tile tile{chunk, size_t(TileW) * 3, TileW, TileH, 1};
+                                        return s.startTile(area, tile, 0, 0, Span<const Rect>(&area, 1), TimeoutMs);
+                                },
+                                [&] { return s.wait(TimeoutMs); });
+                // Raw: the whole area in bands, each one receive descriptor; @p add the bands' sources.
+                const BlitChain::Picture to{dst, W, 720, 3};
+                const auto               raw = [&](const char *metric, auto add) {
+                        return timeJob(
+                                ctx, metric,
+                                [&] {
+                                        Error e;
+                                        for (uint16_t y = Y; e.isOk() && y < Y + H; y += Band) {
+                                                const auto rows =
+                                                        static_cast<uint16_t>(Y + H - y < Band ? Y + H - y : Band);
+                                                e = add(y, rows);
+                                                if (e == Error::Full) {
+                                                        e = chain.run(TimeoutMs);
+                                                        if (e.isOk()) e = add(y, rows);
+                                                }
+                                        }
+                                        return e.isOk() ? chain.submit() : e;
+                                },
+                                [&] { return chain.wait(TimeoutMs); });
+                };
+                if (err.isOk())
+                        err = raw("psram_wide_us", [&](uint16_t y, uint16_t rows) {
+                                return chain.addFill(wide, WideRows, to, 0, y, W, rows);
+                        });
+                if (err.isOk())
+                        err = raw("psram_chunks_us", [&](uint16_t y, uint16_t rows) {
+                                Error e;
+                                for (uint16_t x = 0; e.isOk() && x < W; x += Chunk)
+                                        e = chain.addFill(chunk, ChunkRows, to, x, y, Chunk, rows);
+                                return e;
+                        });
+                if (err.isOk())
+                        err = raw("internal_row_us",
+                                  [&](uint16_t y, uint16_t rows) { return chain.addFill(row, 1, to, 0, y, W, rows); });
+                chain.stop();
+                s.stop();
+                Memory::free(wide);
+                Memory::free(chunk);
+                Memory::free(row);
+                Memory::free(dst);
+                return err;
+        }
+
         // ---- Surface 0, while nothing else has it ----
 
         // Display 0's surface, if it shows and nobody (the desktop) has it.
@@ -700,6 +787,8 @@ BMDS_BENCH_WITH(displayPpaPath, "display.ppa.path", runPixelPath, BenchQuick, Pp
                 "An integer scale's pixel path: the CPU doubling 565 rows, the 2D-DMA widening them (us a frame)")
 BMDS_BENCH_WITH(displayBlitCost, "display.blitcost", runBlitCost, BenchQuick, PpaParams,
                 "A surface's startBlit of 8-row strips, and a cache write-back (us each)")
+BMDS_BENCH(displayFillCost, "display.fillcost", runFillCost, BenchQuick,
+           "A 1280x692 area of an off-screen surface filled: batched, tiled, and raw from PSRAM or internal RAM (us)")
 BMDS_BENCH(displayDraw, "display.draw", runDraw, BenchScreen,
            "The test picture drawn and presented on surface 0 (before the desktop starts)")
 BMDS_BENCH_WITH(displayFill, "display.fill", runFill, BenchScreen, PresentParams,

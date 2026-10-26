@@ -112,8 +112,9 @@ void DesktopWindow::clearPattern() {
         return;
 }
 
-// Around the view (the panel's strip when its window is above): the wallpaper. Painted before
-// the view, so a new desktop color is blended into the pattern first.
+// Around the view (the panel's strip when its window is above): the wallpaper, or the color (the
+// view paints its own; filling under it too drew the desktop twice). Painted before the view, so
+// a new desktop color is blended into the pattern first.
 void DesktopWindow::paint(Painter &painter) {
         const uint32_t desktop = painter.palette().color(Role::Desktop);
         if (_pattern.isValid() && desktop != _desktopColor) {
@@ -121,14 +122,14 @@ void DesktopWindow::paint(Painter &painter) {
                 _pattern.setBackground(desktop);
                 if (!_pattern.isValid() && _view != nullptr) _view->setBackdrop(nullptr); // no memory
         }
-        if (!_pattern.isValid()) {
-                (void)painter.fill(geometry(), desktop);
-                return;
-        }
         Rect   parts[4];
         size_t n = 1;
         parts[0] = geometry();
         if (_view != nullptr) n = subtract(geometry(), _view->geometry(), parts);
+        if (!_pattern.isValid()) {
+                (void)painter.fill(Span<const Rect>(parts, n), desktop);
+                return;
+        }
         for (size_t i = 0; i < n; ++i) (void)_pattern.paint(painter, parts[i]);
         return;
 }
