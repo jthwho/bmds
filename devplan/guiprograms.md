@@ -6,7 +6,8 @@ callbacks; `Screen` for games), 5b (the one-line dialogs, icons from angel's `Im
 example), 5c (a `Canvas` drawn as a `Screen` is, screens' events in `app.run()`, the paint
 example). **Step 6** designed (§14), in three parts: 6a built (settings, processes, the system,
 dates, the folders); 6b built (folders watched, file types, opening files, pads and actions); 6c
-built (players, the mixer, voices, MIDI ports). Next: step 7 (the guide). The user agreed with the shape (2026-10-22): the
+built (players, the mixer, voices, MIDI ports). **Step 7 built** (§15): the guide's lessons
+15-18. Next: step 8 (remote programs). The user agreed with the shape (2026-10-22): the
 toolkit as a service (P1), names (P2), and **a wire protocol in the spirit of X11's** between
 programs and the service (P8), so that applications can also run on another machine. This plan
 revises `gui.md` G1 and fills in `windows.md` §6 ("ABI (later)").
@@ -2066,3 +2067,53 @@ there, and `app.after()`/`app.every()` are the timers.
   - The corpus: `audio.as` (a voice's texts told in order with no audio, the limits, no voices,
     ports, players or mixer on the host).
 - **Size:** angel's text is 1,134,720 bytes (+20.2 KB: `audio.cpp` 20 KB).
+
+## 15. Step 7: the guide (2026-10-25)
+
+§4d planned three lessons; step 6 added the services a beginner reaches for next, so a fourth
+covers them. The lessons follow `scripting.md` §14's form (comments that teach, code that runs
+unchanged, three things to try) and use only what the lessons before them showed.
+- **15. Windows and buttons** (`15-windows.as`): a window with a name box, a hello button, a
+  counter; events and callbacks explained, a callback named and one written in place, Enter in a
+  box, `app.run()` returning when the window closes.
+- **16. A small application** (`16-an-application.as`): a notepad that keeps its text in
+  `dataDir()`, a File menu with shortcuts, a status bar saying whether it's saved, a star in the
+  title, and `ask()` before the close box closes it.
+- **17. Two windows** (`17-two-windows.as`): a to-do list and an "Add a task" window it owns,
+  shown and closed again; the adding window's callbacks change the list's; closing the list ends
+  the program.
+- **18. The computer around your program** (`18-the-system.as`): a clock (`app.every`,
+  `DateTime`) with the free memory, a greeting kept in a `Setting` of the lesson's own
+  (`guide/greeting`, saved when changed), a command run with a `Process` and its lines called
+  back, and a `Voice` saying the time. Its "Try this" names `inZone()`, a voice's speed and pitch,
+  and `AudioPlayer`.
+- **Help and completion** needed nothing: the editor asks `angel --serve` for the API (`api`
+  records), so the new classes, methods and their help come with the runtime (checked:
+  `AudioPlayer`, `FolderWatch`, `Voice.speak`, `Controls.declare`, `Screen.padDown`, `openFile`,
+  `mixer` among the 1,588 records).
+- **Found on the board: F1 on a type showed only `class Voice`.** The editor shows a type's
+  constructors from records named as the type, but angel named them by the factory's function,
+  which AngelScript calls `$beh3`, so no type's constructor was ever found (older than step 6).
+  `printApiRecords()` now names a constructor by its type; F1 on `Voice` shows
+  `Voice@ Voice(const string&in = "")` and its help. Completion skips constructors, so it is
+  unchanged.
+- **Found writing them:** `output` can't be a variable's name (a global function's already),
+  as `args` and `log` before it; lesson 18's box is `results`.
+- **Tried on the board** (the staged angel, the lessons from the PC's tree):
+  - 15: a name typed and Alt+H greeting it, Count clicked twice, the window closed and the count
+    printed.
+  - 16: text typed, Ctrl+S saving it (the file held it), more typed (a star, "Changed"), the
+    lesson started again with the text loaded, the close box asking, Yes saving it. Its data
+    folder was removed after.
+  - 17: Add opening the owned window over the list, a task added with Enter, the window closed
+    and opened again, a task chosen and Done removing it ("1 task"), the list's close ending the
+    program.
+  - 18: the clock ticking with the memory, `ls /` run with its lines in the box, the time said;
+    the greeting left alone, so nothing was saved (`/cfg/sysconf` has no `guide/` line).
+- **Flashed and checked** (2026-10-25): the ROM holds lessons 15-18 and `player.as`; the three
+  board tests pass with the ROM's angel; Help ▸ Guide lists "15. Windows" to "18. The system";
+  lesson 18 shows "No problems"; F1 on `Voice` (after the fix above, flashed again); completion
+  of `v.sp` on a `Voice` offers `speak`.
+- **Tests:** `angel_examples` builds the four with the rest (they have windows, so none runs
+  for its output).
+- **Size:** 11.5 KB of text in the ROM.

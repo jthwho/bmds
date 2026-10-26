@@ -648,6 +648,15 @@ calls). New system calls, if a binding needs one, follow the usual rules.
       again.
   13. Sound: `beep`, `tone`, `play`'s music, `say`, `noteOn`.
   14. Files: saving and loading a high score.
+  15. Windows and buttons: `Window`, `Label`, `LineEdit`, `Button`, a `Box` across, callbacks
+      (named and `function() {...}`), `app.run()` (added with the GUI programs,
+      `guiprograms.md` §14).
+  16. A small application: a menu with shortcuts, a `TextEdit`, a status bar, `dataDir()`,
+      `markSaved()` and `modified`, `ask()` before closing (`onCloseRequested`).
+  17. Two windows: a list and a window for adding to it, shown and closed again, an `owner`;
+      one window's callbacks changing the other.
+  18. The computer around the program: `app.every` with `DateTime`, `system`, a `Setting` of
+      its own saved, a `Process` with its output called back, a `Voice`.
 - **Lesson 1** also says how the guide works: F5, the next lesson, F1, Save As.
 - **Names:** `NN-name.as`, so they sort in order. The menu's text comes from the name:
   `03-asking.as` shows as "3. Asking".

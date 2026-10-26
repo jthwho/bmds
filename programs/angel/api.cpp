@@ -264,7 +264,10 @@ namespace angel {
                         return;
                 }
 
-                void functionRecord(const char *kind, const char *owner, asIScriptFunction *f) {
+                // @p as: the record's name instead of the function's (a constructor's is its type's:
+                // AngelScript names a factory `$beh3`).
+                void functionRecord(const char *kind, const char *owner, asIScriptFunction *f,
+                                    const char *as = nullptr) {
                         if (f == nullptr) return;
                         Text        name;
                         const char *ns = f->GetNamespace();
@@ -272,7 +275,7 @@ namespace angel {
                                 name.appendf("%s.", owner);
                         else if (ns != nullptr && ns[0] != 0)
                                 name.appendf("%s::", ns);
-                        name.append(f->GetName());
+                        name.append(as != nullptr ? as : f->GetName());
                         const char *decl = f->GetDeclaration(true, true, false);
                         record(kind, name.data(), decl, helpOf(decl));
                         return;
@@ -288,7 +291,7 @@ namespace angel {
                         line.appendf("class %s", engine->GetTypeDeclaration(type->GetTypeId(), true));
                         record("type", type->GetName(), line.data(), nullptr);
                         for (asUINT m = 0; m < type->GetFactoryCount(); ++m)
-                                functionRecord("constructor", nullptr, type->GetFactoryByIndex(m));
+                                functionRecord("constructor", nullptr, type->GetFactoryByIndex(m), type->GetName());
                         for (asUINT m = 0; m < type->GetMethodCount(); ++m)
                                 functionRecord("method", type->GetName(), type->GetMethodByIndex(m));
                         for (asUINT p = 0; p < type->GetPropertyCount(); ++p) {

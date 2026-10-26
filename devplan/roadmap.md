@@ -476,7 +476,9 @@ Plan: [`input.md`](input.md).
   `openFile()` (the panel's new `open` service), gamepads and actions on a `Screen` (`controls`),
   Snake steering by actions. 6c done: `AudioPlayer` (decoded files played on a thread, paused,
   sought, tags), `mixer`, `Voice` (speech in the background, each text told when heard),
-  `MidiPort`, the player example. Step 6 done. Next: step 7 (the guide).
+  `MidiPort`, the player example. Step 6 done. Step 7 done: the guide's lessons 15-18 (windows
+  and buttons, a notes application, two windows, the system's services); Help and completion
+  take the new names from `angel --serve`. Next: step 8 (remote programs).
 - [ ] Compiler evaluation (TinyCC RV32 port vs. alternatives) and port.
 - [ ] Assembler/linker producing BMDS executables on the device.
 - [ ] Build the SDK examples on the device.
