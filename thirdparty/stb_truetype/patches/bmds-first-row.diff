@@ -1,0 +1,11 @@
+--- a/stb_truetype.h
++++ b/stb_truetype.h
+@@ -3341,7 +3341,7 @@
+          if (e->y0 != e->y1) {
+             stbtt__active_edge *z = stbtt__new_active(&hh, e, off_x, scan_y_top, userdata);
+             if (z != NULL) {
+-               if (j == 0 && off_y != 0) {
++               if (j == 0) { // BMDS: also at off_y 0 (an edge ending above the bitmap: a glyph outside its box)
+                   if (z->ey < scan_y_top) {
+                      // this can happen due to subpixel positioning and some kind of fp rounding error i think
+                      z->ey = scan_y_top;

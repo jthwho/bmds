@@ -24,6 +24,7 @@ add_subdirectory(${BMDS_ROOT}/components/bmds_drivers ${CMAKE_BINARY_DIR}/bmds_d
 add_subdirectory(${BMDS_ROOT}/components/bmds_audio ${CMAKE_BINARY_DIR}/bmds_audio)
 add_subdirectory(${BMDS_ROOT}/components/bmds_midi ${CMAKE_BINARY_DIR}/bmds_midi)
 add_subdirectory(${BMDS_ROOT}/components/bmds_synth ${CMAKE_BINARY_DIR}/bmds_synth)
+add_subdirectory(${BMDS_ROOT}/components/bmds_fonts ${CMAKE_BINARY_DIR}/bmds_fonts)
 add_subdirectory(${BMDS_ROOT}/components/bmds_speech ${CMAKE_BINARY_DIR}/bmds_speech)
 add_subdirectory(${BMDS_ROOT}/components/bmds_mplayer ${CMAKE_BINARY_DIR}/bmds_mplayer)
 add_subdirectory(${BMDS_ROOT}/components/bmds_sysmon ${CMAKE_BINARY_DIR}/bmds_sysmon)
@@ -87,6 +88,7 @@ add_executable(bmds_host_tests
         memorystream.cpp
         oss.cpp
         ${BMDS_ROOT}/sdk/crt/oss.c
+        fonts.cpp
         game.cpp
         ${BMDS_ROOT}/sdk/game/canvas.c
         ${BMDS_ROOT}/sdk/game/shapes.c
@@ -182,6 +184,8 @@ target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_
         BMDS_IMAGES_DIR="${CMAKE_CURRENT_LIST_DIR}/images"
         BMDS_AUDIO_DIR="${CMAKE_CURRENT_LIST_DIR}/audio"
         BMDS_SYNTH_DIR="${CMAKE_CURRENT_LIST_DIR}/synth"
+        BMDS_FONTS_DIR="${BMDS_ROOT}/thirdparty/plex/fonts"
+        BMDS_FONTS_TEST_DIR="${CMAKE_CURRENT_LIST_DIR}/fonts"
         BMDS_SPEECH_DIR="${BMDS_ROOT}/thirdparty/svox-pico/lang"
         BMDS_COMPAT_DIR="${CMAKE_CURRENT_LIST_DIR}/../compat")
 # The time zone database built from thirdparty/tzdata (devplan/time.md §9), as
@@ -242,7 +246,7 @@ if(Python3_Interpreter_FOUND)
 endif()
 # libbmdsgui's transport is a given fd on the host (devplan/guiprograms.md §8).
 set_source_files_properties(${BMDS_ROOT}/sdk/gui/gui.c PROPERTIES COMPILE_DEFINITIONS BMDS_GUI_HOST)
-target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_bench bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_speech bmds_input bmds_ui bmds_gui bmds_clipboard
+target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_bench bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_fonts bmds_speech bmds_input bmds_ui bmds_gui bmds_clipboard
         bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_settings bmds_panel bmds_imageview bmds_net bmds_lwip)
 bmds_target_options(bmds_host_tests)
 

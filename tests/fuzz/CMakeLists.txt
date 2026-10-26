@@ -137,3 +137,14 @@ target_compile_options(speech_fuzz PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-except
 set_source_files_properties(${BMDS_PICO_SRCS} PROPERTIES COMPILE_OPTIONS "-fwrapv;-w")
 target_link_libraries(speech_fuzz PRIVATE bmds_core)
 target_link_options(speech_fuzz PRIVATE -fsanitize=fuzzer)
+
+# TrueType faces (devplan/fonts.md): bmds_fonts' portable sources, stb_truetype's asserts on.
+set(FONTS ${BMDS_ROOT}/components/bmds_fonts)
+add_executable(fontface_fuzz fontface.cpp ${BMDS_ROOT}/tests/host/hostmemory.cpp ${FONTS}/src/fontface.cpp
+                             ${FONTS}/src/stbtruetype.c)
+target_include_directories(fontface_fuzz PRIVATE ${BMDS_ROOT}/tests/host ${FONTS}/include
+                                                 ${BMDS_ROOT}/thirdparty/stb_truetype)
+target_compile_definitions(fontface_fuzz PRIVATE BMDS_STBTT_ASSERTS)
+target_compile_options(fontface_fuzz PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
+target_link_libraries(fontface_fuzz PRIVATE bmds_core)
+target_link_options(fontface_fuzz PRIVATE -fsanitize=fuzzer)

@@ -23,6 +23,9 @@ the host tests: they run for as long as one lets them.
 - **`syslog_fuzz`:** the system log's text forms (`devplan/logging.md`): a message as any program
   may write it to `/dev/log`, its priority, timestamp and tag taken off and its lines cleaned as
   the kernel does, and the input read as a stamped log line; every view inside the input.
+- **`fontface_fuzz`:** TrueType faces (`devplan/fonts.md`): open, the names, the character map,
+  kerning, glyphs boxed and rendered sharp and smooth at three sizes, with stb_truetype's asserts
+  on; no fault, no read outside the file, no box larger than allowed, no leak.
 - **`soundfont_fuzz`:** SoundFonts (§22): load, play notes on every preset, the drums and across
   the keyboard with controllers and bends, render; every sample finite, no leak.
 
@@ -40,6 +43,12 @@ tests/fuzz/make-font-seeds.py /mnt/data/tmp/fonts       # small SoundFonts made 
 tests/fuzz/make-midi-seeds.py /mnt/data/tmp/midi        # a MIDI file: notes, chords, drums, tempo
 ./soundfont_fuzz -fork=3 -ignore_crashes=1 -max_len=65536 -max_total_time=3600 \
         -artifact_prefix=/mnt/data/tmp/ /mnt/data/tmp/fcorpus /mnt/data/tmp/fonts
+```
+
+```sh
+tests/fuzz/make-ttf-seeds.py /mnt/data/tmp/ttf          # small fonts cut from IBM Plex (fontTools)
+TMPDIR=/mnt/data/tmp ./fontface_fuzz -fork=3 -ignore_crashes=1 -max_len=16384 -max_total_time=3600 -print_funcs=0 \
+        -artifact_prefix=/mnt/data/tmp/ /mnt/data/tmp/tcorpus /mnt/data/tmp/ttf
 ```
 
 ```sh
@@ -73,5 +82,5 @@ symbolizer), so the target ran ten inputs a second instead of 28,000.
 a good reply and a kiss-o'-death are enough for it to find the rest.
 
 A finding is fixed (a patch in `thirdparty/`, listed in its `README.md`), and the input is kept in
-`tests/host/audio/fuzz/`, `tests/host/synth/fuzz/` (fonts) or `tests/host/synth/fuzz-midi/`, which
-the host tests replay.
+`tests/host/audio/fuzz/`, `tests/host/synth/fuzz/` (fonts), `tests/host/synth/fuzz-midi/` or
+`tests/host/fonts/fuzz/` (TrueType), which the host tests replay.

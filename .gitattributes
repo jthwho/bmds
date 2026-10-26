@@ -4,3 +4,5 @@
 *.png filter=lfs diff=lfs merge=lfs -text
 # The SVOX Pico voices (devplan/speech.md) are kept in Git LFS.
 thirdparty/svox-pico/lang/*.bin filter=lfs diff=lfs merge=lfs -text
+# The fonts (devplan/fonts.md): IBM Plex's TrueType files, as released, kept in Git LFS.
+thirdparty/plex/fonts/*.ttf filter=lfs diff=lfs merge=lfs -text
