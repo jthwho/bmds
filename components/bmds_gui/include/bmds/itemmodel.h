@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/font.h>
 #include <bmds/error.h>
 #include <bmds/icon.h>
 #include <bmds/list.h>
@@ -84,6 +85,15 @@ class ItemModel {
                 virtual Emphasis emphasis(size_t row) const {
                         (void)row;
                         return Emphasis::None;
+                }
+
+                /**
+                 * @brief Returns the font row @p row's name is drawn in (a details or list view's;
+                 *        a font dialog's families each in itself), or none (the default): the view's.
+                 */
+                virtual Font rowFont(size_t row) const {
+                        (void)row;
+                        return Font();
                 }
 };
 

@@ -42,6 +42,8 @@ namespace SettingsTable {
                 Password, ///< A `secret` set through Set Password... (`Password::set()`).
                 Pattern,  ///< The desktop's pattern: a grid of them, each drawn (`devplan/wallpaper.md` §4f).
                 PatternColors, ///< Its colors, and its palettes saved and recalled.
+                Font,          ///< A font's name as a `FontButton` (its dialog: every family).
+                MonoFont,      ///< As `Font`, fixed-width families only.
         };
 
         /** @brief A row's flags. */

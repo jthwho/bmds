@@ -320,12 +320,13 @@ void PatternChooser::choose(size_t index) {
 
 void PatternChooser::mousePressed(const WindowManager::MouseEvent &event) {
         if (event.button != PointerEvent::Left) return;
-        setFocus();
+        // Which one, before anything may move it.
         const Rect &g = geometry();
-        if (event.x < g.x || event.y < g.y) return;
-        const size_t col = size_t(event.x - g.x) / CellWidth, row = size_t(event.y - g.y) / CellHeight;
-        if (col >= columns(g.width)) return;
-        choose(row * columns(g.width) + col);
+        const bool   inside = event.x >= g.x && event.y >= g.y;
+        const size_t col = inside ? size_t(event.x - g.x) / CellWidth : 0;
+        const size_t index = inside ? size_t(event.y - g.y) / CellHeight * columns(g.width) + col : SIZE_MAX;
+        setFocus();
+        if (inside && col < columns(g.width)) choose(index);
         return;
 }
 

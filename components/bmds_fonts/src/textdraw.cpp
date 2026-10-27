@@ -23,6 +23,20 @@ namespace {
         constexpr int    Chunk = 512;
         constexpr size_t Band = 2048;
 
+        // Where a TrueType glyph at @p pen (1/64 px from the line's start) is drawn: smoothed, at the
+        // nearest phase (FontFace::Phases a pixel) from its pixel; sharp, at the nearest pixel.
+        struct Landing {
+                        int     x = 0;
+                        uint8_t phase = 0;
+        };
+
+        Landing landing(int64_t pen, bool sharp) {
+                static_assert(FontFace::Phases == 4, "quarters: 16/64 px each");
+                if (sharp) return Landing{int((pen + 32) >> 6), 0};
+                const int64_t q = (pen + 8) >> 4; // the pen in quarters, rounded (floored below 0)
+                return Landing{int(q >> 2), uint8_t(q & 3)};
+        }
+
         // A glyph of the batch where it lands: its cached coverage, or a bitmap font's.
         struct Piece {
                         const GlyphCache::Glyph *cached = nullptr;
@@ -107,16 +121,25 @@ namespace {
                         }
                         size_t j = i;
                         while (j < d.count && d.batch[j].bitmap == nullptr && d.batch[j].faceIndex == p.faceIndex) ++j;
+                        const bool               sharp = d.depth == FontFace::Depth::Mono;
                         uint16_t                 ids[Batch];
+                        uint8_t                  phases[Batch];
+                        int                      xs[Batch];
                         const GlyphCache::Glyph *found[Batch];
-                        for (size_t k = i; k < j; ++k) ids[k - i] = uint16_t(d.batch[k].glyph);
+                        for (size_t k = i; k < j; ++k) {
+                                const Landing at = landing(d.batch[k].pen, sharp);
+                                ids[k - i] = uint16_t(d.batch[k].glyph);
+                                phases[k - i] = at.phase;
+                                xs[k - i] = at.x;
+                        }
                         (void)cache.lookup(p.faceIndex, Span<const uint16_t>(ids, j - i), size, d.depth, bold,
-                                           Span<const GlyphCache::Glyph *>(found, j - i));
+                                           Span<const GlyphCache::Glyph *>(found, j - i),
+                                           Span<const uint8_t>(phases, j - i));
                         for (size_t k = i; k < j; ++k) {
                                 const GlyphCache::Glyph *g = found[k - i];
                                 if (g == nullptr && d.error.isOk()) {
-                                        auto [made, err] =
-                                                cache.acquire(p.faceIndex, *p.face, ids[k - i], size, d.depth, bold);
+                                        auto [made, err] = cache.acquire(p.faceIndex, *p.face, ids[k - i], size,
+                                                                         d.depth, bold, phases[k - i]);
                                         if (err.isError())
                                                 d.error = err;
                                         else
@@ -126,7 +149,7 @@ namespace {
                                 piece.placed = &d.batch[k];
                                 piece.cached = g;
                                 if (g != nullptr) {
-                                        piece.x0 = d.x + d.batch[k].x + g->x;
+                                        piece.x0 = d.x + xs[k - i] + g->x;
                                         piece.y0 = d.baseline + g->y;
                                         piece.width = g->width;
                                         piece.height = g->height;

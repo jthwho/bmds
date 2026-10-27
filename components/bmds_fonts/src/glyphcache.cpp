@@ -76,9 +76,12 @@ GlyphCache::~GlyphCache() {
         Memory::free(_kern);
 }
 
-uint64_t GlyphCache::keyOf(uint16_t faceId, uint16_t glyph, unsigned pixelSize, FontFace::Depth depth, bool bold) {
+static_assert(FontFace::Phases <= 4, "a key holds two bits of phase");
+
+uint64_t GlyphCache::keyOf(uint16_t faceId, uint16_t glyph, unsigned pixelSize, FontFace::Depth depth, bool bold,
+                           unsigned phase) {
         return uint64_t(faceId) << 32 | uint64_t(glyph) << 16 | uint64_t(pixelSize & 0xff) << 8 |
-               (depth == FontFace::Depth::Gray4 ? 1u : 0u) | (bold ? 2u : 0u);
+               uint64_t(phase & 3u) << 2 | (depth == FontFace::Depth::Gray4 ? 1u : 0u) | (bold ? 2u : 0u);
 }
 
 bool GlyphCache::prepareSlow() {
@@ -195,9 +198,10 @@ void GlyphCache::setBudget(size_t budgetBytes) {
 }
 
 Result<const GlyphCache::Glyph *> GlyphCache::acquire(uint16_t faceId, const FontFace &face, uint16_t glyph,
-                                                      unsigned pixelSize, FontFace::Depth depth, bool bold) {
+                                                      unsigned pixelSize, FontFace::Depth depth, bool bold,
+                                                      unsigned phase) {
         if (!prepare()) return makeError<const Glyph *>(Error::NoMem);
-        const uint64_t key = keyOf(faceId, glyph, pixelSize, depth, bold);
+        const uint64_t key = keyOf(faceId, glyph, pixelSize, depth, bold, phase);
         uint8_t        curve[256];
         bool           hasCurve = false;
         {
@@ -220,7 +224,7 @@ Result<const GlyphCache::Glyph *> GlyphCache::acquire(uint16_t faceId, const Fon
                 ++_failures;
                 return makeError<const Glyph *>(err);
         };
-        auto [box, berr] = face.box(glyph, pixelSize);
+        auto [box, berr] = face.box(glyph, pixelSize, phase);
         if (berr.isError()) return fail(berr);
         const size_t   stride = box.stride(depth);
         const uint16_t width = box.width == 0 ? 0 : static_cast<uint16_t>(box.width + (bold ? 1 : 0));
@@ -232,7 +236,7 @@ Result<const GlyphCache::Glyph *> GlyphCache::acquire(uint16_t faceId, const Fon
                 if (work == nullptr) work = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, box.workBytes()));
                 if (work == nullptr) return fail(Error::NoMem);
                 if (Error rerr = face.render(glyph, pixelSize, depth, box, Span<uint8_t>(work, box.workBytes()),
-                                             hasCurve ? curve : nullptr);
+                                             hasCurve ? curve : nullptr, phase);
                     rerr.isError()) {
                         Memory::free(work);
                         return fail(rerr);
@@ -280,13 +284,13 @@ Result<const GlyphCache::Glyph *> GlyphCache::acquire(uint16_t faceId, const Fon
 }
 
 size_t GlyphCache::lookup(uint16_t faceId, Span<const uint16_t> glyphs, unsigned pixelSize, FontFace::Depth depth,
-                          bool bold, Span<const Glyph *> out) {
+                          bool bold, Span<const Glyph *> out, Span<const uint8_t> phases) {
         size_t found = 0;
         for (size_t i = 0; i < out.size(); ++i) out[i] = nullptr;
         if (_buckets == nullptr) return 0;
         Mutex::Locker lock(_mutex, WaitForever);
         for (size_t i = 0; i < glyphs.size() && i < out.size(); ++i) {
-                Entry *e = find(keyOf(faceId, glyphs[i], pixelSize, depth, bold));
+                Entry *e = find(keyOf(faceId, glyphs[i], pixelSize, depth, bold, i < phases.size() ? phases[i] : 0));
                 if (e == nullptr) continue;
                 if (e->pins.fetch_add(1, std::memory_order_relaxed) == 0)
                         _pinned.fetch_add(1, std::memory_order_relaxed);

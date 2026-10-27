@@ -144,8 +144,9 @@ class Painter {
                  *        a 4-pixel column, the line height), smoothed as `Tools::smooth` says (`devplan/fonts.md` §4d,
                  *        Opaque). A bitmap font at its own size takes `GlyphRenderer`'s path;
                  *        the rest is blended into the strip a piece at a time, in bands of its
-                 *        rows. Nothing is read back.
-                 * @return As the bitmap font's `text()`.
+                 *        rows. Nothing is read back. @p x may be off a 4-pixel column: the box
+                 *        then starts on the column left of it, @p bg in the pixels between.
+                 * @return The first error so far.
                  * @hotpath
                  */
                 Error text(int x, int y, StringView utf8, const Font &font, uint32_t fg, uint32_t bg,

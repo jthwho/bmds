@@ -8,6 +8,7 @@
  * A toolkit window on the window manager (devplan/gui.md §4b).
  */
 
+#include <atomic>
 #include <cstring>
 #include <bmds/guiapplication.h>
 #include <bmds/guiwindow.h>
@@ -19,6 +20,10 @@ namespace {
 
         using Role = WindowPalette::Role;
         using Type = GuiApplication::Event::Type;
+
+        // The window handling a press: the focus it gives isn't revealed (one at a time is enough;
+        // another application's press at once only scrolls as any focus would).
+        constinit std::atomic<const GuiWindow *> pressing{nullptr};
 
 } // namespace
 
@@ -166,6 +171,7 @@ void GuiWindow::setFocusWidget(Widget *widget) {
         if (old != nullptr) old->focusOut();
         if (widget == nullptr || _focus != widget) return;
         widget->focusIn();
+        if (pressing.load(std::memory_order_relaxed) == this) return; // clicked: it shows, under the pointer
         for (Widget *p = widget->parent(); p != nullptr && _focus == widget; p = p->parent()) p->childFocused(*widget);
         return;
 }
@@ -668,6 +674,7 @@ void GuiWindow::mouse(const WindowManager::MouseEvent &event) {
                         _app.hideToolTip();
                         Widget *w = widgetAt(event.x, event.y);
                         if (_grab == nullptr) _grab = w;
+                        pressing.store(this, std::memory_order_relaxed); // the focus it gives isn't revealed
                         if (w != this && w->isFocusable() && w->isEnabled()) setFocusWidget(w);
                         if (_hover != w && _hover != nullptr) _hover->mouseLeft();
                         _hover = w;
@@ -681,6 +688,9 @@ void GuiWindow::mouse(const WindowManager::MouseEvent &event) {
                                         taken = c->askInputHook(ask);
                         }
                         if (!taken && w->isEnabled()) w->mousePressed(event);
+                        // Compared only: the press may have closed the window.
+                        const GuiWindow *self = this;
+                        (void)pressing.compare_exchange_strong(self, nullptr, std::memory_order_relaxed);
                         break;
                 }
                 case MType::Release: {

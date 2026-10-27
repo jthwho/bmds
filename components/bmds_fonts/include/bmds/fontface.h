@@ -77,6 +77,13 @@ class FontFace {
                 /** @brief The largest pixel size drawn. */
                 static constexpr unsigned MaxPixelSize = 255;
 
+                /**
+                 * @brief The places a glyph is rendered at within a pixel (a quarter apart): a
+                 *        line's glyphs land where their advances put them, not each rounded to a
+                 *        pixel, which spaces a small size's letters unevenly.
+                 */
+                static constexpr unsigned Phases = 4;
+
                 /** @brief The longest family or style name kept, in bytes (UTF-8). */
                 static constexpr size_t MaxName = 63;
 
@@ -146,11 +153,12 @@ class FontFace {
                 bool hasKerning() const { return _kernLookupCount != 0 || _kern != 0; }
 
                 /**
-                 * @brief Returns @p glyph's box at @p pixelSize.
+                 * @brief Returns @p glyph's box at @p pixelSize, its pen @p phase
+                 *        (`Phases`ths of a pixel) right of the pixel's edge.
                  * @return The box (empty for a glyph with no ink), `OutOfRange` (the
-                 *         glyph or size), or `CorruptData` (a damaged glyph).
+                 *         glyph, size or phase), or `CorruptData` (a damaged glyph).
                  */
-                Result<GlyphBox> box(uint16_t glyph, unsigned pixelSize) const;
+                Result<GlyphBox> box(uint16_t glyph, unsigned pixelSize, unsigned phase = 0) const;
 
                 /**
                  * @brief Renders @p glyph at @p pixelSize into @p out, as `box()` gave
@@ -159,11 +167,11 @@ class FontFace {
                  *        The outline's memory comes from `Internal` (or `Psram` if that
                  *        is short) and is freed before it returns. @p curve, if given,
                  *        maps each pixel's 8-bit coverage before it is reduced to @p depth
-                 *        (the contrast, `GlyphCache::setCurve()`).
+                 *        (the contrast, `GlyphCache::setCurve()`). @p phase as `box()`'s.
                  * @return `Ok`, `BufferTooSmall`, `OutOfRange`, `CorruptData`, `NoMem`.
                  */
                 Error render(uint16_t glyph, unsigned pixelSize, Depth depth, const GlyphBox &box, Span<uint8_t> out,
-                             const uint8_t *curve = nullptr) const;
+                             const uint8_t *curve = nullptr, unsigned phase = 0) const;
 
         private:
                 static constexpr size_t MaxKernLookups = 16;

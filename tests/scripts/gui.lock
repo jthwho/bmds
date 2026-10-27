@@ -341,3 +341,18 @@ property Button.checked Bool RW
 property ToolButton.checked Bool RW
 # 2026-10-26: a widget's font (devplan/fonts.md §6i).
 property Widget.font String RW
+# 2026-10-27: choosing a font (devplan/fonts.md §4i): FontDialog, FontButton.
+class FontButton : Widget Concrete
+class FontDialog : None Concrete
+event FontButton.changed(String) on
+event FontDialog.changed(String) off
+event FontDialog.finished(Bool, String) on
+method FontDialog.open() -> None
+property FontButton.filter Atom RW
+property FontDialog.filter Atom RW
+property FontDialog.font String RW
+property FontDialog.owner Id RW
+property FontDialog.sample String RW
+property FontDialog.title String RW
+values FontButton.filter all monospace scalable
+values FontDialog.filter all monospace scalable

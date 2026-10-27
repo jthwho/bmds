@@ -25,6 +25,7 @@
 #include <bmds/fdtable.h>
 #include <bmds/filedialog.h>
 #include <bmds/fileicons.h>
+#include <bmds/fontdialog.h>
 #include <bmds/folderitemmodel.h>
 #include <bmds/foldermodel.h>
 #include <bmds/formlayout.h>
@@ -129,6 +130,7 @@ namespace {
                         static void numberChanged(void *arg, NumberField &field, int32_t value);
                         static void volumeMoved(void *arg, Slider &slider, int32_t value);
                         static void swatchClicked(void *arg, ColorSwatch &swatch);
+                        static void fontChosen(void *arg, FontButton &button, StringView name);
                         static void colorChanged(void *arg, ColorDialog &dialog, uint32_t rgb);
                         static void colorFinished(void *arg, Dialog &dialog, int result);
                         static void listChanged(void *arg, ListEditor &editor);
@@ -511,7 +513,25 @@ namespace {
                 seek->setChanged(seekMoved, this);
                 seek->setReleased(seekReleased, this);
                 _seekLabel->setMinimumWidth(120);
+                // A font, chosen in the font dialog and shown in itself (devplan/fonts.md §4i).
+                auto *fontRow = Widget::create<BoxLayout>(page, BoxLayout::Direction::Horizontal);
+                if (fontRow == nullptr) return Error::NoMem;
+                fontRow->setSpacing(8);
+                auto *fontLabel = Widget::create<Label>(fontRow, "&Font:");
+                auto *font = Widget::create<FontButton>(fontRow, "IBM Plex Serif 16");
+                if (fontLabel == nullptr || font == nullptr) return Error::NoMem;
+                fontLabel->setMinimumWidth(80);
+                fontLabel->setBuddy(font);
+                font->setChanged(fontChosen, this);
                 return Error::Ok;
+        }
+
+        void WidgetsWindow::fontChosen(void *arg, FontButton &, StringView name) {
+                auto *self = static_cast<WidgetsWindow *>(arg);
+                char  text[96];
+                std::snprintf(text, sizeof(text), "Font: %.*s", int(name.size()), name.data());
+                self->status(text);
+                return;
         }
 
         void WidgetsWindow::comboChanged(void *arg, ComboBox &box, int index) {

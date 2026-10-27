@@ -1331,6 +1331,14 @@ TEST_CASE("SliderModel: a signed range, steps, and the handle's place both ways"
         CHECK(m.stepPage(-10));
         CHECK(m.value() == -61);
         CHECK_FALSE(m.step(-1));
+        // The wheel: three steps a notch, a page at most.
+        CHECK(m.wheel(2));
+        CHECK(m.value() == -55);
+        m.setSteps(1, 2);
+        CHECK(m.wheel(1));
+        CHECK(m.value() == -53);
+        m.setSteps(1, 6);
+        (void)m.setValue(-61);
         // Horizontal: the minimum at the start. A 72-pixel slider, an 11-pixel handle: 61 to travel.
         CHECK(m.handleStart(72, 11) == 0);
         (void)m.setValue(0);

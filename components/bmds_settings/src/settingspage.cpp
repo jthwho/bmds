@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <bmds/colordialog.h>
+#include <bmds/fontdialog.h>
 #include <bmds/combobox.h>
 #include <bmds/detailsview.h>
 #include <bmds/formlayout.h>
@@ -133,6 +134,9 @@ EditorSet::Binding *EditorSet::add(FormLayout &form, SysConf::Id id, const Row &
                 b.kind = Kind::Pattern;
         } else if (row.editor == SettingsTable::Editor::PatternColors && b.type == Config::Type::String) {
                 b.kind = Kind::PatternColors;
+        } else if ((row.editor == SettingsTable::Editor::Font || row.editor == SettingsTable::Editor::MonoFont) &&
+                   b.type == Config::Type::String) {
+                b.kind = Kind::Font;
         } else if (row.editor == SettingsTable::Editor::Slider && b.type == Config::Type::Int) {
                 b.kind = Kind::Slider;
         } else if (b.type == Config::Type::Bool) {
@@ -218,6 +222,13 @@ EditorSet::Binding *EditorSet::add(FormLayout &form, SysConf::Id id, const Row &
                         break;
                 }
                 case Kind::Color: b.editor = Widget::create<ColorSwatch>(field); break;
+                case Kind::Font: {
+                        auto *font = Widget::create<FontButton>(field);
+                        b.editor = font;
+                        if (font != nullptr && row.editor == SettingsTable::Editor::MonoFont)
+                                font->setFilter(FontDialog::Filter::Monospace);
+                        break;
+                }
                 case Kind::Secret: {
                         // The password's: Set Password... asks for it; another secret can only be removed.
                         if (row.editor == SettingsTable::Editor::Password)
@@ -303,6 +314,7 @@ EditorSet::Binding *EditorSet::add(FormLayout &form, SysConf::Id id, const Row &
                         break;
                 }
                 case Kind::Color: static_cast<ColorSwatch *>(bound.editor)->setClicked(swatchClicked, &bound); break;
+                case Kind::Font: static_cast<FontButton *>(bound.editor)->setChanged(fontChosen, &bound); break;
                 case Kind::Secret:
                         if (bound.editor != bound.aside)
                                 static_cast<Button *>(bound.editor)->setClicked(buttonClicked, &bound);
@@ -335,6 +347,9 @@ void EditorSet::showSlider(Binding &b, int32_t value) {
 }
 
 void EditorSet::marks(Binding &b) {
+        // Not while a slider is dragged: the buttons would narrow it under the pointer, which moves
+        // it to another value, which may take them away again. Shown when it is let go.
+        if (b.kind == Kind::Slider && static_cast<Slider *>(b.editor)->isDragging()) return;
         SysConf::Info info;
         const bool    changed = SysConf::info(b.id, info).isOk() && info.isChanged();
         if (b.save->isVisible() == changed) return;
@@ -383,6 +398,11 @@ void EditorSet::load(Binding &b) {
                         break;
                 }
                 case Kind::Color: static_cast<ColorSwatch *>(b.editor)->setColor(Config::toColor(v)); break;
+                case Kind::Font: {
+                        auto *font = static_cast<FontButton *>(b.editor);
+                        if (font->fontName() != v) (void)font->setFontName(v);
+                        break;
+                }
                 case Kind::Secret: {
                         const bool set = !v.isEmpty();
                         b.aside->setText(set ? "Set" : "None");
@@ -555,6 +575,12 @@ void EditorSet::listChanged(void *arg, ListEditor &editor) {
 void EditorSet::listAdd(void *arg, ListEditor &) {
         auto *b = static_cast<Binding *>(arg);
         b->set->_window.addFolder(b->id, labelOf(*b));
+        return;
+}
+
+void EditorSet::fontChosen(void *arg, FontButton &, StringView name) {
+        auto *b = static_cast<Binding *>(arg);
+        b->set->commit(*b, name, Apply::AndSave);
         return;
 }
 

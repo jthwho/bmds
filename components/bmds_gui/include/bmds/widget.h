@@ -446,7 +446,9 @@ class Widget {
 
                 /**
                  * @brief @p widget, inside it, became the focus widget: told to each
-                 *        of its parents, innermost first (a `ScrollView` shows it).
+                 *        of its parents, innermost first (a `ScrollView` shows it). Not told
+                 *        for a click's focus: what was clicked shows already, and moving it
+                 *        would put another under the pointer before the press is handled.
                  */
                 virtual void childFocused(Widget &widget) { (void)widget; }
 

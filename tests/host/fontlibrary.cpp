@@ -540,6 +540,69 @@ namespace {
 
 } // namespace
 
+TEST_CASE("Glyphs at quarter-pixel phases: rendered shifted, kept apart, placed by the pen") {
+        const std::vector<uint8_t> data = load("IBMPlexSans-Regular.ttf");
+        FontFace                   face;
+        REQUIRE(face.open(ByteSpan(data.data(), data.size())) == Error::Ok);
+        GlyphCache       cache(256 * 1024);
+        const uint16_t   l = face.glyphIndex('l');
+        std::vector<int> centers;
+        for (unsigned phase = 0; phase < FontFace::Phases; ++phase) {
+                auto [box, err] = face.box(l, 13, phase);
+                REQUIRE(err == Error::Ok);
+                std::vector<uint8_t> rows(box.workBytes());
+                REQUIRE(face.render(l, 13, FontFace::Depth::Gray4, box, Span<uint8_t>(rows.data(), rows.size()),
+                                    nullptr, phase) == Error::Ok);
+                // The stem's middle row's ink centre, in 1/16 px from the pen.
+                const unsigned y = box.height / 2;
+                unsigned       sum = 0, weight = 0;
+                for (unsigned x = 0; x < box.width; ++x) {
+                        const uint8_t  b = rows[y * box.stride(FontFace::Depth::Gray4) + x / 2];
+                        const unsigned g = (x & 1) != 0 ? b & 0x0f : b >> 4;
+                        sum += g * (x * 16 + 8);
+                        weight += g;
+                }
+                REQUIRE(weight > 0);
+                centers.push_back(box.x * 16 + int(sum / weight));
+        }
+        // Each a quarter further right (to a sixteenth, give or take the coverage's rounding).
+        for (size_t i = 1; i < centers.size(); ++i) {
+                CHECK(centers[i] - centers[i - 1] >= 2);
+                CHECK(centers[i] - centers[i - 1] <= 6);
+        }
+        CHECK(face.box(l, 13, FontFace::Phases).error() == Error::OutOfRange);
+
+        // Kept apart in the cache.
+        auto [g0, e0] = cache.acquire(1, face, l, 13, FontFace::Depth::Gray4, false, 0);
+        auto [g2, e2] = cache.acquire(1, face, l, 13, FontFace::Depth::Gray4, false, 2);
+        REQUIRE(e0 == Error::Ok);
+        REQUIRE(e2 == Error::Ok);
+        CHECK(g0 != g2);
+        cache.release(g0);
+        cache.release(g2);
+
+        // A line's glyphs land at their pens' phases: a run of one letter needs several; sharp, one.
+        GlyphCache  lineCache(256 * 1024);
+        HostFiles   files(true);
+        FontLibrary lineLib(lineCache, &files);
+        REQUIRE(lineLib.scan(BMDS_FONTS_DIR) == Error::Ok);
+        Font                 font = open(lineLib, "IBM Plex Sans 13");
+        std::vector<uint8_t> pic(size_t(200) * 20 * 3, 0xff);
+        bmds::TextTarget     t;
+        t.pixels = pic.data();
+        t.format = bmds::TextBlend::Format::Bgr24;
+        t.width = 200;
+        t.height = 20;
+        t.stride = size_t(200) * 3;
+        bmds::TextPaint paint;
+        REQUIRE(bmds::TextDraw::line(t, font, "eeeeeeee", 0, 2, paint, 0, bmds::Simd::Kernel::Scalar).isOk());
+        CHECK(lineCache.stats().entries > 1);
+        const size_t smooth = lineCache.stats().entries;
+        paint.smooth = false;
+        REQUIRE(bmds::TextDraw::line(t, font, "eeeeeeee", 0, 2, paint, 0, bmds::Simd::Kernel::Scalar).isOk());
+        CHECK(lineCache.stats().entries == smooth + 1);
+}
+
 TEST_CASE("TextBlend: coverage combined as alpha, the ramp, every format's blend and fill") {
         using bmds::TextBlend::Format;
         uint32_t seed = 7;

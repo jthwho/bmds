@@ -17,6 +17,7 @@
 #include <new>
 #include <bmds/codeedit.h>
 #include <bmds/colordialog.h>
+#include <bmds/fontdialog.h>
 #include <bmds/combobox.h>
 #include <bmds/detailsview.h>
 #include <bmds/filedialog.h>
@@ -2406,12 +2407,141 @@ namespace {
                 return Ok;
         }
 
+        // ---- FontDialog and FontButton (devplan/fonts.md §4i)
+
+        constexpr const char *FilterNames[] = {"all", "monospace", "scalable"};
+
+        struct FontData {
+                        DialogOwner owner;
+                        FontDialog *dialog = nullptr;
+                        String      title{MemSpace::Psram};
+                        String      font{MemSpace::Psram};
+                        String      sample{MemSpace::Psram};
+                        uint8_t     filter = 0;
+        };
+        void dropFontDialog(GuiObject &o, FontData *d) {
+                dialogOpen(o, d->owner, nullptr);
+                if (d->dialog == nullptr) return;
+                d->dialog->~FontDialog();
+                Memory::free(d->dialog);
+                d->dialog = nullptr;
+                return;
+        }
+        GuiStatus set_FontDialog_title(GuiObject &o, const Value &v) {
+                return dataOf<FontData>(o)->title.assign(v.text).isOk() ? Ok : NoMem;
+        }
+        Value get_FontDialog_title(GuiObject &o) {
+                return Value::string(dataOf<FontData>(o)->title.view());
+        }
+        GuiStatus set_FontDialog_font(GuiObject &o, const Value &v) {
+                if (!v.text.isEmpty() && FontName::parse(v.text).error().isError()) return BadValue;
+                return dataOf<FontData>(o)->font.assign(v.text).isOk() ? Ok : NoMem;
+        }
+        Value get_FontDialog_font(GuiObject &o) {
+                return Value::string(dataOf<FontData>(o)->font.view());
+        }
+        GuiStatus set_FontDialog_owner(GuiObject &o, const Value &v) {
+                return setDialogOwner(o, dataOf<FontData>(o)->owner, v);
+        }
+        Value get_FontDialog_owner(GuiObject &o) {
+                return Value::id(dataOf<FontData>(o)->owner.id);
+        }
+        GuiStatus set_FontDialog_sample(GuiObject &o, const Value &v) {
+                return dataOf<FontData>(o)->sample.assign(v.text).isOk() ? Ok : NoMem;
+        }
+        Value get_FontDialog_sample(GuiObject &o) {
+                return Value::string(dataOf<FontData>(o)->sample.view());
+        }
+        GuiStatus set_FontDialog_filter(GuiObject &o, const Value &v) {
+                const int i = nameIndex(FilterNames, v);
+                if (i < 0) return BadValue;
+                dataOf<FontData>(o)->filter = uint8_t(i);
+                return Ok;
+        }
+        Value get_FontDialog_filter(GuiObject &o) {
+                return Value::atom(GuiAtoms::intern(FilterNames[dataOf<FontData>(o)->filter]));
+        }
+        void fontChanged(void *arg, FontDialog &, StringView name) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const Value v = Value::string(name);
+                o.connection->emit(o, "changed", Args(&v, 1));
+                return;
+        }
+        void fontFinished(void *arg, Dialog &dialog, int result) {
+                auto      &o = *static_cast<GuiObject *>(arg);
+                FontData  *d = dataOf<FontData>(o);
+                const bool accepted = result == FontDialog::Accepted;
+                if (accepted) (void)d->font.assign(static_cast<FontDialog &>(dialog).fontName());
+                dialogOpen(o, d->owner, nullptr);
+                const Value v[] = {Value::boolean(accepted), Value::string(d->font.view())};
+                o.connection->emit(o, "finished", Args(v, 2));
+                return;
+        }
+        GuiStatus call_FontDialog_open(GuiObject &o, Args, Value &) {
+                FontData *d = dataOf<FontData>(o);
+                if (d->dialog != nullptr && d->dialog->isShown()) {
+                        d->dialog->activate();
+                        return Ok;
+                }
+                dropFontDialog(o, d);
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(FontDialog));
+                if (mem == nullptr) return NoMem;
+                d->dialog = ::new (mem) FontDialog(o.connection->application(),
+                                                   d->title.view().isEmpty() ? StringView("Font") : d->title.view());
+                d->dialog->setFilter(FontDialog::Filter(d->filter));
+                if (!d->sample.view().isEmpty()) d->dialog->setSample(d->sample.view());
+                d->dialog->setChanged(fontChanged, &o);
+                d->dialog->setFinished(fontFinished, &o);
+                if (d->dialog->open(d->font.view().isEmpty() ? StringView("ui") : d->font.view()).isError()) {
+                        dropFontDialog(o, d);
+                        return NoMem;
+                }
+                dialogOpen(o, d->owner, d->dialog);
+                return Ok;
+        }
+        void disposeFontDialog(GuiObject &o) {
+                if (o.data != nullptr) dropFontDialog(o, dataOf<FontData>(o));
+                freeData<FontData>(o);
+                return;
+        }
+        GuiStatus create_FontDialog(GuiObject &o, GuiObject *parent) {
+                (void)parent;
+                if (makeData<FontData>(o) == nullptr) return NoMem;
+                o.dispose = disposeFontDialog;
+                return Ok;
+        }
+
+        FontButton *fontButton(GuiObject &o) {
+                return static_cast<FontButton *>(o.widget);
+        }
+        GuiStatus set_FontButton_filter(GuiObject &o, const Value &v) {
+                const int i = nameIndex(FilterNames, v);
+                if (i < 0) return BadValue;
+                fontButton(o)->setFilter(FontDialog::Filter(i));
+                return Ok;
+        }
+        Value get_FontButton_filter(GuiObject &o) {
+                return Value::atom(GuiAtoms::intern(FilterNames[size_t(fontButton(o)->filter())]));
+        }
+        void fontButtonChanged(void *arg, FontButton &, StringView name) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const Value v = Value::string(name);
+                o.connection->emit(o, "changed", Args(&v, 1));
+                return;
+        }
+        GuiStatus create_FontButton(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<FontButton>(o, parent);
+                if (s == Ok) fontButton(o)->setChanged(fontButtonChanged, &o);
+                return s;
+        }
+
         // A dialog's owner, or null (not a dialog).
         DialogOwner *dialogOwnerOf(GuiObject &o) {
                 if (o.data == nullptr) return nullptr;
                 if (isClassNamed(&o, "MessageBox")) return &dataOf<BoxData>(o)->owner;
                 if (isClassNamed(&o, "FileDialog")) return &dataOf<FileData>(o)->owner;
                 if (isClassNamed(&o, "ColorDialog")) return &dataOf<ColorData>(o)->owner;
+                if (isClassNamed(&o, "FontDialog")) return &dataOf<FontData>(o)->owner;
                 return nullptr;
         }
 
@@ -3787,7 +3917,10 @@ namespace {
         // ---- A widget's font (devplan/fonts.md §6i): a role or a name; "" its class's
 
         GuiStatus set_Widget_font(GuiObject &o, const Value &v) {
-                const Error err = o.widget->setFont(v.text);
+                // A font button shows the font's name as well.
+                const Error err = isClassNamed(&o, "FontButton")
+                                          ? static_cast<FontButton *>(o.widget)->setFontName(v.text)
+                                          : o.widget->setFont(v.text);
                 if (err == Error::Invalid) return BadValue;
                 if (err.isError()) return NoMem;
                 o.connection->touched(o.owner);

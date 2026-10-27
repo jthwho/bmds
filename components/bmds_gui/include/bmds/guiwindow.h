@@ -185,7 +185,7 @@ class GuiWindow : public Widget {
                 /**
                  * @brief Sets the widget keys go to (null: none); both are redrawn, the old one
                  *        told `focusOut()`, then the new one `focusIn()` and its parents
-                 *        `childFocused()`.
+                 *        `childFocused()` (not while a press is handled: it is clicked).
                  */
                 void setFocusWidget(Widget *widget);
 

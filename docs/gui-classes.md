@@ -63,6 +63,8 @@ only. What the protocol carries and what the classes mean are in
 | [TrayIcon](#trayicon) | - | yes |
 | [Services](#services) | - | yes |
 | [Shell](#shell) | - | yes |
+| [FontDialog](#fontdialog) | - | yes |
+| [FontButton](#fontbutton) | Widget | yes |
 
 ## Widget
 
@@ -751,3 +753,36 @@ Made by `Create`.
 | `windowClosed` | Int | on |
 | `workAreaChanged` | Rect | on |
 | `keyGrabbed` | Int, Int | on |
+
+## FontDialog
+
+Made by `Create`.
+
+| Property | Tag | Access | Values |
+|---|---|---|---|
+| `title` | String | read, written |  |
+| `font` | String | read, written |  |
+| `owner` | Id | read, written |  |
+| `sample` | String | read, written |  |
+| `filter` | Atom | read, written | `all`, `monospace`, `scalable` |
+
+| Method | Arguments | Result |
+|---|---|---|
+| `open` | none | none |
+
+| Event | Values | Sent |
+|---|---|---|
+| `finished` | Bool, String | on |
+| `changed` | String | off |
+
+## FontButton
+
+Made by `Create`; also has the entries of [Widget](#widget).
+
+| Property | Tag | Access | Values |
+|---|---|---|---|
+| `filter` | Atom | read, written | `all`, `monospace`, `scalable` |
+
+| Event | Values | Sent |
+|---|---|---|
+| `changed` | String | on |

@@ -661,15 +661,15 @@ Error FontFace::checkGlyph(uint16_t glyph, unsigned depth, uint32_t &points) con
         return Error::Ok;
 }
 
-Result<FontFace::GlyphBox> FontFace::box(uint16_t glyph, unsigned pixelSize) const {
-        if (glyph >= _glyphCount || pixelSize < MinPixelSize || pixelSize > MaxPixelSize)
+Result<FontFace::GlyphBox> FontFace::box(uint16_t glyph, unsigned pixelSize, unsigned phase) const {
+        if (glyph >= _glyphCount || pixelSize < MinPixelSize || pixelSize > MaxPixelSize || phase >= Phases)
                 return makeError<GlyphBox>(Error::OutOfRange);
         uint32_t points = 0;
         if (Error err = checkGlyph(glyph, 0, points); err.isError()) return makeError<GlyphBox>(err);
         const float s = scale(pixelSize);
         int         x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-        stbtt_GetGlyphBitmapBoxSubpixel(reinterpret_cast<const stbtt_fontinfo *>(_stb), glyph, s, s, 0.0f, 0.0f, &x0,
-                                        &y0, &x1, &y1);
+        stbtt_GetGlyphBitmapBoxSubpixel(reinterpret_cast<const stbtt_fontinfo *>(_stb), glyph, s, s,
+                                        float(phase) / float(Phases), 0.0f, &x0, &y0, &x1, &y1);
         // A box turned inside out says "nothing here" (Gemelli's compounds of a space): no ink.
         if (x1 < x0 || y1 < y0) return makeResult(GlyphBox{});
         if (uint32_t(x1 - x0) > MaxBoxSide || uint32_t(y1 - y0) > MaxBoxSide || x0 < -int(MaxBoxSide) ||
@@ -686,8 +686,9 @@ Result<FontFace::GlyphBox> FontFace::box(uint16_t glyph, unsigned pixelSize) con
 }
 
 Error FontFace::render(uint16_t glyph, unsigned pixelSize, Depth depth, const GlyphBox &box, Span<uint8_t> out,
-                       const uint8_t *curve) const {
-        if (glyph >= _glyphCount || pixelSize < MinPixelSize || pixelSize > MaxPixelSize) return Error::OutOfRange;
+                       const uint8_t *curve, unsigned phase) const {
+        if (glyph >= _glyphCount || pixelSize < MinPixelSize || pixelSize > MaxPixelSize || phase >= Phases)
+                return Error::OutOfRange;
         if (box.width == 0 || box.height == 0) return Error::Ok;
         if (out.size() < box.workBytes()) return Error::BufferTooSmall;
         uint32_t points = 0;
@@ -707,7 +708,9 @@ Error FontFace::render(uint16_t glyph, unsigned pixelSize, Depth depth, const Gl
         uint8_t *pixels = out.data();
         std::memset(pixels, 0, box.workBytes());
         stbtt__bitmap bitmap{box.width, box.height, box.width, pixels};
-        if (count > 0) stbtt_Rasterize(&bitmap, 0.35f, vertices, count, s, s, 0.0f, 0.0f, box.x, box.y, 1, &context);
+        if (count > 0)
+                stbtt_Rasterize(&bitmap, 0.35f, vertices, count, s, s, float(phase) / float(Phases), 0.0f, box.x, box.y,
+                                1, &context);
         stbtt_FreeShape(&info, vertices);
         if (context.failed) return Error::NoMem;
 

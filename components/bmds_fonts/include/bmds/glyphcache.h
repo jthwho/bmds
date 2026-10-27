@@ -96,21 +96,23 @@ class GlyphCache final : public Memory::Reclaimer {
 
                 /**
                  * @brief Returns @p glyph of @p face (cache id @p faceId) at @p pixelSize
-                 *        and @p depth, @p bold made up (one pixel smeared right), rendered
-                 *        on a miss; pinned until `release()`.
+                 *        and @p depth, @p bold made up (one pixel smeared right), at pen
+                 *        phase @p phase (`FontFace::Phases`), rendered on a miss; pinned until
+                 *        `release()`.
                  * @return The glyph, or `FontFace::box()`'s or `render()`'s error, `NoMem`.
                  */
                 Result<const Glyph *> acquire(uint16_t faceId, const FontFace &face, uint16_t glyph, unsigned pixelSize,
-                                              FontFace::Depth depth, bool bold);
+                                              FontFace::Depth depth, bool bold, unsigned phase = 0);
 
                 /**
                  * @brief Looks up a run of glyphs under one lock (as `acquire()` would, same
-                 *        face, size, depth and boldness): each found is pinned into @p out,
-                 *        a missing one left null for `acquire()` to render.
+                 *        face, size, depth and boldness; each at its phase in @p phases, or 0
+                 *        if it is shorter): each found is pinned into @p out, a missing one
+                 *        left null for `acquire()` to render.
                  * @return How many were found.
                  */
                 size_t lookup(uint16_t faceId, Span<const uint16_t> glyphs, unsigned pixelSize, FontFace::Depth depth,
-                              bool bold, Span<const Glyph *> out);
+                              bool bold, Span<const Glyph *> out, Span<const uint8_t> phases = {});
 
                 /** @brief Unpins a glyph `acquire()` or `lookup()` gave. */
                 void release(const Glyph *glyph);
@@ -146,7 +148,7 @@ class GlyphCache final : public Memory::Reclaimer {
                 };
 
                 static uint64_t keyOf(uint16_t faceId, uint16_t glyph, unsigned pixelSize, FontFace::Depth depth,
-                                      bool bold);
+                                      bool bold, unsigned phase);
                 Entry          *find(uint64_t key) const; // locked
                 void            unlink(Entry *e);         // locked
                 void            pushFront(Entry *e);      // locked

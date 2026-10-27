@@ -1727,3 +1727,46 @@ void ToolBar::set_font(const string&in)
 void ToolButton::set_font(const string&in)
 void TreeView::set_font(const string&in)
 void Widget::set_font(const string&in)
+# 2026-10-27: fonts step 8 (devplan/fonts.md §4i): FontDialog, FontButton.
+FontButton@ FontButton(GuiObject@ = null)
+FontDialog@ FontDialog(GuiObject@ = null)
+FontDialog@ FontDialog(GuiObject@, const string&in)
+GuiObject@ FontButton::opImplCast()
+GuiObject@ FontDialog::opImplCast()
+Rect FontButton::get_geometry() const
+Widget@ FontButton::opImplCast()
+Window@ FontDialog::get_owner() const
+bool FontButton::get_enabled() const
+bool FontButton::get_visible() const
+class FontButton
+class FontDialog
+funcdef void BoolStringCallback(bool, const string&in)
+int FontButton::get_stretch() const
+string FontButton::get_filter() const
+string FontButton::get_font() const
+string FontDialog::get_filter() const
+string FontDialog::get_font() const
+string FontDialog::get_sample() const
+string FontDialog::get_title() const
+string[]@ FontButton::get_dropTypes() const
+void FontButton::destroy()
+void FontButton::onChanged(StringCallback@)
+void FontButton::onContextMenu(IntIntCallback@)
+void FontButton::onDropped(StringStringIntIntCallback@)
+void FontButton::onWheel(IntCallback@)
+void FontButton::setFocus()
+void FontButton::set_dropTypes(const string[]&in)
+void FontButton::set_enabled(bool)
+void FontButton::set_filter(const string&in)
+void FontButton::set_font(const string&in)
+void FontButton::set_stretch(int)
+void FontButton::set_visible(bool)
+void FontDialog::destroy()
+void FontDialog::onChanged(StringCallback@)
+void FontDialog::onFinished(BoolStringCallback@)
+void FontDialog::open()
+void FontDialog::set_filter(const string&in)
+void FontDialog::set_font(const string&in)
+void FontDialog::set_owner(Window@)
+void FontDialog::set_sample(const string&in)
+void FontDialog::set_title(const string&in)

@@ -51,6 +51,7 @@ typedef struct Gallery {
                 uint32_t    tree, files, code, codeState, term;
                 uint32_t    open, saveAs, quitItem, statusItem, aboutItem, fileDialog, saving;
                 uint32_t    ask, answer, colorButton, colorDialog, popupButton, popup, popupItems[3];
+                uint32_t    fontButton, fontDialog, fontChooser;
                 uint32_t    timer, timerButton, ticks;
                 uint32_t    canvas, clearButton;
                 uint32_t    clipboard, clipEdit, clipCopy, clipOffer, clipPaste, clipState, dropTarget;
@@ -472,6 +473,22 @@ static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
                 bmds_color_dialog_open(gui, g->colorDialog);
                 return 1;
         }
+        if (e->source == g->fontButton) {
+                bmds_font_dialog_open(gui, g->fontDialog);
+                return 1;
+        }
+        // A font chosen (the dialog's, or the font button's): the answer written in it.
+        if ((e->source == g->fontDialog && bmds_gui_event_is(gui, e, BMDS_GUI_FONT_DIALOG_FINISHED) && e->count == 2 &&
+             e->values[0].number != 0) ||
+            (e->source == g->fontChooser && bmds_gui_event_is(gui, e, BMDS_GUI_FONT_BUTTON_CHANGED) && e->count == 1)) {
+                const bmds_gui_value_t *v = &e->values[e->count - 1];
+                char                    name[96], text[128];
+                snprintf(name, sizeof(name), "%.*s", (int)v->length, v->text);
+                snprintf(text, sizeof(text), "The font: %s", name);
+                bmds_label_set_text(gui, g->answer, text);
+                bmds_widget_set_font(gui, g->answer, name);
+                return 1;
+        }
         if (e->source == g->canvas) {
                 if (bmds_gui_event_is(gui, e, BMDS_GUI_CANVAS_RESIZED) && e->count == 2) {
                         paintResized(g, (int)e->values[0].number, (int)e->values[1].number);
@@ -750,7 +767,7 @@ int main(void) {
         bmds_item_view_set_icon_image(gui, icons, 5, bigDiamond);
         bmds_splitter_set_position(gui, split, 140);
 
-        // Dialogs: a message box, the colour dialog, a popup menu, a timer
+        // Dialogs: a message box, the colour and font dialogs, a font button, a popup menu, a timer
         const uint32_t dialogs = bmds_tab_page_new(gui, g.tabs);
         bmds_tab_page_set_title(gui, dialogs, "Dialogs");
         bmds_box_set_margin(gui, dialogs, 8);
@@ -762,6 +779,10 @@ int main(void) {
         bmds_button_set_text(gui, g.colorButton, "&Colour...");
         g.popupButton = bmds_button_new(gui, row1);
         bmds_button_set_text(gui, g.popupButton, "&Popup menu");
+        g.fontButton = bmds_button_new(gui, row1);
+        bmds_button_set_text(gui, g.fontButton, "&Font...");
+        g.fontChooser = bmds_font_button_new(gui, row1); // its name drawn in it; a click opens the dialog
+        bmds_widget_set_font(gui, g.fontChooser, "IBM Plex Serif 16");
         g.answer = bmds_label_new(gui, dialogs);
         bmds_label_set_text(gui, g.answer, "No answer yet");
         const uint32_t row2 = bmds_gui_new(gui, "Box", dialogs);
@@ -775,6 +796,9 @@ int main(void) {
         g.colorDialog = bmds_gui_new(gui, "ColorDialog", 0);
         bmds_color_dialog_set_title(gui, g.colorDialog, "Pick a colour");
         bmds_color_dialog_set_color(gui, g.colorDialog, 0x3a6ea5);
+        g.fontDialog = bmds_font_dialog_new(gui, 0);
+        bmds_font_dialog_set_title(gui, g.fontDialog, "Pick a font");
+        bmds_font_dialog_set_font(gui, g.fontDialog, "ui");
         g.popup = bmds_menu_new(gui, g.window);
         static const char *const choices[] = {"&Apple", "&Banana", "&Cherry"};
         for (int i = 0; i < 3; ++i) {

@@ -41,11 +41,23 @@ class SliderModel {
                 /** @brief Sets the value, kept in range. @return True if it changed. */
                 bool setValue(int64_t value);
 
-                /** @brief Sets a step (arrows, the wheel) and a page (Page Up, Page Down); at least 1. */
+                /** @brief A wheel notch's steps (`wheel()`), as Qt's. */
+                static constexpr int32_t WheelSteps = 3;
+
+                /** @brief Sets a step (the arrows) and a page (Page Up, Page Down); at least 1. */
                 void setSteps(int32_t step, int32_t page);
 
                 /** @brief Moves by @p steps steps. @return True if it changed. */
                 bool step(int steps) { return setValue(int64_t(_value) + int64_t(steps) * _step); }
+
+                /**
+                 * @brief Moves by @p notches of the wheel: `WheelSteps` steps each, a page at
+                 *        most (a step of 1 in 100 would barely show). @return True if it changed.
+                 */
+                bool wheel(int notches) {
+                        const int64_t by = int64_t(_step) * WheelSteps < _page ? int64_t(_step) * WheelSteps : _page;
+                        return setValue(int64_t(_value) + int64_t(notches) * by);
+                }
 
                 /** @brief Moves by @p pages pages. @return True if it changed. */
                 bool stepPage(int pages) { return setValue(int64_t(_value) + int64_t(pages) * _page); }

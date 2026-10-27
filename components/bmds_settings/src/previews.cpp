@@ -5,13 +5,16 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * Previews of the color settings on real-looking elements (devplan/controlpanel.md §12).
+ * Previews of the color settings on real-looking elements (devplan/controlpanel.md §12): the
+ * window manager's in the fonts set now too.
  */
 
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
 #include <bmds/bitmapfont.h>
+#include <bmds/glyphrenderer.h>
+#include <bmds/windowstack.h>
 #include <bmds/patternfiles.h>
 #include <bmds/sysconf.h>
 
@@ -53,9 +56,8 @@ namespace {
                 };
         } // namespace P
 
-        constexpr uint16_t Cell = 8;    // unscii-16's cell
-        constexpr uint16_t Line = 16;   // and its height
-        constexpr uint16_t TitleH = 18; // a preview window's title bar
+        constexpr uint16_t Cell = 8;  // unscii-16's cell (the terminal's)
+        constexpr uint16_t Line = 16; // and its height
 
         uint16_t col(uint32_t x) {
                 return static_cast<uint16_t>((x + 3) & ~3u); // text on 4-pixel columns
@@ -131,6 +133,46 @@ namespace {
 
 // ---- PalettePreview
 
+namespace {
+
+        using Frame = WindowFrame;
+
+        constexpr uint16_t Pad = 6;          // the client's content from its edges, and between rows
+        constexpr uint16_t InactiveTop = 10; // the windows' tops
+        constexpr uint16_t ActiveTop = 26;
+        constexpr uint16_t Hang = 10; // how far the tooltip reaches below the active window
+
+        int colDown(int x) {
+                return x & ~3;
+        }
+
+        // A row of @p font's text at the top of @p r, cut to @p r and @p limit.
+        void text(Painter &p, const Rect &r, StringView s, const Font &font, uint32_t fg, uint32_t bg,
+                  const Rect &limit) {
+                const Rect cut = r.intersected(limit);
+                if (cut.isEmpty()) return;
+                const int y = GuiStyle::textTop(r, font);
+                GuiStyle::drawClipped(p, cut,
+                                      [&](Painter &clipped) { (void)clipped.text(r.x, y, s, font, fg, bg, r.width); });
+                return;
+        }
+
+        // The active window's client area, from its top: the labels, the button and field, the item.
+        uint16_t clientHeight(const Font &ui) {
+                const uint16_t line = uint16_t(ui.metrics().lineHeight);
+                return uint16_t(Pad + line + Pad + GuiStyle::buttonHeight(ui) + Pad + line + 4 + Pad + 2);
+        }
+
+        uint16_t activeHeight(const Font &ui) {
+                return Frame::outerHeight(clientHeight(ui), Frame::Standard);
+        }
+
+        uint16_t inactiveHeight(const Font &ui) {
+                return uint16_t(activeHeight(ui) - 24);
+        }
+
+} // namespace
+
 PalettePreview::PalettePreview(Widget *parent) : Widget(parent) {
         reload();
 }
@@ -165,60 +207,115 @@ void PalettePreview::desktop(Painter &p, const Rect &g) {
 }
 
 GuiSize PalettePreview::sizeHint() const {
-        return GuiSize{360, 168};
+        return GuiSize{360, heightForWidth(360)};
 }
 
 uint16_t PalettePreview::heightForWidth(uint16_t) const {
-        return 168;
+        // The active window and the tooltip under it; the inactive one and the desktop's text under it.
+        const Font     ui = font();
+        const uint32_t active = ActiveTop + activeHeight(ui) + Hang + 8;
+        const uint32_t inactive = InactiveTop + inactiveHeight(ui) + 8 + uint32_t(ui.metrics().lineHeight) + 6;
+        return uint16_t(active > inactive ? active : inactive);
 }
 
+// A window as the window manager draws it (WindowFrame's parts, its buttons' glyphs and bevels, the
+// title in the title font, its ink in the bar's middle), in the colors set now.
 void PalettePreview::window(Painter &p, const Rect &r, bool active, const char *title) {
+        using Part = Frame::Part;
         const Rect    &g = geometry();
+        const Frame    f(r, Frame::Standard);
         const uint32_t frame = _c[active ? P::ActiveFrame : P::InactiveFrame];
-        // The frame and title bar, then the client.
-        fill(p, r.x, r.y, r.width, r.height, frame, g);
-        text(p, r.x + 6, r.y + 1, StringView(title), _c[active ? P::ActiveTitle : P::InactiveTitle], frame, g);
-        if (active) {
-                const int bx = int(r.right()) - 2 - 16;
-                fill(p, bx, r.y + 2, 14, 14, _c[P::CloseBox], g);
-                fill(p, bx + 3, r.y + 8, 8, 2, _c[P::CloseMark], g); // a bar for the close mark
-                fill(p, bx - 18, r.y + 2, 14, 14, _c[P::Button], g);
-                fill(p, bx - 15, r.y + 12, 8, 2, _c[P::ButtonMark], g); // minimize's line
+        Rect           edges[4];
+        const size_t   n = f.edges(edges);
+        for (size_t i = 0; i < n; ++i) fill(p, edges[i].x, edges[i].y, edges[i].width, edges[i].height, frame, g);
+        const Rect bar = f.titleBar();
+        fill(p, bar.x, bar.y, bar.width, bar.height, frame, g);
+        struct Box {
+                        Part     part;
+                        size_t   face, mark;
+                        uint32_t icon;
+        };
+        const Box boxes[] = {
+                {Part::Menu, P::Button, P::ButtonMark, IconGlyph::Menu},
+                {Part::Minimize, P::Button, P::ButtonMark, IconGlyph::Minimize},
+                {Part::Maximize, P::Button, P::ButtonMark, IconGlyph::Maximize},
+                {Part::Close, P::CloseBox, P::CloseMark, IconGlyph::Close},
+        };
+        for (const Box &b : boxes) {
+                const Rect br = f.button(b.part);
+                if (br.isEmpty() || !g.contains(br)) continue;
+                TextCell icon;
+                icon.codepoint = b.icon;
+                icon.fg = _c[b.mark];
+                icon.bg = _c[b.face];
+                (void)p.cells(br.x, br.y, Span<const TextCell>(&icon, 1), Fonts::icons16, br.width);
+                bevel(p, br.x, br.y, br.width, br.height, true, _c, g);
         }
-        const Rect in{uint16_t(r.x + 2), uint16_t(r.y + TitleH), uint16_t(r.width - 4),
-                      uint16_t(r.height - TitleH - 2)};
+        const Rect tr = f.title();
+        if (!tr.isEmpty()) {
+                const Font titleFont = GuiStyle::font(FontName::Role::Title);
+                const int  x = col(tr.x);
+                text(p, Rect{uint16_t(x), bar.y, uint16_t(tr.right() > x ? tr.right() - x : 0), bar.height},
+                     StringView(title), titleFont, _c[active ? P::ActiveTitle : P::InactiveTitle], frame, g);
+        }
+        const Rect in = f.client();
         fill(p, in.x, in.y, in.width, in.height, active ? _c[P::Face] : _c[P::Client], g);
         if (!active) return;
         // The face's things: text and disabled text; a button and a field; a selected item.
-        int y = in.y + 6;
-        text(p, in.x + 8, y, "Text", _c[P::FaceText], _c[P::Face], g);
-        text(p, in.x + 56, y, "Disabled", _c[P::DisabledText], _c[P::Face], g);
-        y += 22;
-        bevel(p, in.x + 8, y, 56, 22, true, _c, g);
-        fill(p, in.x + 10, y + 2, 52, 18, _c[P::Face], g);
-        text(p, in.x + 28, y + 3, "OK", _c[P::FaceText], _c[P::Face], g);
-        bevel(p, in.x + 72, y, int(in.width) - 80, 22, false, _c, g);
-        fill(p, in.x + 74, y + 2, int(in.width) - 84, 18, _c[P::FaceHighlight], g);
-        text(p, in.x + 78, y + 3, "Field", _c[P::FaceText], _c[P::FaceHighlight], g);
-        y += 30;
-        fill(p, in.x + 8, y, 104, 18, _c[P::Highlight], g);
-        text(p, in.x + 12, y + 1, "Selected", _c[P::HighlightText], _c[P::Highlight], g);
+        const Font     ui = font();
+        const uint16_t line = uint16_t(ui.metrics().lineHeight), bh = GuiStyle::buttonHeight(ui);
+        const int      left = col(in.x + 8);
+        const Rect     inside = in.intersected(g);
+        int            y = in.y + Pad;
+        const uint16_t textW = uint16_t(col(int(ui.textWidth("Text"))) + 12);
+        text(p, Rect{uint16_t(left), uint16_t(y), textW, line}, "Text", ui, _c[P::FaceText], _c[P::Face], inside);
+        text(p, Rect{uint16_t(left + textW), uint16_t(y), uint16_t(in.right() - (left + textW)), line}, "Disabled", ui,
+             _c[P::DisabledText], _c[P::Face], inside);
+        y += line + Pad;
+        // The button as Button draws it: its text a pad in, centred on its ink.
+        const int bw = col(int(ui.textWidth("OK")) + 2 * GuiStyle::ButtonPad + 3);
+        bevel(p, left, y, bw, bh, true, _c, inside);
+        fill(p, left + 2, y + 2, bw - 4, bh - 4, _c[P::Face], inside);
+        const int okX = col(left + (bw - int(ui.textWidth("OK"))) / 2);
+        text(p, Rect{uint16_t(okX), uint16_t(y + 2), uint16_t(left + bw - 2 - okX), uint16_t(bh - 4)}, "OK", ui,
+             _c[P::FaceText], _c[P::Face], inside);
+        const int fx = col(left + bw + 8), fw = int(in.right()) - 8 - fx;
+        if (fw > 8) {
+                bevel(p, fx, y, fw, bh, false, _c, inside);
+                fill(p, fx + 2, y + 2, fw - 4, bh - 4, _c[P::FaceHighlight], inside);
+                text(p, Rect{uint16_t(col(fx + 4)), uint16_t(y + 2), uint16_t(fw - 8), uint16_t(bh - 4)}, "Field", ui,
+                     _c[P::FaceText], _c[P::FaceHighlight], inside);
+        }
+        y += bh + Pad;
+        const uint16_t sw = uint16_t(col(int(ui.textWidth("Selected item")) + 8 + 3));
+        const Rect     sel{uint16_t(left), uint16_t(y), sw, uint16_t(line + 4)};
+        fill(p, sel.x, sel.y, sel.width, sel.height, _c[P::Highlight], inside);
+        text(p, Rect{uint16_t(left + 4), sel.y, uint16_t(sw - 4), sel.height}, "Selected item", ui,
+             _c[P::HighlightText], _c[P::Highlight], sel.intersected(inside));
         return;
 }
 
 void PalettePreview::paint(Painter &p) {
         const Rect &g = geometry();
         desktop(p, g);
+        const Font     ui = font();
+        const uint16_t line = uint16_t(ui.metrics().lineHeight);
+        // On 4-pixel columns, as windows are: their buttons' glyphs and their text start on them.
         const int w = g.width;
-        window(p, Rect{uint16_t(g.x + 12), uint16_t(g.y + 10), uint16_t(w * 2 / 5), 92}, false, "Inactive");
-        const Rect active{uint16_t(g.x + w / 4), uint16_t(g.y + 26), uint16_t(w * 5 / 8), 118};
+        const int ix = col(g.x + 12), ax = col(g.x + w / 4);
+        window(p, Rect{uint16_t(ix), uint16_t(g.y + InactiveTop), uint16_t(colDown(w * 2 / 5)), inactiveHeight(ui)},
+               false, "Inactive");
+        const Rect active{uint16_t(ax), uint16_t(g.y + ActiveTop), uint16_t(colDown(w * 5 / 8)), activeHeight(ui)};
         window(p, active, true, "Active window");
-        text(p, g.x + 12, g.bottom() - 20, "Desktop", _c[P::DesktopText], _c[P::Desktop], g);
+        text(p, Rect{uint16_t(ix), uint16_t(g.bottom() - line - 6), uint16_t(ax > ix ? ax - ix : 0), line}, "Desktop",
+             ui, _c[P::DesktopText], _c[P::Desktop], g);
         // A tooltip over the active window's corner, the pointer by it.
-        const int tx = int(active.right()) - 72, ty = int(active.bottom()) - 10;
-        fill(p, tx, ty, 72, 20, _c[P::ToolTipText], g);
-        fill(p, tx + 1, ty + 1, 70, 18, _c[P::ToolTip], g);
-        text(p, tx + 4, ty + 2, "Tooltip", _c[P::ToolTipText], _c[P::ToolTip], g);
+        const int tw = col(int(ui.textWidth("Tooltip")) + 8 + 3), th = line + 4;
+        const int tx = col(int(active.right()) - tw), ty = int(active.bottom()) + Hang - th;
+        fill(p, tx, ty, tw, th, _c[P::ToolTipText], g);
+        fill(p, tx + 1, ty + 1, tw - 2, th - 2, _c[P::ToolTip], g);
+        text(p, Rect{uint16_t(tx + 4), uint16_t(ty + 1), uint16_t(tw - 5), uint16_t(th - 2)}, "Tooltip", ui,
+             _c[P::ToolTipText], _c[P::ToolTip], g);
         const int px = tx - 14, py = ty - 14;
         for (int i = 0; i < 11; ++i) {
                 fill(p, px, py + i, 1, 1, _c[P::CursorEdge], g);

@@ -38,6 +38,7 @@ if(COMMAND idf_component_register)
                                     src/filedialog.cpp
                                     src/fileicons.cpp
                                     src/folderitemmodel.cpp
+                                    src/fontdialog.cpp
                                     src/formlayout.cpp
                                     src/furniture.cpp
                                     src/graph.cpp

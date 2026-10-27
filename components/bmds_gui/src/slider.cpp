@@ -128,7 +128,7 @@ void Slider::mouseReleased(const WindowManager::MouseEvent &event) {
 
 bool Slider::wheelTurned(int notches) {
         SliderModel m = _model;
-        (void)m.step(notches); // up: toward the maximum
+        (void)m.wheel(notches); // up: toward the maximum
         userSet(m.value());
         return true;
 }

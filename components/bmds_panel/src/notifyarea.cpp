@@ -179,38 +179,71 @@ NotifyArea::~NotifyArea() {
 
 // ---- Its parts
 
+// [inset][icon gap icon gap ... icon][gap][time][inset], or the other way round; the time alone
+// in the middle. The width is rounded up to a column (icons start on columns): the slack goes
+// between the icons and the time, so both ends have the same room.
 Rect NotifyArea::trayRect() const {
+        const size_t n = icons();
+        if (n == 0) return Rect();
         const Rect     in = Bevel::inside(geometry(), Bevel::Style::Status);
-        const uint16_t w = trayWidth();
-        const uint16_t x = _parts == Parts::ClockTray ? uint16_t(in.right() - w) : in.x;
-        return Rect{x, in.y, w, in.height};
+        const uint16_t w = uint16_t(n * TrayRow::CellWidth);
+        const int      x = _parts == Parts::ClockTray ? int(in.right()) - Inset - (w - Gap) : in.x + Inset;
+        return Rect{uint16_t(column(x)), in.y, w, in.height};
 }
 
 Rect NotifyArea::clockRect() const {
         if (!hasClock()) return Rect();
-        const Rect     in = Bevel::inside(geometry(), Bevel::Style::Status);
-        const uint16_t tray = trayWidth();
-        const uint16_t w = in.width > tray ? uint16_t(in.width - tray) : 0;
-        const uint16_t x = _parts == Parts::TrayClock ? uint16_t(in.x + tray) : in.x;
-        return Rect{x, in.y, w, in.height};
+        const Rect in = Bevel::inside(geometry(), Bevel::Style::Status);
+        const Rect t = trayRect();
+        if (t.isEmpty()) return in;
+        if (_parts == Parts::TrayClock)
+                return t.right() < in.right()
+                               ? Rect{uint16_t(t.right()), in.y, uint16_t(in.right() - t.right()), in.height}
+                               : Rect();
+        return t.x > in.x ? Rect{in.x, in.y, uint16_t(t.x - in.x), in.height} : Rect();
+}
+
+int NotifyArea::clockX() const {
+        const Rect in = Bevel::inside(geometry(), Bevel::Style::Status);
+        const int  tw = int(font().textWidth(_time.view()));
+        if (icons() == 0) return in.x + (int(in.width) - tw) / 2;
+        return _parts == Parts::TrayClock ? int(in.right()) - Inset - tw : in.x + Inset;
 }
 
 int NotifyArea::iconAt(int x) const {
-        if (!hasTray()) return -1;
-        return _tray.row().positionAt(x - trayRect().x - TrayLead);
+        const Rect t = trayRect();
+        if (t.isEmpty()) return -1;
+        return _tray.row().positionAt(x - t.x);
 }
 
 GuiSize NotifyArea::sizeHint() const {
-        const uint16_t edges = uint16_t(2 * Bevel::width(Bevel::Style::Status));
-        return GuiSize{uint16_t(edges + trayWidth() + (hasClock() ? clockWidth() : 0)), buttonHeight()};
+        const size_t n = icons();
+        uint32_t     w = 2u * Bevel::width(Bevel::Style::Status);
+        if (n == 0 && !hasClock()) return GuiSize{uint16_t(w), buttonHeight()}; // an empty tray: its edge
+        w += 2u * Inset;
+        if (n != 0) w += n * TrayRow::CellWidth - Gap;
+        if (hasClock()) w += timeWidth() + (n != 0 ? Gap : 0);
+        w = (w + GuiStyle::Column - 1) & ~uint32_t(GuiStyle::Column - 1);
+        return GuiSize{uint16_t(w), buttonHeight()};
 }
 
-// The time and its room: a character's each side, half of it by the icons (the cells' own edges
-// make up the rest).
-uint16_t NotifyArea::clockWidth() const {
-        const uint16_t outer = Fonts::unscii16.width();
-        const uint16_t near = trayWidth() != 0 ? uint16_t(GuiStyle::Column) : outer;
-        return uint16_t((outer + _textWidth + near + GuiStyle::Column - 1) & ~uint32_t(GuiStyle::Column - 1));
+// Measured when asked, not kept: a restyle lays the row out before this hears of the font.
+uint16_t NotifyArea::timeWidth() const {
+        // Its digits each the widest (a proportional font's differ).
+        uint32_t widest = 0;
+        char     digit = '0';
+        for (char c = '0'; c <= '9'; ++c) {
+                const uint32_t w = font().textWidth(StringView(&c, 1));
+                if (w > widest) {
+                        widest = w;
+                        digit = c;
+                }
+        }
+        char             sample[64];
+        const StringView time = _time.view();
+        if (time.size() > sizeof(sample)) return uint16_t(font().textWidth(time));
+        for (size_t i = 0; i < time.size(); ++i) sample[i] = time[i] >= '0' && time[i] <= '9' ? digit : time[i];
+        return uint16_t(font().textWidth(StringView(sample, time.size())));
 }
 
 Rect NotifyArea::cellOnScreen(size_t position) const {
@@ -219,8 +252,8 @@ Rect NotifyArea::cellOnScreen(size_t position) const {
         const Rect s = w->screenRect();
         if (s.width == 0) return Rect();
         const Rect t = trayRect();
-        return Rect{uint16_t(s.x + t.x + TrayLead + position * TrayRow::CellWidth), uint16_t(s.y + t.y),
-                    TrayRow::CellWidth, t.height};
+        return Rect{uint16_t(s.x + t.x + position * TrayRow::CellWidth), uint16_t(s.y + t.y), TrayRow::CellWidth,
+                    t.height};
 }
 
 // ---- The clock
@@ -245,8 +278,6 @@ Error NotifyArea::configureClock(StringView format, StringView tipFormat, String
         _seconds = f.contains(StringView("%S")) || f.contains(StringView("%T")) || f.contains(StringView("%s")) ||
                    f.contains(StringView("%r"));
         tick();
-        // Wide enough for any time: a sample's width (padded fields keep it).
-        _textWidth = uint16_t(font().textWidth(_time.view()));
         return Error();
 }
 
@@ -318,15 +349,12 @@ void NotifyArea::paint(Painter &painter) {
         drawBevel(painter, g, Bevel::Style::Status); // sunk into the bar
         (void)painter.fill(Bevel::inside(g, Bevel::Style::Status), face);
         if (hasClock()) {
-                // A character's room before it; by the icons, half (their cells' edges are the rest).
-                const Rect     c = clockRect();
-                const uint16_t tw = uint16_t(font().textWidth(_time.view()));
-                const int      x = _parts == Parts::TrayClock && trayWidth() != 0 ? column(c.x + GuiStyle::Column)
-                                   : _parts == Parts::Clock
-                                           ? column(c.x + (c.width > tw ? (c.width - tw) / 2 : 0) + GuiStyle::Column / 2)
-                                           : column(c.x + Fonts::unscii16.width());
-                const int      y = c.y + (c.height - textHeight()) / 2;
-                (void)painter.text(x, y, _time.view(), font(), painter.palette().color(Role::FaceText), face, c.width);
+                const Rect c = clockRect();
+                const int  x = clockX();
+                const int  y = c.y + (c.height - textHeight()) / 2;
+                if (x >= c.x && x < int(c.right()))
+                        (void)painter.text(x, y, _time.view(), font(), painter.palette().color(Role::FaceText), face,
+                                           uint16_t(c.right() - x));
         }
         if (!hasTray()) return;
         const Rect t = trayRect();
@@ -334,7 +362,7 @@ void NotifyArea::paint(Painter &painter) {
         for (size_t p = 0;; ++p) {
                 const TrayRow::Entry *e = _tray.row().shown(p);
                 if (e == nullptr) break;
-                const int   x = column(t.x + TrayLead + int(p * TrayRow::CellWidth));
+                const int   x = t.x + int(p * TrayRow::CellWidth);
                 const int   y = t.y + (t.height - GuiStyle::IconSize) / 2;
                 const Icon  own = e->pixels();
                 const Icon *icon = own.isValid() ? &own : icons.find(TrayProtocol::view(e->icon), GuiStyle::IconSize);

@@ -20,7 +20,7 @@ BMDS_NAMESPACE_BEGIN
  *        (`devplan/gui.md` §4s). A vertical one has its maximum at the top.
  *
  * Drag the handle, or press the groove to bring the handle there and drag
- * it; the wheel moves it a step a notch; the arrows a step, Page Up and Page
+ * it; the wheel moves it three steps a notch (a page at most); the arrows a step, Page Up and Page
  * Down a page, Home and End to the ends. It takes the focus.
  *
  * @par Thread Safety

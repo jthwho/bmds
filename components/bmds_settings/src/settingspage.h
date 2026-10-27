@@ -24,6 +24,7 @@ BMDS_NAMESPACE_BEGIN
 
 class CheckBox;
 class ColorSwatch;
+class FontButton;
 class ComboBox;
 class DetailsView;
 class FormLayout;
@@ -60,6 +61,7 @@ class EditorSet {
                         Mode,          // a choice of modes, and Custom's field
                         Pattern,       // the desktop's patterns as a grid (under the row)
                         PatternColors, // its colors and palettes
+                        Font,          // a font button (its dialog)
                 };
 
                 /** @brief One setting's editor. */
@@ -130,6 +132,7 @@ class EditorSet {
                 static void listChanged(void *arg, ListEditor &editor);
                 static void listAdd(void *arg, ListEditor &editor);
                 static void swatchClicked(void *arg, ColorSwatch &swatch);
+                static void fontChosen(void *arg, FontButton &button, StringView name);
                 static void modeChosen(void *arg, ComboBox &box, int index);
                 static void buttonClicked(void *arg, Button &button);
 

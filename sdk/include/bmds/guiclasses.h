@@ -1298,6 +1298,60 @@ static inline int bmds_widget_get_font(bmds_gui_t *gui, uint32_t id, bmds_gui_va
         return bmds_gui_get_named(gui, id, "font", out);
 }
 
+/* ---- FontDialog */
+/** @brief A new FontDialog under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_font_dialog_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "FontDialog", parent);
+}
+static inline int bmds_font_dialog_set_title(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "title", bmds_gui_string(value));
+}
+static inline int bmds_font_dialog_get_title(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "title", out);
+}
+static inline int bmds_font_dialog_set_font(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "font", bmds_gui_string(value));
+}
+static inline int bmds_font_dialog_get_font(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "font", out);
+}
+static inline int bmds_font_dialog_set_owner(bmds_gui_t *gui, uint32_t id, uint32_t value) {
+        return bmds_gui_set_named(gui, id, "owner", bmds_gui_id(value));
+}
+static inline int bmds_font_dialog_get_owner(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "owner", out);
+}
+static inline int bmds_font_dialog_set_sample(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "sample", bmds_gui_string(value));
+}
+static inline int bmds_font_dialog_get_sample(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "sample", out);
+}
+static inline int bmds_font_dialog_set_filter(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "filter", bmds_gui_atom_value(bmds_gui_atom(gui, value)));
+}
+static inline int bmds_font_dialog_get_filter(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "filter", out);
+}
+static inline int bmds_font_dialog_open(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "open", NULL, 0, NULL);
+}
+#define BMDS_GUI_FONT_DIALOG_FINISHED "finished" /**< FontDialog's event (Bool, String). */
+#define BMDS_GUI_FONT_DIALOG_CHANGED "changed" /**< FontDialog's event (String). */
+
+/* ---- FontButton (of Widget) */
+/** @brief A new FontButton under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_font_button_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "FontButton", parent);
+}
+static inline int bmds_font_button_set_filter(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "filter", bmds_gui_atom_value(bmds_gui_atom(gui, value)));
+}
+static inline int bmds_font_button_get_filter(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "filter", out);
+}
+#define BMDS_GUI_FONT_BUTTON_CHANGED "changed" /**< FontButton's event (String). */
+
 #ifdef __cplusplus
 }
 #endif

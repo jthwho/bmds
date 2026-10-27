@@ -406,3 +406,21 @@ GUI_PROP(ToolButton, checked, Bool, RW)
 /* ---- 2026-10-26 (devplan/fonts.md §6i): a widget's font: a role (ui, mono, title, terminal, with
  * a size: "mono 20") or a name ("IBM Plex Sans 14 bold"); "" is its class's */
 GUI_PROP(Widget, font, String, RW)
+
+/* ---- 2026-10-27 (devplan/fonts.md §4i): choosing a font. A FontButton's font is Widget.font
+ * (its name shown in it); a FontDialog's font is a name or a role, and comes back as a name */
+GUI_CLASS(FontDialog, None, Concrete)
+GUI_PROP(FontDialog, title, String, RW)
+GUI_PROP(FontDialog, font, String, RW)
+GUI_PROP(FontDialog, owner, Id, RW)
+GUI_PROP(FontDialog, sample, String, RW)
+GUI_PROP(FontDialog, filter, Atom, RW)
+GUI_VALUES(FontDialog, filter, all, monospace, scalable)
+GUI_METHOD(FontDialog, open, None)
+GUI_EVENT(FontDialog, finished, On, Bool, String)
+GUI_EVENT(FontDialog, changed, Off, String)
+
+GUI_CLASS(FontButton, Widget, Concrete)
+GUI_PROP(FontButton, filter, Atom, RW)
+GUI_VALUES(FontButton, filter, all, monospace, scalable)
+GUI_EVENT(FontButton, changed, On, String)

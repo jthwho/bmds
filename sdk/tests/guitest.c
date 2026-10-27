@@ -130,7 +130,7 @@ static void describeAll(bmds_gui_t *gui) {
                 {"StatusBar", 1},   {"ItemView", 0}, {"ListView", 1},    {"DetailsView", 1}, {"IconView", 1},
                 {"TreeView", 1},    {"TextEdit", 1}, {"CodeEdit", 1},    {"Terminal", 1},    {"MenuBar", 1},
                 {"Menu", 1},        {"MenuItem", 1}, {"MessageBox", 1},  {"FileDialog", 1},  {"ColorDialog", 1},
-                {"Timer", 1},       {"Image", 1},    {"Canvas", 1},
+                {"Timer", 1},       {"Image", 1},    {"Canvas", 1},      {"FontDialog", 1},  {"FontButton", 1},
         };
         uint32_t parent = 0, creatable = 0;
         int      found = 0;
@@ -637,6 +637,63 @@ static void dropTypesTest(bmds_gui_t *gui, uint32_t window) {
         return;
 }
 
+// A string property's value is @p want.
+static int stringIs(bmds_gui_t *gui, uint32_t id, const char *name, const char *want) {
+        bmds_gui_value_t v;
+        return bmds_gui_get_named(gui, id, name, &v) == 0 && v.length == strlen(want) &&
+               memcmp(v.text, want, v.length) == 0;
+}
+
+// Fonts (devplan/fonts.md §4i, §6i): a widget's own font, a role, its height in a bigger one; a
+// font button; a font dialog's properties, opened and destroyed.
+static void fontTest(bmds_gui_t *gui, uint32_t window) {
+        const uint32_t label = bmds_label_new(gui, window);
+        bmds_label_set_text(gui, label, "Fonts");
+        bmds_gui_sync(gui);
+        bmds_gui_value_t v;
+        CHECK(stringIs(gui, label, "font", ""));
+        CHECK(bmds_widget_get_geometry(gui, label, &v) == 0);
+        const uint32_t before = v.height;
+        bmds_widget_set_font(gui, label, "IBM Plex Serif 40");
+        bmds_gui_sync(gui);
+        CHECK(stringIs(gui, label, "font", "IBM Plex Serif 40"));
+        CHECK(bmds_widget_get_geometry(gui, label, &v) == 0 && v.height > before);
+        bmds_widget_set_font(gui, label, "mono");
+        CHECK(stringIs(gui, label, "font", "mono"));
+        bmds_widget_set_font(gui, label, "IBM Plex Sans 900"); // too big
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_widget_set_font(gui, label, "");
+        CHECK(stringIs(gui, label, "font", ""));
+        bmds_gui_destroy(gui, label);
+        EXPECT_NONE();
+
+        const uint32_t button = bmds_font_button_new(gui, window);
+        bmds_widget_set_font(gui, button, "IBM Plex Mono 13");
+        CHECK(stringIs(gui, button, "font", "IBM Plex Mono 13"));
+        bmds_font_button_set_filter(gui, button, "monospace");
+        CHECK(bmds_font_button_get_filter(gui, button, &v) == 0 && v.tag == BMDS_GUI_ATOM &&
+              strcmp(bmds_gui_atom_name(gui, (uint32_t)v.number), "monospace") == 0);
+        bmds_font_button_set_filter(gui, button, "sideways");
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_gui_destroy(gui, button);
+        EXPECT_NONE();
+
+        const uint32_t dialog = bmds_font_dialog_new(gui, 0);
+        bmds_font_dialog_set_title(gui, dialog, "guitest font");
+        bmds_font_dialog_set_font(gui, dialog, "IBM Plex Sans 14 bold");
+        bmds_font_dialog_set_sample(gui, dialog, "Sample");
+        bmds_font_dialog_set_filter(gui, dialog, "scalable");
+        CHECK(stringIs(gui, dialog, "font", "IBM Plex Sans 14 bold"));
+        CHECK(stringIs(gui, dialog, "sample", "Sample"));
+        bmds_font_dialog_set_font(gui, dialog, "not a font 0 0");
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_font_dialog_open(gui, dialog);
+        bmds_gui_sync(gui);
+        bmds_gui_destroy(gui, dialog); // closed with it, nothing told
+        EXPECT_NONE();
+        return;
+}
+
 // A notification's fields read back, shown (silent, transient, briefly) until it expires, shown
 // again in place and closed.
 static void notificationTest(bmds_gui_t *gui) {
@@ -944,6 +1001,7 @@ int main(void) {
         canvasSurfaceTest(gui, window);
         clipboardTest(gui);
         dropTypesTest(gui, window);
+        fontTest(gui, window);
         notificationTest(gui);
         trayTest(gui);
         servicesTest(gui);

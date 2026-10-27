@@ -1,6 +1,6 @@
 # Fonts: one font library for the desktop, programs and angel
 
-Status: **steps 1-7 done** (2026-10-26/27: §6a, §6c-§6e, §6g-§6i; other fonts tested, §6f); planned the same day with the user (§8). Fills the
+Status: **steps 1-8 done** (2026-10-26/27: §6a, §6c-§6e, §6g-§6j; fixes after, §6k; other fonts tested, §6f); planned the same day with the user (§8). Fills the
 roadmap's "A system font library (planned with the user 2026-10-15)".
 
 ## 1. Goal
@@ -115,8 +115,10 @@ roadmap's "A system font library (planned with the user 2026-10-15)".
 - UTF-8 in, left to right, one codepoint to one glyph (stb_truetype's cmap). No shaping, no
   ligatures, no right-to-left.
 - **Kerning:** stb_truetype's pair adjustments (the `kern` table and GPOS pair positioning).
-- **Positions:** advances and kerning add up in 1/64 pixels so the spacing is right, and each glyph
-  is snapped to a whole pixel. That means one cached render per glyph, not one per sub-pixel offset.
+- **Positions:** advances and kerning add up in 1/64 pixels so the spacing is right. Smoothed, each
+  glyph lands at the nearest quarter pixel (`FontFace::Phases`: up to four cached renders of a
+  glyph, the phase in the cache's key); sharp, at the nearest whole pixel. Snapping smoothed glyphs
+  to whole pixels, as first built, spaced 13-pixel Plex unevenly (§6k).
 - **Metrics** per font: ascent, descent, line height, the widest advance, monospace or not.
   Measuring a string gives its width, how many bytes fit in a width (for eliding and wrapping)
   and its ink box.
@@ -664,6 +666,53 @@ picture, for tests and for looking).
     right.
   - **Not followed live:** the panel's height is set when it starts (a font change shows at
     the next start), and a dialog sized from its hints is the next one opened.
+
+### 6j. Step 8, as built (2026-10-27)
+
+- **`FontDialog`** (`bmds_gui/fontdialog.h`): a search box over the families (each drawn in
+  itself: `ItemModel::rowFont()`, which a details or list view draws a row's name in, cut to the
+  row), the family's styles in order (regular, bold, italic, bold italic: its faces' names, and
+  "Bold" made up where it has none), sizes (21 from 8 to 72, or a bitmap face's multiples) with a
+  field, and a preview in the font. Opened on a name or a role (shown as the font it is now);
+  `fontName()` is what was chosen; `Filter` offers all families, fixed-width ones or TrueType
+  ones; `Changed` for a live preview.
+- **`FontButton`**: a button showing a font's name in that font (its own font); a click opens a
+  `FontDialog`, a font chosen becomes its own and is told to `Changed`.
+- **The GUI protocol:** `FontDialog` (`title`, `font`, `owner`, `sample`, `filter`; `open`;
+  `finished`, `changed`) and `FontButton` (`filter`, `changed`; its font is `Widget.font`), so
+  the SDK's wrappers, the reference, angel and both locks follow. `guitest` covers a widget's
+  font (its height grows in a bigger one, a role, a bad name), a font button and a font dialog
+  opened and destroyed; `guigallery`'s Dialogs tab has Font... and a font button, the answer
+  written in the font chosen.
+- **The Widgets app** (Controls: a font button) and **Settings** (Appearance > Fonts: text,
+  window titles and fixed-width as font buttons, the last offering fixed-width families; smooth
+  text, contrast, the folders, the fallback families, the cache). `font/terminal` isn't placed:
+  the terminal still draws in unscii cells.
+- **Checked on the board:** the dialog from the Widgets app (families in themselves, a family's
+  styles, sizes, the preview following, OK applying it); from Settings, a fixed-width font
+  chosen, saved and shown, then put back to its default; `guitest` passes.
+
+### 6k. Fixes after step 8 (2026-10-27)
+
+- **Glyphs at quarter pixels:** the pens were right but each glyph was drawn at its pen rounded to
+  a pixel, so letters a pixel apart in one place touched in another ("pps" in the panel's Apps).
+  `FontFace::box()` and `render()` take a phase (stb_truetype's x shift), `GlyphCache` keys on
+  it, and `TextDraw` places a smoothed glyph at its pen's nearest quarter; sharp text keeps whole
+  pixels (and one render).
+- **Text at any pixel:** `Painter::text(Font)` may start off a 4-pixel column: the box starts on
+  the column left of it, its background in the pixels between. The panel's clock uses it.
+- **The tray's room:** the same at both ends (the 3 pixels inside the edge the icons had), the
+  icons' 4-pixel gap between them and the clock, the time as wide as it gets (each digit the
+  widest), measured when asked so a font change lays the panel out right. The width's rounding
+  to a column goes between the icons and the time.
+- **Settings:** the palette preview draws the window manager's frames (`WindowFrame`'s parts, the
+  title buttons' glyphs) with the title in the title font and the rest in the toolkit's, its
+  height from them, so it follows the fonts as it follows the colors. A slider's Save and Revert
+  wait for the drag to end (shown at once they narrowed it, which moved the value under the
+  pointer, which could take them away again). A click's focus no longer scrolls a form to show
+  what was clicked (`GuiWindow`: the pattern grid moved under the pointer before the press was
+  placed, choosing another pattern). A wheel notch moves a slider three steps, a page at most
+  (`SliderModel::wheel()`): one step of contrast's 100 didn't show.
 
 ## 7. ABI impact
 

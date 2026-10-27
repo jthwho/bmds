@@ -221,7 +221,9 @@ void DetailsView::paintRows(Painter &painter, const Rect &viewport) {
                                                                     *icon, background);
                                         if (int(row) != editing()) {
                                                 const StringView name = model()->text(row);
-                                                const int        tw = int(font().textWidth(name));
+                                                const Font       own = model()->rowFont(row);
+                                                const Font       nameFont = own.isValid() ? own : font();
+                                                const int        tw = int(nameFont.textWidth(name));
                                                 const int        room =
                                                         width - TextX - CellPad > 0 ? width - TextX - CellPad : 0;
                                                 const int  shown = tw < room ? tw : room;
@@ -230,9 +232,23 @@ void DetailsView::paintRows(Painter &painter, const Rect &viewport) {
                                                                               focus, int(row) == current(), background);
                                                 const uint32_t fg =
                                                         selected && focus ? p.color(Role::HighlightText) : text;
-                                                if (room > 0)
+                                                if (room > 0 && !own.isValid()) {
                                                         (void)painter.text(x + TextX, ty, name, font(), fg, bg,
                                                                            uint16_t(room));
+                                                } else if (room > 0) {
+                                                        // A font of the row's own: its ink box centred, cut to the row.
+                                                        const int nty =
+                                                                y +
+                                                                (rowHeight() - int(GuiStyle::textHeight(nameFont))) / 2;
+                                                        const Rect cell = Rect{uint16_t(x + TextX > 0 ? x + TextX : 0),
+                                                                               uint16_t(y > 0 ? y : 0), uint16_t(room),
+                                                                               rowHeight()}
+                                                                                  .intersected(viewport);
+                                                        GuiStyle::drawClipped(painter, cell, [&](Painter &cut) {
+                                                                (void)cut.text(x + TextX, nty, name, nameFont, fg, bg,
+                                                                               uint16_t(room));
+                                                        });
+                                                }
                                                 if (!selected && focus && int(row) == current())
                                                         focusRect(painter, viewport, bx, y, bw);
                                         }

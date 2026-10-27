@@ -152,14 +152,14 @@ class NotifyArea final : public Widget {
                 static void clockDue(void *arg);
                 bool        hasTray() const { return _parts != Parts::Clock; }
                 bool        hasClock() const { return _parts != Parts::Tray; }
-                // The icons' part: a column's room before the first, then their cells (none: nothing).
-                static constexpr uint16_t TrayLead = GuiStyle::Column;
-                uint16_t                  trayWidth() const {
-                        const uint16_t cells = hasTray() ? _tray.row().width() : 0;
-                        return cells != 0 ? uint16_t(TrayLead + cells) : 0;
-                }
-                Rect trayRect() const;    // in the window
-                Rect clockRect() const;   // in the window
+                // The room inside the edge at either end (an icon's first column, the edge being one
+                // pixel), and between things: the icons' cells' own, and the icons and the clock.
+                static constexpr uint16_t Inset = GuiStyle::Column - 1;
+                static constexpr uint16_t Gap = TrayRow::CellWidth - GuiStyle::IconSize;
+                size_t                    icons() const { return hasTray() ? _tray.row().shownCount() : 0; }
+                Rect                      trayRect() const;    // the icons' cells (a gap after the last), in the window
+                Rect                      clockRect() const;   // the clock's part, in the window
+                int                       clockX() const;      // where its text starts (any pixel)
                 int  iconAt(int x) const; // a window x: the position, or -1
                 void tick();
 
@@ -176,13 +176,12 @@ class NotifyArea final : public Widget {
                 void           *_menuArg = nullptr;
                 // The clock's.
                 static constexpr int ClockHovered = -2; // _hovered: the clock (its tooltip, the date)
-                uint16_t             clockWidth() const;
+                uint16_t             timeWidth() const; // as wide as the time gets, in the font now
                 char                 _format[32] = "%l:%M %p";
                 char                 _tipFormat[64] = "%A, %B %-d, %Y";
                 TimeZone             _zone;
                 bool                 _hasZone = false;
                 bool                 _seconds = false;
-                uint16_t             _textWidth = 0; // the time's, as wide as it gets
                 int                  _clockTimer = -1;
                 String               _time{MemSpace::Psram};
                 String               _date{MemSpace::Psram}; // its tooltip
