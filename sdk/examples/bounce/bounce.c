@@ -110,7 +110,7 @@ static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
                 s->frames_in_second = s->frames;
                 s->second_ns = now;
                 bmds_canvas_fill(c, 0, 0, s->width, 18, background);
-                bmds_canvas_text(c, 4, 1, s->rate, ink, 1);
+                bmds_canvas_text(c, BMDS_GAME_FONT_DEFAULT, 4, 1, s->rate, ink);
         }
 }
 

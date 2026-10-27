@@ -1,0 +1,12 @@
+--- a/stb_truetype.h
++++ b/stb_truetype.h
+@@ -1477,6 +1477,9 @@
+                   // MS/Unicode
+                   info->index_map = cmap + ttULONG(data+encoding_record+4);
+                   break;
++               case STBTT_MS_EID_SYMBOL: // BMDS: a symbol font opens too (its map read by FontFace)
++                  if (info->index_map == 0) info->index_map = cmap + ttULONG(data+encoding_record+4);
++                  break;
+             }
+             break;
+         case STBTT_PLATFORM_ID_UNICODE:

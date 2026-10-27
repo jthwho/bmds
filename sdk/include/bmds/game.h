@@ -38,9 +38,12 @@ extern "C" {
 /** @brief Rectangles of damage a canvas keeps (merged where they meet; more: their bounds). */
 #define BMDS_CANVAS_MAX_DAMAGE 16u
 
-/** @brief A glyph's size, at scale 1. */
+/** @brief The default font's glyphs (unscii 16, `BMDS_GAME_FONT_DEFAULT`): its cell. */
 #define BMDS_GAME_GLYPH_WIDTH 8
 #define BMDS_GAME_GLYPH_HEIGHT 16
+
+/** @brief The font a negative font argument means: unscii 16, the system's bitmap font. */
+#define BMDS_GAME_FONT_DEFAULT (-1)
 
 /** @brief A picture to draw on. Its fields are read freely; changed only through the calls. */
 typedef struct bmds_canvas_t {
@@ -139,15 +142,31 @@ void bmds_canvas_blit(bmds_canvas_t *canvas, int32_t x, int32_t y, const bmds_ga
                       const bmds_rect_t *source);
 
 /**
- * @brief Draws UTF-8 @p text's characters in @p pixel (the background left as it is) from
- *        (@p x, @p y), each glyph @p scale times its size (1 or more): ASCII and Latin-1, `?`
- *        for others. A newline starts a line below at @p x.
+ * @brief Returns a font handle for @p name ("IBM Plex Sans 16 bold", "unscii 32", "ui"; the
+ *        system call `font_open`, devplan/fonts.md): opened the first time, then the same handle
+ *        (up to 16 names kept, a program's 16 fonts; the OS closes them when the program ends).
+ * @return The handle, or `font_open`'s `-errno`.
+ */
+int32_t bmds_game_font(const char *name);
+
+/** @brief Returns unscii at @p scale times its size (1-15: "unscii 32" for 2), as `bmds_game_font()`. */
+int32_t bmds_game_font_scaled(int32_t scale);
+
+/** @brief Returns @p font's line height in pixels (`BMDS_GAME_FONT_DEFAULT`: 16). */
+int32_t bmds_game_line_height(int32_t font);
+
+/**
+ * @brief Draws UTF-8 @p text in font @p font (`BMDS_GAME_FONT_DEFAULT`, or from
+ *        `bmds_game_font()`) and @p pixel over the canvas (the background showing through;
+ *        TrueType smoothed as the system's `font/smooth` says, never on L8), the first line's
+ *        top at (@p x, @p y). A newline starts a line below at @p x. Drawn by the OS
+ *        (`text_draw`), through the system's glyph cache.
  * @return The widest line's width in pixels.
  */
-int32_t bmds_canvas_text(bmds_canvas_t *canvas, int32_t x, int32_t y, const char *text, uint32_t pixel, int32_t scale);
+int32_t bmds_canvas_text(bmds_canvas_t *canvas, int32_t font, int32_t x, int32_t y, const char *text, uint32_t pixel);
 
-/** @brief Returns the widest line of @p text's width at @p scale, in pixels. */
-int32_t bmds_game_text_width(const char *text, int32_t scale);
+/** @brief Returns the widest line of @p text's width in font @p font, in pixels. */
+int32_t bmds_game_text_width(int32_t font, const char *text);
 
 /**
  * @brief Draws @p source of @p image (NULL: all of it; cut to the image) stretched to

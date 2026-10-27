@@ -2799,6 +2799,165 @@ static int expand_test(void) {
 /* Pictures (devplan/images.md §3f): a pattern written as PNG and read back exactly, as JPEG and
    read back near, through an fd and from memory, every pixel format; with FILE (a baseline JPEG the
    codec takes), decoded by the codec into a buffer laid out as image_info says (no copy). */
+/* --- The system's fonts (devplan/fonts.md §4e): the faces, fonts opened every way, metrics,
+   measuring, drawing into each format (clipped), errors, fds closed. */
+
+static int count_ink(const uint8_t *p, size_t n, uint8_t empty) {
+        int ink = 0;
+        for (size_t i = 0; i < n; ++i) ink += p[i] != empty;
+        return ink;
+}
+
+static int font_test(void) {
+        if (!bmds_sys_has(BMDS_SYS_FONT_OPEN)) {
+                printf("fonts: not in this kernel\n");
+                return 0;
+        }
+        // The faces: unscii first, then IBM Plex from /rom.
+        bmds_font_face_t face = {.size = sizeof(face)};
+        CHECK(bmds_font_list(0, &face) == 0);
+        CHECK(strcmp(face.family, "unscii") == 0 && (face.flags & BMDS_FONT_BITMAP) != 0 && face.bitmap_size == 16);
+        uint32_t faces = 1, plex = 0;
+        while (bmds_font_list(faces, &face) == 0) {
+                plex += strncmp(face.family, "IBM Plex", 8) == 0;
+                ++faces;
+        }
+        CHECK(plex >= 6);
+        CHECK(bmds_font_list(faces, &face) == -BMDS_ENOENT);
+        face.size = 2;
+        CHECK(bmds_font_list(0, &face) == -BMDS_EINVAL);
+
+        // By name, by family, by role; what each is.
+        const int32_t sans = bmds_font_open_name("IBM Plex Sans 16 bold");
+        CHECK(sans >= 0);
+        bmds_font_info_t info = {.size = sizeof(info)};
+        CHECK(bmds_font_info(sans, &info) == 0);
+        CHECK(strcmp(info.name, "IBM Plex Sans 16 bold") == 0 && info.pixel_size == 16);
+        CHECK(info.ascent > 0 && info.descent > 0 && info.line_height >= info.ascent + info.descent);
+        CHECK((info.flags & BMDS_FONT_BITMAP) == 0 && (info.style & BMDS_FONT_BOLD) != 0);
+        bmds_font_spec_t spec = {.size = sizeof(spec), .family = "IBM Plex Mono", .pixel_size = 14};
+        const int32_t    mono = bmds_font_open(&spec);
+        CHECK(mono >= 0 && bmds_font_info(mono, &info) == 0 && (info.flags & BMDS_FONT_FIXED) != 0);
+        spec = (bmds_font_spec_t){.size = sizeof(spec), .role = BMDS_FONT_ROLE_TERMINAL};
+        const int32_t term = bmds_font_open(&spec);
+        CHECK(term >= 0 && bmds_font_info(term, &info) == 0 && info.line_height > 0);
+        const int32_t big = bmds_font_open_name("unscii 32");
+        CHECK(big >= 0 && bmds_font_info(big, &info) == 0 && (info.flags & BMDS_FONT_BITMAP) != 0);
+        CHECK(info.pixel_size == 32 && info.line_height == 32);
+
+        // Errors.
+        CHECK(bmds_font_open_name("") == -BMDS_EINVAL);
+        CHECK(bmds_font_open_name("Sans 300") == -BMDS_ERANGE);
+        spec = (bmds_font_spec_t){.size = sizeof(spec), .role = 9};
+        CHECK(bmds_font_open(&spec) == -BMDS_EINVAL);
+        spec = (bmds_font_spec_t){.size = sizeof(spec), .family = "IBM Plex Sans", .style = 0x10};
+        CHECK(bmds_font_open(&spec) == -BMDS_EINVAL);
+        CHECK(bmds_font_open(NULL) == -BMDS_EFAULT);
+        spec = (bmds_font_spec_t){.size = sizeof(spec), .flags = 1, .name = "ui"};
+        CHECK(bmds_font_open(&spec) == -BMDS_EINVAL);
+        CHECK(bmds_font_info(15, &info) == -BMDS_EBADF); // a handle not open (not an fd: 1 is stdout)
+        CHECK(bmds_font_info(-1, &info) == -BMDS_EBADF);
+        CHECK(bmds_font_close(77) == -BMDS_EBADF);
+
+        // Measuring: kerned, to a newline, within a width.
+        bmds_text_extent_t e = {.size = sizeof(e)}, av = {.size = sizeof(av)}, a = {.size = sizeof(a)},
+                           v = {.size = sizeof(v)};
+        CHECK(bmds_text_measure(sans, "AV", 2, 0, &av) == 0);
+        CHECK(bmds_text_measure(sans, "A", 1, 0, &a) == 0 && bmds_text_measure(sans, "V", 1, 0, &v) == 0);
+        CHECK(av.width < a.width + v.width && av.bytes == 2);
+        CHECK(bmds_text_measure(sans, "Hello\nworld", 11, 0, &e) == 0 && e.bytes == 5);
+        const uint32_t whole = e.width;
+        CHECK(bmds_text_measure(sans, "Hello", 5, whole - 1, &e) == 0 && e.bytes < 5 && e.width <= whole - 1);
+        CHECK(bmds_text_measure(big, "abc", 3, 0, &e) == 0 && e.width == 48 && e.height == 32);
+
+        // Drawing into each format: ink inside the line, nothing outside the clip.
+        static const uint32_t formats[] = {BMDS_PIXEL_BGR24,  BMDS_PIXEL_RGB24, BMDS_PIXEL_BGRA32,
+                                           BMDS_PIXEL_RGB565, BMDS_PIXEL_GRAY8, BMDS_PIXEL_L8};
+        static const uint32_t bpps[] = {3, 3, 4, 2, 1, 1};
+        enum {
+                W = 120,
+                H = 30
+        };
+        static uint8_t pic[W * H * 4];
+        for (size_t f = 0; f < sizeof(formats) / sizeof(formats[0]); ++f) {
+                const size_t row = (size_t)W * bpps[f];
+                memset(pic, 0, sizeof(pic));
+                bmds_text_draw_t d = {.size = sizeof(d),
+                                      .font = sans,
+                                      .pixels = pic,
+                                      .format = formats[f],
+                                      .width = W,
+                                      .height = H,
+                                      .x = 4,
+                                      .y = 4,
+                                      .color = 0xffffff,
+                                      .text = "To AVA",
+                                      .length = 6};
+                if (formats[f] == BMDS_PIXEL_L8) d.color = 9;
+                const int32_t w = bmds_text_draw(&d);
+                CHECK(bmds_text_measure(sans, "To AVA", 6, 0, &e) == 0);
+                CHECK(w > 0 && (uint32_t)w == e.width);
+                CHECK(count_ink(pic, row * H, 0) > 20);
+                // Clipped to columns 20-40: nothing changes outside them.
+                memset(pic, 0, sizeof(pic));
+                d.clip_x = 20;
+                d.clip_y = 0;
+                d.clip_width = 20;
+                d.clip_height = H;
+                CHECK(bmds_text_draw(&d) > 0);
+                for (int y = 0; y < H; ++y) {
+                        CHECK(count_ink(pic + (size_t)y * row, 20 * bpps[f], 0) == 0);
+                        CHECK(count_ink(pic + (size_t)y * row + 40 * bpps[f], (W - 40) * bpps[f], 0) == 0);
+                }
+        }
+        // On a box: the line's box filled (nothing read), sharp on request.
+        memset(pic, 0, sizeof(pic));
+        bmds_text_draw_t d = {.size = sizeof(d),
+                              .font = sans,
+                              .pixels = pic,
+                              .format = BMDS_PIXEL_GRAY8,
+                              .width = W,
+                              .height = H,
+                              .color = 0,
+                              .background = 0x808080,
+                              .flags = BMDS_TEXT_OPAQUE | BMDS_TEXT_SHARP,
+                              .text = "Box",
+                              .length = 3};
+        const int32_t    bw = bmds_text_draw(&d);
+        CHECK(bw > 0 && pic[2 * W + 1] == 0x80);
+        for (size_t i = 0; i < sizeof(pic) && i < (size_t)W * H; ++i) CHECK(pic[i] == 0 || pic[i] == 0x80);
+        d.flags = BMDS_TEXT_SMOOTH | BMDS_TEXT_SHARP;
+        CHECK(bmds_text_draw(&d) == -BMDS_EINVAL);
+        d.flags = 0;
+        d.format = 6;
+        CHECK(bmds_text_draw(&d) == -BMDS_EINVAL);
+        d.format = BMDS_PIXEL_GRAY8;
+        d.stride = W - 1;
+        CHECK(bmds_text_draw(&d) == -BMDS_EINVAL);
+        d.stride = 0;
+        d.font = 15;
+        CHECK(bmds_text_draw(&d) == -BMDS_EBADF);
+
+        // Many opened and closed: none left behind; sixteen at once, then no more; fds untouched.
+        for (int i = 0; i < 200; ++i) {
+                const int32_t f = bmds_font_open_name(i % 2 ? "IBM Plex Serif 20" : "ui");
+                CHECK(f >= 0 && bmds_font_close(f) == 0);
+        }
+        int32_t held[16];
+        int     n = 0;
+        while (n < 16 && (held[n] = bmds_font_open_name("unscii")) >= 0) ++n;
+        CHECK(n == 12); // with the four above
+        CHECK(bmds_font_open_name("unscii") == -BMDS_EMFILE);
+        const int spare = open("/dev/null", O_RDONLY);
+        CHECK(spare >= 0 && close(spare) == 0);
+        while (n > 0) CHECK(bmds_font_close(held[--n]) == 0);
+        CHECK(bmds_font_close(sans) == 0 && bmds_font_close(mono) == 0 && bmds_font_close(term) == 0);
+        CHECK(bmds_font_close(big) == 0);
+        CHECK(bmds_font_info(sans, &info) == -BMDS_EBADF);
+        printf("fonts: ok (%u faces)\n", (unsigned)faces);
+        return 0;
+}
+
 static int image_test(const char *file) {
         CHECK(bmds_sys_has(BMDS_SYS_IMAGE_ENCODE));
         enum {
@@ -4231,7 +4390,7 @@ int main(int argc, char **argv) {
                         "threads|"
                         "threadspin|filetype|audio|decode|rt|midi|synth|speech|mididecode|hog|stats|tasks|"
                         "procs|"
-                        "system|notify|expand|image|net|netwatch|rtnet|sched|ptp|netfs [arg]\n");
+                        "system|notify|expand|image|fonts|net|netwatch|rtnet|sched|ptp|netfs [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -4253,6 +4412,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "system") == 0) return system_test();
         if (strcmp(what, "expand") == 0) return expand_test();
         if (strcmp(what, "image") == 0) return image_test(argc > 2 ? arg : NULL);
+        if (strcmp(what, "fonts") == 0) return font_test();
         if (strcmp(what, "notify") == 0) return notify_test(argc > 2 && strcmp(arg, "served") == 0);
         if (strcmp(what, "net") == 0) return net_test();
         if (strcmp(what, "netwatch") == 0) return net_watch_test(argc > 2 ? atoi(arg) : 1);

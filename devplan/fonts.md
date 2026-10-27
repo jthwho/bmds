@@ -1,6 +1,6 @@
 # Fonts: one font library for the desktop, programs and angel
 
-Status: **steps 1-3 done** (2026-10-26: §6a, §6c, §6d); planned the same day with the user (§8). Fills the
+Status: **steps 1-4 done** (2026-10-26: §6a, §6c-§6e; other fonts tested, §6f); planned the same day with the user (§8). Fills the
 roadmap's "A system font library (planned with the user 2026-10-15)".
 
 ## 1. Goal
@@ -173,22 +173,30 @@ There are three ways to draw a run, chosen by what the caller gives:
 - **In programs:** the call draws into the program's own buffer with the CPU, in the program's
   task, as image decoding writes into its buffer.
 
-### 4e. The program ABI (`sdk/include/bmds/font.h`, new system calls)
+### 4e. The program ABI (`sdk/include/bmds/sys.h`, new system calls)
 
-Fonts are fds, like the synth's, so a program's exit closes them. Structs start with
-`uint32_t size`. Slots from 127 (exact layout in step 4):
+The calls are in `sys.h` with every other (its structs, function types, inline wrappers); there is
+no separate `font.h`. A font is a **font handle**, not an fd: a program has 16 fds in all
+(`FdTable::MaxFds`), and a game holds a font for each size it uses. So fonts are a table of the
+program's own (`Process::fontAdd()`, as its directories are), 16 of them, closed by `font_close`
+and when the program ends or execs (§6e). Structs start with `uint32_t size`.
 
 | Slot | Call | Does |
 |---|---|---|
-| 127 | `bmds_font_open(const bmds_font_spec_t *)` | Opens a font by family, pixel size and style, by role, or by a name string (§4a); returns an fd |
-| 128 | `bmds_font_info(int fd, bmds_font_info_t *)` | The face chosen, its size, ascent, descent, line height, widest advance, flags (bitmap, monospace, made-up bold) |
-| 129 | `bmds_text_measure(int fd, const char *utf8, size_t len, int32_t max_width, bmds_text_extent_t *)` | Width, bytes that fit, ink box |
-| 130 | `bmds_text_draw(const bmds_text_draw_t *)` | Draws into a buffer (pixels, format, width, height, stride, a clip rectangle): font, x and y (the top of the line), fg, bg or none, smoothing (system, on, off), max width; returns the width drawn |
-| 131 | `bmds_font_list(uint32_t index, bmds_font_face_t *)` | The faces installed: family, style, file, bitmap sizes |
+| 127 | `font_open(const bmds_font_spec_t *)` | Opens a font by a name string (§4a), or a family or role with a pixel size and style; a handle |
+| 128 | `font_info(int32_t font, bmds_font_info_t *)` | Its size, ascent, descent, line height, widest advance, flags (bitmap, fixed, made-up bold), style, face, and its name |
+| 129 | `text_measure(int32_t font, text, length, max_width, bmds_text_extent_t *)` | To a newline: width, bytes that fit, line height |
+| 130 | `text_draw(const bmds_text_draw_t *)` | Draws a line into the program's pixels (pixels, format, size, stride, a clip; x and y the line's top; color; a background box or not; smoothed, sharp or the system's; a width limit): the width drawn |
+| 131 | `font_list(uint32_t index, bmds_font_face_t *)` | The faces installed: family, style, weight, flags, glyphs, a bitmap font's size, file |
+| 132 | `font_close(int32_t font)` | Closes a handle |
 
-`close()` closes a font. **libbmdsgame:** `bmds_canvas_text()` and `bmds_game_text_width()` take
-a font fd and go through these calls. `sdk/game/font16.c` and `tools/gamefont` go away, since
-unscii comes from the OS like any other font. A null font (-1) means the `ui` role.
+**libbmdsgame:** `bmds_canvas_text(canvas, font, x, y, text, pixel)` and
+`bmds_game_text_width(font, text)` take a font handle and go through these calls, a line at a
+time (they keep newlines). `sdk/game/font16.c` and `tools/gamefont` are gone, since unscii comes
+from the OS like any other font. A negative font is unscii 16 (`BMDS_GAME_FONT_DEFAULT`), not the
+`ui` role: games lay out on its 8×16 cells, and `ui` becomes IBM Plex in step 7.
+`bmds_game_font(name)` opens a font once and keeps it; `bmds_game_font_scaled(n)` is unscii at
+n × 16, so callers of the old `scale` keep their look.
 
 ### 4f. angel
 
@@ -284,8 +292,8 @@ picture, for tests and for looking).
    mutex, stats, `font/paths`, roles, fallback, the bitmap fonts as faces. The `font` command.
 3. **The kernels:** 1 and 4 bits at any x into BGR24, RGB565, BGRA32 and GRAY8, Opaque and Over;
    Scalar and PIE writing the same bytes (host test plus a board check); a bench (`font.draw`).
-4. **The SDK:** slots 127-131, `font.h`, the kernel side, libbmdsgame onto it (`font16.c` gone),
-   an example, `progtest`, `ABI.md`, `abilock.c`.
+4. **The SDK:** slots 127-132 in `sys.h`, the kernel side, libbmdsgame onto it (`font16.c`
+   gone), an example, `progtest`, `ABI.md`, `abilock.c`.
 5. **angel:** §4f, help, `api.lock`, an example script.
 6. **The Painter:** Opaque and Over runs through the strip; the window manager's titles and menus
    follow the `title` and `ui` roles.
@@ -460,10 +468,86 @@ picture, for tests and for looking).
   formula, fills, and lines drawn: over, cached, clipped, off the picture, width-limited, on a
   box, sharp, indexed, and unscii doubled.
 
+### 6e. Step 4, as built (2026-10-26)
+
+- **The calls** (§4e): slots 127-132 in `sys.h` (structs, function types, inline wrappers;
+  `bmds_font_open_name()` for the common case), the kernel's side in
+  `bmds_loader/src/fontcalls.cpp` over `SystemFonts`, `TextDraw` and the program's font table,
+  locked in `abilock.c`. `text_draw` takes about 5 KB of the caller's stack (the band shrank to
+  2 KB for it); program stacks are 32 KB unless a program asks for less.
+- **Found on the board:** fonts as fds, as first designed (a `FontFile` stream like the synth's),
+  ran the `fonts` example out of fds. A program has 16 fds in all; the example held 12 fonts and
+  the 13th failed with `EMFILE`. So fonts became a table of the program's own
+  (`Process::fontAdd()`, `fontOf()`, `fontClose()`, `MaxFonts` 16, allocated on the first
+  `font_open`, freed with the program's other state), and `font_close` took slot 132.
+- **libbmdsgame:** §4e. `bmds_game_font_scaled()` reaches unscii at 15 × 16 = 240 px (the
+  library's bitmap multiple went from 8 to 15, the most a 255 px size allows); angel's `scale`
+  is 1-15 now (it was 1-64).
+- **Tests:**
+  - **The host tests** run libbmdsgame's text on the real `FontLibrary` and `TextDraw` behind fake
+    font calls in the fake system call table (`tests/host/fakefonts.cpp`, from `oss.cpp`). They
+    check unscii's bits in each format and clip, scaled, beyond Latin-1, and smoothed TrueType
+    into B, G, R and sharp into L8.
+  - **The host `angel`** gets the same fake font calls (`angelsys.cpp`), so the script tests'
+    text (`graphics.as`: widths and heights) runs on the real library.
+  - **`progtest fonts` on the board** covers the faces, opening by name, family and role, info,
+    the errors, measuring (kerned, to a newline, within a width), drawing into all six formats
+    and clipped, a box, sharp, 200 opens and closes, and 16 at once and no more with the fds
+    untouched.
+- **On the board:** Blocks (built, not installed: run from `build-dist`) draws as it did. The
+  `fonts` example (`sdk/examples/fonts`) shows each face in itself, sizes from 11 to 32, smoothed
+  and sharp, white over blue, black on a yellow box, unscii.
+
+### 6f. Other fonts tested (2026-10-26)
+
+- **A sweep of every font on the development machine:** 2,577 files (Noto, DejaVu, Inter,
+  Liberation, Roboto, URW, STIX, Thai and Korean faces, and decorative fonts from the user's
+  `~/.fonts`). Each was opened by `FontFace` and every glyph rendered at 13 and 40 px, smooth and
+  sharp, built with AddressSanitizer, UBSan and stb_truetype's asserts.
+  - **First run:** no fault, no sanitizer report, no assert. But 92 of DejaVu Sans' glyphs were
+    refused (`u` among them), and there were problems in five other files.
+  - **After the fixes below:** 2,135 files open, all 2,046,406 of their glyphs render, and none is
+    refused. Refused files: 435 CFF `.otf` (and one CFF font named `.ttf`), 5 collections, and
+    NotoColorEmoji (colour bitmaps, no outlines).
+- **Kerning against fontTools**, every printable ASCII pair, for ten fonts: DejaVu Sans,
+  Liberation Serif, Noto Sans, Ubuntu and Lato (kerning in GPOS extension lookups: 1,314 and
+  1,908 pairs), EB Garamond, Go Mono (none), Open Sans (a `kern` table only), Roboto, FreeSerif.
+  Every pair the same.
+- **Fixed:**
+  - **A lone last point:** refused only when it is off-curve, the case where stb_truetype reads
+    past its allocation. DejaVu's are on-curve hinting anchors, drawn safely; refusing them lost
+    92 glyphs.
+  - **Empty contours** (an end the same as the one before; Milea): accepted, and stb_truetype
+    patched to skip them (`bmds-empty-contours.diff`). Unpatched, it joined every later contour
+    into one shape.
+  - **A box turned inside out** (Gemelli's compounds of a space): an empty glyph, not a damaged
+    one.
+  - **Glyphs of up to 65,536 points** (Toony's and Daubmark's hand-traced 15,000-21,000): was
+    16,384. A first render takes up to about 1 MB for stb_truetype, `Internal` else `Psram`,
+    once.
+  - **A font with only a Windows symbol map** (Seized X-S): opens, its 0x20-0xFF also looked up
+    at U+F020-F0FF, as Windows does (`bmds-symbol-cmap.diff` lets stb_truetype open it).
+- **The fuzzer on the fixes** (15 minutes): one find, UBSan's. A compound part scaled past a
+  vertex's 16 bits made stb_truetype's float-to-`short` conversion undefined; it is clamped now
+  (`bmds-compound-range.diff`, the fourth patch). A second 15 minutes was clean.
+- **Tests:** `tests/host/fonts/edge.ttf` and `symbol.ttf`, our own (MIT), made by
+  `make-edge-fonts.py`, hold each case. The empty-contour test fails with the stb patch undone.
+- **On the board** (the fonts copied to `/sd0/p0/claude/fonts`, `font/paths` pointed there for
+  the test and set back): DejaVu Sans, EB Garamond, FreeSerif, Go Mono, Lato, Liberation Serif,
+  Noto Sans, Open Sans, Roboto, Ubuntu, Seized X-S, Toony, Milea, Gemelli and Daubmark draw
+  right, kerned, with accents and Cyrillic, ∑ and → from the fallback where a font lacks them.
+  These are loaded into PSRAM, not read in place.
+- **Names:** EB Garamond's file names its family "EB Garamond" and its style "12 Regular" (an
+  optical size), so `EB Garamond 12 16` names no family and gives the `ui` role's font. The
+  name's form can't end a family in a number (§4a).
+- **Not covered:** CFF outlines (`.otf`) and collections (`.ttc`). They are a large part of what
+  people have: 442 of the 2,577 here. stb_truetype reads CFF, through a charstring interpreter
+  that would need checking and fuzzing like the rest. A question for later.
+
 ## 7. ABI impact
 
-New slots 127-131 and `sdk/include/bmds/font.h`; libbmdsgame's two text calls change their
-arguments (no ABI promise there, and nothing is released); angel gains calls and keeps its old
+New slots 127-132 and their structs in `sys.h` (step 4, locked in `abilock.c`); libbmdsgame's two
+text calls change their arguments (no ABI promise there, and nothing is released); angel gains calls and keeps its old
 ones; `classes.def` gains a property and two classes (appended). On-disk: none (fonts are
 standard TrueType files).
 

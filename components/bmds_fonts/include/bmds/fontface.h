@@ -30,7 +30,8 @@ BMDS_NAMESPACE_BEGIN
  * feature (GPOS), or the `kern` table's pairs.
  *
  * Only TrueType outlines (`glyf`): a CFF font (`OTTO`) or a collection
- * (`ttcf`) is `NotSupported`.
+ * (`ttcf`) is `NotSupported`. A symbol font (only a Windows symbol map) has
+ * its 0x20-0xFF looked up at U+F020-F0FF too, as Windows does.
  *
  * Sizes are pixels per em, as desktops name them: a 13 px font's em is 13
  * pixels. Glyph boxes are in pixels from the pen on the baseline, y down.
@@ -174,6 +175,7 @@ class FontFace {
                 int      kernTableKerning(uint16_t left, uint16_t right) const;
                 bool     readName(uint16_t id, char *out, uint8_t &length) const;
                 uint16_t cmapLookup(uint32_t codepoint) const;
+                uint16_t symbolLookup(uint32_t codepoint) const; // a symbol font: c, else U+F000 + c
 
                 ByteSpan _data;
                 Metrics  _metrics;
@@ -193,6 +195,7 @@ class FontFace {
                 bool     _longLoca = false;
                 bool     _fixedPitch = false;
                 bool     _italic = false;
+                bool     _symbol = false; // a symbol font's map (Windows encoding 0)
                 uint16_t _weight = 400;
                 uint8_t  _familyLength = 0, _styleLength = 0;
                 char     _family[MaxName + 1] = {};

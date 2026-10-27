@@ -1,0 +1,35 @@
+--- a/stb_truetype.h
++++ b/stb_truetype.h
+@@ -1674,6 +1674,16 @@
+    return num_vertices;
+ }
+ 
++// BMDS: a compound part's transformed coordinate, kept in a vertex's range: a scale or offset can
++// put it past 16 bits, and the conversion was undefined (found by the fuzzer).
++static stbtt_vertex_type stbtt__bmds_coord(float f)
++{
++   if (!(f == f)) return 0;
++   if (f < -32768.0f) return -32768;
++   if (f > 32767.0f) return 32767;
++   return (stbtt_vertex_type) f;
++}
++
+ static int stbtt__GetGlyphShapeTT(const stbtt_fontinfo *info, int glyph_index, stbtt_vertex **pvertices)
+ {
+    stbtt_int16 numberOfContours;
+@@ -1870,11 +1880,11 @@
+                stbtt_vertex* v = &comp_verts[i];
+                stbtt_vertex_type x,y;
+                x=v->x; y=v->y;
+-               v->x = (stbtt_vertex_type)(m * (mtx[0]*x + mtx[2]*y + mtx[4]));
+-               v->y = (stbtt_vertex_type)(n * (mtx[1]*x + mtx[3]*y + mtx[5]));
++               v->x = stbtt__bmds_coord(m * (mtx[0]*x + mtx[2]*y + mtx[4]));
++               v->y = stbtt__bmds_coord(n * (mtx[1]*x + mtx[3]*y + mtx[5]));
+                x=v->cx; y=v->cy;
+-               v->cx = (stbtt_vertex_type)(m * (mtx[0]*x + mtx[2]*y + mtx[4]));
+-               v->cy = (stbtt_vertex_type)(n * (mtx[1]*x + mtx[3]*y + mtx[5]));
++               v->cx = stbtt__bmds_coord(m * (mtx[0]*x + mtx[2]*y + mtx[4]));
++               v->cy = stbtt__bmds_coord(n * (mtx[1]*x + mtx[3]*y + mtx[5]));
+             }
+             // Append vertices.
+             tmp = (stbtt_vertex*)STBTT_malloc((num_vertices+comp_num_verts)*sizeof(stbtt_vertex), info->userdata);

@@ -13,11 +13,6 @@
 
 #include <bmds/game.h>
 
-/** @brief Glyphs in the font: ASCII 0x20-0x7E, then Latin-1 0xA0-0xFF. */
-#define BMDS_GAME_FONT_GLYPHS 191
-
-extern const unsigned char bmds_game_font16[BMDS_GAME_FONT_GLYPHS][16];
-
 /** @brief Adds @p rect, cut to the canvas's clip (what drawing there can change), to its damage. */
 void bmds_game_damage_in_clip(bmds_canvas_t *canvas, const bmds_rect_t *rect);
 

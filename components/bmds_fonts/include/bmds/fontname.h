@@ -53,7 +53,7 @@ struct FontName {
                 static constexpr size_t MaxFamily = 63;
 
                 /** @brief The longest name `format()` writes, its terminator included. */
-                static constexpr size_t MaxText = MaxFamily + 24;
+                static constexpr size_t MaxText = 88; // MaxFamily, " 255 bold italic", NUL: 80; BMDS_FONT_NAME_MAX
 
                 /** @brief The smallest and largest pixel sizes a name may give. */
                 static constexpr uint16_t MinSize = 4, MaxSize = 255;

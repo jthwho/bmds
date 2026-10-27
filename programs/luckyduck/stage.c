@@ -62,10 +62,10 @@ bmds_rect_t stage_bounds(const stage_item_t *it) {
                         return ui_text_rect(it->font, x, it->y, it->text);
                 }
                 case STAGE_LABEL: {
-                        const int32_t scale = it->font != 0 ? it->font : 1;
-                        const int32_t tw = bmds_game_text_width(it->text, scale);
+                        const int32_t font = bmds_game_font_scaled(it->font != 0 ? it->font : 1);
+                        const int32_t tw = bmds_game_text_width(font, it->text);
                         const int32_t x = (it->flags & STAGE_CENTRE) != 0 ? it->x - tw / 2 : it->x;
-                        return rect(x, it->y, tw, BMDS_GAME_GLYPH_HEIGHT * scale);
+                        return rect(x, it->y, tw, bmds_game_line_height(font));
                 }
                 case STAGE_BUTTON:
                 case STAGE_PANEL:
@@ -124,10 +124,10 @@ void stage_draw_item(bmds_canvas_t *c, const stage_item_t *it) {
                         break;
                 }
                 case STAGE_LABEL: {
-                        const int32_t scale = it->font != 0 ? it->font : 1;
-                        const int32_t tw = bmds_game_text_width(it->text, scale);
-                        (void)bmds_canvas_text(c, (it->flags & STAGE_CENTRE) != 0 ? it->x - tw / 2 : it->x, it->y,
-                                               it->text, bmds_canvas_pixel(c, it->rgb), scale);
+                        const int32_t font = bmds_game_font_scaled(it->font != 0 ? it->font : 1);
+                        const int32_t tw = bmds_game_text_width(font, it->text);
+                        (void)bmds_canvas_text(c, font, (it->flags & STAGE_CENTRE) != 0 ? it->x - tw / 2 : it->x, it->y,
+                                               it->text, bmds_canvas_pixel(c, it->rgb));
                         break;
                 }
                 case STAGE_BUTTON: {

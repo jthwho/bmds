@@ -20,6 +20,7 @@
 #include <sys/soundcard.h>
 #include <bmds/errno.h>
 #include <bmds/sys.h>
+#include "fakefonts.h"
 
 extern "C" {
 long __bmds_oss_ioctl(long fd, unsigned long request, void *arg);
@@ -101,17 +102,18 @@ namespace {
 
         struct Table {
                         uint32_t      magic, abi_version, count, reserved;
-                        bmds_sys_fn_t slot[BMDS_SYS_SOUND_PLAY + 1];
+                        bmds_sys_fn_t slot[BMDS_SYS_FONT_CLOSE + 1]; // the fonts: libbmdsgame's text
         };
 
         Table makeTable() {
-                Table t = {BMDS_SYS_MAGIC, BMDS_ABI_VERSION, BMDS_SYS_SOUND_PLAY + 1, 0, {}};
+                Table t = {BMDS_SYS_MAGIC, BMDS_ABI_VERSION, BMDS_SYS_FONT_CLOSE + 1, 0, {}};
                 t.slot[BMDS_SYS_AUDIO_CONFIG] = reinterpret_cast<bmds_sys_fn_t>(audioConfig);
                 t.slot[BMDS_SYS_AUDIO_STATUS] = reinterpret_cast<bmds_sys_fn_t>(audioStatus);
                 t.slot[BMDS_SYS_AUDIO_CONTROL] = reinterpret_cast<bmds_sys_fn_t>(audioControl);
                 t.slot[BMDS_SYS_SYSCONF_FIND] = reinterpret_cast<bmds_sys_fn_t>(sysconfFind);
                 t.slot[BMDS_SYS_SYSCONF_GET] = reinterpret_cast<bmds_sys_fn_t>(sysconfGet);
                 t.slot[BMDS_SYS_SYSCONF_SET] = reinterpret_cast<bmds_sys_fn_t>(sysconfSet);
+                FakeFonts::install(t.slot);
                 return t;
         }
 

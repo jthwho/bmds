@@ -202,6 +202,12 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_GUI_CANVAS_SURFACE                                                                                    \
         125u /**< `int32_t gui_canvas_surface(int32_t conn, uint32_t canvas, const bmds_surface_config_t *c)`. */
 #define BMDS_SYS_FS_WATCH 126u /**< `int32_t fs_watch(const char *path, uint32_t flags)`: a new fd. */
+#define BMDS_SYS_FONT_OPEN 127u    /**< `int32_t font_open(const bmds_font_spec_t *spec)`: a font handle. */
+#define BMDS_SYS_FONT_INFO 128u    /**< `int32_t font_info(int32_t font, bmds_font_info_t *info)`. */
+#define BMDS_SYS_TEXT_MEASURE 129u /**< `int32_t text_measure(font, text, length, max_width, extent)`. */
+#define BMDS_SYS_TEXT_DRAW 130u    /**< `int32_t text_draw(const bmds_text_draw_t *draw)`: the width. */
+#define BMDS_SYS_FONT_LIST 131u    /**< `int32_t font_list(uint32_t index, bmds_font_face_t *face)`. */
+#define BMDS_SYS_FONT_CLOSE 132u   /**< `int32_t font_close(int32_t font)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1895,6 +1901,114 @@ typedef struct bmds_fs_space_t {
 /** @brief `BMDS_FS_RENAME`'s flags. */
 #define BMDS_FS_REPLACE 0x1u /**< A file there is replaced (else `-BMDS_EEXIST`). */
 
+/* --- Fonts (devplan/fonts.md §4e; slots 127-131, appended 2026-10-26) --- */
+
+/*
+ * The system's fonts: TrueType faces (IBM Plex, and the user's in ~/Fonts) and the built-in
+ * bitmap font (unscii), one glyph cache shared by every program. A font is a face at a pixel size,
+ * opened by a name ("IBM Plex Sans 13 bold") or a role (the fonts the user chose for everything:
+ * the toolkit's, fixed-width text's, ...), and held as a font handle: not an fd (a program has 16
+ * fds), one of its own 16 fonts, closed by `font_close` and when the program ends or execs. Text
+ * is drawn by the OS into the program's own pixels: smoothed (antialiased) or sharp, over what is
+ * there or on a box of a background color. Each call handles one line: a newline ends it.
+ */
+
+/** @brief The longest font name, its terminating NUL included ("IBM Plex Sans 13 bold italic"). */
+#define BMDS_FONT_NAME_MAX 88u
+
+/** @brief A font's style (bits). */
+#define BMDS_FONT_BOLD 0x1u
+#define BMDS_FONT_ITALIC 0x2u
+
+/** @brief The roles: fonts the user chooses once (font/ui, ...). */
+#define BMDS_FONT_ROLE_NONE 0u     /**< A family named outright. */
+#define BMDS_FONT_ROLE_UI 1u       /**< The toolkit's text. */
+#define BMDS_FONT_ROLE_MONO 2u     /**< Fixed-width text outside the terminal. */
+#define BMDS_FONT_ROLE_TITLE 3u    /**< Window titles and headings. */
+#define BMDS_FONT_ROLE_TERMINAL 4u /**< The terminal's cells. */
+
+/** @brief What a font or face is (`bmds_font_info_t::flags`, `bmds_font_face_t::flags`; bits). */
+#define BMDS_FONT_BITMAP 0x1u       /**< A bitmap font (unscii): whole multiples of its size, never smoothed. */
+#define BMDS_FONT_FIXED 0x2u        /**< Every glyph as wide. */
+#define BMDS_FONT_MADE_UP_BOLD 0x4u /**< A bold its family lacks, made up (a pixel wider). */
+
+/** @brief How text is drawn (`bmds_text_draw_t::flags`; bits). */
+#define BMDS_TEXT_OPAQUE 0x1u /**< The line's box filled with `background` first; nothing read. */
+#define BMDS_TEXT_SMOOTH 0x2u /**< Smoothed, whatever the system's setting (font/smooth). */
+#define BMDS_TEXT_SHARP 0x4u  /**< Sharp (one bit a pixel), whatever the setting; always for L8. */
+
+/**
+ * @brief A font to open (`font_open`): a name, or a family or role with a size and style.
+ *        A family the system lacks gives the `ui` role's font; a size of 0 the role's (or 13).
+ */
+typedef struct bmds_font_spec_t {
+                uint32_t    size;       /**< `sizeof(bmds_font_spec_t)`. */
+                uint32_t    flags;      /**< 0 (none yet). */
+                const char *name;       /**< "IBM Plex Sans 13 bold", "title 20", "ui"; or NULL: */
+                const char *family;     /**< A family ("IBM Plex Mono"), or NULL with `role`. */
+                uint32_t    role;       /**< `BMDS_FONT_ROLE_*` (without `family`). */
+                uint32_t    pixel_size; /**< Pixels per em; 0: the role's, or 13. */
+                uint32_t    style;      /**< `BMDS_FONT_BOLD`, `BMDS_FONT_ITALIC`. */
+} bmds_font_spec_t;
+
+/** @brief An open font (`font_info`): what it is and its metrics, in pixels. */
+typedef struct bmds_font_info_t {
+                uint32_t size;                     /**< `sizeof(bmds_font_info_t)`. */
+                uint32_t pixel_size;               /**< A bitmap font's: its height times its multiple. */
+                int32_t  ascent;                   /**< Above the baseline: a line's top to its baseline. */
+                int32_t  descent;                  /**< Below it (positive). */
+                int32_t  line_height;              /**< From one baseline to the next. */
+                int32_t  max_advance;              /**< The widest advance. */
+                uint32_t flags;                    /**< `BMDS_FONT_BITMAP`, `_FIXED`, `_MADE_UP_BOLD`. */
+                uint32_t style;                    /**< The face's: `BMDS_FONT_BOLD`, `BMDS_FONT_ITALIC`. */
+                uint32_t face;                     /**< Its face's index (`font_list`). */
+                char     name[BMDS_FONT_NAME_MAX]; /**< What it is, as a name: "IBM Plex Sans 13 bold". */
+} bmds_font_info_t;
+
+/** @brief A line measured (`text_measure`). */
+typedef struct bmds_text_extent_t {
+                uint32_t size;   /**< `sizeof(bmds_text_extent_t)`. */
+                uint32_t width;  /**< The advance of what fits, in pixels (rounded up). */
+                uint32_t bytes;  /**< The bytes that fit: whole characters, up to a newline. */
+                uint32_t height; /**< The line's height. */
+} bmds_text_extent_t;
+
+/** @brief A line to draw (`text_draw`) into the program's pixels. */
+typedef struct bmds_text_draw_t {
+                uint32_t    size;   /**< `sizeof(bmds_text_draw_t)`. */
+                int32_t     font;   /**< A font handle. */
+                void       *pixels; /**< The picture: rows `stride` bytes apart. */
+                uint32_t    format; /**< `BMDS_PIXEL_BGR24`, `_RGB24`, `_BGRA32`, `_RGB565`, `_GRAY8`, `_L8`. */
+                uint32_t    width;  /**< In pixels. */
+                uint32_t    height;
+                uint32_t    stride; /**< Bytes; 0: `width` pixels. */
+                int32_t     clip_x; /**< Only this part changes (within the picture); */
+                int32_t     clip_y;
+                uint32_t    clip_width; /**< 0 with `clip_height` 0: the whole picture. */
+                uint32_t    clip_height;
+                int32_t     x; /**< The line's top left (its baseline `ascent` below). */
+                int32_t     y;
+                uint32_t    color;      /**< 0xRRGGBB (L8: the index). */
+                uint32_t    background; /**< With `BMDS_TEXT_OPAQUE` (L8: the index). */
+                uint32_t    flags;      /**< `BMDS_TEXT_OPAQUE`, `_SMOOTH`, `_SHARP`. */
+                uint32_t    max_width;  /**< Whole characters within it are drawn; 0: no limit. */
+                const char *text;       /**< UTF-8; a newline ends the line. */
+                uint32_t    length;     /**< Its bytes. */
+} bmds_text_draw_t;
+
+/** @brief An installed face (`font_list`). */
+typedef struct bmds_font_face_t {
+                uint32_t size;           /**< `sizeof(bmds_font_face_t)`. */
+                uint32_t style;          /**< `BMDS_FONT_BOLD` (weight 600 or more), `BMDS_FONT_ITALIC`. */
+                uint32_t weight;         /**< 1-1000: 400 regular, 700 bold. */
+                uint32_t flags;          /**< `BMDS_FONT_BITMAP`, `BMDS_FONT_FIXED`. */
+                uint32_t glyphs;         /**< How many (0: its file not read since it was found). */
+                uint32_t bitmap_size;    /**< A bitmap font's height; 0 for TrueType. */
+                char     family[64];     /**< "IBM Plex Sans". */
+                char     style_name[32]; /**< "Bold Italic". */
+                char     path[128];      /**< Its file; "" for a built-in font. */
+} bmds_font_face_t;
+
 /* --- Calls ----------------------------------------------------------- */
 
 typedef void (*bmds_sys_exit_fn)(int32_t status);
@@ -2016,6 +2130,13 @@ typedef int32_t (*bmds_sys_fs_serve_fn)(const bmds_fs_serve_t *config);
 typedef int32_t (*bmds_sys_gui_open_fn)(uint32_t display, uint32_t flags);
 typedef int32_t (*bmds_sys_gui_canvas_surface_fn)(int32_t conn, uint32_t canvas, const bmds_surface_config_t *config);
 typedef int32_t (*bmds_sys_fs_watch_fn)(const char *path, uint32_t flags);
+typedef int32_t (*bmds_sys_font_open_fn)(const bmds_font_spec_t *spec);
+typedef int32_t (*bmds_sys_font_info_fn)(int32_t font, bmds_font_info_t *info);
+typedef int32_t (*bmds_sys_text_measure_fn)(int32_t font, const char *text, uint32_t length, uint32_t max_width,
+                                            bmds_text_extent_t *extent);
+typedef int32_t (*bmds_sys_text_draw_fn)(const bmds_text_draw_t *draw);
+typedef int32_t (*bmds_sys_font_list_fn)(uint32_t index, bmds_font_face_t *face);
+typedef int32_t (*bmds_sys_font_close_fn)(int32_t font);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -3364,6 +3485,76 @@ static inline int32_t bmds_gui_canvas_surface(int32_t conn, uint32_t canvas, con
 static inline int32_t bmds_fs_watch(const char *path, uint32_t flags) {
         if (!bmds_sys_has(BMDS_SYS_FS_WATCH)) return -BMDS_ENOSYS;
         return ((bmds_sys_fs_watch_fn)bmds_sys->slot[BMDS_SYS_FS_WATCH])(path, flags);
+}
+
+/**
+ * @brief Opens a font (`bmds_font_spec_t`): a font handle (0 up; not an fd) for `font_info`,
+ *        `text_measure` and `text_draw`, closed with `font_close` (and when the program ends
+ *        or execs). (Slots 127-132, appended 2026-10-26: check `bmds_sys_has(BMDS_SYS_FONT_OPEN)`.)
+ * @return The handle, or `-BMDS_EINVAL` (a name that doesn't read, a role, style, flag or
+ *         `size`), `-BMDS_ERANGE` (a size outside 4-255), `-BMDS_ENOENT` (no font at all),
+ *         `-BMDS_ENOMEM`, `-BMDS_EIO` (a font file changed or damaged), `-BMDS_EMFILE` (16 fonts
+ *         open), `-BMDS_EFAULT`, `-BMDS_ENOSYS` (a system without fonts).
+ */
+static inline int32_t bmds_font_open(const bmds_font_spec_t *spec) {
+        if (!bmds_sys_has(BMDS_SYS_FONT_OPEN)) return -BMDS_ENOSYS;
+        return ((bmds_sys_font_open_fn)bmds_sys->slot[BMDS_SYS_FONT_OPEN])(spec);
+}
+
+/**
+ * @brief Opens the font named @p name ("IBM Plex Sans 13 bold", "ui").
+ * @return As `bmds_font_open()`.
+ */
+static inline int32_t bmds_font_open_name(const char *name) {
+        bmds_font_spec_t spec = {sizeof(bmds_font_spec_t), 0, name, 0, 0, 0, 0};
+        return bmds_font_open(&spec);
+}
+
+/**
+ * @brief Closes font handle @p font.
+ * @return 0, or `-BMDS_EBADF` (not an open font).
+ */
+static inline int32_t bmds_font_close(int32_t font) {
+        return ((bmds_sys_font_close_fn)bmds_sys->slot[BMDS_SYS_FONT_CLOSE])(font);
+}
+
+/**
+ * @brief Fills @p info (its `size` set) with font @p font's metrics and name.
+ * @return 0, or `-BMDS_EBADF` (not an open font), `-BMDS_EINVAL` (`size`), `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_font_info(int32_t font, bmds_font_info_t *info) {
+        return ((bmds_sys_font_info_fn)bmds_sys->slot[BMDS_SYS_FONT_INFO])(font, info);
+}
+
+/**
+ * @brief Measures @p length bytes of UTF-8 @p text in font @p font, to a newline and as far as
+ *        @p max_width pixels allow (0: no limit), into @p extent (its `size` set).
+ * @return 0, or `-BMDS_EBADF` (not an open font), `-BMDS_EINVAL` (`size`), `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_text_measure(int32_t font, const char *text, uint32_t length, uint32_t max_width,
+                                        bmds_text_extent_t *extent) {
+        return ((bmds_sys_text_measure_fn)bmds_sys->slot[BMDS_SYS_TEXT_MEASURE])(font, text, length, max_width, extent);
+}
+
+/**
+ * @brief Draws a line of text into the program's pixels (`bmds_text_draw_t`), clipped, through
+ *        the system's glyph cache. Takes about 5 KB of the caller's stack.
+ * @return The width drawn in pixels, or `-BMDS_EBADF` (not an open font),
+ *         `-BMDS_EINVAL` (a format, flag, size or `size`), `-BMDS_ENOMEM`, `-BMDS_EIO` (a damaged
+ *         glyph), `-BMDS_EFAULT`.
+ * @hotpath The glyphs come from the cache: a line of 57 characters takes about 0.3 ms.
+ */
+static inline int32_t bmds_text_draw(const bmds_text_draw_t *draw) {
+        return ((bmds_sys_text_draw_fn)bmds_sys->slot[BMDS_SYS_TEXT_DRAW])(draw);
+}
+
+/**
+ * @brief Fills @p face (its `size` set) with installed face @p index (0 up: unscii first, then
+ *        the TrueType files found in font/paths).
+ * @return 0, or `-BMDS_ENOENT` (past the last), `-BMDS_EINVAL` (`size`), `-BMDS_EFAULT`.
+ */
+static inline int32_t bmds_font_list(uint32_t index, bmds_font_face_t *face) {
+        return ((bmds_sys_font_list_fn)bmds_sys->slot[BMDS_SYS_FONT_LIST])(index, face);
 }
 
 /**

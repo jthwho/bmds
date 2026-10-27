@@ -88,6 +88,7 @@ add_executable(bmds_host_tests
         memorystream.cpp
         oss.cpp
         ${BMDS_ROOT}/sdk/crt/oss.c
+        fakefonts.cpp
         fontlibrary.cpp
         fonts.cpp
         game.cpp
@@ -95,7 +96,6 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/game/shapes.c
         ${BMDS_ROOT}/sdk/game/text.c
         ${BMDS_ROOT}/sdk/gui/gui.c
-        ${BMDS_ROOT}/sdk/game/font16.c
         ${BMDS_ROOT}/sdk/game/convert.c
         ${BMDS_ROOT}/sdk/game/mix.c
         ${BMDS_ROOT}/sdk/game/smf.c
@@ -302,9 +302,12 @@ file(GLOB BMDS_ANGEL_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT}/programs/angel/*.cpp
 # The GUI's client (libbmdsgui) too: a host has no GUI service, so scripts' GUI objects can't be
 # made there, but the bindings are registered (--api, the lock).
 add_executable(angel ${BMDS_ANGEL_SOURCES} ${BMDS_ROOT}/sdk/game/canvas.c ${BMDS_ROOT}/sdk/game/shapes.c
-        ${BMDS_ROOT}/sdk/game/text.c ${BMDS_ROOT}/sdk/game/font16.c ${BMDS_ROOT}/sdk/gui/gui.c)
+        ${BMDS_ROOT}/sdk/game/text.c ${BMDS_ROOT}/sdk/gui/gui.c
+        angelsys.cpp fakefonts.cpp ${CMAKE_CURRENT_LIST_DIR}/hostmemory.cpp)
 target_include_directories(angel PRIVATE ${BMDS_ROOT}/sdk/include)
-target_link_libraries(angel PRIVATE bmds_angelscript pthread m)
+target_link_libraries(angel PRIVATE bmds_angelscript bmds_fonts pthread m)
+# The font calls' fake (fakefonts.cpp): the real library over IBM Plex.
+target_compile_definitions(angel PRIVATE BMDS_FONTS_DIR="${BMDS_ROOT}/thirdparty/plex/fonts")
 bmds_target_options(angel)
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)

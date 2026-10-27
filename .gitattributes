@@ -6,3 +6,6 @@
 thirdparty/svox-pico/lang/*.bin filter=lfs diff=lfs merge=lfs -text
 # The fonts (devplan/fonts.md): IBM Plex's TrueType files, as released, kept in Git LFS.
 thirdparty/plex/fonts/*.ttf filter=lfs diff=lfs merge=lfs -text
+# The font tests' own small fonts (tests/host/fonts): binary, not in LFS.
+tests/host/fonts/*.ttf binary
+tests/host/fonts/fuzz/*.ttf binary

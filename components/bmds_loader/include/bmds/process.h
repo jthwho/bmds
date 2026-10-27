@@ -26,6 +26,7 @@
 
 BMDS_NAMESPACE_BEGIN
 
+class Font;
 class ProgramControls;
 
 class Console;
@@ -69,6 +70,9 @@ class Process {
 
                 /** @brief How many directories a program may have open at once. */
                 static constexpr int MaxDirectories = 8;
+
+                /** @brief How many fonts a program may have open at once (`font_open`: not fds). */
+                static constexpr int MaxFonts = 16;
 
                 /** @brief The most entries one `poll()` takes. */
                 static constexpr uint32_t MaxPollEntries = BMDS_POLL_MAX;
@@ -175,6 +179,22 @@ class Process {
 
                 /** @brief Returns how many directories it has open. */
                 int openDirectories() const;
+
+                /**
+                 * @brief Keeps @p font in the program's font table (`font_open`,
+                 *        `devplan/fonts.md` §4e), made on first use.
+                 * @return Its handle (0 up), `-BMDS_EMFILE` (`MaxFonts` open), `-BMDS_ENOMEM`.
+                 */
+                int32_t fontAdd(const Font &font);
+
+                /** @brief Sets @p out to font handle @p id's font (a copy: it stays usable). @return False if none. */
+                bool fontOf(int32_t id, Font &out) const;
+
+                /** @brief Closes font handle @p id. @return 0 or `-BMDS_EBADF`. */
+                int32_t fontClose(int32_t id);
+
+                /** @brief Returns how many fonts it has open. */
+                int openFonts() const;
 
                 /** @brief Closes its fds and directories and frees everything it allocated. Idempotent. */
                 void release();
@@ -305,6 +325,7 @@ class Process {
                 bool       _echo = true;
                 bool       _crToNl = true;
                 Directory  _dirs[MaxDirectories];
+                Font      *_fonts = nullptr; // MaxFonts of them (Psram), made by the first font_open
                 Semaphore  _childEvent{1, 0};
                 Block     *_blocks = nullptr;
                 size_t     _allocatedBytes = 0;

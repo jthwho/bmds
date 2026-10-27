@@ -20,6 +20,7 @@
 extern "C" {
 #include "../../sdk/game/game_internal.h"
 }
+#include <bmds/bitmapfont.h>
 
 namespace {
 
@@ -470,43 +471,62 @@ TEST_CASE("Game canvas: copy between buffers, no damage") {
         CHECK(b.damage().empty());
 }
 
-TEST_CASE("Game text: glyphs, widths, Latin-1, others as ?") {
-        CHECK(bmds_game_text_width("abc", 1) == 24);
-        CHECK(bmds_game_text_width("ab\nabcd", 2) == 64);
-        CHECK(bmds_game_text_width("\xc3\xa9t\xc3\xa9", 1) == 24); // été: three characters
+TEST_CASE("Game text: the system's fonts through the font calls; unscii by default") {
+        const bmds::BitmapFont &u = bmds::Fonts::unscii16;
+        CHECK(bmds_game_text_width(BMDS_GAME_FONT_DEFAULT, "abc") == 24);
+        const int32_t big = bmds_game_font_scaled(2);
+        REQUIRE(big >= 0);
+        CHECK(bmds_game_font_scaled(2) == big); // kept
+        CHECK(bmds_game_font("unscii 32") == big);
+        CHECK(bmds_game_text_width(big, "ab\nabcd") == 64);
+        CHECK(bmds_game_text_width(BMDS_GAME_FONT_DEFAULT, "\xc3\xa9t\xc3\xa9") == 24); // été: three characters
+        CHECK(bmds_game_line_height(BMDS_GAME_FONT_DEFAULT) == 16);
+        CHECK(bmds_game_line_height(big) == 32);
         Picture p(16, 16, BMDS_PIXEL_L8);
-        CHECK(bmds_canvas_text(&p.canvas, 0, 0, "A", 1, 1) == 8);
+        CHECK(bmds_canvas_text(&p.canvas, BMDS_GAME_FONT_DEFAULT, 0, 0, "A", 1) == 8);
         // Each row as the glyph's bits.
-        const unsigned char *a = bmds_game_font16['A' - 0x20];
+        const bmds::Glyph a = u.glyph('A');
         for (int32_t y = 0; y < 16; ++y)
-                for (int32_t x = 0; x < 8; ++x) CHECK((p.at(x, y) != 0) == ((a[y] & (0x80 >> x)) != 0));
-        CHECK(p.damage() == "0,0 8x16;");
-        // Not in the font: '?'. Latin-1's: its own.
-        Picture q(8, 16, BMDS_PIXEL_L8), r(8, 16, BMDS_PIXEL_L8);
-        bmds_canvas_text(&q.canvas, 0, 0, "\xe2\x82\xac", 1, 1); // the euro sign
-        bmds_canvas_text(&r.canvas, 0, 0, "?", 1, 1);
-        CHECK(q.pixels == r.pixels);
-        Picture s(8, 16, BMDS_PIXEL_L8);
-        bmds_canvas_text(&s.canvas, 0, 0, "\xc3\xa9", 1, 1);
-        const unsigned char *e = bmds_game_font16[0xe9 - 0xa0 + 95];
-        CHECK((s.at(0, 0) != 0) == ((e[0] & 0x80) != 0));
-        CHECK(s.pixels != r.pixels);
+                for (int32_t x = 0; x < 8; ++x) CHECK((p.at(x, y) != 0) == ((a.rows[y] & (0x80 >> x)) != 0));
+        CHECK(p.damage() == "0,0 10x16;"); // two pixels either side for smoothed ink, cut to the clip
+        // Beyond Latin-1 now: the euro sign is unscii's own glyph.
+        Picture q(8, 16, BMDS_PIXEL_L8);
+        bmds_canvas_text(&q.canvas, BMDS_GAME_FONT_DEFAULT, 0, 0, "\xe2\x82\xac", 1);
+        const bmds::Glyph euro = u.glyph(0x20ac);
+        for (int32_t y = 0; y < 16; ++y)
+                for (int32_t x = 0; x < 8; ++x) CHECK((q.at(x, y) != 0) == ((euro.rows[y] & (0x80 >> x)) != 0));
         // Scaled: each pixel 2x2; clipped at the edge, the damage too.
         Picture t(12, 40, BMDS_PIXEL_RGB565);
-        bmds_canvas_text(&t.canvas, 0, 0, "A", 0xffff, 2);
-        for (int32_t y = 0; y < 32; ++y) CHECK((t.at(5, y) != 0) == ((a[y / 2] & (0x80 >> 2)) != 0));
+        bmds_canvas_text(&t.canvas, big, 0, 0, "A", 0xffff);
+        for (int32_t y = 0; y < 32; ++y) CHECK((t.at(5, y) != 0) == ((a.rows[y / 2] & (0x80 >> 2)) != 0));
         CHECK(t.damage() == "0,0 12x32;");
+        // A TrueType font smooths into B, G, R (some pixels between) and sharpens into L8.
+        const int32_t sans = bmds_game_font("IBM Plex Sans 16");
+        REQUIRE(sans >= 0);
+        Picture smooth(60, 24, BMDS_PIXEL_BGR24);
+        CHECK(bmds_canvas_text(&smooth.canvas, sans, 2, 2, "Aw", 0xffffff) == bmds_game_text_width(sans, "Aw"));
+        unsigned between = 0;
+        for (int32_t y = 0; y < 24; ++y)
+                for (int32_t x = 0; x < 60; ++x) {
+                        const uint32_t v = smooth.at(x, y) & 0xff;
+                        between += v != 0 && v != 0xff;
+                }
+        CHECK(between > 0);
+        Picture idx(60, 24, BMDS_PIXEL_L8);
+        bmds_canvas_text(&idx.canvas, sans, 2, 2, "Aw", 7);
+        for (int32_t y = 0; y < 24; ++y)
+                for (int32_t x = 0; x < 60; ++x) CHECK((idx.at(x, y) == 0 || idx.at(x, y) == 7));
 }
 
-TEST_CASE("Game text: drawn straight into the pixels, as runs of fills drew it, clipped, in each format") {
-        // The reference: the glyphs' set bits as fills, as text was drawn before.
+TEST_CASE("Game text: unscii drawn as its set bits, clipped, in each format") {
+        // The reference: the glyphs' set bits as fills.
         const auto reference = [](bmds_canvas_t *c, int32_t x, int32_t y, const char *text, uint32_t pixel,
                                   int32_t scale) {
                 for (int32_t cx = x; *text != 0; ++text, cx += 8 * scale) {
-                        const unsigned char *g = bmds_game_font16[*text - 0x20];
+                        const bmds::Glyph g = bmds::Fonts::unscii16.glyph(uint8_t(*text));
                         for (int32_t row = 0; row < 16; ++row)
                                 for (int32_t col = 0; col < 8; ++col)
-                                        if ((g[row] & (0x80 >> col)) != 0)
+                                        if ((g.rows[row] & (0x80 >> col)) != 0)
                                                 bmds_canvas_fill(c, cx + col * scale, y + row * scale, scale, scale,
                                                                  pixel);
                 }
@@ -520,7 +540,8 @@ TEST_CASE("Game text: drawn straight into the pixels, as runs of fills drew it, 
                                 const bmds_rect_t clip = {2, 1, 55, 40};
                                 bmds_canvas_set_clip(&got.canvas, &clip);
                                 bmds_canvas_set_clip(&want.canvas, &clip);
-                                bmds_canvas_text(&got.canvas, at[0], at[1], "Hi, 9!", 0x123456, scale);
+                                bmds_canvas_text(&got.canvas, bmds_game_font_scaled(scale), at[0], at[1], "Hi, 9!",
+                                                 0x123456);
                                 reference(&want.canvas, at[0], at[1], "Hi, 9!", 0x123456, scale);
                                 CHECK(got.pixels == want.pixels);
                         }

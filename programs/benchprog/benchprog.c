@@ -675,7 +675,7 @@ static int draw_sample(void *arg, double *out) {
                                 pixels += Sprite * Sprite;
                                 break;
                         default:
-                                bmds_canvas_text(cv, x, y, "The quick brown fox jumps", px, 1);
+                                bmds_canvas_text(cv, BMDS_GAME_FONT_DEFAULT, x, y, "The quick brown fox jumps", px);
                                 pixels += 25;
                                 break;
                 }

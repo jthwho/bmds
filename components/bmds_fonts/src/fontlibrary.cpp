@@ -339,7 +339,7 @@ Result<Font> FontLibrary::openLocked(const FontName &name, int depth) {
                 const unsigned size = want.size != 0 ? want.size : height;
                 unsigned       scale = (size + height / 2) / height;
                 if (scale < 1) scale = 1;
-                if (scale > 8) scale = 8;
+                if (scale > 15) scale = 15; // unscii to 240 px (sizes stop at 255)
                 f._scale = static_cast<uint8_t>(scale);
                 f._size = static_cast<uint16_t>(height * scale);
                 f._metrics.ascent = static_cast<int16_t>(r.bitmapAscent * scale);

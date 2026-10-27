@@ -1,0 +1,13 @@
+--- a/stb_truetype.h
++++ b/stb_truetype.h
+@@ -1792,6 +1792,10 @@
+             was_off = 0;
+             next_move = 1 + ttUSHORT(endPtsOfContours+j*2);
+             ++j;
++            // BMDS: an empty contour (its end the same as the one before) is skipped, as FreeType does;
++            // else next_move never matches again and the contours after it are joined into one.
++            while (j < numberOfContours && 1 + ttUSHORT(endPtsOfContours+j*2) == next_move)
++               ++j;
+          } else {
+             if (!(flags & 1)) { // if it's a curve
+                if (was_off) // two off-curve control points in a row means interpolate an on-curve midpoint

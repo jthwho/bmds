@@ -45,7 +45,7 @@ namespace {
         // The deepest nesting of compound glyphs (which also stops a glyph containing itself), and
         // the most points a glyph may have with its parts: what stb_truetype allocates for.
         constexpr unsigned MaxCompoundDepth = 8;
-        constexpr uint32_t MaxGlyphPoints = 16384;
+        constexpr uint32_t MaxGlyphPoints = 65536; // a simple glyph's most (hand-traced fonts have 21,000)
 
         // The largest glyph box drawn, in pixels on a side: a damaged box is refused, not drawn.
         constexpr uint32_t MaxBoxSide = 4 * FontFace::MaxPixelSize;
@@ -288,19 +288,21 @@ Error FontFace::open(ByteSpan data) {
                 previous = offset;
         }
 
-        // cmap: a Unicode subtable, format 12 over format 4; stb_truetype needs one to open.
+        // cmap: a Unicode subtable, format 12 over format 4; else a symbol font's (Windows, encoding 0,
+        // format 4: its characters at U+F020-F0FF, looked up there as Windows does).
         const Table cmap{file.p + tables[Cmap].at, tables[Cmap].length};
         uint16_t    encodings = 0;
         if (!cmap.u16(2, encodings) || !cmap.has(4, uint32_t(encodings) * 8)) return Error::CorruptData;
-        uint32_t best = 0;
+        uint32_t best = 0, symbol = 0;
         uint16_t bestFormat = 0;
         for (uint32_t i = 0; i < encodings; ++i) {
                 const uint8_t *r = cmap.p + 4 + i * 8;
                 const uint16_t platform = be16(r), encoding = be16(r + 2);
                 const uint32_t at = be32(r + 4);
                 const bool     unicode = platform == 0 || (platform == 3 && (encoding == 1 || encoding == 10));
+                const bool     symbolic = platform == 3 && encoding == 0;
                 uint16_t       format = 0;
-                if (!unicode || !cmap.u16(at, format)) continue;
+                if ((!unicode && !symbolic) || !cmap.u16(at, format)) continue;
                 if (format == 4) {
                         uint16_t segX2 = 0;
                         if (!cmap.u16(at + 6, segX2) || segX2 == 0 || (segX2 & 1) != 0 ||
@@ -314,12 +316,21 @@ Error FontFace::open(ByteSpan data) {
                 } else {
                         continue;
                 }
+                if (symbolic) {
+                        if (format == 4 && symbol == 0) symbol = at;
+                        continue;
+                }
                 if (format > bestFormat) {
                         best = at;
                         bestFormat = format;
                 }
         }
-        if (bestFormat == 0) return Error::NotSupported; // no Unicode map we read
+        if (bestFormat == 0 && symbol != 0) {
+                best = symbol;
+                bestFormat = 4;
+                _symbol = true;
+        }
+        if (bestFormat == 0) return Error::NotSupported; // no map we read
 
         if (stbtt_InitFont(reinterpret_cast<stbtt_fontinfo *>(_stb), file.p, 0) == 0) return Error::CorruptData;
 
@@ -383,7 +394,7 @@ Error FontFace::open(ByteSpan data) {
         if (_kernLookupCount == 0) _gpos = 0; // no kerning there: the kern table, if any
 
         _glyphCount = glyphCount;
-        for (uint32_t c = 0; c < 256; ++c) _latin[c] = cmapLookup(c);
+        for (uint32_t c = 0; c < 256; ++c) _latin[c] = _symbol ? symbolLookup(c) : cmapLookup(c);
         if (!readName(16, _family, _familyLength)) (void)readName(1, _family, _familyLength);
         if (!readName(17, _style, _styleLength)) (void)readName(2, _style, _styleLength);
         return Error::Ok;
@@ -392,6 +403,11 @@ Error FontFace::open(ByteSpan data) {
 uint16_t FontFace::glyphIndex(uint32_t codepoint) const {
         if (codepoint < 256) return _latin[codepoint];
         return cmapLookup(codepoint);
+}
+
+uint16_t FontFace::symbolLookup(uint32_t codepoint) const {
+        const uint16_t g = cmapLookup(codepoint);
+        return g != 0 || codepoint < 0x20 || codepoint > 0xff ? g : cmapLookup(0xf000 + codepoint);
 }
 
 uint16_t FontFace::cmapLookup(uint32_t codepoint) const {
@@ -585,18 +601,22 @@ Error FontFace::checkGlyph(uint16_t glyph, unsigned depth, uint32_t &points) con
         const int16_t contours = int16_t(contours16);
         if (contours > 0) {
                 uint32_t n = 0;
+                bool     lonePoint = false; // the last contour with points has one
                 for (int16_t c = 0; c < contours; ++c) {
                         uint16_t e = 0;
-                        if (!g.u16(10 + uint32_t(c) * 2, e) || (c > 0 && e < n)) return Error::CorruptData;
-                        // A last contour of one point would have stb_truetype read past its points.
-                        if (c == contours - 1 && c > 0 && e == n) return Error::CorruptData;
+                        // Ends never go back; one the same as the last is an empty contour (fonts have
+                        // them: Milea's), skipped (stb_truetype's bmds-empty-contours.diff).
+                        if (!g.u16(10 + uint32_t(c) * 2, e) || (c > 0 && uint32_t(e) + 1 < n))
+                                return Error::CorruptData;
+                        if (c > 0 && uint32_t(e) + 1 == n) continue;
+                        lonePoint = e == n;
                         n = uint32_t(e) + 1;
                 }
-                if (contours == 1 && n == 1) return Error::CorruptData;
                 uint16_t       instructions = 0;
                 const uint32_t insAt = 10 + uint32_t(contours) * 2;
                 if (!g.u16(insAt, instructions)) return Error::CorruptData;
                 uint32_t at = insAt + 2 + instructions, xBytes = 0, yBytes = 0;
+                uint8_t  lastFlags = 0;
                 for (uint32_t i = 0; i < n;) {
                         if (!g.has(at, 1)) return Error::CorruptData;
                         const uint8_t flags = g.p[at++];
@@ -609,8 +629,12 @@ Error FontFace::checkGlyph(uint16_t glyph, unsigned depth, uint32_t &points) con
                         xBytes += repeat * ((flags & 2) != 0 ? 1 : (flags & 16) != 0 ? 0 : 2);
                         yBytes += repeat * ((flags & 4) != 0 ? 1 : (flags & 32) != 0 ? 0 : 2);
                         i += repeat;
+                        lastFlags = flags;
                 }
                 if (!g.has(at, xBytes + yBytes)) return Error::CorruptData;
+                // A last contour of one off-curve point would have stb_truetype read a point past its
+                // allocation. One on-curve point (a hinting anchor, as DejaVu's) is read safely.
+                if (lonePoint && (lastFlags & 1) == 0) return Error::CorruptData;
                 points += n + 2u * uint32_t(contours);
                 return points > MaxGlyphPoints ? Error::CorruptData : Error::Ok;
         }
@@ -646,8 +670,10 @@ Result<FontFace::GlyphBox> FontFace::box(uint16_t glyph, unsigned pixelSize) con
         int         x0 = 0, y0 = 0, x1 = 0, y1 = 0;
         stbtt_GetGlyphBitmapBoxSubpixel(reinterpret_cast<const stbtt_fontinfo *>(_stb), glyph, s, s, 0.0f, 0.0f, &x0,
                                         &y0, &x1, &y1);
-        if (x1 < x0 || y1 < y0 || uint32_t(x1 - x0) > MaxBoxSide || uint32_t(y1 - y0) > MaxBoxSide ||
-            x0 < -int(MaxBoxSide) || y0 < -int(MaxBoxSide) || x0 > int(MaxBoxSide) || y0 > int(MaxBoxSide))
+        // A box turned inside out says "nothing here" (Gemelli's compounds of a space): no ink.
+        if (x1 < x0 || y1 < y0) return makeResult(GlyphBox{});
+        if (uint32_t(x1 - x0) > MaxBoxSide || uint32_t(y1 - y0) > MaxBoxSide || x0 < -int(MaxBoxSide) ||
+            y0 < -int(MaxBoxSide) || x0 > int(MaxBoxSide) || y0 > int(MaxBoxSide))
                 return makeError<GlyphBox>(Error::CorruptData);
         GlyphBox b;
         if (x1 > x0 && y1 > y0) {

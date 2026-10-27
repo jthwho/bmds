@@ -843,3 +843,45 @@ _Static_assert(offsetof(bmds_surface_info_t, full_screen) == 4 && offsetof(bmds_
 _Static_assert(offsetof(bmds_surface_event_t, flags) == 4 && offsetof(bmds_surface_event_t, time_ns) == 8 &&
                        offsetof(bmds_surface_event_t, data) == 16 && sizeof(bmds_surface_event_t) == 32,
                "ABI: bmds_surface_event_t");
+
+/* Fonts (devplan/fonts.md §4e; slots 127-132, 2026-10-26). */
+_Static_assert(BMDS_SYS_FONT_OPEN == 127 && BMDS_SYS_FONT_INFO == 128 && BMDS_SYS_TEXT_MEASURE == 129 &&
+                       BMDS_SYS_TEXT_DRAW == 130 && BMDS_SYS_FONT_LIST == 131 && BMDS_SYS_FONT_CLOSE == 132,
+               "ABI: slots FONT_*, TEXT_*");
+_Static_assert(BMDS_FONT_NAME_MAX == 88 && BMDS_FONT_BOLD == 0x1 && BMDS_FONT_ITALIC == 0x2, "ABI: font styles");
+_Static_assert(BMDS_FONT_ROLE_NONE == 0 && BMDS_FONT_ROLE_UI == 1 && BMDS_FONT_ROLE_MONO == 2 &&
+                       BMDS_FONT_ROLE_TITLE == 3 && BMDS_FONT_ROLE_TERMINAL == 4,
+               "ABI: font roles");
+_Static_assert(BMDS_FONT_BITMAP == 0x1 && BMDS_FONT_FIXED == 0x2 && BMDS_FONT_MADE_UP_BOLD == 0x4, "ABI: font flags");
+_Static_assert(BMDS_TEXT_OPAQUE == 0x1 && BMDS_TEXT_SMOOTH == 0x2 && BMDS_TEXT_SHARP == 0x4, "ABI: text flags");
+_Static_assert(offsetof(bmds_font_info_t, pixel_size) == 4 && offsetof(bmds_font_info_t, ascent) == 8 &&
+                       offsetof(bmds_font_info_t, descent) == 12 && offsetof(bmds_font_info_t, line_height) == 16 &&
+                       offsetof(bmds_font_info_t, max_advance) == 20 && offsetof(bmds_font_info_t, flags) == 24 &&
+                       offsetof(bmds_font_info_t, style) == 28 && offsetof(bmds_font_info_t, face) == 32 &&
+                       offsetof(bmds_font_info_t, name) == 36 && sizeof(bmds_font_info_t) == 124,
+               "ABI: bmds_font_info_t");
+_Static_assert(offsetof(bmds_text_extent_t, width) == 4 && offsetof(bmds_text_extent_t, bytes) == 8 &&
+                       offsetof(bmds_text_extent_t, height) == 12 && sizeof(bmds_text_extent_t) == 16,
+               "ABI: bmds_text_extent_t");
+_Static_assert(offsetof(bmds_font_face_t, style) == 4 && offsetof(bmds_font_face_t, weight) == 8 &&
+                       offsetof(bmds_font_face_t, flags) == 12 && offsetof(bmds_font_face_t, glyphs) == 16 &&
+                       offsetof(bmds_font_face_t, bitmap_size) == 20 && offsetof(bmds_font_face_t, family) == 24 &&
+                       offsetof(bmds_font_face_t, style_name) == 88 && offsetof(bmds_font_face_t, path) == 120 &&
+                       sizeof(bmds_font_face_t) == 248,
+               "ABI: bmds_font_face_t");
+#if UINTPTR_MAX == 0xffffffffu // (pointers inside)
+_Static_assert(offsetof(bmds_font_spec_t, flags) == 4 && offsetof(bmds_font_spec_t, name) == 8 &&
+                       offsetof(bmds_font_spec_t, family) == 12 && offsetof(bmds_font_spec_t, role) == 16 &&
+                       offsetof(bmds_font_spec_t, pixel_size) == 20 && offsetof(bmds_font_spec_t, style) == 24 &&
+                       sizeof(bmds_font_spec_t) == 28,
+               "ABI: bmds_font_spec_t");
+_Static_assert(offsetof(bmds_text_draw_t, font) == 4 && offsetof(bmds_text_draw_t, pixels) == 8 &&
+                       offsetof(bmds_text_draw_t, format) == 12 && offsetof(bmds_text_draw_t, width) == 16 &&
+                       offsetof(bmds_text_draw_t, height) == 20 && offsetof(bmds_text_draw_t, stride) == 24 &&
+                       offsetof(bmds_text_draw_t, clip_x) == 28 && offsetof(bmds_text_draw_t, clip_width) == 36 &&
+                       offsetof(bmds_text_draw_t, x) == 44 && offsetof(bmds_text_draw_t, color) == 52 &&
+                       offsetof(bmds_text_draw_t, background) == 56 && offsetof(bmds_text_draw_t, flags) == 60 &&
+                       offsetof(bmds_text_draw_t, max_width) == 64 && offsetof(bmds_text_draw_t, text) == 68 &&
+                       offsetof(bmds_text_draw_t, length) == 72 && sizeof(bmds_text_draw_t) == 76,
+               "ABI: bmds_text_draw_t");
+#endif

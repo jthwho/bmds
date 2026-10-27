@@ -1717,20 +1717,21 @@ namespace angel {
                 }
                 int scaleOf(asIScriptGeneric *gen, asUINT n) {
                         const int s = argInt(gen, n);
-                        return s < 1 ? 1 : s > 64 ? 64 : s;
+                        return s < 1 ? 1 : s > 15 ? 15 : s; // unscii at 16-240 px
                 }
                 void text(asIScriptGeneric *gen) {
                         Text t;
                         formatValue(gen->GetEngine(), t, gen->GetArgAddress(2), gen->GetArgTypeId(2));
                         Drawing d(gen);
-                        gen->SetReturnDWord(
-                                asDWORD(bmds_canvas_text(d.canvas(), argInt(gen, 0), argInt(gen, 1), t.data(),
-                                                         d.pixel(argColor(gen, 3)), scaleOf(gen, 4))));
+                        gen->SetReturnDWord(asDWORD(bmds_canvas_text(d.canvas(), bmds_game_font_scaled(scaleOf(gen, 4)),
+                                                                     argInt(gen, 0), argInt(gen, 1), t.data(),
+                                                                     d.pixel(argColor(gen, 3)))));
                 }
                 void textWidth(asIScriptGeneric *gen) {
                         Text t;
                         formatValue(gen->GetEngine(), t, gen->GetArgAddress(0), gen->GetArgTypeId(0));
-                        gen->SetReturnDWord(asDWORD(bmds_game_text_width(t.data(), scaleOf(gen, 1))));
+                        gen->SetReturnDWord(
+                                asDWORD(bmds_game_text_width(bmds_game_font_scaled(scaleOf(gen, 1)), t.data())));
                 }
                 void textHeight(asIScriptGeneric *gen) {
                         gen->SetReturnDWord(asDWORD(BMDS_GAME_GLYPH_HEIGHT * scaleOf(gen, 0)));
@@ -2411,8 +2412,7 @@ namespace angel {
                             "Fills the area of one colour around (x, y) with another (QBasic's PAINT).");
                         add(type, "int text(int x, int y, const ?&in value, uint color, int scale = 1)", text,
                             "Writes a value (text, a number...) with its top left at (x, y), each letter 8 x 16 "
-                            "pixels times "
-                            "scale; its width.");
+                            "pixels times scale (1-15); its width.");
                         add(type, "void image(Image@ image, int x, int y)", drawImage,
                             "Draws an image with its top left at (x, y), leaving out its transparent pixels.");
                         add(type, "void image(Image@ image, int x, int y, int width, int height)", drawImageScaled,

@@ -1477,6 +1477,9 @@ static int stbtt_InitFont_internal(stbtt_fontinfo *info, unsigned char *data, in
                   // MS/Unicode
                   info->index_map = cmap + ttULONG(data+encoding_record+4);
                   break;
+               case STBTT_MS_EID_SYMBOL: // BMDS: a symbol font opens too (its map read by FontFace)
+                  if (info->index_map == 0) info->index_map = cmap + ttULONG(data+encoding_record+4);
+                  break;
             }
             break;
         case STBTT_PLATFORM_ID_UNICODE:
@@ -1671,6 +1674,16 @@ static int stbtt__close_shape(stbtt_vertex *vertices, int num_vertices, int was_
    return num_vertices;
 }
 
+// BMDS: a compound part's transformed coordinate, kept in a vertex's range: a scale or offset can
+// put it past 16 bits, and the conversion was undefined (found by the fuzzer).
+static stbtt_vertex_type stbtt__bmds_coord(float f)
+{
+   if (!(f == f)) return 0;
+   if (f < -32768.0f) return -32768;
+   if (f > 32767.0f) return 32767;
+   return (stbtt_vertex_type) f;
+}
+
 static int stbtt__GetGlyphShapeTT(const stbtt_fontinfo *info, int glyph_index, stbtt_vertex **pvertices)
 {
    stbtt_int16 numberOfContours;
@@ -1792,6 +1805,10 @@ static int stbtt__GetGlyphShapeTT(const stbtt_fontinfo *info, int glyph_index, s
             was_off = 0;
             next_move = 1 + ttUSHORT(endPtsOfContours+j*2);
             ++j;
+            // BMDS: an empty contour (its end the same as the one before) is skipped, as FreeType does;
+            // else next_move never matches again and the contours after it are joined into one.
+            while (j < numberOfContours && 1 + ttUSHORT(endPtsOfContours+j*2) == next_move)
+               ++j;
          } else {
             if (!(flags & 1)) { // if it's a curve
                if (was_off) // two off-curve control points in a row means interpolate an on-curve midpoint
@@ -1863,11 +1880,11 @@ static int stbtt__GetGlyphShapeTT(const stbtt_fontinfo *info, int glyph_index, s
                stbtt_vertex* v = &comp_verts[i];
                stbtt_vertex_type x,y;
                x=v->x; y=v->y;
-               v->x = (stbtt_vertex_type)(m * (mtx[0]*x + mtx[2]*y + mtx[4]));
-               v->y = (stbtt_vertex_type)(n * (mtx[1]*x + mtx[3]*y + mtx[5]));
+               v->x = stbtt__bmds_coord(m * (mtx[0]*x + mtx[2]*y + mtx[4]));
+               v->y = stbtt__bmds_coord(n * (mtx[1]*x + mtx[3]*y + mtx[5]));
                x=v->cx; y=v->cy;
-               v->cx = (stbtt_vertex_type)(m * (mtx[0]*x + mtx[2]*y + mtx[4]));
-               v->cy = (stbtt_vertex_type)(n * (mtx[1]*x + mtx[3]*y + mtx[5]));
+               v->cx = stbtt__bmds_coord(m * (mtx[0]*x + mtx[2]*y + mtx[4]));
+               v->cy = stbtt__bmds_coord(n * (mtx[1]*x + mtx[3]*y + mtx[5]));
             }
             // Append vertices.
             tmp = (stbtt_vertex*)STBTT_malloc((num_vertices+comp_num_verts)*sizeof(stbtt_vertex), info->userdata);

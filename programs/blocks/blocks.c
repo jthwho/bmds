@@ -455,12 +455,14 @@ static void draw_number(bmds_canvas_t *c, int32_t x, int32_t y, uint32_t value) 
         char text[16];
         snprintf(text, sizeof(text), "%u", (unsigned)value);
         bmds_canvas_fill(c, x, y, PANEL_W, 32, bmds_canvas_pixel(c, BACKGROUND));
-        bmds_canvas_text(c, x + PANEL_W - bmds_game_text_width(text, 2), y, text, bmds_canvas_pixel(c, VALUE), 2);
+        const int32_t big = bmds_game_font_scaled(2);
+        bmds_canvas_text(c, big, x + PANEL_W - bmds_game_text_width(big, text), y, text, bmds_canvas_pixel(c, VALUE));
         return;
 }
 
 static void centred(bmds_canvas_t *c, int32_t y, const char *text, uint32_t rgb, int32_t scale) {
-        bmds_canvas_text(c, (WIDTH - bmds_game_text_width(text, scale)) / 2, y, text, bmds_canvas_pixel(c, rgb), scale);
+        const int32_t font = bmds_game_font_scaled(scale);
+        bmds_canvas_text(c, font, (WIDTH - bmds_game_text_width(font, text)) / 2, y, text, bmds_canvas_pixel(c, rgb));
         return;
 }
 
@@ -503,8 +505,9 @@ static void draw_overlay(bmds_canvas_t *c, state_t *s) {
                 const entry_t *e = &s->table[i];
                 snprintf(line, sizeof(line), "%2u %-12s %8u  L%-2u", (unsigned)(i + 1), e->name, (unsigned)e->score,
                          (unsigned)e->level);
-                bmds_canvas_text(c, (WIDTH - 29 * BMDS_GAME_GLYPH_WIDTH) / 2, 124 + (int32_t)i * 16, line,
-                                 bmds_canvas_pixel(c, (int)i == s->placed ? ACCENT : VALUE), 1);
+                bmds_canvas_text(c, BMDS_GAME_FONT_DEFAULT, (WIDTH - 29 * BMDS_GAME_GLYPH_WIDTH) / 2,
+                                 124 + (int32_t)i * 16, line,
+                                 bmds_canvas_pixel(c, (int)i == s->placed ? ACCENT : VALUE));
         }
         centred(c, 288, s->hints[0], LABEL, 1);
         centred(c, 304, s->hints[1], LABEL, 1);
@@ -519,11 +522,11 @@ static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
                 bmds_canvas_rect(c, FIELD_X - 2, FIELD_Y - 2, BLOCKS_WIDTH * CELL + 4, ROWS * CELL + 4,
                                  bmds_canvas_pixel(c, FRAME));
                 const uint32_t label = bmds_canvas_pixel(c, LABEL);
-                bmds_canvas_text(c, LEFT_X, FIELD_Y, "HOLD", label, 1);
-                bmds_canvas_text(c, LEFT_X, 120, "SCORE", label, 1);
-                bmds_canvas_text(c, LEFT_X, 190, "LEVEL", label, 1);
-                bmds_canvas_text(c, LEFT_X, 260, "LINES", label, 1);
-                bmds_canvas_text(c, RIGHT_X, FIELD_Y, "NEXT", label, 1);
+                bmds_canvas_text(c, BMDS_GAME_FONT_DEFAULT, LEFT_X, FIELD_Y, "HOLD", label);
+                bmds_canvas_text(c, BMDS_GAME_FONT_DEFAULT, LEFT_X, 120, "SCORE", label);
+                bmds_canvas_text(c, BMDS_GAME_FONT_DEFAULT, LEFT_X, 190, "LEVEL", label);
+                bmds_canvas_text(c, BMDS_GAME_FONT_DEFAULT, LEFT_X, 260, "LINES", label);
+                bmds_canvas_text(c, BMDS_GAME_FONT_DEFAULT, RIGHT_X, FIELD_Y, "NEXT", label);
                 memset(s->shown, 0xff, sizeof(s->shown));
                 s->shown_hold = s->shown_hold_dim = 0xff;
                 memset(s->shown_next, 0xff, sizeof(s->shown_next));

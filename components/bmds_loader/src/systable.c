@@ -142,10 +142,17 @@ int32_t bmds_k_fs_serve(const bmds_fs_serve_t *config);
 int32_t bmds_k_gui_open(uint32_t display, uint32_t flags);
 int32_t bmds_k_gui_canvas_surface(int32_t conn, uint32_t canvas, const bmds_surface_config_t *config);
 int32_t bmds_k_fs_watch(const char *path, uint32_t flags);
+int32_t bmds_k_font_open(const bmds_font_spec_t *spec);
+int32_t bmds_k_font_info(int32_t fd, bmds_font_info_t *info);
+int32_t bmds_k_text_measure(int32_t fd, const char *text, uint32_t length, uint32_t max_width,
+                            bmds_text_extent_t *extent);
+int32_t bmds_k_text_draw(const bmds_text_draw_t *draw);
+int32_t bmds_k_font_list(uint32_t index, bmds_font_face_t *face);
+int32_t bmds_k_font_close(int32_t font);
 int32_t bmds_k_audio_speak(const bmds_speak_config_t *config);
 int32_t bmds_k_audio_speak_info(int32_t fd, bmds_speak_info_t *info);
 
-#define SLOTS 127
+#define SLOTS 133
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -287,10 +294,16 @@ static const struct {
                 [BMDS_SYS_GUI_OPEN] = (bmds_sys_fn_t)bmds_k_gui_open,
                 [BMDS_SYS_GUI_CANVAS_SURFACE] = (bmds_sys_fn_t)bmds_k_gui_canvas_surface,
                 [BMDS_SYS_FS_WATCH] = (bmds_sys_fn_t)bmds_k_fs_watch,
+                [BMDS_SYS_FONT_OPEN] = (bmds_sys_fn_t)bmds_k_font_open,
+                [BMDS_SYS_FONT_INFO] = (bmds_sys_fn_t)bmds_k_font_info,
+                [BMDS_SYS_TEXT_MEASURE] = (bmds_sys_fn_t)bmds_k_text_measure,
+                [BMDS_SYS_TEXT_DRAW] = (bmds_sys_fn_t)bmds_k_text_draw,
+                [BMDS_SYS_FONT_LIST] = (bmds_sys_fn_t)bmds_k_font_list,
+                [BMDS_SYS_FONT_CLOSE] = (bmds_sys_fn_t)bmds_k_font_close,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_FS_WATCH + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_FONT_CLOSE + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

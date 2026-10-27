@@ -14,6 +14,7 @@
 #include <bmds/directorywatch.h>
 #include <bmds/errno.h>
 #include <bmds/fileformat.h>
+#include <bmds/font.h>
 #include <bmds/interrupt.h>
 #include <bmds/lineeditor.h>
 #include <bmds/memory.h>
@@ -201,6 +202,11 @@ ProgramControls *Process::controls() {
 
 void Process::releaseProgram() {
         for (Directory &d : _dirs) d.close();
+        if (_fonts != nullptr) {
+                for (int i = 0; i < MaxFonts; ++i) _fonts[i].~Font();
+                Memory::free(_fonts);
+                _fonts = nullptr;
+        }
         if (ProgramControls *c = _controls.exchange(nullptr, std::memory_order_acq_rel); c != nullptr)
                 c->unref(); // its surfaces keep theirs until they close
         if (_line != nullptr) {
@@ -251,6 +257,53 @@ int Process::openDirectories() const {
         Mutex::Locker locker(_lock, WaitForever);
         int           n = 0;
         for (const Directory &d : _dirs) n += d.isOpen() ? 1 : 0;
+        return n;
+}
+
+int32_t Process::fontAdd(const Font &font) {
+        Font *made = nullptr;
+        if (_fonts == nullptr) { // made outside the lock (an allocation may reclaim), installed under it
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(Font) * MaxFonts);
+                if (mem == nullptr) return -BMDS_ENOMEM;
+                made = static_cast<Font *>(mem);
+                for (int i = 0; i < MaxFonts; ++i) ::new (&made[i]) Font();
+        }
+        Mutex::Locker locker(_lock, WaitForever);
+        if (made != nullptr) {
+                if (_fonts == nullptr) {
+                        _fonts = made;
+                } else {
+                        for (int i = 0; i < MaxFonts; ++i) made[i].~Font();
+                        Memory::free(made);
+                }
+        }
+        for (int i = 0; i < MaxFonts; ++i)
+                if (!_fonts[i].isValid()) {
+                        _fonts[i] = font;
+                        return i;
+                }
+        return -BMDS_EMFILE;
+}
+
+bool Process::fontOf(int32_t id, Font &out) const {
+        Mutex::Locker locker(_lock, WaitForever);
+        if (_fonts == nullptr || id < 0 || id >= MaxFonts || !_fonts[id].isValid()) return false;
+        out = _fonts[id];
+        return true;
+}
+
+int32_t Process::fontClose(int32_t id) {
+        Font          closed; // dropped after the lock
+        Mutex::Locker locker(_lock, WaitForever);
+        if (_fonts == nullptr || id < 0 || id >= MaxFonts || !_fonts[id].isValid()) return -BMDS_EBADF;
+        closed = static_cast<Font &&>(_fonts[id]);
+        return 0;
+}
+
+int Process::openFonts() const {
+        Mutex::Locker locker(_lock, WaitForever);
+        int           n = 0;
+        for (int i = 0; _fonts != nullptr && i < MaxFonts; ++i) n += _fonts[i].isValid() ? 1 : 0;
         return n;
 }
 

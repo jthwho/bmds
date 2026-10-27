@@ -332,3 +332,54 @@ TEST_CASE("FontFace: the fuzzer's finds open and draw safely, or not at all") {
         }
         CHECK(files > 0);
 }
+
+TEST_CASE("FontFace: what other fonts do (edge.ttf, symbol.ttf from make-edge-fonts.py)") {
+        const auto loadTest = [](const char *name) {
+                std::ifstream in(std::string(BMDS_FONTS_TEST_DIR) + "/" + name, std::ios::binary);
+                REQUIRE(in.good());
+                return std::vector<uint8_t>(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        };
+        const std::vector<uint8_t> edge = loadTest("edge.ttf");
+        FontFace                   face;
+        REQUIRE(face.open(ByteSpan(edge.data(), edge.size())) == Error::Ok);
+        FontFace::GlyphBox   box;
+        std::vector<uint8_t> rows;
+
+        // An empty contour, then squares: each drawn, nothing joining them.
+        REQUIRE(render(face, face.glyphIndex('A'), 100, FontFace::Depth::Gray4, box, rows) == Error::Ok);
+        const int  mid = box.height / 2 - 6; // 35 px up: inside the first square, above the second
+        const auto at = [&](int x) {
+                return gray(rows, box, unsigned(x - box.x), unsigned(mid));
+        };
+        CHECK(at(30) == 15); // inside the first square (10-60 px)
+        CHECK(at(65) == 0);  // between them
+        // The two squares on the right (70-90 px across; 0-30 and 40-70 px up), not joined: nothing between.
+        const auto up = [&](int x, int y) {
+                return gray(rows, box, unsigned(x - box.x), unsigned(box.height - 1 - y));
+        };
+        CHECK(up(80, 15) == 15);
+        CHECK(up(80, 55) == 15);
+        CHECK(up(80, 35) == 0);
+
+        // A lone on-curve point last: drawn (a hinting anchor); a lone off-curve one: refused.
+        CHECK(face.box(face.glyphIndex('B'), 16).isOk());
+        CHECK(face.box(face.glyphIndex('C'), 16).error() == Error::CorruptData);
+
+        // A box turned inside out: nothing to draw, no error.
+        auto [empty, eerr] = face.box(face.glyphIndex('D'), 16);
+        REQUIRE(eerr == Error::Ok);
+        CHECK(empty.width == 0);
+        CHECK(empty.height == 0);
+
+        // 20,000 points: drawn.
+        REQUIRE(render(face, face.glyphIndex('E'), 40, FontFace::Depth::Gray4, box, rows) == Error::Ok);
+        CHECK(gray(rows, box, box.width / 2, box.height / 2) == 15);
+
+        // Only a symbol map: 0x20-0xFF found at U+F020-F0FF too.
+        const std::vector<uint8_t> sym = loadTest("symbol.ttf");
+        FontFace                   symbol;
+        REQUIRE(symbol.open(ByteSpan(sym.data(), sym.size())) == Error::Ok);
+        CHECK(symbol.glyphIndex('A') != 0);
+        CHECK(symbol.glyphIndex('A') == symbol.glyphIndex(0xf041));
+        CHECK(symbol.glyphIndex('B') == 0);
+}

@@ -20,7 +20,7 @@ namespace {
 
         // Columns a chunk at a time, and the band of rows composed at once (on the stack).
         constexpr int    Chunk = 512;
-        constexpr size_t Band = 3072;
+        constexpr size_t Band = 2048;
 
         struct Drawing {
                         Drawing(const TextTarget &t, const Font &f, const TextPaint &p, Simd::Kernel k)

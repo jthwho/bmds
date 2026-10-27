@@ -105,7 +105,7 @@ void ui_panel(bmds_canvas_t *c, bmds_rect_t r) {
 }
 
 void ui_line(bmds_canvas_t *c, int32_t x, int32_t y, const char *text, uint32_t rgb) {
-        (void)bmds_canvas_text(c, x, y, text, bmds_canvas_pixel(c, rgb), 1);
+        (void)bmds_canvas_text(c, BMDS_GAME_FONT_DEFAULT, x, y, text, bmds_canvas_pixel(c, rgb));
         return;
 }
 
