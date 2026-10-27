@@ -1,0 +1,23 @@
+IBM Plex Sans 14 bold | IBM Plex Sans | Bold | 14
+true false false false
+true true true
+true
+IBM Plex Mono 20 true true
+unscii 16 true 16 24
+48 32
+true 0
+true
+5 5 0 3
+unscii
+IBM Plex Mono
+IBM Plex Sans
+IBM Plex Serif
+unscii
+true true
+true
+true true true
+true
+true
+No font 'IBM Plex Sans 300': its size must be 4 to 255 pixels
+No font style 8 (FontStyle: Regular, Bold, Italic, Bold | Italic)
+No font '' (a family, a size, bold, italic: "IBM Plex Sans 14 bold"; or a role: ui, mono, title, terminal)

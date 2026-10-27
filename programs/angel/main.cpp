@@ -436,6 +436,7 @@ namespace {
                 angel::registerConsole(engine);
                 angel::registerFiles(engine);
                 angel::registerSystem(engine);
+                angel::registerFonts(engine);
                 angel::registerGraphics(engine);
                 angel::registerSound(engine);
                 angel::registerNetwork(engine);

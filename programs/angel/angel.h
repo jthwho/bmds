@@ -105,6 +105,7 @@ namespace angel {
         void registerConsole(asIScriptEngine *engine);
         void registerFiles(asIScriptEngine *engine);
         void registerSystem(asIScriptEngine *engine);
+        void registerFonts(asIScriptEngine *engine); // before the graphics, which draw with them
         void registerGraphics(asIScriptEngine *engine);
         void registerSound(asIScriptEngine *engine);
         void registerNetwork(asIScriptEngine *engine);
@@ -127,6 +128,11 @@ namespace angel {
         ImageInfo imageInfo(void *image);
         // Its pixels as 0xAARRGGBB into @p out (width × height), transparent where it is keyed.
         void imageArgb(void *image, uint32_t *out);
+
+        // A script's Font (fonts.cpp, opaque here) for drawing (graphics.cpp): its handle for
+        // libbmdsgame (null: `BMDS_GAME_FONT_DEFAULT`), and a reference let go of.
+        int32_t fontHandle(const void *font);
+        void    releaseFont(void *font);
 
         // A GUI canvas drawn as a Screen is (graphics.cpp's pictures, gui.cpp's Canvas). Its drawing
         // methods find their picture through the hooks (their auxiliary pointer): given the

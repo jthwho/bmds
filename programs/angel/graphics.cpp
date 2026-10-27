@@ -1727,6 +1727,27 @@ namespace angel {
                                                                      argInt(gen, 0), argInt(gen, 1), t.data(),
                                                                      d.pixel(argColor(gen, 3)))));
                 }
+                // text() in a font (argument @p fontArg, released here), over the picture or on a box of
+                // @p background (opaque).
+                void textInFont(asIScriptGeneric *gen, asUINT fontArg, bool opaque) {
+                        void          *font = gen->GetArgObject(fontArg);
+                        const uint32_t flags = gen->GetArgDWord(fontArg + 1) | (opaque ? BMDS_TEXT_OPAQUE : 0u);
+                        Text           t;
+                        formatValue(gen->GetEngine(), t, gen->GetArgAddress(2), gen->GetArgTypeId(2));
+                        {
+                                Drawing d(gen);
+                                gen->SetReturnDWord(asDWORD(bmds_canvas_text_flags(
+                                        d.canvas(), fontHandle(font), argInt(gen, 0), argInt(gen, 1), t.data(),
+                                        d.pixel(argColor(gen, 3)), opaque ? d.pixel(argColor(gen, 4)) : 0, flags)));
+                        }
+                        releaseFont(font);
+                }
+                void textFont(asIScriptGeneric *gen) {
+                        textInFont(gen, 4, false);
+                }
+                void textFontOn(asIScriptGeneric *gen) {
+                        textInFont(gen, 5, true);
+                }
                 void textWidth(asIScriptGeneric *gen) {
                         Text t;
                         formatValue(gen->GetEngine(), t, gen->GetArgAddress(0), gen->GetArgTypeId(0));
@@ -2413,6 +2434,16 @@ namespace angel {
                         add(type, "int text(int x, int y, const ?&in value, uint color, int scale = 1)", text,
                             "Writes a value (text, a number...) with its top left at (x, y), each letter 8 x 16 "
                             "pixels times scale (1-15); its width.");
+                        add(type,
+                            "int text(int x, int y, const ?&in value, uint color, const Font@ font, "
+                            "TextSmoothing smooth = TextSmoothing::Default)",
+                            textFont,
+                            "Writes a value in a font (null: unscii) over what is there, its first line's top left "
+                            "at (x, y), smoothed as the system's settings say unless smooth says; its width.");
+                        add(type,
+                            "int text(int x, int y, const ?&in value, uint color, uint background, const Font@ font, "
+                            "TextSmoothing smooth = TextSmoothing::Default)",
+                            textFontOn, "Writes a value in a font on a box of the background colour; its width.");
                         add(type, "void image(Image@ image, int x, int y)", drawImage,
                             "Draws an image with its top left at (x, y), leaving out its transparent pixels.");
                         add(type, "void image(Image@ image, int x, int y, int width, int height)", drawImageScaled,

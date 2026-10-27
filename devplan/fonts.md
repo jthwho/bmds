@@ -1,6 +1,6 @@
 # Fonts: one font library for the desktop, programs and angel
 
-Status: **steps 1-4 done** (2026-10-26: §6a, §6c-§6e; other fonts tested, §6f); planned the same day with the user (§8). Fills the
+Status: **steps 1-5 done** (2026-10-26: §6a, §6c-§6e, §6g; other fonts tested, §6f); planned the same day with the user (§8). Fills the
 roadmap's "A system font library (planned with the user 2026-10-15)".
 
 ## 1. Goal
@@ -543,6 +543,33 @@ picture, for tests and for looking).
 - **Not covered:** CFF outlines (`.otf`) and collections (`.ttc`). They are a large part of what
   people have: 442 of the 2,577 here. stb_truetype reads CFF, through a charstring interpreter
   that would need checking and fuzzing like the rest. A question for later.
+
+### 6g. Step 5, as built (2026-10-26)
+
+- **`Font`** (`programs/angel/fonts.cpp`): `Font(name)` (a name or a role, "ui", "mono 20"),
+  `Font(family, size, style = 0)`; `name`, `family`, `style` (the face's style name), `size`,
+  `ascent`, `descent`, `lineHeight`, `maxAdvance`, `bold`, `italic`, `bitmap`, `monospace`;
+  `width(value)` (the widest line) and `fit(text, maxWidth)` (bytes of the first line that fit).
+  `enum FontStyle { Regular, Bold, Italic }`, `array<string>@ fontFamilies()` (sorted).
+- **Changed from §4f:**
+  - **No `FontRole` enum or `systemFont()`:** roles are names (`Font("title")`), as in the
+    settings and the GUI's `font` property. `Terminal` and `System` are already classes in the
+    script API, and enum values aren't scoped here, so `FontRole::Terminal` would clash.
+  - **`TextSmoothing { Default, Smooth, Sharp }`,** the system's words, for the same reason
+    (`System` is a class).
+- **Sharing:** a program has 16 fonts, so fonts that come back with the same name share one
+  object (`Font("IBM Plex Sans 14")` is `Font("IBM Plex Sans", 14)`), and a font is closed when
+  the script lets go of it. A 17th at once raises an exception naming the limit; 90 opened one at
+  a time are fine (checked on the board).
+- **Drawing:** `Screen`, `Image` and `Canvas` get `text(x, y, value, color, font, smooth)` and
+  `text(x, y, value, color, background, font, smooth)` (each line on a box); a null font is
+  unscii 16. They go through libbmdsgame's new `bmds_canvas_text_flags()` (a background and
+  `text_draw`'s flags). The `scale` forms stay.
+- **Tests:** `tests/scripts/fonts.as` (names, sharing, metrics, measuring, drawing over, on a box
+  sharp, smoothed, a null font, the errors) gives the same output on the host and on the board.
+  The host's fake font calls gained opening by family and role, the face's style and `font_list`.
+  `api.lock` appended. The `fonts` example (each family in itself; size, smoothing, bold, italic
+  from the keys), and lesson 10 writes a line in IBM Plex.
 
 ## 7. ABI impact
 

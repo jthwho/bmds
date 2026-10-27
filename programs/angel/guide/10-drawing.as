@@ -36,6 +36,10 @@ for (int i = 0; i < 7; i++) w.fillCircle(400 + i * 30, 330, 12, hsv(i * 50, 1, 1
 // Text: where, what, which colour, and how big (2 is twice the size).
 w.text(20, 20, "My house", Color::White, 3);
 
+// Or in one of the system's fonts: its family, a size in pixels, bold or italic.
+Font sign("IBM Plex Sans 24 bold");
+w.text(20, 76, "Welcome", Color::Navy, sign);
+
 // The program ends here, but the window stays until you close it, so you can look at the
 // picture. w.save("picture.png") would save it as a file.
 

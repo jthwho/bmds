@@ -1632,3 +1632,37 @@ void Voice::set_volume(int)
 void Voice::speak(const string&in)
 void Voice::stop()
 void Voice::wait()
+# 2026-10-26: fonts step 5 (devplan/fonts.md §4f): Font, FontStyle, TextSmoothing, fontFamilies(),
+# text() in a font on Screen, Image and Canvas.
+Font@ Font(const string&in)
+Font@ Font(const string&in, int, int = 0)
+FontStyle::Bold = 1
+FontStyle::Italic = 2
+FontStyle::Regular = 0
+TextSmoothing::Default = 0
+TextSmoothing::Sharp = 4
+TextSmoothing::Smooth = 2
+bool Font::get_bitmap() const
+bool Font::get_bold() const
+bool Font::get_italic() const
+bool Font::get_monospace() const
+class Font
+enum FontStyle
+enum TextSmoothing
+int Canvas::text(int, int, const ?&in, uint, const Font@, TextSmoothing = TextSmoothing::Default)
+int Canvas::text(int, int, const ?&in, uint, uint, const Font@, TextSmoothing = TextSmoothing::Default)
+int Font::fit(const string&in, int) const
+int Font::get_ascent() const
+int Font::get_descent() const
+int Font::get_lineHeight() const
+int Font::get_maxAdvance() const
+int Font::get_size() const
+int Font::width(const ?&in) const
+int Image::text(int, int, const ?&in, uint, const Font@, TextSmoothing = TextSmoothing::Default)
+int Image::text(int, int, const ?&in, uint, uint, const Font@, TextSmoothing = TextSmoothing::Default)
+int Screen::text(int, int, const ?&in, uint, const Font@, TextSmoothing = TextSmoothing::Default)
+int Screen::text(int, int, const ?&in, uint, uint, const Font@, TextSmoothing = TextSmoothing::Default)
+string Font::get_family() const
+string Font::get_name() const
+string Font::get_style() const
+string[]@ fontFamilies()

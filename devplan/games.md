@@ -549,7 +549,8 @@ each tested before the next; Blocks (step 5) is its first user.
   The glyphs (3 KB) were generated from `thirdparty/unscii/unscii-16.hex` by `tools/gamefont`.
   Since 2026-10-26 (`fonts.md` §6e) text is the system's fonts, drawn by the OS (`text_draw`):
   `bmds_canvas_text(canvas, font, ...)`, unscii 16 by default, `bmds_game_font()` for any other,
-  `bmds_game_font_scaled()` for the old scales; the copy of unscii is gone.
+  `bmds_game_font_scaled()` for the old scales, `bmds_canvas_text_flags()` for a box or a
+  smoothing of its own; the copy of unscii is gone.
 - **Damage, kept by the canvas:** every drawing call adds what it changed (merged rectangles, 16
   kept, past that their bounds). The frame loop presents it, so a program that draws only what
   changes gets the cheap presents of §12 without saying anything; one that redraws everything

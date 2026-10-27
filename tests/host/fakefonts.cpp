@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The font system calls (slots 127-131, devplan/fonts.md §4e) for the host's fake system call
+ * The font system calls (slots 127-132, devplan/fonts.md §4e) for the host's fake system call
  * table (oss.cpp): the real FontLibrary (unscii and the IBM Plex files), glyph cache and
  * TextDraw behind handles of their own, as the kernel's fontcalls.cpp has them, so libbmdsgame's
  * text runs on the host as it does on the board.
@@ -94,9 +94,39 @@ namespace {
                 return StringView(text, nl != nullptr ? size_t(static_cast<const char *>(nl) - text) : length);
         }
 
+        uint32_t styleOf(const FontLibrary::FaceInfo &f) {
+                return (f.weight >= 600 ? BMDS_FONT_BOLD : 0u) | (f.italic ? BMDS_FONT_ITALIC : 0u);
+        }
+
+        void copyText(StringView from, char *to, size_t size) {
+                const size_t n = from.size() < size - 1 ? from.size() : size - 1;
+                std::memcpy(to, from.data(), n);
+                to[n] = 0;
+        }
+
         int32_t hostFontOpen(const bmds_font_spec_t *spec) {
-                if (spec == nullptr || spec->name == nullptr) return -BMDS_EINVAL;
-                auto [font, err] = state().library.open(StringView(spec->name));
+                if (spec == nullptr) return -BMDS_EINVAL;
+                if (spec->pixel_size != 0 &&
+                    (spec->pixel_size < FontName::MinSize || spec->pixel_size > FontName::MaxSize))
+                        return -BMDS_ERANGE;
+                FontName name;
+                if (spec->name != nullptr) {
+                        auto [parsed, err] = FontName::parse(StringView(spec->name));
+                        if (err == Error::OutOfRange) return -BMDS_ERANGE;
+                        if (err.isError()) return -BMDS_EINVAL;
+                        name = parsed;
+                } else if (spec->family != nullptr) {
+                        name = FontName::make(StringView(spec->family), uint16_t(spec->pixel_size),
+                                              uint8_t(spec->style));
+                } else {
+                        if (spec->role == BMDS_FONT_ROLE_NONE || spec->role > BMDS_FONT_ROLE_TERMINAL)
+                                return -BMDS_EINVAL;
+                        name.role = FontName::Role(spec->role);
+                        name.size = uint16_t(spec->pixel_size);
+                        name.style = uint8_t(spec->style);
+                        name.hasStyle = spec->style != 0;
+                }
+                auto [font, err] = state().library.open(name);
                 if (err.isError()) return -BMDS_EINVAL;
                 for (int32_t i = 0; i < MaxFds; ++i)
                         if (!state().fds[i].isValid()) {
@@ -109,13 +139,31 @@ namespace {
         int32_t hostFontInfo(int32_t fd, bmds_font_info_t *info) {
                 const Font *f = fontOf(fd);
                 if (f == nullptr) return -BMDS_EBADF;
+                const FontLibrary::FaceInfo face = state().library.face(f->faceIndex());
                 info->pixel_size = f->pixelSize();
                 info->ascent = f->metrics().ascent;
                 info->descent = f->metrics().descent;
                 info->line_height = f->metrics().lineHeight;
                 info->max_advance = f->metrics().maxAdvance;
-                info->flags = f->isBitmap() ? BMDS_FONT_BITMAP : 0u;
+                info->flags = (f->isBitmap() ? BMDS_FONT_BITMAP : 0u) | (face.fixedPitch ? BMDS_FONT_FIXED : 0u) |
+                              (f->isMadeUpBold() ? BMDS_FONT_MADE_UP_BOLD : 0u);
+                info->style = styleOf(face);
+                info->face = f->faceIndex();
                 (void)f->name().format(info->name, sizeof(info->name));
+                return 0;
+        }
+
+        int32_t hostFontList(uint32_t index, bmds_font_face_t *out) {
+                if (index >= state().library.faceCount()) return -BMDS_ENOENT;
+                const FontLibrary::FaceInfo f = state().library.face(index);
+                out->style = styleOf(f);
+                out->weight = f.weight;
+                out->flags = (f.bitmapSize != 0 ? BMDS_FONT_BITMAP : 0u) | (f.fixedPitch ? BMDS_FONT_FIXED : 0u);
+                out->glyphs = f.glyphs;
+                out->bitmap_size = f.bitmapSize;
+                copyText(f.family, out->family, sizeof(out->family));
+                copyText(f.style, out->style_name, sizeof(out->style_name));
+                copyText(f.path, out->path, sizeof(out->path));
                 return 0;
         }
 
@@ -169,6 +217,7 @@ void FakeFonts::install(bmds_sys_fn_t *slots) {
         slots[BMDS_SYS_FONT_INFO] = reinterpret_cast<bmds_sys_fn_t>(hostFontInfo);
         slots[BMDS_SYS_TEXT_MEASURE] = reinterpret_cast<bmds_sys_fn_t>(hostTextMeasure);
         slots[BMDS_SYS_TEXT_DRAW] = reinterpret_cast<bmds_sys_fn_t>(hostTextDraw);
+        slots[BMDS_SYS_FONT_LIST] = reinterpret_cast<bmds_sys_fn_t>(hostFontList);
         slots[BMDS_SYS_FONT_CLOSE] = reinterpret_cast<bmds_sys_fn_t>(hostFontClose);
         return;
 }

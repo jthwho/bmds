@@ -165,6 +165,15 @@ int32_t bmds_game_line_height(int32_t font);
  */
 int32_t bmds_canvas_text(bmds_canvas_t *canvas, int32_t font, int32_t x, int32_t y, const char *text, uint32_t pixel);
 
+/**
+ * @brief Draws @p text as `bmds_canvas_text()` does, with `text_draw`'s @p flags:
+ *        `BMDS_TEXT_OPAQUE` puts each line on a box of @p background (its width by the line
+ *        height), `BMDS_TEXT_SMOOTH` or `BMDS_TEXT_SHARP` overrides the system's smoothing.
+ * @return The widest line's width in pixels.
+ */
+int32_t bmds_canvas_text_flags(bmds_canvas_t *canvas, int32_t font, int32_t x, int32_t y, const char *text,
+                               uint32_t pixel, uint32_t background, uint32_t flags);
+
 /** @brief Returns the widest line of @p text's width in font @p font, in pixels. */
 int32_t bmds_game_text_width(int32_t font, const char *text);
 

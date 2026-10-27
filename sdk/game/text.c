@@ -85,6 +85,11 @@ int32_t bmds_game_text_width(int32_t font, const char *text) {
 }
 
 int32_t bmds_canvas_text(bmds_canvas_t *canvas, int32_t font, int32_t x, int32_t y, const char *text, uint32_t pixel) {
+        return bmds_canvas_text_flags(canvas, font, x, y, text, pixel, 0, 0);
+}
+
+int32_t bmds_canvas_text_flags(bmds_canvas_t *canvas, int32_t font, int32_t x, int32_t y, const char *text,
+                               uint32_t pixel, uint32_t background, uint32_t flags) {
         const int32_t fd = font_or_default(font);
         if (fd < 0) return 0;
         const int32_t    line = bmds_game_line_height(fd);
@@ -102,6 +107,8 @@ int32_t bmds_canvas_text(bmds_canvas_t *canvas, int32_t font, int32_t x, int32_t
         d.clip_width = canvas->clip.width;
         d.clip_height = canvas->clip.height;
         d.color = bmds_canvas_rgb(canvas, pixel);
+        d.background = bmds_canvas_rgb(canvas, background);
+        d.flags = flags;
         int32_t widest = 0, cy = y;
         for (const char *at = text;;) {
                 const uint32_t n = line_length(at);

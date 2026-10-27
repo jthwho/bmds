@@ -277,7 +277,8 @@ table, so they can't disagree.
   - **Drawing:** `clear`, `plot`, `pixel` (the colour read back, exactly: pictures are 24-bit),
     `line`, `rect`, `fillRect` (solid, or with an opacity), `circle`, `fillCircle`, `ellipse`,
     `fillEllipse`, `polygon` and `fillPolygon` (`{x1, y1, x2, y2, ...}`), `floodFill` (PAINT),
-    `text` (any value, 8 × 16 letters times a scale), `image` (at a place, or stretched),
+    `text` (any value, 8 × 16 letters times a scale, or in a `Font`: `devplan/fonts.md` §4f),
+    `image` (at a place, or stretched),
     `imageRotated` (degrees and a scale), `clip`, `save` (PNG).
   - **Colours** are `uint` 0xRRGGBB: `Color::Red` and 17 more, `rgb(r, g, b)`, `hsv(hue,
     saturation, value)`, `mix(a, b, amount)`; `textWidth`, `textHeight`.
