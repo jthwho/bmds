@@ -695,6 +695,14 @@ typedef struct bmds_midi_status_t {
 #define BMDS_MIDI_AHEAD_MAX_NS 60000000000ll
 
 /**
+ * @brief `bmds_synth_config_t.engine` and `bmds_synth_info_t.engine` (appended 2026-10-27,
+ *        `devplan/audio.md` §26): what makes a synth fd's sound.
+ */
+#define BMDS_SYNTH_ENGINE_DEFAULT 0u   /**< The system synth's; with a `font` named, that file's kind. */
+#define BMDS_SYNTH_ENGINE_WAVETABLE 1u /**< A SoundFont's samples (`font`: an SF2 or SF3). */
+#define BMDS_SYNTH_ENGINE_FM 2u        /**< An OPL's voices (`font`: an OP2 bank). */
+
+/**
  * @brief A General MIDI synth (`audio_synth`, appended 2026-10-08, `devplan/audio.md` §22): MIDI
  *        events written with their frames, samples read.
  */
@@ -705,7 +713,10 @@ typedef struct bmds_synth_config_t {
                 uint32_t    channels;   /**< 1 or 2, interleaved (0: 2). */
                 uint32_t    format;     /**< `BMDS_AUDIO_F32LE` or `BMDS_AUDIO_S16LE`. */
                 uint32_t    max_voices; /**< Voices at most, up to 256 (0: 32); past it, voices are stolen. */
-                const char *font;       /**< A SoundFont's path (SF2 or SF3); NULL: the `synth/font` setting. */
+                const char *font;       /**< The instruments: a SoundFont (SF2, SF3) or an OP2 bank; NULL: the
+                                             engine's setting (`synth/font`, `synth/fm-bank`). */
+                uint32_t    engine;     /**< `BMDS_SYNTH_ENGINE_...` (appended 2026-10-27; programs built before
+                                             pass 0, the default). */
 } bmds_synth_config_t;
 
 /**
@@ -740,12 +751,13 @@ typedef struct bmds_synth_info_t {
                 uint32_t queued;           /**< Events waiting for their frame. */
                 uint32_t queue_full;       /**< Events refused because the queue was full. */
                 uint32_t ignored;          /**< Messages it doesn't take. */
-                uint32_t presets;          /**< The font's presets. */
-                uint32_t font_bytes;       /**< The memory the font holds (shared by every synth on it). */
+                uint32_t presets;          /**< The font's presets (a bank's instruments: 175). */
+                uint32_t font_bytes;       /**< The memory the instruments hold (shared; a bank in `/rom`: 0). */
                 uint32_t cpu_permille;     /**< The last read's render time over its frames' time, in 1/1000. */
                 uint32_t cpu_permille_max; /**< The most since it opened. */
                 uint32_t reserved;         /**< 0. */
-                char     font[128];        /**< The font's path, NUL-terminated (cut at a character's end). */
+                char     font[128];        /**< The instruments' path, NUL-terminated (cut at a character's end). */
+                uint32_t engine;           /**< `BMDS_SYNTH_ENGINE_WAVETABLE` or `_FM` (appended 2026-10-27). */
 } bmds_synth_info_t;
 
 /* --- The system's counters, tasks and processes (devplan/sysmon.md §3.6) --- */

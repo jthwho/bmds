@@ -80,12 +80,15 @@ extern "C" int LLVMFuzzerInitialize(int *, char ***) {
         std::fclose(f);
         if (err.isError()) abort();
         font = loaded;
-        bmds::MidiDecoder::setFonts(
-                [](const bmds::Synth::Config &c, bmds::Synth &s) -> bmds::Result<bmds::SoundFont *> {
-                        const Error e = s.open(*font, c);
-                        return e.isOk() ? bmds::makeResult(font) : bmds::makeError<bmds::SoundFont *>(e);
+        bmds::MidiDecoder::setSynths(
+                [](const bmds::Synth::Config &c) -> bmds::Result<bmds::SynthEngine *> {
+                        auto       *s = new bmds::Synth();
+                        const Error e = s->open(*font, c);
+                        if (e.isOk()) return bmds::makeResult<bmds::SynthEngine *>(s);
+                        delete s;
+                        return bmds::makeError<bmds::SynthEngine *>(e);
                 },
-                [](bmds::Synth &s, bmds::SoundFont *) { s.close(); });
+                [](bmds::SynthEngine *s) { delete s; });
         if (Decoder::addFormat("MThd", bmds::MidiDecoder::open).isError()) abort();
         return 0;
 }

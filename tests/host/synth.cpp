@@ -385,18 +385,21 @@ TEST_CASE("SoundFont: the fuzzer's seeds play, its finds load safely or not at a
 }
 
 TEST_CASE("MidiDecoder: a MIDI file decoded through the synth, sought, ended") {
-        // The test font, through the hooks the kernel gives its shared fonts.
+        // A wavetable synth on the test font, through the hooks the kernel gives its engines.
         static std::vector<uint8_t> fontData;
         static SoundFont           *font = nullptr;
         fontData = readFile(std::filesystem::path(BMDS_SYNTH_DIR) / "sine.sf2");
         font = loadFont(fontData);
         REQUIRE(font != nullptr);
-        bmds::MidiDecoder::setFonts(
-                [](const Synth::Config &c, Synth &s) -> bmds::Result<SoundFont *> {
-                        const Error err = s.open(*font, c);
-                        return err.isOk() ? bmds::makeResult(font) : bmds::makeError<SoundFont *>(err);
+        bmds::MidiDecoder::setSynths(
+                [](const Synth::Config &c) -> bmds::Result<bmds::SynthEngine *> {
+                        auto       *s = new Synth();
+                        const Error err = s->open(*font, c);
+                        if (err.isOk()) return bmds::makeResult<bmds::SynthEngine *>(s);
+                        delete s;
+                        return bmds::makeError<bmds::SynthEngine *>(err);
                 },
-                [](Synth &s, SoundFont *) { s.close(); });
+                [](bmds::SynthEngine *s) { delete s; });
         static bool added = false;
         if (!added) REQUIRE(bmds::Decoder::addFormat("MThd", bmds::MidiDecoder::open) == Error::Ok);
         added = true;
@@ -484,7 +487,7 @@ TEST_CASE("MidiDecoder: a MIDI file decoded through the synth, sought, ended") {
         }
         CHECK(finds >= 4);
         // The hooks gone with the font: a MIDI file is then NotSupported, not played on a freed font.
-        bmds::MidiDecoder::setFonts(nullptr, nullptr);
+        bmds::MidiDecoder::setSynths(nullptr, nullptr);
         CHECK(bmds::Decoder::open({readAt, &in, file.size()}).error() == Error::NotSupported);
         font->destroy();
         font = nullptr;

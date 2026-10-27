@@ -188,6 +188,7 @@ namespace SettingsTable {
                         {.key = "audio/feedback", .label = "Feedback sounds"},
                         section("Synthesizer"),
                         {.key = "synth/wavetable", .label = "Built-in synth (the wavetable port)"},
+                        {.key = "synth/fm-bank", .label = "FM bank", .editor = E::File},
                         {.key = "synth/font", .label = "SoundFont", .editor = E::File},
                         {.key = "synth/gain", .label = "Gain", .unit = "dB"},
                         {.key = "synth/keep-fonts", .label = "Keep fonts loaded"},

@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * Standard MIDI Files as a decoder, played by a synth (devplan/audio.md §22).
+ * Standard MIDI Files as a decoder, played by a synth (devplan/audio.md §22, §26).
  */
 
 #include <cstring>
@@ -46,8 +46,8 @@ namespace {
                 public:
                         explicit MidiFileDecoder(const Source &source) : Decoder(source) {}
 
-                        Error start(SoundFont *font, tml_message *messages, uint64_t frames) {
-                                _font = font;
+                        Error start(SynthEngine *synth, tml_message *messages, uint64_t frames) {
+                                _synth = synth;
                                 _messages = messages;
                                 _next = messages;
                                 _info.codec = Codec::Midi;
@@ -60,7 +60,7 @@ namespace {
 
                 protected:
                         ~MidiFileDecoder() override {
-                                if (_font != nullptr) closeSynth.load(std::memory_order_acquire)(_synth, _font);
+                                if (_synth != nullptr) closeSynth.load(std::memory_order_acquire)(_synth);
                                 if (_messages != nullptr) tml_free(_messages);
                         }
 
@@ -75,9 +75,9 @@ namespace {
                                         // The file's messages up to this chunk's end, as many as the queue takes.
                                         const uint64_t end = _position + frames;
                                         while (_next != nullptr && frameOf(*_next) < end) {
-                                                Synth::Event e;
+                                                SynthEngine::Event e;
                                                 e.frame = _base + frameOf(*_next);
-                                                if (toEvent(*_next, e) && _synth.queue(e) == Error::Full) break;
+                                                if (toEvent(*_next, e) && _synth->queue(e) == Error::Full) break;
                                                 _next = _next->next;
                                         }
                                         // Up to the first message not queued (the queue was full), or the end.
@@ -88,7 +88,7 @@ namespace {
                                                 n = until > at ? static_cast<size_t>(until - at) : 1;
                                                 if (n > frames - done) n = frames - done;
                                         }
-                                        _synth.render(samples + done * 2, n);
+                                        _synth->render(samples + done * 2, n);
                                         done += n;
                                 }
                                 return makeResult(frames);
@@ -97,20 +97,17 @@ namespace {
                         // Back to the start; the controllers and programs replayed up to @p frame, its
                         // notes not.
                         Error seekFrame(uint64_t frame) override {
-                                _synth.reset();
-                                _base = _synth.stats().frames - frame;
+                                _synth->reset();
+                                _base = _synth->stats().frames - frame;
                                 for (_next = _messages; _next != nullptr && frameOf(*_next) < frame;
                                      _next = _next->next) {
                                         if (_next->type == TML_NOTE_ON || _next->type == TML_NOTE_OFF) continue;
-                                        Synth::Event e;
+                                        SynthEngine::Event e;
                                         e.frame = 0; // at once
-                                        if (toEvent(*_next, e)) (void)_synth.queue(e);
+                                        if (toEvent(*_next, e)) (void)_synth->queue(e);
                                 }
                                 return Error::Ok;
                         }
-
-                public:
-                        Synth _synth;
 
                 private:
                         static uint64_t frameOf(const tml_message &m) {
@@ -118,7 +115,7 @@ namespace {
                         }
 
                         // A message's bytes (false: not one the synth takes, as a tempo change).
-                        static bool toEvent(const tml_message &m, Synth::Event &e) {
+                        static bool toEvent(const tml_message &m, SynthEngine::Event &e) {
                                 const auto status = static_cast<uint8_t>(m.type | (m.channel & 0x0f));
                                 switch (m.type) {
                                         case TML_NOTE_OFF:
@@ -146,7 +143,7 @@ namespace {
                                 }
                         }
 
-                        SoundFont   *_font = nullptr;
+                        SynthEngine *_synth = nullptr;
                         tml_message *_messages = nullptr;
                         tml_message *_next = nullptr;
                         uint64_t     _base = 0; // the synth's frame at this file's frame 0
@@ -154,7 +151,7 @@ namespace {
 
 } // namespace
 
-void MidiDecoder::setFonts(OpenSynth open, CloseSynth close) {
+void MidiDecoder::setSynths(OpenSynth open, CloseSynth close) {
         closeSynth.store(close, std::memory_order_release);
         openSynth.store(open, std::memory_order_release);
         return;
@@ -181,20 +178,20 @@ Result<Decoder *> MidiDecoder::open(const Decoder::Source &source) {
                 return makeError<Decoder *>(Error::NoMem);
         }
         auto         *d = ::new (mem) MidiFileDecoder(source);
-        Synth::Config c;
+        SynthEngine::Config c;
         c.rateHz = RateHz;
         c.channels = 2;
         const OpenSynth opener = openSynth.load(std::memory_order_acquire);
-        SoundFont      *sf = nullptr;
+        SynthEngine    *synth = nullptr;
         if (opener == nullptr) {
                 err = Error::NotSupported;
         } else {
-                auto [f, ferr] = opener(c, d->_synth);
-                err = ferr;
-                sf = f;
+                auto [e, eerr] = opener(c);
+                err = eerr;
+                synth = e;
         }
         if (err.isOk())
-                err = d->start(sf, messages, static_cast<uint64_t>(lengthMs) * RateHz / 1000 + TailFrames);
+                err = d->start(synth, messages, static_cast<uint64_t>(lengthMs) * RateHz / 1000 + TailFrames);
         else
                 tml_free(messages);
         if (err.isError()) {

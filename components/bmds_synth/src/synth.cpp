@@ -226,6 +226,7 @@ Error Synth::open(SoundFont &font, const Config &config) {
         }
         tsf_set_output(_tsf, c.channels == 2 ? TSF_STEREO_INTERLEAVED : TSF_MONO, static_cast<int>(c.rateHz), c.gainDb);
         _config = c;
+        _font = &font;
         _head = _count = 0;
         _frames = 0;
         _stats = Stats();
@@ -254,6 +255,7 @@ bool Synth::initChannels() {
 void Synth::close() {
         if (_tsf != nullptr) tsf_close(_tsf);
         _tsf = nullptr;
+        _font = nullptr;
         Memory::free(_events);
         _events = nullptr;
         _head = _count = 0;
@@ -352,6 +354,14 @@ void Synth::reset() {
         _head = _count = 0;
         if (_tsf != nullptr) (void)initChannels();
         return;
+}
+
+size_t Synth::presets() const {
+        return _font != nullptr ? _font->presetCount() : 0;
+}
+
+size_t Synth::instrumentBytes() const {
+        return _font != nullptr ? _font->bytes() : 0;
 }
 
 Synth::Stats Synth::stats() const {

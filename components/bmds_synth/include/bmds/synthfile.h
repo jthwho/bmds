@@ -21,17 +21,20 @@
 #include <bmds/stream.h>
 #include <bmds/string.h>
 #include <bmds/synth.h>
+#include <bmds/synthengine.h>
 #include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief A synth fd (`audio_synth`, `devplan/audio.md` §22): MIDI events
- *        written with their frames, samples read.
+ * @brief A synth fd (`audio_synth`, `devplan/audio.md` §22, §26): MIDI events
+ *        written with their frames, samples read, through either engine
+ *        (`SynthEngines`).
  *
  * Fonts are loaded once and shared by path while any synth plays them
- * (`SoundFonts`). Writes take `Synth::Event` records (`bmds_synth_event_t`),
- * whole ones; reads render whole frames, in `F32Le` or `S16Le`. Neither waits.
+ * (`SoundFonts`); a bank in `/rom` is read in place. Writes take
+ * `SynthEngine::Event` records (`bmds_synth_event_t`), whole ones; reads render
+ * whole frames, in `F32Le` or `S16Le`. Neither waits.
  *
  * @par Thread Safety
  * Thread-safe: calls serialize on its lock.
@@ -44,12 +47,14 @@ class SynthFile final : public Stream {
                                 uint8_t      channels = 2;
                                 SampleFormat format = SampleFormat::F32Le;
                                 uint16_t     maxVoices = 0;
-                                StringView   font; ///< A path; empty: `synth/font`.
+                                StringView
+                                        font; ///< The instruments' path (a font, a bank); empty: the engine's setting.
+                                SynthEngine::Kind engine = SynthEngine::Kind::Default; ///< Open: resolved.
                 };
 
                 /** @brief Its state (`bmds_synth_info_t`). */
                 struct Info {
-                                Synth::Stats synth;
+                                SynthEngine::Stats synth;
                                 Config       config;
                                 size_t       presets = 0;
                                 size_t       fontBytes = 0;
@@ -61,19 +66,20 @@ class SynthFile final : public Stream {
                 static constexpr const char *DefaultFont = "/sd0/p0/share/soundfonts/TimGM6mb.sf2";
 
                 /**
-                 * @brief Opens a synth on @p config's font (`context` for a relative path).
+                 * @brief Opens a synth of @p config's engine on its instruments (`context` for a
+                 *        relative path), as `SynthEngines::open()`.
                  * @return A read-write handle, or `Invalid` (a rate, channel count,
-                 *         format or voice count), the font's open or load error
+                 *         format or voice count), the instruments' open or load error
                  *         (`NotExist`, `Invalid` for a damaged one, `NoMem`).
                  * @blocking While a font loads (TimGM6mb: 0.72 s from the card); one loaded
-                 *           before and kept (`synth/keep-fonts`) doesn't.
+                 *           before and kept (`synth/keep-fonts`) doesn't, nor a bank.
                  */
                 static Result<FileHandle::Ptr> open(const Config &config, const Vfs::Context &context);
 
                 /** @brief Returns its state. */
                 Info info();
 
-                /** @brief Returns its font's path. */
+                /** @brief Returns its instruments' path (a font's, a bank's). */
                 StringView fontPath() const { return _fontPath; }
 
                 Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override;
@@ -88,10 +94,9 @@ class SynthFile final : public Stream {
 
                 static void readStats(void *arg, Span<int64_t> values);
 
-                Mutex      _lock;
-                Synth      _synth;
-                SoundFont *_font = nullptr;
-                String     _fontPath;
+                Mutex        _lock;
+                SynthEngine *_engine = nullptr;
+                String       _fontPath;
                 Config     _config;
                 uint32_t   _cpuPermille = 0;
                 uint32_t   _cpuPermilleMax = 0;
@@ -126,11 +131,55 @@ namespace SoundFonts {
          * @return The font, or its error.
          * @blocking While the font loads.
          */
-        Result<SoundFont *> openSynth(StringView path, const Synth::Config &config, Synth &synth);
+        Result<SoundFont *> openSynth(StringView path, const SynthEngine::Config &config, Synth &synth);
 
         /** @brief Closes @p synth, and frees @p font if no synth plays it now. */
         void closeSynth(Synth &synth, SoundFont *font);
 
 } // namespace SoundFonts
+
+/**
+ * @brief The synth engines as the system has them (`devplan/audio.md` §26): which one a request
+ *        means, the instruments each plays when none is named, and an engine opened on them
+ *        with `synth/gain`. Synth fds and MIDI files open theirs here.
+ *
+ * @par Thread Safety
+ * Thread-safe.
+ */
+namespace SynthEngines {
+
+        /** @brief The bank the FM engine plays when none is named, while `synth/fm-bank` is unset. */
+        inline constexpr const char *DefaultBank = "/rom/share/synth/dmxopl3.op2";
+
+        /** @brief Returns the engine `Kind::Default` stands for with no instruments named: the system synth's. */
+        SynthEngine::Kind systemKind();
+
+        /**
+         * @brief Returns the engine @p kind means for instruments @p path (absolute; empty: its
+         *        setting's): itself, or for `Default` with a path, the file's own kind (an OP2
+         *        bank FM, anything else the wavetable), else `systemKind()`.
+         * @blocking A path's first 8 bytes are read.
+         */
+        SynthEngine::Kind resolve(SynthEngine::Kind kind, StringView path);
+
+        /** @brief Sets @p out to the instruments @p kind plays when none is named (`synth/font`, `synth/fm-bank`). */
+        Error defaultInstruments(SynthEngine::Kind kind, String &out);
+
+        /**
+         * @brief Opens an engine of @p kind (resolved by `resolve()`) on instruments @p path
+         *        (absolute; empty: its setting's), with @p config and `synth/gain`'s gain.
+         * @return The engine (`close()` it), or `Invalid` (a configuration, or damaged
+         *         instruments), the file's error, `NoMem`.
+         * @blocking While a font loads; a bank on the card is read (12 KB), one in `/rom` mapped.
+         */
+        Result<SynthEngine *> open(SynthEngine::Kind kind, StringView path, const SynthEngine::Config &config);
+
+        /** @brief Closes @p engine (`open()`'s), letting go of its instruments; null: nothing. */
+        void close(SynthEngine *engine);
+
+        /** @brief Returns @p kind's name: "wavetable", "fm" ("default" for the request). */
+        const char *name(SynthEngine::Kind kind);
+
+} // namespace SynthEngines
 
 BMDS_NAMESPACE_END

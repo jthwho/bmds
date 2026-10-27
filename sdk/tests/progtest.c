@@ -2275,7 +2275,7 @@ static int speech(const char *arg) {
 
 /* The synth (devplan/audio.md §22) on FONT (tests/host/synth/sine.sf2: one preset, a 440 Hz
    sine at its key A4): every bad config refused, events on their frames, the pitch, the queue,
-   S16, a damaged font, two synths sharing the font. */
+   S16, a damaged font, two synths sharing the font; the engines (§26). */
 static int crossings_f(const float *x, size_t frames, int channels) {
         int n = 0;
         for (size_t i = 1; i < frames; ++i)
@@ -2378,7 +2378,46 @@ static int synth(const char *font) {
         CHECK(bmds_audio_synth_info(a, &ia) == 0 && bmds_audio_synth_info(b, &ib) == 0 &&
               ia.font_bytes == ib.font_bytes);
         CHECK(close(a) == 0 && close(b) == 0);
-        printf("synth: ok, %u bytes of font, A4 at %d crossings a second\n", (unsigned)info.font_bytes, n);
+
+        /* The engines (devplan/audio.md §26): a font named and the default is the wavetable (its
+           kind), as for a program built before engine (a shorter struct); FM on synth/fm-bank's bank
+           (the ROM's, read in place); no font and the default is the system synth's (FM). */
+        bad = c;
+        bad.engine = 3;
+        CHECK(bmds_audio_synth(&bad) == -BMDS_EINVAL);
+        bmds_synth_config_t old = {
+                .size = offsetof(bmds_synth_config_t, engine), .format = BMDS_AUDIO_F32LE, .font = font};
+        int fm = bmds_audio_synth(&old);
+        CHECK(fm >= 0);
+        CHECK(bmds_audio_synth_info(fm, &info) == 0 && info.engine == BMDS_SYNTH_ENGINE_WAVETABLE);
+        CHECK(close(fm) == 0);
+        bmds_synth_config_t f = {.size = sizeof(f), .format = BMDS_AUDIO_F32LE, .engine = BMDS_SYNTH_ENGINE_FM};
+        fm = bmds_audio_synth(&f);
+        CHECK(fm >= 0);
+        CHECK(bmds_audio_synth_info(fm, &info) == 0);
+        CHECK(info.engine == BMDS_SYNTH_ENGINE_FM && info.presets == 175 && strstr(info.font, ".op2") != NULL);
+        const unsigned bank_bytes = (unsigned)info.font_bytes; /* 0: mapped from /rom */
+        e = synth_event(0, 0xc0, 80, 0);                       /* a square lead */
+        e.length = 2;
+        CHECK(write(fm, &e, sizeof(e)) == (ssize_t)sizeof(e));
+        e = synth_event(0, 0x90, 69, 127);
+        CHECK(write(fm, &e, sizeof(e)) == (ssize_t)sizeof(e));
+        CHECK(read(fm, out, sizeof(out)) == (ssize_t)sizeof(out));
+        peak = 0;
+        for (int i = 0; i < 48000 * 2; ++i) peak = fabsf(out[i]) > peak ? fabsf(out[i]) : peak;
+        if (!(peak > 0.01f && peak < 1.0f)) printf("fm peak %f\n", (double)peak);
+        CHECK(peak > 0.01f && peak < 1.0f);
+        CHECK(bmds_audio_synth_info(fm, &info) == 0 && info.voices >= 1 && info.frames == 48000);
+        CHECK(close(fm) == 0);
+        f.engine = BMDS_SYNTH_ENGINE_DEFAULT;
+        fm = bmds_audio_synth(&f);
+        CHECK(fm >= 0 && bmds_audio_synth_info(fm, &info) == 0 && info.engine == BMDS_SYNTH_ENGINE_FM);
+        CHECK(close(fm) == 0);
+        f.engine = BMDS_SYNTH_ENGINE_FM;
+        f.font = font; /* a SoundFont isn't a bank */
+        CHECK(bmds_audio_synth(&f) == -BMDS_EIO);
+        printf("synth: ok, %u bytes of font, A4 at %d crossings a second; fm: peak %.2f, bank %u bytes in RAM\n",
+               (unsigned)ia.font_bytes, n, (double)peak, bank_bytes);
         return 0;
 }
 

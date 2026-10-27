@@ -102,14 +102,14 @@ namespace {
                         char metric[24];
                         std::snprintf(metric, sizeof(metric), "voices_%u_us", unsigned(n));
                         if (Error err = measureBlocks(ctx, synth, metric); err.isError()) return err;
-                        const Synth::Stats st = synth.stats();
+                        const SynthEngine::Stats st = synth.stats();
                         if (st.voices < n) ctx.note("%s: only %u voices sounding", metric, unsigned(st.voices));
                 }
                 return Error::Ok;
         }
 
-        Synth::Config config() {
-                Synth::Config c;
+        SynthEngine::Config config() {
+                SynthEngine::Config c;
                 c.rateHz = 48000;
                 c.channels = 2;
                 c.maxVoices = 32;

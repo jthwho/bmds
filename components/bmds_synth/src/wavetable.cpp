@@ -182,6 +182,7 @@ namespace {
                 sc.rateHz = audio->config().rateHz;
                 sc.channels = 2;
                 sc.format = SampleFormat::F32Le;
+                sc.engine = SynthEngine::Kind::Wavetable;
                 auto [synthHandle, serr] = SynthFile::open(sc, Root);
                 if (serr.isError()) {
                         bmdsWarn("wavetable: the font: %s",

@@ -524,7 +524,10 @@ _Static_assert(offsetof(bmds_synth_info_t, cpu_permille) == 60, "ABI: synth_info
 _Static_assert(offsetof(bmds_synth_info_t, cpu_permille_max) == 64, "ABI: synth_info.cpu_permille_max");
 _Static_assert(offsetof(bmds_synth_info_t, reserved) == 68, "ABI: synth_info.reserved");
 _Static_assert(offsetof(bmds_synth_info_t, font) == 72, "ABI: synth_info.font");
-_Static_assert(sizeof(bmds_synth_info_t) == 200, "ABI: bmds_synth_info_t size");
+_Static_assert(sizeof(bmds_synth_info_t) == 208, "ABI: bmds_synth_info_t size"); /* 200 before 2026-10-27 */
+_Static_assert(offsetof(bmds_synth_info_t, engine) == 200, "ABI: synth_info.engine");
+_Static_assert(BMDS_SYNTH_ENGINE_DEFAULT == 0 && BMDS_SYNTH_ENGINE_WAVETABLE == 1 && BMDS_SYNTH_ENGINE_FM == 2,
+               "ABI: synth engines");
 
 _Static_assert(BMDS_COUNTER_UNAVAILABLE == INT64_MIN && BMDS_COUNTER_NO_LEVEL == INT64_MIN, "ABI: counter markers");
 _Static_assert(BMDS_COUNTER_NAME_MAX == 47, "ABI: counter name length");
@@ -703,7 +706,8 @@ _Static_assert(offsetof(bmds_audio_cycle_t, late) == 52, "ABI: audio_cycle.late"
 _Static_assert(offsetof(bmds_audio_cycle_t, throttled) == 56, "ABI: audio_cycle.throttled");
 _Static_assert(offsetof(bmds_audio_cycle_t, flags) == 60, "ABI: audio_cycle.flags");
 _Static_assert(sizeof(bmds_audio_cycle_t) == 64, "ABI: bmds_audio_cycle_t size");
-_Static_assert(sizeof(bmds_synth_config_t) == 28, "ABI: bmds_synth_config_t size");
+_Static_assert(offsetof(bmds_synth_config_t, engine) == 28, "ABI: synth_config.engine");
+_Static_assert(sizeof(bmds_synth_config_t) == 32, "ABI: bmds_synth_config_t size"); /* 28 before 2026-10-27 */
 _Static_assert(offsetof(bmds_iovec_t, length) == 4 && sizeof(bmds_iovec_t) == 8, "ABI: bmds_iovec_t");
 _Static_assert(offsetof(bmds_msghdr_t, name) == 4 && offsetof(bmds_msghdr_t, name_length) == 8 &&
                        offsetof(bmds_msghdr_t, iov) == 12 && offsetof(bmds_msghdr_t, iov_count) == 16 &&

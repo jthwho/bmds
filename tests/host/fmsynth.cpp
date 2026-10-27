@@ -19,8 +19,11 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <bmds/decoder.h>
 #include <bmds/fmsynth.h>
+#include <bmds/mididecoder.h>
 #include <bmds/op2bank.h>
+#include <bmds/synth.h>
 
 using bmds::ByteSpan;
 using bmds::Error;
@@ -291,7 +294,7 @@ TEST_CASE("FmSynth: open's checks; an operator's pitch, its multiple, the bend")
         c.gainDb = 0;
         REQUIRE(synth.open(bank, c) == Error::Ok);
         CHECK(synth.open(bank, c) == Error::InvalidState);
-        CHECK(synth.config().maxVoices == bmds::Synth::DefaultVoices);
+        CHECK(synth.config().maxVoices == bmds::SynthEngine::DefaultVoices);
         synth.close();
         CHECK_FALSE(synth.isOpen());
 
@@ -420,6 +423,23 @@ TEST_CASE("FmSynth: the envelope's attack, decay and release against the chip's 
                 const double steps = std::log2(512.0 / 6.0) / -std::log2(7.0 / 8.0);
                 const double expected = steps / chipSteps(26) / 49716.0;
                 CHECK(crossingSeconds(s, -5 * 0.1875, true) == doctest::Approx(expected).epsilon(0.1).scale(0));
+        }
+        SUBCASE("a fast decay stops at the sustain level") {
+                // The fastest decay to sustain level 4 (12 dB): the chip stops within a step of it,
+                // a tick's steps must not carry it past (found on DMXOPL3's square lead, 12 dB low).
+                const auto steady = [](uint8_t attackDecay, uint8_t sustainRelease) {
+                        BankWriter writer;
+                        VoiceSpec  v;
+                        v.carrier.attackDecay = attackDecay;
+                        v.carrier.sustainRelease = sustainRelease;
+                        writer.set(0, v);
+                        Player p(writer.bytes());
+                        p.send({0x90, 69, 127});
+                        const std::vector<float> s = p.render(Rate / 2);
+                        return rms(s, Rate / 4, Rate / 2);
+                };
+                CHECK(db(steady(0xff, 0x4f) / steady(0xf0, 0x0f)) == doctest::Approx(-12.0).epsilon(0.02));
+                CHECK(db(steady(0xff, 0x0f) / steady(0xf0, 0x0f)) == doctest::Approx(0.0).scale(1).epsilon(0.05));
         }
         SUBCASE("percussive: falls from the sustain level at the release rate, keyed on") {
                 BankWriter writer;
@@ -616,7 +636,7 @@ TEST_CASE("FmSynth: the voice limit steals the quietest released voice first; do
         CHECK(rms(s, Rate / 10 + Rate / 20, Rate / 5, 2, 0) > 0.01);
         CHECK(rms(s, Rate / 5 + 64, Rate / 2, 2, 0) == 0.0);
         CHECK(rms(s, Rate / 5 + 64, Rate / 2, 2, 1) > 0.01);
-        bmds::Synth::Stats st = p.synth.stats();
+        bmds::SynthEngine::Stats st = p.synth.stats();
         CHECK(st.voices == 4);
         CHECK(st.peakVoices == 4);
         CHECK(st.notesAtLimit == 1);
@@ -679,10 +699,10 @@ TEST_CASE("FmSynth: messages taken and ignored; GM System On; the queue") {
         e.data[0] = 0xb0;
         e.data[1] = 7;
         e.data[2] = 100;
-        for (size_t i = 0; i < bmds::Synth::QueueEvents; ++i) REQUIRE(f.synth.queue(e) == Error::Ok);
+        for (size_t i = 0; i < bmds::SynthEngine::QueueEvents; ++i) REQUIRE(f.synth.queue(e) == Error::Ok);
         CHECK(f.synth.queue(e) == Error::Full);
         CHECK(f.synth.stats().queueFull == 1);
-        CHECK(f.synth.stats().queued == bmds::Synth::QueueEvents);
+        CHECK(f.synth.stats().queued == bmds::SynthEngine::QueueEvents);
 }
 
 TEST_CASE("FmSynth: every instrument of the shipped banks through 32 voices") {
@@ -708,4 +728,65 @@ TEST_CASE("FmSynth: every instrument of the shipped banks through 32 voices") {
                 CHECK(peak < 2.0f);
                 CHECK(p.synth.stats().peakVoices <= 32);
         }
+}
+
+TEST_CASE("FmSynth: a MIDI file decoded through it, as an engine; the engines' kinds") {
+        // The kernel's hooks, given the FM engine on DMXOPL3: what play does with a .mid now.
+        static std::vector<uint8_t> bankData;
+        static Op2Bank              bank;
+        bankData = readFile(std::string(BMDS_OPL_BANKS_DIR) + "/dmxopl3.op2");
+        REQUIRE(bank.open(ByteSpan(bankData.data(), bankData.size())) == Error::Ok);
+        bmds::MidiDecoder::setSynths(
+                [](const bmds::SynthEngine::Config &c) -> bmds::Result<bmds::SynthEngine *> {
+                        auto       *s = new FmSynth();
+                        const Error err = s->open(bank, c);
+                        if (err.isOk()) return bmds::makeResult<bmds::SynthEngine *>(s);
+                        delete s;
+                        return bmds::makeError<bmds::SynthEngine *>(err);
+                },
+                [](bmds::SynthEngine *s) { delete s; });
+        static bool added = false;
+        if (!added) REQUIRE(bmds::Decoder::addFormat("MThd", bmds::MidiDecoder::open) == Error::Ok);
+        added = true;
+        const std::vector<uint8_t> file = readFile(std::string(BMDS_SYNTH_DIR) + "/scale.mid");
+        REQUIRE(!file.empty());
+        struct In {
+                        const std::vector<uint8_t> *data;
+        } in{&file};
+        auto readAt = [](void *arg, uint64_t offset, bmds::WritableByteSpan buf) -> Error {
+                const auto &d = *static_cast<In *>(arg)->data;
+                if (offset > d.size() || d.size() - offset < buf.size()) return Error::EndOfFile;
+                std::memcpy(buf.data(), d.data() + offset, buf.size());
+                return Error::Ok;
+        };
+        auto [d, err] = bmds::Decoder::open({readAt, &in, file.size()});
+        REQUIRE(err == Error::Ok);
+        CHECK(d->info().frames == 336000);
+        std::vector<uint8_t> buf(4096 * 8);
+        uint64_t             frames = 0;
+        float                peak = 0;
+        for (;;) {
+                auto [n, derr] = d->decode(bmds::WritableByteSpan(buf.data(), buf.size()));
+                for (size_t i = 0; i < n / 4; ++i) {
+                        float v;
+                        std::memcpy(&v, buf.data() + i * 4, 4);
+                        REQUIRE(std::isfinite(v));
+                        peak = std::max(peak, std::fabs(v));
+                }
+                frames += n / 8;
+                if (derr == Error::EndOfFile) break;
+                REQUIRE(derr == Error::Ok);
+        }
+        CHECK(frames == 336000);
+        CHECK(peak > 0.01f);
+        bmds::Decoder::close(d);
+        bmds::MidiDecoder::setSynths(nullptr, nullptr);
+
+        FmSynth fm;
+        CHECK(fm.kind() == bmds::SynthEngine::Kind::Fm);
+        CHECK(fm.presets() == Op2Bank::Instruments);
+        CHECK(fm.instrumentBytes() == 0); // not open
+        bmds::Synth wavetable;
+        CHECK(wavetable.kind() == bmds::SynthEngine::Kind::Wavetable);
+        CHECK(wavetable.presets() == 0);
 }

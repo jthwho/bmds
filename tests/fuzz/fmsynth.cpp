@@ -57,7 +57,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
                         frame += uint64_t(*p++) * 4;
                         FmSynth::Event e;
                         e.frame = frame;
-                        e.length = uint8_t(1 + *p++ % bmds::Synth::MaxEventBytes);
+                        e.length = uint8_t(1 + *p++ % bmds::SynthEngine::MaxEventBytes);
                         for (uint8_t k = 0; k < e.length; ++k) e.data[k] = p < end ? *p++ : 0;
                         if (synth.queue(e) == Error::Full) {
                                 play(synth, 512);

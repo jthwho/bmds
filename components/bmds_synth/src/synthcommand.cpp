@@ -132,12 +132,22 @@ namespace {
                 if (args.size() == 2 && std::strcmp(args[1], "status") == 0) return showStatus(ctx);
                 const char             *font = nullptr;
                 const char             *name = "synth";
+                SynthEngine::Kind       engine = SynthEngine::Kind::Default;
                 uint32_t                period = DefaultPeriod;
                 uint32_t                voices = 0;
                 for (size_t i = 1; i < args.size(); ++i) {
                         const bool more = i + 1 < args.size();
                         if (std::strcmp(args[i], "-f") == 0 && more) {
                                 font = args[++i];
+                        } else if (std::strcmp(args[i], "-e") == 0 && more) {
+                                const char *e = args[++i];
+                                if (std::strcmp(e, "fm") == 0) {
+                                        engine = SynthEngine::Kind::Fm;
+                                } else if (std::strcmp(e, "wavetable") == 0) {
+                                        engine = SynthEngine::Kind::Wavetable;
+                                } else {
+                                        return usage(ctx);
+                                }
                         } else if (std::strcmp(args[i], "-n") == 0 && more) {
                                 name = args[++i];
                         } else if (std::strcmp(args[i], "-p") == 0 && more) {
@@ -178,11 +188,12 @@ namespace {
                 sc.format = SampleFormat::F32Le;
                 sc.maxVoices = static_cast<uint16_t>(voices);
                 sc.font = font != nullptr ? StringView(font) : StringView();
+                sc.engine = engine;
                 const int64_t loadStart = Clock::monotonicNs();
                 auto [synthHandle, serr] = SynthFile::open(sc, ctx.vfs());
                 if (serr.isError()) {
-                        ctx.eprintf("synth: the font: %s\n",
-                                    serr == Error::Invalid ? "damaged, or not a SoundFont" : serr.desc());
+                        ctx.eprintf("synth: the instruments: %s\n",
+                                    serr == Error::Invalid ? "damaged, or not a SoundFont or OP2 bank" : serr.desc());
                         return Shell::ExitFailure;
                 }
                 SynthFile *synth = synthHandle->stream().synthFile();
@@ -251,8 +262,9 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(synth, runSynth, "[-f FONT] [-n NAME] [-p FRAMES] [-v VOICES] | status",
-                   "A General MIDI synth: a MIDI port (NAME, synth) playing a SoundFont (synth/font) on /dev/dsp, "
-                   "until Ctrl+C; 'status': the built-in one's (the wavetable port)")
+BMDS_SHELL_COMMAND(synth, runSynth, "[-e fm|wavetable] [-f FILE] [-n NAME] [-p FRAMES] [-v VOICES] | status",
+                   "A General MIDI synth: a MIDI port (NAME, synth) playing on /dev/dsp until Ctrl+C, the FM engine "
+                   "on an OP2 bank (synth/fm-bank) or the wavetable on a SoundFont (synth/font); by default the "
+                   "system synth's, or FILE's kind; 'status': the built-in one's (the wavetable port)")
 
 BMDS_NAMESPACE_END

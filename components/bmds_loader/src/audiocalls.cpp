@@ -307,11 +307,12 @@ int32_t bmds_k_audio_synth(const bmds_synth_config_t *config) {
         bmds_synth_config_t c;
         int32_t             r = copyIn(config, c);
         if (r < 0) return r;
-        // Checked here, so that Invalid from the open is the font's (damaged).
+        // Checked here, so that Invalid from the open is the instruments' (damaged).
         const uint32_t rate = c.rate != 0 ? c.rate : 48000;
         const uint32_t channels = c.channels != 0 ? c.channels : 2;
         if ((c.flags & ~BMDS_O_CLOEXEC) != 0 || rate < 8000 || rate > 96000 || channels > 2 ||
-            (c.format != BMDS_AUDIO_F32LE && c.format != BMDS_AUDIO_S16LE) || c.max_voices > Synth::MaxVoices)
+            (c.format != BMDS_AUDIO_F32LE && c.format != BMDS_AUDIO_S16LE) || c.max_voices > Synth::MaxVoices ||
+            c.engine > BMDS_SYNTH_ENGINE_FM)
                 return -BMDS_EINVAL;
         bmds::String font;
         if (c.font != nullptr) {
@@ -324,8 +325,9 @@ int32_t bmds_k_audio_synth(const bmds_synth_config_t *config) {
         k.format = static_cast<SampleFormat>(c.format);
         k.maxVoices = static_cast<uint16_t>(c.max_voices);
         k.font = font.view();
+        k.engine = static_cast<bmds::SynthEngine::Kind>(c.engine);
         auto [handle, err] = SynthFile::open(k, bmds::Vfs::Context());
-        if (err == Error::Invalid) return -BMDS_EIO; // a damaged font
+        if (err == Error::Invalid) return -BMDS_EIO; // damaged instruments
         if (err.isError()) return Process::errnoFor(err);
         return call->addHandle(std::move(handle), c.flags);
 }
@@ -355,6 +357,7 @@ int32_t bmds_k_audio_synth_info(int32_t fd, bmds_synth_info_t *info) {
         i.cpu_permille = k.cpuPermille;
         i.cpu_permille_max = k.cpuPermilleMax;
         copyText(file->fontPath(), i.font, sizeof(i.font));
+        i.engine = static_cast<uint32_t>(k.config.engine);
         return copyOut(i, info);
 }
 

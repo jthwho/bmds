@@ -11,19 +11,17 @@
 #include <bmds/config.h>
 #include <bmds/decoder.h>
 #include <bmds/result.h>
-#include <bmds/soundfont.h>
-#include <bmds/synth.h>
+#include <bmds/synthengine.h>
 
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief Standard MIDI Files as a decoder (`devplan/audio.md` §22): played by
- *        a synth on `synth/font`, so `play`, the file browser and
- *        `audio_decode` take them as they take sound files. Registered with
- *        `Decoder::addFormat()` ("MThd") at boot.
+ * @brief Standard MIDI Files as a decoder (`devplan/audio.md` §22, §26): played by the system
+ *        synth's engine, so `play`, the file browser and `audio_decode` take them as they take
+ *        sound files. Registered with `Decoder::addFormat()` ("MThd") at boot.
  *
- * Portable: the font comes from `setFonts()`'s calls (the kernel's shared
- * fonts on the board; a test font on the host).
+ * Portable: the synth comes from `setSynths()`'s calls (the kernel's, on its settings, on the
+ * board; a test engine on the host).
  *
  * Float, stereo, 48 kHz. Its length is the file's and two seconds for the
  * last notes' release. Seeking replays the file's controller and program
@@ -55,14 +53,14 @@ namespace MidiDecoder {
                         uint8_t  b = 0;
         };
 
-        /** @brief Opens @p synth on the font to play files with; returns the font. */
-        using OpenSynth = Result<SoundFont *> (*)(const Synth::Config &config, Synth &synth);
+        /** @brief Opens the synth to play files with, on @p config (its engine and instruments the opener's). */
+        using OpenSynth = Result<SynthEngine *> (*)(const SynthEngine::Config &config);
 
         /** @brief Closes what `OpenSynth` opened. */
-        using CloseSynth = void (*)(Synth &synth, SoundFont *font);
+        using CloseSynth = void (*)(SynthEngine *synth);
 
-        /** @brief Sets where the font comes from (before the format is added). */
-        void setFonts(OpenSynth open, CloseSynth close);
+        /** @brief Sets where the synths come from (before the format is added). */
+        void setSynths(OpenSynth open, CloseSynth close);
 
         /** @brief `Decoder::Opener` for MIDI files (`NotSupported` before `setFonts()`). */
         Result<Decoder *> open(const Decoder::Source &source);

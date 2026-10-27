@@ -126,7 +126,7 @@ namespace {
                                 if (e.kind == BMDS_GAME_SMF_MESSAGE) {
                                         ev.length = e.length;
                                         std::memcpy(ev.data, e.data, e.length);
-                                } else if (e.count <= bmds::Synth::MaxEventBytes) {
+                                } else if (e.count <= bmds::SynthEngine::MaxEventBytes) {
                                         ev.length = uint8_t(e.count);
                                         std::memcpy(ev.data, e.bytes, e.count);
                                 }
@@ -151,7 +151,7 @@ namespace {
                         }
                         frame += Chunk;
                 }
-                const bmds::Synth::Stats st = synth.stats();
+                const bmds::SynthEngine::Stats st = synth.stats();
                 std::printf("voices: %u at most of %u, %u notes at the limit; %u messages ignored\n", st.peakVoices,
                             st.maxVoices, st.notesAtLimit, st.ignored);
                 return 0;
@@ -203,7 +203,7 @@ int main(int argc, char **argv) {
                 std::fprintf(stderr, "bmds-synthwav: %s isn't a MIDI file\n", argv[i]);
                 return 1;
         }
-        bmds::Synth::Config c;
+        bmds::SynthEngine::Config c;
         c.rateHz = Rate;
         c.channels = 2;
         c.maxVoices = uint16_t(voices);

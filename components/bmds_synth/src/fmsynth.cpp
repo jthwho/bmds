@@ -161,7 +161,7 @@ struct FmSynth::State {
                 Channel  channels[MidiChannels];
                 int32_t  mix[BlockFrames * 2];
                 int32_t  sum[BlockFrames];        // a channel's voices
-                uint8_t  order[Synth::MaxVoices]; // the sounding voices by channel, a block's
+                uint8_t  order[SynthEngine::MaxVoices]; // the sounding voices by channel, a block's
                 uint32_t ages = 0;
                 uint32_t sounding = 0;
                 uint16_t voiceCount = 0;
@@ -293,8 +293,13 @@ namespace {
                                 }
                                 break;
                         case Decay:
+                                // The chip stops within a step of the sustain level; a tick's steps
+                                // would overshoot it (at the fastest rate by 66, 12 dB).
                                 op.level += s.decayAdd[op.decayRate];
-                                if (op.level >= float(op.sustainLevel * 16)) op.stage = Sustain;
+                                if (op.level >= float(op.sustainLevel * 16)) {
+                                        op.level = float(op.sustainLevel * 16);
+                                        op.stage = Sustain;
+                                }
                                 break;
                         case Sustain:
                                 // A percussive operator goes on falling, at its release rate.
@@ -713,11 +718,12 @@ Error FmSynth::open(const Op2Bank &bank, const Config &config) {
         if (_state != nullptr) return Error::InvalidState;
         if (!bank.isOpen()) return Error::Invalid;
         Config c = config;
-        if (c.maxVoices == 0) c.maxVoices = Synth::DefaultVoices;
-        if (c.rateHz < 8000 || c.rateHz > 96000 || c.channels < 1 || c.channels > 2 || c.maxVoices > Synth::MaxVoices ||
-            !(c.gainDb >= Synth::MinGainDb && c.gainDb <= Synth::MaxGainDb))
+        if (c.maxVoices == 0) c.maxVoices = SynthEngine::DefaultVoices;
+        if (c.rateHz < 8000 || c.rateHz > 96000 || c.channels < 1 || c.channels > 2 ||
+            c.maxVoices > SynthEngine::MaxVoices ||
+            !(c.gainDb >= SynthEngine::MinGainDb && c.gainDb <= SynthEngine::MaxGainDb))
                 return Error::Invalid;
-        _events = static_cast<Event *>(Memory::alloc(MemSpace::Psram, Synth::QueueEvents * sizeof(Event)));
+        _events = static_cast<Event *>(Memory::alloc(MemSpace::Psram, SynthEngine::QueueEvents * sizeof(Event)));
         if (_events == nullptr) return Error::NoMem;
         const size_t bytes = sizeof(State) + c.maxVoices * sizeof(State::Voice);
         void        *mem = Memory::alloc(MemSpace::Internal, bytes);
@@ -767,18 +773,18 @@ void FmSynth::close() {
 
 Error FmSynth::queue(const Event &event) {
         if (_state == nullptr) return Error::InvalidState;
-        if (event.length == 0 || event.length > Synth::MaxEventBytes) return Error::Invalid;
-        if (_count == Synth::QueueEvents) {
+        if (event.length == 0 || event.length > SynthEngine::MaxEventBytes) return Error::Invalid;
+        if (_count == SynthEngine::QueueEvents) {
                 ++_stats.queueFull;
                 return Error::Full;
         }
         // In frame order: from the newest back to the first at or before its frame.
         size_t at = _count;
-        while (at > 0 && _events[(_head + at - 1) % Synth::QueueEvents].frame > event.frame) {
-                _events[(_head + at) % Synth::QueueEvents] = _events[(_head + at - 1) % Synth::QueueEvents];
+        while (at > 0 && _events[(_head + at - 1) % SynthEngine::QueueEvents].frame > event.frame) {
+                _events[(_head + at) % SynthEngine::QueueEvents] = _events[(_head + at - 1) % SynthEngine::QueueEvents];
                 --at;
         }
-        _events[(_head + at) % Synth::QueueEvents] = event;
+        _events[(_head + at) % SynthEngine::QueueEvents] = event;
         ++_count;
         return Error::Ok;
 }
@@ -839,7 +845,7 @@ void FmSynth::render(float *out, size_t frames) {
                 // What is due by this frame, then up to the next event's frame, a block at a time.
                 while (_count > 0 && _events[_head].frame <= _frames + done) {
                         apply(_events[_head], _frames + done);
-                        _head = (_head + 1) % Synth::QueueEvents;
+                        _head = (_head + 1) % SynthEngine::QueueEvents;
                         --_count;
                 }
                 size_t until = frames;

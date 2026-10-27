@@ -5,15 +5,17 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * Synth fds and the fonts they share (devplan/audio.md §22).
+ * Synth fds, the fonts they share and the engines they play (devplan/audio.md §22, §26).
  */
 
 #include <atomic>
 #include <cstring>
 #include <new>
 #include <bmds/clock.h>
+#include <bmds/fmsynth.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
+#include <bmds/op2bank.h>
 #include <bmds/staticobject.h>
 #include <bmds/synthfile.h>
 #include <bmds/sysconf.h>
@@ -30,6 +32,8 @@ namespace {
         BMDS_SYSCONF(synthGain, "synth/gain", Config::Type::Int, "-10",
                      "The synths' gain in dB (-40 to 12): headroom, so that many notes at once stay below full scale",
                      static_cast<int32_t>(Synth::MinGainDb), static_cast<int32_t>(Synth::MaxGainDb), nullptr, nullptr)
+        BMDS_SYSCONF(synthFmBank, "synth/fm-bank", Config::Type::String, SynthEngines::DefaultBank,
+                     "The OP2 instrument bank the FM synth plays when a program names none", 0, 0, nullptr, nullptr)
         BMDS_SYSCONF(synthKeepFonts, "synth/keep-fonts", Config::Type::Bool, "true",
                      "Keep SoundFonts loaded after their last synth, until memory runs short", 0, 0, nullptr, nullptr)
 
@@ -219,7 +223,150 @@ namespace {
                 return makeResult(font);
         }
 
+        // synth/gain's, or @p fallback.
+        float gainDb(float fallback) {
+                if (!SysConf::isReady()) return fallback;
+                auto [gain, err] = SysConf::getInt(bmdsConf_synthGain.key);
+                return err.isOk() ? static_cast<float>(gain) : fallback;
+        }
+
+        // The wavetable engine: a synth on a shared font, let go of with it.
+        class FontEngine final : public Synth {
+                public:
+                        ~FontEngine() override { SoundFonts::closeSynth(*this, _font); }
+                        SoundFont *_font = nullptr;
+        };
+
+        // The FM engine: a synth on a bank, mapped in place or copied into PSRAM (then its own).
+        class BankEngine final : public FmSynth {
+                public:
+                        ~BankEngine() override {
+                                close();
+                                Memory::free(_copy);
+                        }
+                        size_t   instrumentBytes() const override { return _copy != nullptr ? _bank.bytes() : 0; }
+                        Op2Bank  _bank;
+                        uint8_t *_copy = nullptr;
+        };
+
+        constexpr size_t MaxBankBytes = 64 * 1024; // an OP2 bank is 11,908
+
+        // A whole small file into PSRAM.
+        Result<uint8_t *> readSmall(StringView path, size_t &bytes) {
+                auto [info, serr] = Vfs::stat(path, Vfs::Context());
+                if (serr.isError()) return makeError<uint8_t *>(serr);
+                if (info.size > MaxBankBytes) return makeError<uint8_t *>(Error::Invalid);
+                auto [file, err] = Vfs::open(path, Vfs::Read, Vfs::Context());
+                if (err.isError()) return makeError<uint8_t *>(err);
+                bytes = static_cast<size_t>(info.size);
+                auto *data = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, bytes != 0 ? bytes : 1));
+                if (data == nullptr) return makeError<uint8_t *>(Error::NoMem);
+                for (size_t done = 0; done < bytes;) {
+                        auto [n, rerr] = file->read(WritableByteSpan(data + done, bytes - done), WaitForever);
+                        if (rerr.isError() || n == 0) {
+                                Memory::free(data);
+                                return makeError<uint8_t *>(rerr.isError() ? rerr : Error::Invalid);
+                        }
+                        done += n;
+                }
+                return makeResult(data);
+        }
+
+        Result<SynthEngine *> openFm(StringView path, const SynthEngine::Config &config) {
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(BankEngine));
+                if (mem == nullptr) return makeError<SynthEngine *>(Error::NoMem);
+                auto *e = ::new (mem) BankEngine();
+                // In place when the file system has its bytes in memory (/rom), else a copy.
+                auto [mapped, merr] = Vfs::map(path, Vfs::Context());
+                Error err = Error::Ok;
+                if (merr.isOk()) {
+                        err = e->_bank.open(mapped);
+                } else if (merr == Error::NotSupported) {
+                        size_t bytes = 0;
+                        auto [copy, rerr] = readSmall(path, bytes);
+                        e->_copy = copy;
+                        err = rerr.isOk() ? e->_bank.open(ByteSpan(copy, bytes)) : rerr;
+                } else {
+                        err = merr;
+                }
+                if (err.isOk()) err = e->open(e->_bank, config);
+                if (err.isError()) {
+                        bmdsWarn("synth: %.*s: %s", static_cast<int>(path.size()), path.data(),
+                                 err == Error::Invalid ? "not an OP2 bank" : err.desc());
+                        SynthEngines::close(e);
+                        return makeError<SynthEngine *>(err);
+                }
+                return makeResult(static_cast<SynthEngine *>(e));
+        }
+
+        Result<SynthEngine *> openWavetable(StringView path, const SynthEngine::Config &config) {
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(FontEngine));
+                if (mem == nullptr) return makeError<SynthEngine *>(Error::NoMem);
+                auto *e = ::new (mem) FontEngine();
+                auto [font, err] = SoundFonts::openSynth(path, config, *e);
+                if (err.isError()) {
+                        e->~FontEngine();
+                        Memory::free(mem);
+                        return makeError<SynthEngine *>(err);
+                }
+                e->_font = font;
+                return makeResult(static_cast<SynthEngine *>(e));
+        }
+
 } // namespace
+
+// ---- The engines
+
+SynthEngine::Kind SynthEngines::systemKind() {
+        return SynthEngine::Kind::Fm; // the system synth's (devplan/audio.md §26)
+}
+
+SynthEngine::Kind SynthEngines::resolve(SynthEngine::Kind kind, StringView path) {
+        if (kind != SynthEngine::Kind::Default) return kind;
+        if (path.isEmpty()) return systemKind();
+        // A file named: its own kind, by its first bytes.
+        uint8_t head[Op2Bank::HeaderBytes] = {};
+        auto [file, err] = Vfs::open(path, Vfs::Read, Vfs::Context());
+        if (err.isOk()) (void)file->read(WritableByteSpan(head, sizeof(head)), WaitForever);
+        return std::memcmp(head, "#OPL_II#", sizeof(head)) == 0 ? SynthEngine::Kind::Fm : SynthEngine::Kind::Wavetable;
+}
+
+Error SynthEngines::defaultInstruments(SynthEngine::Kind kind, String &out) {
+        if (kind != SynthEngine::Kind::Fm) return SoundFonts::defaultFont(out);
+        if (SysConf::isReady() && SysConf::get(bmdsConf_synthFmBank.key, out).isOk() && !out.isEmpty())
+                return Error::Ok;
+        return out.assign(DefaultBank);
+}
+
+Result<SynthEngine *> SynthEngines::open(SynthEngine::Kind kind, StringView path, const SynthEngine::Config &config) {
+        const SynthEngine::Kind k = resolve(kind, path);
+        String                  instruments;
+        if (path.isEmpty()) {
+                if (Error err = defaultInstruments(k, instruments); err.isError()) return makeError<SynthEngine *>(err);
+                path = instruments.view();
+        }
+        if (k == SynthEngine::Kind::Fm) {
+                SynthEngine::Config c = config;
+                c.gainDb = gainDb(c.gainDb);
+                return openFm(path, c);
+        }
+        return openWavetable(path, config); // its gain set by openSynth()
+}
+
+void SynthEngines::close(SynthEngine *engine) {
+        if (engine == nullptr) return;
+        engine->~SynthEngine();
+        Memory::free(engine);
+        return;
+}
+
+const char *SynthEngines::name(SynthEngine::Kind kind) {
+        switch (kind) {
+                case SynthEngine::Kind::Wavetable: return "wavetable";
+                case SynthEngine::Kind::Fm: return "fm";
+                default: return "default";
+        }
+}
 
 // ---- The fonts
 
@@ -227,15 +374,12 @@ Error SoundFonts::init() {
         fonts.create();
         if (Memory::addReclaimer(&*fonts).isError())
                 bmdsWarn("synth: idle fonts won't be given back when memory runs short");
-        // MIDI files play through the synth wherever sound files decode, on synth/font.
-        MidiDecoder::setFonts(
-                [](const Synth::Config &config, Synth &synth) -> Result<SoundFont *> {
-                        String      path;
-                        const Error err = defaultFont(path);
-                        if (err.isError()) return makeError<SoundFont *>(err);
-                        return openSynth(path.view(), config, synth);
+        // MIDI files play through the system synth's engine, on its setting's instruments.
+        MidiDecoder::setSynths(
+                [](const SynthEngine::Config &config) {
+                        return SynthEngines::open(SynthEngine::Kind::Default, StringView(), config);
                 },
-                closeSynth);
+                SynthEngines::close);
         const Error err = Decoder::addFormat("MThd", MidiDecoder::open);
         if (err.isError()) bmdsWarn("synth: MIDI files won't decode: %s", err.desc());
         return Error::Ok;
@@ -246,13 +390,10 @@ Error SoundFonts::defaultFont(String &out) {
         return out.assign(SynthFile::DefaultFont);
 }
 
-Result<SoundFont *> SoundFonts::openSynth(StringView path, const Synth::Config &asked, Synth &synth) {
+Result<SoundFont *> SoundFonts::openSynth(StringView path, const SynthEngine::Config &asked, Synth &synth) {
         // Every synth's gain is synth/gain's, read here: play, synth and programs' synth fds alike.
-        Synth::Config config = asked;
-        if (SysConf::isReady()) {
-                auto [gain, gerr] = SysConf::getInt(bmdsConf_synthGain.key);
-                if (gerr.isOk()) config.gainDb = static_cast<float>(gain);
-        }
+        SynthEngine::Config config = asked;
+        config.gainDb = gainDb(config.gainDb);
         // The file as it is now: a font loaded from it before is used only if it hasn't changed.
         auto [info, serr] = Vfs::stat(path, Vfs::Context());
         if (serr.isError()) return makeError<SoundFont *>(serr);
@@ -443,34 +584,36 @@ void SynthFile::readStats(void *arg, Span<int64_t> v) {
 Result<FileHandle::Ptr> SynthFile::open(const Config &config, const Vfs::Context &context) {
         if (config.format != SampleFormat::F32Le && config.format != SampleFormat::S16Le)
                 return makeError<FileHandle::Ptr>(Error::Invalid);
-        // The font: the path given (made absolute), or synth/font's.
+        // The engine, and its instruments: the path given (made absolute), or its setting's.
         String path;
         Error  err = Error::Ok;
-        if (config.font.isEmpty()) {
-                err = SoundFonts::defaultFont(path);
-        } else {
+        if (!config.font.isEmpty()) {
                 auto [full, nerr] = Vfs::normalize(config.font, context.cwd);
                 err = nerr.isOk() ? path.assign(full.view()) : nerr;
         }
         if (err.isError()) return makeError<FileHandle::Ptr>(err);
+        const SynthEngine::Kind kind = SynthEngines::resolve(config.engine, path.view());
+        if (path.isEmpty()) err = SynthEngines::defaultInstruments(kind, path);
+        if (err.isError()) return makeError<FileHandle::Ptr>(err);
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(SynthFile));
         if (mem == nullptr) return makeError<FileHandle::Ptr>(Error::NoMem);
-        auto         *file = ::new (mem) SynthFile();
-        Synth::Config sc;
+        auto               *file = ::new (mem) SynthFile();
+        SynthEngine::Config sc;
         sc.rateHz = config.rateHz;
         sc.channels = config.channels;
         sc.maxVoices = config.maxVoices;
-        auto [font, ferr] = SoundFonts::openSynth(path.view(), sc, file->_synth);
-        if (ferr.isError()) {
+        auto [engine, eerr] = SynthEngines::open(kind, path.view(), sc);
+        if (eerr.isError()) {
                 file->~SynthFile();
                 Memory::free(mem);
-                return makeError<FileHandle::Ptr>(ferr);
+                return makeError<FileHandle::Ptr>(eerr);
         }
-        file->_font = font;
+        file->_engine = engine;
         file->_fontPath = std::move(path);
         file->_config = config;
         file->_config.font = file->_fontPath.view();
-        file->_config.maxVoices = file->_synth.config().maxVoices;
+        file->_config.engine = kind;
+        file->_config.maxVoices = engine->config().maxVoices;
         Result<FileHandle::Ptr> handle = FileHandle::open(*file, FileHandle::ReadWrite);
         if (handle.error().isError()) {
                 file->handleClosed(0);
@@ -487,7 +630,7 @@ Result<FileHandle::Ptr> SynthFile::open(const Config &config, const Vfs::Context
 void SynthFile::handleClosed(uint8_t) {
         Stats::remove(_stats);
         giveStatsNumber(_statsNumber);
-        SoundFonts::closeSynth(_synth, _font);
+        SynthEngines::close(_engine);
         this->~SynthFile();
         Memory::free(this);
         return;
@@ -496,23 +639,23 @@ void SynthFile::handleClosed(uint8_t) {
 SynthFile::Info SynthFile::info() {
         Mutex::Locker lock(_lock, WaitForever);
         Info          i;
-        i.synth = _synth.stats();
+        i.synth = _engine->stats();
         i.config = _config;
-        i.presets = _font != nullptr ? _font->presetCount() : 0;
-        i.fontBytes = _font != nullptr ? _font->bytes() : 0;
+        i.presets = _engine->presets();
+        i.fontBytes = _engine->instrumentBytes();
         i.cpuPermille = _cpuPermille;
         i.cpuPermilleMax = _cpuPermilleMax;
         return i;
 }
 
 Result<size_t> SynthFile::write(ByteSpan data, unsigned int) {
-        if (data.size() % sizeof(Synth::Event) != 0) return Result<size_t>(0, Error::Invalid);
+        if (data.size() % sizeof(SynthEngine::Event) != 0) return Result<size_t>(0, Error::Invalid);
         Mutex::Locker lock(_lock, WaitForever);
         size_t        done = 0;
         while (done < data.size()) {
-                Synth::Event e;
+                SynthEngine::Event e;
                 std::memcpy(&e, data.data() + done, sizeof(e));
-                const Error err = _synth.queue(e);
+                const Error err = _engine->queue(e);
                 if (err.isError()) return Result<size_t>(done, err == Error::Full ? Error::WouldBlock : err);
                 done += sizeof(e);
         }
@@ -528,12 +671,12 @@ Result<size_t> SynthFile::read(WritableByteSpan buf, unsigned int) {
         if (_config.format == SampleFormat::F32Le) {
                 // Straight into the buffer when it is aligned for floats, else through the stack.
                 if ((reinterpret_cast<uintptr_t>(buf.data()) & 3) == 0) {
-                        _synth.render(reinterpret_cast<float *>(buf.data()), frames);
+                        _engine->render(reinterpret_cast<float *>(buf.data()), frames);
                 } else {
                         float block[ConvertFrames * 2];
                         for (size_t done = 0; done < frames;) {
                                 const size_t n = frames - done < ConvertFrames ? frames - done : ConvertFrames;
-                                _synth.render(block, n);
+                                _engine->render(block, n);
                                 std::memcpy(buf.data() + done * frameBytes, block, n * frameBytes);
                                 done += n;
                         }
@@ -542,7 +685,7 @@ Result<size_t> SynthFile::read(WritableByteSpan buf, unsigned int) {
                 float block[ConvertFrames * 2];
                 for (size_t done = 0; done < frames;) {
                         const size_t n = frames - done < ConvertFrames ? frames - done : ConvertFrames;
-                        _synth.render(block, n);
+                        _engine->render(block, n);
                         for (size_t i = 0; i < n * _config.channels; ++i) {
                                 const float   x = block[i] * 32767.0f;
                                 const int16_t s =

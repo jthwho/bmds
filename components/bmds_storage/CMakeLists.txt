@@ -158,19 +158,25 @@ elseif(NOT BOOTLOADER_BUILD)
         file(GLOB BMDS_ROM_FONT_FILES CONFIGURE_DEPENDS ${BMDS_ROM_PLEX}/fonts/*.ttf)
         set(BMDS_ROM_FONTS --dir share/fonts=${BMDS_ROM_PLEX}/fonts
                            --file share/licenses/ibm-plex/LICENSE.txt=${BMDS_ROM_PLEX}/LICENSE.txt)
+        # The FM synth's bank (devplan/audio.md §26): DMXOPL3, read in place; its license.
+        set(BMDS_ROM_OPL ${BMDS_ROOT_DIR}/thirdparty/opl-banks)
+        set(BMDS_ROM_BANKS --file share/synth/dmxopl3.op2=${BMDS_ROM_OPL}/dmxopl3.op2
+                           --file share/licenses/dmxopl3/LICENSE=${BMDS_ROM_OPL}/dmxopl3-LICENSE)
         add_custom_command(OUTPUT ${BMDS_ROM_BIN} ${BMDS_ROM_HASH}
                            COMMAND ${BMDS_STORAGE_PYTHON} ${BMDS_MKROM} image ${BMDS_ROM_BIN}
                                    --max-bytes ${BMDS_ROM_PARTITION_BYTES} ${BMDS_ROM_TREE}
                                    --file share/icons/bmds.icons=${BMDS_ROM_OUT}/bmds.icons
                                    --file share/icons/bmds.LICENSES=${BMDS_ROM_OUT}/bmds.LICENSES
                                    ${BMDS_ROM_ZONES} ${BMDS_ROM_LEAP} ${BMDS_ROM_SSH} ${BMDS_ROM_SPEECH}
-                                   ${BMDS_ROM_PADS} ${BMDS_ROM_PATTERNS} ${BMDS_ROM_FONTS} --hash-header ${BMDS_ROM_HASH}
+                                   ${BMDS_ROM_PADS} ${BMDS_ROM_PATTERNS} ${BMDS_ROM_FONTS} ${BMDS_ROM_BANKS}
+                                   --hash-header ${BMDS_ROM_HASH}
                            DEPENDS ${BMDS_MKROM} ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/bmds.LICENSES
                                    ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
                                    ${BMDS_ROM_SSHFS}/bin/sshfs ${BMDS_ROM_COPYID}/bin/ssh-copy-id
                                    ${BMDS_ROM_ANGEL}/bin/angel ${BMDS_ROM_ANGEL_EXAMPLES} ${BMDS_ROM_TREE_FILES} ${BMDS_ROM_ZONES_FILE} ${BMDS_ROM_LEAP_FILE}
                                    ${BMDS_ROM_SPEECH_FILES} ${BMDS_ROM_PADS_FILE} ${BMDS_ROM_PATTERN_FILES}
-                                   ${BMDS_ROM_FONT_FILES} ${BMDS_ROM_PLEX}/LICENSE.txt
+                                   ${BMDS_ROM_FONT_FILES} ${BMDS_ROM_PLEX}/LICENSE.txt ${BMDS_ROM_OPL}/dmxopl3.op2
+                                   ${BMDS_ROM_OPL}/dmxopl3-LICENSE
                            VERBATIM)
         target_sources(${COMPONENT_LIB} PRIVATE ${BMDS_ROM_HASH})
         target_include_directories(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})

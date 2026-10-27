@@ -2775,3 +2775,33 @@ built in `build-host`); the benches `synth.fm.voice`, `synth.fm.voices`,
 `fmsynth_fuzz` (a bank and a MIDI stream on a configuration the input picks): 10 minutes, 24,353
 inputs (each seconds of sound under ASan and UBSan), no fault, no leak, every sample finite.
 Next: step 2, `SynthEngine` and the synth fd's `engine`.
+
+### As built: step 2 (2026-10-27)
+
+- **`SynthEngine`** (`bmds/synthengine.h`, portable): the interface both synths are (`Synth`,
+  `FmSynth` derive from it), with the configuration, events, counters and limits that were
+  `Synth`'s (`Synth::Config` and the rest still name them), `kind()`, `presets()` and
+  `instrumentBytes()`.
+- **`SynthEngines`** (`synthfile.h`, the kernel's): `resolve()` (`Default` with a file named is
+  that file's kind by its first 8 bytes, `#OPL_II#` FM, else the wavetable; with none, the system
+  synth's: FM until step 3 reads `synth/system`), `defaultInstruments()` (`synth/font`, and the new
+  **`synth/fm-bank`**, default `/rom/share/synth/dmxopl3.op2`), `open()` (a font shared as before;
+  a bank mapped in place with `Vfs::map()`, else read into PSRAM, 64 KB at most), `close()`.
+- **The synth fd** plays an engine (`SynthFile::Config::engine`, resolved at open); **ABI,
+  appended:** `bmds_synth_config_t.engine` (offset 28; 28 bytes to 32), `bmds_synth_info_t.engine`
+  (offset 200; 200 bytes to 208), `BMDS_SYNTH_ENGINE_DEFAULT`, `_WAVETABLE`, `_FM`; the size locks
+  carry the old sizes beside them (`docs/ABI.md` §4). A program built before passes the shorter
+  struct: engine 0, and its font named keeps it on the wavetable.
+- **MIDI files** (`play`, Open, `audio_decode`): `MidiDecoder::setSynths()` hooks take an engine;
+  the kernel's open the system synth's (FM). **`synth -e fm|wavetable`** (`-f FILE` a font or a
+  bank). The wavetable service asks for the wavetable. The Settings app's Synthesizer section has
+  `synth/fm-bank`.
+- **The ROM** has `share/synth/dmxopl3.op2` and `share/licenses/dmxopl3/LICENSE` (Freedoom's bank
+  only in the repository: the same sound on the songs tried).
+- **Found (a bug, fixed):** a fast decay overshot the sustain level by up to a tick's steps (at the
+  fastest rate 66 units, 12 dB): DMXOPL3's square lead played 12 dB low. The chip stops within a
+  step of it; now the level is set to it. Host test added; Freedoom's songs barely moved (the
+  calibration stands: FM -22.5 dBFS on average, TimGM6mb -22.2).
+- **Tried on the board:** `progtest synth` (the old struct and a font: wavetable; FM on the ROM's
+  bank, 175 presets, 0 bytes of RAM for it; default: FM; engine 3 refused; a SoundFont as a bank:
+  EIO), `progtest mididecode` and `play scale.mid` through FM.

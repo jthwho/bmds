@@ -13,19 +13,15 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/soundfont.h>
+#include <bmds/synthengine.h>
 
 struct tsf;
 
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief A General MIDI synth on a `SoundFont` (`devplan/audio.md` §22):
- *        MIDI messages placed on frames, rendered as float samples.
- *
- * The frame count is its own: the frames `render()` has made. An event for a
- * frame already made plays at the next render's start; one for a later frame
- * waits until then, so a player writes ahead and every event lands on its
- * sample. Channel 10 (9 here) is the drums.
+ * @brief The wavetable synth: a General MIDI synth on a `SoundFont` (`devplan/audio.md` §22), a
+ *        `SynthEngine`.
  *
  * Takes: note off and on, key pressure (ignored), control changes (bank,
  * volume, pan, expression, sustain, RPN pitch-bend range, all notes and
@@ -40,48 +36,10 @@ BMDS_NAMESPACE_BEGIN
  * `close()` of synths on one font must also be serialized with each other:
  * TinySoundFont counts a font's users without atomics.
  */
-class Synth {
+class Synth : public SynthEngine {
         public:
-                static constexpr uint16_t DefaultVoices = 32; ///< Voices when `Config::maxVoices` is 0.
-                static constexpr uint16_t MaxVoices = 256;    ///< The most `Config::maxVoices` takes.
-                static constexpr size_t   QueueEvents = 1024; ///< Events waiting at most.
-                static constexpr size_t   MaxEventBytes = 6;  ///< A message's bytes (GM System On).
-                static constexpr float    MinGainDb = -40;    ///< `Config::gainDb`'s range.
-                static constexpr float    MaxGainDb = 12;
-
-                /** @brief How it renders. */
-                struct Config {
-                                uint32_t rateHz = 48000;
-                                uint8_t  channels = 2;  ///< 1 or 2 (interleaved).
-                                uint16_t maxVoices = 0; ///< 0: `DefaultVoices`.
-                                float    gainDb =
-                                        0; ///< The output's gain, `MinGainDb` to `MaxGainDb` (headroom: below 0).
-                };
-
-                /** @brief A message for a frame (the ABI's `bmds_synth_event_t`). */
-                struct Event {
-                                uint64_t frame = 0;
-                                uint8_t  length = 0;
-                                uint8_t  flags = 0;
-                                uint8_t  data[MaxEventBytes] = {};
-                };
-
-                /** @brief Its counters. */
-                struct Stats {
-                                uint64_t frames = 0;       ///< Frames made.
-                                uint32_t voices = 0;       ///< Playing now.
-                                uint32_t maxVoices = 0;    ///< Its limit.
-                                uint32_t peakVoices = 0;   ///< The most at once.
-                                uint32_t notesAtLimit = 0; ///< Note-ons with every voice busy (one stolen or dropped).
-                                uint32_t queued = 0;       ///< Events waiting.
-                                uint32_t queueFull = 0;    ///< Events refused (the queue was full).
-                                uint32_t ignored = 0;      ///< Messages it doesn't take.
-                };
-
                 Synth() = default;
-                ~Synth();
-                Synth(const Synth &) = delete;
-                Synth &operator=(const Synth &) = delete;
+                ~Synth() override;
 
                 /**
                  * @brief Starts playing @p font (which must outlive it, until `close()`).
@@ -93,8 +51,8 @@ class Synth {
                 /** @brief Stops: its memory goes. */
                 void close();
 
-                /** @brief Returns true while open. */
-                bool isOpen() const { return _tsf != nullptr; }
+                Kind kind() const override { return Kind::Wavetable; }
+                bool isOpen() const override { return _tsf != nullptr; }
 
                 /**
                  * @brief Queues @p event, in frame order (events for one frame keep
@@ -103,7 +61,7 @@ class Synth {
                  *         `Full` (counted), `InvalidState` (not open).
                  * @nonblocking
                  */
-                Error queue(const Event &event);
+                Error queue(const Event &event) override;
 
                 /**
                  * @brief Makes @p frames frames into @p out (interleaved, the
@@ -111,26 +69,26 @@ class Synth {
                  *        their frames.
                  * @nonblocking
                  */
-                void render(float *out, size_t frames);
+                void render(float *out, size_t frames) override;
 
                 /**
                  * @brief Ends every note (a release of a few milliseconds, against a
                  *        click), resets the channels and forgets what is queued; the
                  *        frame count stays.
                  */
-                void reset();
+                void reset() override;
 
-                /** @brief Returns the counters. */
-                Stats stats() const;
-
-                /** @brief Returns the configuration (with the defaults filled in). */
-                const Config &config() const { return _config; }
+                Stats         stats() const override;
+                const Config &config() const override { return _config; }
+                size_t        presets() const override;
+                size_t        instrumentBytes() const override;
 
         private:
                 void apply(const Event &event);
                 bool initChannels(); // false: no memory (only the first time)
 
-                ::tsf   *_tsf = nullptr;
+                ::tsf     *_tsf = nullptr;
+                SoundFont *_font = nullptr; // open()'s
                 Config   _config;
                 Event   *_events = nullptr; // a ring, in frame order
                 size_t   _head = 0;         // the oldest

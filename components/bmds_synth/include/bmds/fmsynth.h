@@ -13,7 +13,7 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/op2bank.h>
-#include <bmds/synth.h>
+#include <bmds/synthengine.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -33,26 +33,20 @@ BMDS_NAMESPACE_BEGIN
  * reset controllers and GM System On. Real-time bytes, pressure and bank select are taken and
  * ignored.
  *
- * Its counters and frame count are `Synth`'s, as are its events and configuration. Its memory
+ * A `SynthEngine`: its counters, frame count, events and configuration are every engine's. Its memory
  * (the voices in internal RAM, the event queue in PSRAM) is allocated by `open()`; `queue()` and
  * `render()` never allocate.
  *
  * @par Thread Safety
  * Not thread-safe: one thread at a time (its fd serializes).
  */
-class FmSynth {
+class FmSynth : public SynthEngine {
         public:
-                using Config = Synth::Config;
-                using Event = Synth::Event;
-                using Stats = Synth::Stats;
-
                 static constexpr size_t TickFrames = 16;  ///< Envelopes and LFOs are worked out this often.
                 static constexpr size_t BlockFrames = 64; ///< A voice renders up to this many frames at once.
 
                 FmSynth() = default;
-                ~FmSynth();
-                FmSynth(const FmSynth &) = delete;
-                FmSynth &operator=(const FmSynth &) = delete;
+                ~FmSynth() override;
 
                 /**
                  * @brief Starts playing @p bank's instruments (it must outlive it, until `close()`).
@@ -64,36 +58,16 @@ class FmSynth {
                 /** @brief Stops: its memory goes. */
                 void close();
 
-                /** @brief Returns true while open. */
-                bool isOpen() const { return _state != nullptr; }
+                Kind kind() const override { return Kind::Fm; }
+                bool isOpen() const override { return _state != nullptr; }
 
-                /**
-                 * @brief Queues @p event, in frame order (events for one frame keep their order).
-                 * @return `Ok`, `Invalid` (no bytes, or more than `Synth::MaxEventBytes`), `Full`
-                 *         (counted), `InvalidState` (not open).
-                 * @nonblocking
-                 */
-                Error queue(const Event &event);
-
-                /**
-                 * @brief Makes @p frames frames into @p out (interleaved, the configured channels,
-                 *        full scale ±1.0), the queued events at their frames.
-                 * @nonblocking
-                 * @hotpath
-                 */
-                void render(float *out, size_t frames);
-
-                /**
-                 * @brief Ends every note (a release of a few milliseconds, against a click), resets
-                 *        the channels and forgets what is queued; the frame count stays.
-                 */
-                void reset();
-
-                /** @brief Returns the counters. */
-                Stats stats() const;
-
-                /** @brief Returns the configuration (with the defaults filled in). */
-                const Config &config() const { return _config; }
+                Error         queue(const Event &event) override;
+                void          render(float *out, size_t frames) override; ///< @hotpath
+                void          reset() override;
+                Stats         stats() const override;
+                const Config &config() const override { return _config; }
+                size_t        presets() const override { return Op2Bank::Instruments; }
+                size_t        instrumentBytes() const override { return _bank != nullptr ? _bank->bytes() : 0; }
 
                 struct State; ///< Its voices and channels (opaque).
 
