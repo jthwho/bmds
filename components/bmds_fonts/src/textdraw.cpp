@@ -6,6 +6,7 @@
  */
 
 #include <cstring>
+#include <new>
 #include <bmds/bitmapfont.h>
 #include <bmds/fontlibrary.h>
 #include <bmds/glyphcache.h>
@@ -18,9 +19,17 @@ namespace {
         // The glyphs laid out and waiting to be drawn, a run of them fetched from the cache at once.
         constexpr size_t Batch = 32;
 
-        // Columns a chunk at a time, and the band of rows composed at once (on the stack).
+        // Columns a chunk at a time, and the band of rows composed at once (the scratch's).
         constexpr int    Chunk = 512;
         constexpr size_t Band = 2048;
+
+        // A glyph of the batch where it lands: its cached coverage, or a bitmap font's.
+        struct Piece {
+                        const GlyphCache::Glyph *cached = nullptr;
+                        const Font::Placed      *placed = nullptr;
+                        Glyph                    bitmap; // a bitmap font's glyph
+                        int                      x0 = 0, y0 = 0, width = 0, height = 0;
+        };
 
         struct Drawing {
                         Drawing(const TextTarget &t, const Font &f, const TextPaint &p, Simd::Kernel k)
@@ -39,17 +48,11 @@ namespace {
                         int64_t           limit = INT64_MAX;                        // 1/64 px
                         int64_t           end = 0;                                  // the drawn line's advance
                         int               filledTo = INT32_MIN; // opaque: the box filled up to this column
-                        Font::Placed      batch[Batch];
+                        Font::Placed     *batch = nullptr;      // the scratch's
+                        Piece            *pieces = nullptr;     // and the batch's places
+                        uint8_t          *band = nullptr;       // and a band's coverage (Band bytes)
                         size_t            count = 0;
                         Error             error;
-        };
-
-        // A glyph of the batch where it lands: its cached coverage, or a bitmap font's.
-        struct Piece {
-                        const GlyphCache::Glyph *cached = nullptr;
-                        const Font::Placed      *placed = nullptr;
-                        Glyph                    bitmap; // a bitmap font's glyph
-                        int                      x0 = 0, y0 = 0, width = 0, height = 0;
         };
 
         // Combines @p p's rows from @p y0 to @p y1 between columns @p c0 and @p c1 into @p band
@@ -85,7 +88,8 @@ namespace {
         // the line's rows across the whole run, its glyphs' levels combined and drawn by one call.
         void flush(Drawing &d) {
                 GlyphCache    &cache = d.font.library()->cache();
-                Piece          pieces[Batch];
+                Piece         *pieces = d.pieces;
+                for (size_t i = 0; i < d.count; ++i) pieces[i] = Piece();
                 const unsigned size = d.font.pixelSize();
                 const bool     bold = d.font.isMadeUpBold();
                 for (size_t i = 0; i < d.count && d.error.isOk();) {
@@ -166,8 +170,8 @@ namespace {
                                                 d.target.format, unsigned(to - from), d.paint.background);
                 }
                 // Bands of rows across a chunk of columns, composed a glyph at a time, then each row drawn
-                // by one call: a band on the stack (Band bytes).
-                uint8_t band[Band];
+                // by one call: the scratch's band (Band bytes).
+                uint8_t *band = d.band;
                 for (int c0 = x0; d.error.isOk() && c0 < x1; c0 += Chunk) {
                         const int c1 = c0 + Chunk < x1 ? c0 + Chunk : x1, w = c1 - c0;
                         const int rows = int(Band) / w;
@@ -203,28 +207,72 @@ namespace {
 
 } // namespace
 
-Result<uint32_t> TextDraw::line(const TextTarget &target, const Font &font, StringView utf8, int x, int top,
-                                const TextPaint &paint, uint32_t maxWidth, Simd::Kernel kernel) {
-        if (!font.isValid() || target.pixels == nullptr) return makeError<uint32_t>(Error::Invalid);
-        const bool sharp = !paint.smooth || target.format == TextBlend::Format::Index8;
-        Drawing    d(target, font, paint, kernel);
-        d.depth = sharp ? FontFace::Depth::Mono : FontFace::Depth::Gray4;
-        d.x = x;
-        d.baseline = top + font.metrics().ascent;
-        d.left = target.clipLeft < 0 ? 0 : target.clipLeft;
-        d.top = target.clipTop < 0 ? 0 : target.clipTop;
-        d.right = target.clipRight > target.width ? target.width : target.clipRight;
-        d.bottom = target.clipBottom > target.height ? target.height : target.clipBottom;
-        d.limit = maxWidth == 0 ? INT64_MAX : int64_t(maxWidth) * 64;
-        if (paint.opaque) TextBlend::makeRamp(target.format, paint.color, paint.background, d.ramp);
-        // On a box the ramp writes what a blend over the filled box would; where PIE blends, it is faster.
-        d.blendOnBox = paint.opaque && Simd::usable(kernel) == Simd::Kernel::Pie &&
-                       (target.format == TextBlend::Format::Bgr24 || target.format == TextBlend::Format::Rgb24 ||
-                        target.format == TextBlend::Format::Gray8);
-        (void)font.layout(utf8, visit, &d);
-        if (d.error.isOk()) flush(d);
-        if (d.error.isError()) return makeError<uint32_t>(d.error);
-        return makeResult(uint32_t((d.end + 63) >> 6));
+struct TextDraw::Scratch {
+                Font::Placed batch[Batch];
+                Piece        pieces[Batch];
+                uint8_t      band[Band];
+};
+
+size_t TextDraw::scratchBytes() {
+        return sizeof(Scratch);
 }
+
+TextDraw::Scratch *TextDraw::makeScratch(void *memory) {
+        return memory != nullptr ? ::new (memory) Scratch() : nullptr;
+}
+
+namespace {
+
+        Result<uint32_t> drawLine(const TextTarget &target, const Font &font, StringView utf8, int x, int top,
+                                  const TextPaint &paint, uint32_t maxWidth, Simd::Kernel kernel,
+                                  TextDraw::Scratch &work);
+
+        // line() without a scratch: one on this frame's stack, which callers with one never pay for.
+        __attribute__((noinline)) Result<uint32_t> drawOnStack(const TextTarget &target, const Font &font,
+                                                               StringView utf8, int x, int top, const TextPaint &paint,
+                                                               uint32_t maxWidth, Simd::Kernel kernel) {
+                TextDraw::Scratch own;
+                return drawLine(target, font, utf8, x, top, paint, maxWidth, kernel, own);
+        }
+
+} // namespace
+
+Result<uint32_t> TextDraw::line(const TextTarget &target, const Font &font, StringView utf8, int x, int top,
+                                const TextPaint &paint, uint32_t maxWidth, Simd::Kernel kernel, Scratch *scratch) {
+        if (!font.isValid() || target.pixels == nullptr) return makeError<uint32_t>(Error::Invalid);
+        if (scratch == nullptr) return drawOnStack(target, font, utf8, x, top, paint, maxWidth, kernel);
+        return drawLine(target, font, utf8, x, top, paint, maxWidth, kernel, *scratch);
+}
+
+namespace {
+
+        Result<uint32_t> drawLine(const TextTarget &target, const Font &font, StringView utf8, int x, int top,
+                                  const TextPaint &paint, uint32_t maxWidth, Simd::Kernel kernel,
+                                  TextDraw::Scratch &work) {
+                const bool sharp = !paint.smooth || target.format == TextBlend::Format::Index8;
+                Drawing    d(target, font, paint, kernel);
+                d.batch = work.batch;
+                d.pieces = work.pieces;
+                d.band = work.band;
+                d.depth = sharp ? FontFace::Depth::Mono : FontFace::Depth::Gray4;
+                d.x = x;
+                d.baseline = top + font.metrics().ascent;
+                d.left = target.clipLeft < 0 ? 0 : target.clipLeft;
+                d.top = target.clipTop < 0 ? 0 : target.clipTop;
+                d.right = target.clipRight > target.width ? target.width : target.clipRight;
+                d.bottom = target.clipBottom > target.height ? target.height : target.clipBottom;
+                d.limit = maxWidth == 0 ? INT64_MAX : int64_t(maxWidth) * 64;
+                if (paint.opaque) TextBlend::makeRamp(target.format, paint.color, paint.background, d.ramp);
+                // On a box the ramp writes what a blend over the filled box would; where PIE blends, it is faster.
+                d.blendOnBox = paint.opaque && Simd::usable(kernel) == Simd::Kernel::Pie &&
+                               (target.format == TextBlend::Format::Bgr24 ||
+                                target.format == TextBlend::Format::Rgb24 || target.format == TextBlend::Format::Gray8);
+                (void)font.layout(utf8, visit, &d);
+                if (d.error.isOk()) flush(d);
+                if (d.error.isError()) return makeError<uint32_t>(d.error);
+                return makeResult(uint32_t((d.end + 63) >> 6));
+        }
+
+} // namespace
 
 BMDS_NAMESPACE_END

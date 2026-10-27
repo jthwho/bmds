@@ -105,6 +105,19 @@ namespace {
         constinit std::atomic<bool>              ready{false};
         constinit std::atomic<bool>              smooth{true};
 
+        struct Watcher {
+                        SystemFonts::Notify notify = nullptr;
+                        void               *arg = nullptr;
+        };
+        constinit Watcher             watchers[SystemFonts::MaxWatchers] = {};
+        constinit StaticObject<Mutex> watchMutex; // held while the listeners are called
+
+        Mutex &watchLock() {
+                SpinLock::Locker lock(createLock);
+                if (!watchMutex.isCreated()) watchMutex.create();
+                return *watchMutex;
+        }
+
         Mutex &initLock() {
                 SpinLock::Locker lock(createLock);
                 if (!initMutex.isCreated()) initMutex.create();
@@ -183,9 +196,14 @@ namespace {
                 SysConf::Id               id;
                 while (watcher->next(id))
                         if (pathsId.isOk() && id == pathsId.value()) rescan = true;
-                Mutex::Locker lock(initLock(), WaitForever);
-                if (rescan) (void)scanFolders();
-                apply();
+                {
+                        Mutex::Locker lock(initLock(), WaitForever);
+                        if (rescan) (void)scanFolders();
+                        apply();
+                }
+                Mutex::Locker lock(watchLock(), WaitForever);
+                for (const Watcher &w : watchers)
+                        if (w.notify != nullptr) w.notify(w.arg);
                 return;
         }
 
@@ -224,6 +242,25 @@ GlyphCache &SystemFonts::cache() {
 bool SystemFonts::smoothing() {
         ensure();
         return smooth.load(std::memory_order_relaxed);
+}
+
+Error SystemFonts::watch(Notify notify, void *arg) {
+        if (notify == nullptr) return Error::Invalid;
+        Mutex::Locker lock(watchLock(), WaitForever);
+        for (Watcher &w : watchers)
+                if (w.notify == nullptr) {
+                        w.notify = notify;
+                        w.arg = arg;
+                        return Error::Ok;
+                }
+        return Error::Full;
+}
+
+void SystemFonts::unwatch(Notify notify, void *arg) {
+        Mutex::Locker lock(watchLock(), WaitForever);
+        for (Watcher &w : watchers)
+                if (w.notify == notify && w.arg == arg) w = Watcher();
+        return;
 }
 
 Error SystemFonts::rescan() {

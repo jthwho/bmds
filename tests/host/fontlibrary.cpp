@@ -697,6 +697,27 @@ TEST_CASE("TextDraw: lines drawn over, on a box, clipped, limited, sharp, indexe
         REQUIRE(bmds::TextDraw::line(t, sans, "To AVA", 10, 5, paint, 0, bmds::Simd::Kernel::Scalar).isOk());
         CHECK(pic == first);
 
+        // With the caller's scratch (the window manager's): the same pixels, and more than a batch
+        // of glyphs (pieces reused from one batch to the next).
+        std::vector<uint64_t>    memory((bmds::TextDraw::scratchBytes() + 7) / 8);
+        bmds::TextDraw::Scratch *scratch = bmds::TextDraw::makeScratch(memory.data());
+        REQUIRE(scratch != nullptr);
+        std::fill(pic.begin(), pic.end(), 0xff);
+        REQUIRE(bmds::TextDraw::line(t, sans, "To AVA", 10, 5, paint, 0, bmds::Simd::Kernel::Scalar, scratch).isOk());
+        CHECK(pic == first);
+        const char *longLine = "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii"; // 50 glyphs: two batches
+        std::fill(pic.begin(), pic.end(), 0xff);
+        REQUIRE(bmds::TextDraw::line(t, sans, longLine, 0, 5, paint, 0, bmds::Simd::Kernel::Scalar).isOk());
+        std::vector<uint8_t> onStack = pic;
+        std::fill(pic.begin(), pic.end(), 0xff);
+        REQUIRE(bmds::TextDraw::line(t, sans, longLine, 0, 5, paint, 0, bmds::Simd::Kernel::Scalar, scratch).isOk());
+        CHECK(pic == onStack);
+        std::fill(pic.begin(), pic.end(), 0xff);
+        REQUIRE(bmds::TextDraw::line(t, sans, "To AVA", 10, 5, paint, 0, bmds::Simd::Kernel::Scalar, scratch).isOk());
+        CHECK(pic == first);
+        std::fill(pic.begin(), pic.end(), 0xff);
+        REQUIRE(bmds::TextDraw::line(t, sans, "To AVA", 10, 5, paint, 0, bmds::Simd::Kernel::Scalar).isOk());
+
         // Clipped to a column band: nothing outside it.
         std::fill(pic.begin(), pic.end(), 0xff);
         t.clipLeft = 20;

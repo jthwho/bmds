@@ -25,9 +25,12 @@ namespace {
 
 } // namespace
 
-Error MenuLayout::layout(Span<const Item> items, const BitmapFont &font, uint16_t minWidth) {
+Error MenuLayout::layout(Span<const Item> items, const Font &font, uint16_t minWidth) {
         _count = 0;
         if (items.size() > MaxItems) return Error::Full;
+        _font = font;
+        const int ink = font.metrics().ascent + font.metrics().descent + ItemPad;
+        _itemHeight = static_cast<uint16_t>(ink > ItemHeight ? ink : ItemHeight);
         uint32_t textWidth = 0;
         uint32_t shortcutWidth = 0;
         bool     submenus = false;
@@ -54,7 +57,7 @@ Error MenuLayout::layout(Span<const Item> items, const BitmapFont &font, uint16_
                 const uint32_t s = roundUp4(font.textWidth(item.shortcut));
                 const uint32_t end = _width - RightPad - (submenus ? ShortcutGap / 2 + ArrowWidth : 0);
                 _shortcutX[_count] = static_cast<uint16_t>(s <= end ? end - s : 0);
-                y += (item.flags & Separator) != 0 ? SeparatorHeight : ItemHeight;
+                y += (item.flags & Separator) != 0 ? SeparatorHeight : _itemHeight;
                 ++_count;
         }
         _height = static_cast<uint16_t>(y + InsetY);
@@ -63,7 +66,7 @@ Error MenuLayout::layout(Span<const Item> items, const BitmapFont &font, uint16_
 
 Rect MenuLayout::itemRect(size_t i) const {
         if (i >= _count) return Rect();
-        const uint16_t h = (_flags[i] & Separator) != 0 ? SeparatorHeight : ItemHeight;
+        const uint16_t h = (_flags[i] & Separator) != 0 ? SeparatorHeight : _itemHeight;
         return Rect{Edge, _top[i], static_cast<uint16_t>(_width - 2 * Edge), h};
 }
 

@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/fontlibrary.h>
@@ -38,6 +39,22 @@ namespace SystemFonts {
 
         /** @brief Returns `font/smooth`: whether text is smoothed unless a call says otherwise. */
         bool smoothing();
+
+        /** @brief Called after a `font/` setting change is applied (the settings' task). */
+        using Notify = void (*)(void *arg);
+
+        /** @brief Most listeners `watch()` keeps. */
+        constexpr size_t MaxWatchers = 4;
+
+        /**
+         * @brief Calls @p notify with @p arg after each `font/` change is applied (the
+         *        roles, smoothing, contrast, the faces found), until `unwatch()`.
+         * @return `Ok`, or `Full` (`MaxWatchers` already).
+         */
+        Error watch(Notify notify, void *arg);
+
+        /** @brief Stops calling @p notify with @p arg. Returns once no call to it is running. */
+        void unwatch(Notify notify, void *arg);
 
         /**
          * @brief Finds the faces in `font/paths` again.

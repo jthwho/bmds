@@ -11,6 +11,7 @@
 #include <cstring>
 #include <bmds/bitmapfont.h>
 #include <bmds/menu.h>
+#include <bmds/systemfonts.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -88,7 +89,12 @@ Error Menu::popup(const Rect &anchor, bool submenu) {
         for (size_t i = 0; i < _count; ++i)
                 _views[i] = MenuLayout::Item{StringView(_items[i].text), StringView(_items[i].shortcut),
                                              _items[i].flags, _items[i].icon, _items[i].underline};
-        const Error err = _layout.layout(Span<const MenuLayout::Item>(_views, _count), Fonts::unscii16);
+        // Menus are in the ui role's font, as the window manager's are.
+        FontName ui;
+        ui.role = FontName::Role::Ui;
+        auto [font, ferr] = SystemFonts::library().open(ui);
+        if (ferr.isError()) return ferr;
+        const Error err = _layout.layout(Span<const MenuLayout::Item>(_views, _count), font);
         if (err.isError()) return err;
         const Rect area = application().windowManager().workArea();
         _highlight = -1;

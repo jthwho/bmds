@@ -17,6 +17,7 @@
 #include <bmds/deadline.h>
 #include <bmds/display.h>
 #include <bmds/bitmapfont.h>
+#include <bmds/systemfonts.h>
 #include <bmds/iconid.h>
 #include <bmds/log.h>
 #include <bmds/iconpack.h>
@@ -152,6 +153,10 @@ Result<WindowManager *> WindowManager::manager(size_t number) {
 }
 
 Error WindowManager::start(Display &display, const WindowPalette &palette) {
+        // Fonts followed (outside the lock: a notification holds SystemFonts' and then takes it).
+        SystemFonts::unwatch(fontsNotify, this);
+        if (Error werr = SystemFonts::watch(fontsNotify, this); werr.isError())
+                bmdsWarn("wm: font settings not followed: %s", werr.desc());
         // The window menu's icons, in the ROM (found before the lock: the VFS has its own).
         if (auto [bytes, merr] = Vfs::map("/rom/share/icons/bmds.icons", Vfs::Context()); merr.isOk()) {
                 if (auto [pack, perr] = IconPack::open(bytes); perr.isOk()) {
@@ -176,7 +181,10 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _pieces = static_cast<ComposePiece *>(Memory::alloc(MemSpace::Internal, MaxPieces * sizeof(ComposePiece)));
         _scratch = static_cast<Rect *>(Memory::alloc(MemSpace::Internal, 3 * MaxPieces * sizeof(Rect)));
         _under = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, UnderBytes));
-        Error err = _tools.strip == nullptr || _pieces == nullptr || _scratch == nullptr || _under == nullptr
+        // TextDraw's memory (5 KB): the task's stack is too short for it.
+        _textScratch = Memory::allocAligned(MemSpace::Internal, TextDraw::scratchBytes(), 8);
+        Error err = _tools.strip == nullptr || _pieces == nullptr || _scratch == nullptr || _under == nullptr ||
+                                    _textScratch == nullptr
                             ? Error(Error::NoMem)
                             : display.claim("desktop");
         if (err.isOk() && !_task.isRunning()) {
@@ -190,6 +198,8 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         }
         if (err.isError()) {
                 Memory::free(_tools.strip);
+                Memory::free(_textScratch);
+                _textScratch = nullptr;
                 Memory::free(_pieces);
                 Memory::free(_scratch);
                 Memory::free(_under);
@@ -205,6 +215,8 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         _tools.palette = &_palette;
         _tools.stripHalf = 0;
         _tools.stripColumn = 0;
+        _tools.textScratch = TextDraw::makeScratch(_textScratch);
+        openFontsLocked();
         if (_snapshots == nullptr) { // kept for good: queries may read it while the window manager stops
                 void *memory = Memory::alloc(MemSpace::Psram, MaxIds * (sizeof(Snapshot) + 1));
                 if (memory != nullptr) {
@@ -282,6 +294,7 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
 }
 
 void WindowManager::stop() {
+        SystemFonts::unwatch(fontsNotify, this);
         Mutex::Locker lock(_lock, WaitForever);
         if (_surface == nullptr) return;
         Input::setSink(nullptr);
@@ -306,6 +319,8 @@ void WindowManager::stop() {
         _display->release();
         _display = nullptr;
         Memory::free(_tools.strip);
+        Memory::free(_textScratch);
+        _textScratch = nullptr;
         Memory::free(_pieces);
         Memory::free(_scratch);
         Memory::free(_under);
@@ -318,6 +333,8 @@ void WindowManager::stop() {
         _dndOldUnder = nullptr;
         _dndEnded = nullptr;
         _tools = Painter::Tools();
+        _titleFont = Font();
+        _uiFont = Font();
         _pieces = nullptr;
         _scratch = nullptr;
         _under = nullptr;
@@ -1750,8 +1767,19 @@ void WindowManager::drawLayer(size_t z, Span<const Rect> pieces) {
                         std::snprintf(shown, sizeof(shown), "%s - click it for the mouse", w.title);
                         words = StringView(shown);
                 }
-                if (!title.isEmpty())
-                        (void)chrome.text(title.x, title.y, words, Fonts::unscii16, text, color, title.width);
+                if (!title.isEmpty()) {
+                        // The font's ink box (ascent and descent) in the bar's middle, cut to the title.
+                        const Rect bar = f.titleBar();
+                        const int  ink = _titleFont.metrics().ascent + _titleFont.metrics().descent;
+                        const int  ty = int(bar.y) + (int(bar.height) - ink) / 2;
+                        if (ty >= int(bar.y) && ty + _titleFont.metrics().lineHeight <= int(bar.bottom())) {
+                                (void)chrome.text(title.x, ty, words, _titleFont, text, color, title.width);
+                        } else {
+                                Rect    storage[32];
+                                Painter cut(chrome, Rect{title.x, bar.y, title.width, bar.height}, Span<Rect>(storage));
+                                (void)cut.text(title.x, ty, words, _titleFont, text, color, title.width);
+                        }
+                }
                 count(chrome);
         }
 
@@ -2574,7 +2602,7 @@ Error WindowManager::showWindowMenuLocked(uint8_t id, const Rect &anchor) {
         add("&Close", "Alt+F4", off((w.decorations & WindowFrame::CloseButton) != 0), icon(5), MenuChoice::Close);
         const size_t Count = count;
         _menuCount = Count;
-        Error err = _menuLayout.layout(Span<const MenuLayout::Item>(_menuItems, Count), Fonts::unscii16);
+        Error err = _menuLayout.layout(Span<const MenuLayout::Item>(_menuItems, Count), _uiFont);
         if (err.isError()) return err;
         WindowConfig config;
         config.rect = MenuLayout::place(_menuLayout.width(), _menuLayout.height(), anchor, _stack.screen(), false);
@@ -2682,7 +2710,7 @@ Error WindowManager::showDesktopMenuLocked(uint16_t x, uint16_t y) {
 // The menu of _menuItems (_menuCount of them) opened at @p anchor, for window @p menuFor (0: the
 // desktop).
 Error WindowManager::openMenuLocked(const char *title, const Rect &anchor, uint8_t menuFor) {
-        Error err = _menuLayout.layout(Span<const MenuLayout::Item>(_menuItems, _menuCount), Fonts::unscii16);
+        Error err = _menuLayout.layout(Span<const MenuLayout::Item>(_menuItems, _menuCount), _uiFont);
         if (err.isError()) return err;
         WindowConfig config;
         config.rect = MenuLayout::place(_menuLayout.width(), _menuLayout.height(), anchor, _stack.screen(), false);
@@ -3405,11 +3433,19 @@ void WindowManager::switchRedraw(void *arg, Painter &painter) {
                 (void)painter.fill(in, face);
                 const StringView text(sw.texts[sw.at]);
                 const uint16_t   room = static_cast<uint16_t>(in.width > 8 ? in.width - 8 : 0);
-                const StringView shown = text.left(Fonts::unscii16.fitting(text, room));
-                const uint32_t   tw = Fonts::unscii16.textWidth(shown);
+                const Font      &font = self->_uiFont;
+                const StringView shown = text.left(font.fitting(text, room));
+                const uint32_t   tw = font.textWidth(shown);
                 const uint16_t   tx = static_cast<uint16_t>((in.x + (in.width - tw) / 2) & ~3u);
-                const uint16_t   ty = static_cast<uint16_t>(in.y + (in.height - Fonts::unscii16.height()) / 2);
-                (void)painter.text(tx, ty, shown, Fonts::unscii16, fg, face, room);
+                const int        ink = font.metrics().ascent + font.metrics().descent;
+                const int        ty = int(in.y) + (int(in.height) - ink) / 2;
+                if (ty >= int(in.y) && ty + font.metrics().lineHeight <= int(in.bottom())) {
+                        (void)painter.text(tx, ty, shown, font, fg, face, room);
+                } else {
+                        Rect    storage[32];
+                        Painter cut(painter, in, Span<Rect>(storage));
+                        (void)cut.text(tx, ty, shown, font, fg, face, room);
+                }
         }
         return;
 }
@@ -3756,6 +3792,31 @@ Error WindowManager::setPalette(const WindowPalette &palette) {
         _palette = palette;
         changed(focusId());
         return Error::Ok;
+}
+
+void WindowManager::openFontsLocked() {
+        FontLibrary &library = SystemFonts::library();
+        FontName     name;
+        name.role = FontName::Role::Title;
+        if (auto [font, err] = library.open(name); err.isOk()) _titleFont = font;
+        name.role = FontName::Role::Ui;
+        if (auto [font, err] = library.open(name); err.isOk()) _uiFont = font;
+        _tools.smooth = SystemFonts::smoothing();
+        return;
+}
+
+void WindowManager::fontsNotify(void *arg) {
+        static_cast<WindowManager *>(arg)->fontsChanged();
+        return;
+}
+
+void WindowManager::fontsChanged() {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (_surface == nullptr) return;
+        openFontsLocked();
+        _stack.invalidateScreen(_stack.screen());
+        changed(focusId());
+        return;
 }
 
 WindowPalette WindowManager::palette() {

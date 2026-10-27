@@ -11,7 +11,9 @@
 
 #include <bmds/image.h>
 #include <bmds/painter.h>
+#include <bmds/simd.h>
 #include <bmds/surface.h>
+#include <bmds/textdraw.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -269,6 +271,54 @@ Error Painter::text(int x, int y, StringView utf8, const BitmapFont &font, uint3
                 more = at < utf8.size();
                 return w;
         });
+}
+
+Error Painter::text(int x, int y, StringView utf8, const Font &font, uint32_t fg, uint32_t bg, uint16_t maxWidth) {
+        if (!font.isValid()) {
+                note(Error::Invalid);
+                return _error;
+        }
+        const BitmapFont *bitmap = font.bitmap();
+        if (bitmap != nullptr && font.scale() == 1 && !font.isMadeUpBold())
+                return text(x, y, utf8, *bitmap, fg, bg, maxWidth);
+        const StringView line = utf8.left(font.fitting(utf8, maxWidth));
+        const uint32_t   advance = font.textWidth(line);
+        // The box ends on a 4-pixel column (the strip's copies are in fours), bg past the advance.
+        const auto width = static_cast<uint16_t>(((advance < maxWidth ? advance : maxWidth) + AlignMask) & ~AlignMask);
+        const int  height = font.metrics().lineHeight;
+        if (width == 0 || height <= 0) return _error;
+        // Each piece filled with bg, then the line blended over it from minus the piece's column:
+        // what TextDraw's Opaque writes on PIE.
+        TextPaint paint;
+        paint.color = fg;
+        paint.smooth = _tools.smooth;
+        const Simd::Kernel kernel = Simd::best();
+        for (int band = 0; band < height && _tools.height != 0; band += _tools.height) {
+                const auto rows = static_cast<uint16_t>(height - band < _tools.height ? height - band : _tools.height);
+                uint16_t   column = 0;
+                (void)run(x, y + band, width, rows, [&](uint8_t *strip, size_t stride, uint16_t room, bool &more) {
+                        const auto left = static_cast<uint16_t>(width - column);
+                        const auto w = static_cast<uint16_t>(room < left ? room & ~AlignMask : left);
+                        if (w == 0) return w;
+                        if (strip != nullptr) {
+                                for (uint16_t r = 0; r < rows; ++r)
+                                        TextBlend::fill(strip + size_t(r) * stride, TextBlend::Format::Bgr24, w, bg);
+                                TextTarget t;
+                                t.pixels = strip;
+                                t.format = TextBlend::Format::Bgr24;
+                                t.width = w;
+                                t.height = rows;
+                                t.stride = stride;
+                                const Result<uint32_t> drawn = TextDraw::line(t, font, line, -int(column), -band, paint,
+                                                                              0, kernel, _tools.textScratch);
+                                if (drawn.isError()) note(drawn.error());
+                        }
+                        column = static_cast<uint16_t>(column + w);
+                        more = column < width;
+                        return w;
+                });
+        }
+        return _error;
 }
 
 Error Painter::rows(int x, int y, uint16_t width, uint16_t height, uint16_t repeat, bool rgb565, RowMaker make,

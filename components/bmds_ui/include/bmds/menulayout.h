@@ -13,6 +13,7 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/bitmapfont.h>
+#include <bmds/font.h>
 #include <bmds/icon.h>
 #include <bmds/mnemonic.h>
 #include <bmds/rect.h>
@@ -56,7 +57,8 @@ class MenuLayout {
                 };
 
                 static constexpr size_t   MaxItems = 32;
-                static constexpr uint16_t ItemHeight = 20;     ///< A font row and 2 pixels above and below.
+                static constexpr uint16_t ItemHeight = 20; ///< An item at least: a 16-pixel row and 2 above and below.
+                static constexpr uint16_t ItemPad = 4;     ///< An item past the font's ink box (ascent + descent).
                 static constexpr uint16_t SeparatorHeight = 8; ///< The line in its middle.
                 static constexpr uint16_t Edge = 2;            ///< The bevel around (`Bevel::Style::Window`).
                 static constexpr uint16_t InsetY = 3;          ///< Above the first item (the edge included).
@@ -69,11 +71,18 @@ class MenuLayout {
                 static constexpr uint16_t MinWidth = 96;
 
                 /**
-                 * @brief Lays @p items out, texts measured in @p font, at least
-                 *        @p minWidth wide (rounded up to a multiple of 4).
+                 * @brief Lays @p items out, texts measured in @p font (kept: `drawMenu()` writes
+                 *        in it), at least @p minWidth wide (rounded up to a multiple of 4). An item
+                 *        is `ItemHeight` high, or the font's ink box and `ItemPad` if taller.
                  * @return `Ok`, or `Full` (more than `MaxItems`).
                  */
-                Error layout(Span<const Item> items, const BitmapFont &font, uint16_t minWidth = MinWidth);
+                Error layout(Span<const Item> items, const Font &font, uint16_t minWidth = MinWidth);
+
+                /** @brief Returns the font the items are measured and written in. */
+                const Font &font() const { return _font; }
+
+                /** @brief Returns an item's height (a separator's is `SeparatorHeight`). */
+                uint16_t itemHeight() const { return _itemHeight; }
 
                 /** @brief Returns the items laid out. */
                 size_t count() const { return _count; }
@@ -122,6 +131,8 @@ class MenuLayout {
                 static Rect place(uint16_t width, uint16_t height, const Rect &anchor, const Rect &area, bool submenu);
 
         private:
+                Font     _font;
+                uint16_t _itemHeight = ItemHeight;
                 uint16_t _top[MaxItems] = {};
                 uint16_t _shortcutX[MaxItems] = {};
                 uint8_t  _flags[MaxItems] = {};

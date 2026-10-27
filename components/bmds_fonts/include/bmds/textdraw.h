@@ -51,16 +51,31 @@ struct TextPaint {
 namespace TextDraw {
 
         /**
+         * @brief `line()`'s working memory (about 5 KB: a batch of laid out glyphs and a band of
+         *        coverage), for a caller whose stack is short (the window manager's): made by
+         *        `makeScratch()` in memory of the caller's, used by one `line()` at a time.
+         */
+        struct Scratch;
+
+        /** @brief Returns the bytes a `Scratch` takes (8-byte aligned). */
+        size_t scratchBytes();
+
+        /** @brief Makes a `Scratch` in @p memory (`scratchBytes()`, 8-byte aligned). Nothing to free. */
+        Scratch *makeScratch(void *memory);
+
+        /**
          * @brief Draws @p utf8 on one line in @p font, the line's top at (@p x, @p top)
          *        (its baseline the font's ascent below), as far as @p maxWidth
          *        pixels allow (whole characters; 0: no limit).
+         *        Its working memory is @p scratch, or the caller's stack (about 5 KB).
          * @return The width drawn in pixels (the advance, rounded up), or the
          *         cache's error for a glyph (damaged, `NoMem`): what came before
          *         it is drawn.
          * @hotpath
          */
         Result<uint32_t> line(const TextTarget &target, const Font &font, StringView utf8, int x, int top,
-                              const TextPaint &paint, uint32_t maxWidth, Simd::Kernel kernel);
+                              const TextPaint &paint, uint32_t maxWidth, Simd::Kernel kernel,
+                              Scratch *scratch = nullptr);
 
 } // namespace TextDraw
 

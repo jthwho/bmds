@@ -21,6 +21,8 @@
 #include <bmds/bevel.h>
 #include <bmds/desktopentry.h>
 #include <bmds/filenamelist.h>
+#include <bmds/fontlibrary.h>
+#include <bmds/glyphcache.h>
 #include <bmds/formmodels.h>
 #include <bmds/bitmapfont.h>
 #include <bmds/furniturelayout.h>
@@ -260,6 +262,21 @@ TEST_CASE("DesktopEntry: Exec split by the specification's quoting") {
               Error::BufferTooSmall);
 }
 
+namespace {
+
+        // unscii at @p size from a library of its own (kept for the tests' life).
+        bmds::Font unscii(unsigned size) {
+                static bmds::GlyphCache  cache{64 * 1024};
+                static bmds::FontLibrary library{cache, nullptr};
+                static bool              added = library.addBitmap(bmds::Fonts::unscii16, "unscii", 13).isOk();
+                REQUIRE(added);
+                auto [font, err] = library.open(bmds::FontName::make("unscii", uint16_t(size), 0));
+                REQUIRE(err.isOk());
+                return font;
+        }
+
+} // namespace
+
 TEST_CASE("MenuLayout: rows, widths, hits and keys") {
         const MenuLayout::Item items[] = {
                 {"Restore", "", MenuLayout::Disabled}, {"Minimize", "", 0},
@@ -267,7 +284,7 @@ TEST_CASE("MenuLayout: rows, widths, hits and keys") {
                 {"More", "", MenuLayout::Submenu},
         };
         MenuLayout m;
-        REQUIRE(m.layout(Span<const MenuLayout::Item>(items), bmds::Fonts::unscii16).isOk());
+        REQUIRE(m.layout(Span<const MenuLayout::Item>(items), unscii(16)).isOk());
         CHECK(m.count() == 5);
         CHECK(m.width() % 4 == 0);
         // The text column, the longest text, the shortcut and the arrow fit.
@@ -300,11 +317,19 @@ TEST_CASE("MenuLayout: rows, widths, hits and keys") {
         CHECK(!m.isSelectable(2));
 
         const MenuLayout::Item none[] = {{"x", "", MenuLayout::Disabled}};
-        REQUIRE(m.layout(Span<const MenuLayout::Item>(none), bmds::Fonts::unscii16).isOk());
+        REQUIRE(m.layout(Span<const MenuLayout::Item>(none), unscii(16)).isOk());
         CHECK(m.width() == MenuLayout::MinWidth);
         CHECK(m.next(-1, 1) == -1);
         MenuLayout::Item many[MenuLayout::MaxItems + 1];
-        CHECK(m.layout(Span<const MenuLayout::Item>(many), bmds::Fonts::unscii16) == Error::Full);
+        CHECK(m.layout(Span<const MenuLayout::Item>(many), unscii(16)) == Error::Full);
+
+        // A taller font: rows of its ink box and the padding, measured in it.
+        REQUIRE(m.layout(Span<const MenuLayout::Item>(items), unscii(32)).isOk());
+        CHECK(m.itemHeight() == 32 + MenuLayout::ItemPad);
+        CHECK(m.font().pixelSize() == 32);
+        CHECK(m.itemRect(1).height == 32 + MenuLayout::ItemPad);
+        CHECK(m.itemRect(2).height == MenuLayout::SeparatorHeight);
+        CHECK(m.width() >= MenuLayout::TextX + 8 * 16 + MenuLayout::ShortcutGap + 6 * 16 + MenuLayout::ArrowWidth);
 }
 
 TEST_CASE("MenuLayout: placing a menu on the screen") {

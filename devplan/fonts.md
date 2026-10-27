@@ -1,6 +1,6 @@
 # Fonts: one font library for the desktop, programs and angel
 
-Status: **steps 1-5 done** (2026-10-26: §6a, §6c-§6e, §6g; other fonts tested, §6f); planned the same day with the user (§8). Fills the
+Status: **steps 1-6 done** (2026-10-26: §6a, §6c-§6e, §6g, §6h; other fonts tested, §6f); planned the same day with the user (§8). Fills the
 roadmap's "A system font library (planned with the user 2026-10-15)".
 
 ## 1. Goal
@@ -570,6 +570,48 @@ picture, for tests and for looking).
   The host's fake font calls gained opening by family and role, the face's style and `font_list`.
   `api.lock` appended. The `fonts` example (each family in itself; size, smoothing, bold, italic
   from the keys), and lesson 10 writes a line in IBM Plex.
+
+### 6h. Step 6, the design and as built (2026-10-26)
+
+- **`Painter::text(x, y, utf8, const Font &, fg, bg, maxWidth)` (Opaque):** a bitmap font at its
+  own size (unscii 16) keeps `GlyphRenderer`'s path, the same pixels as before. Anything else is
+  drawn through the strip by `run()` as before, a piece at a time: each piece filled with bg,
+  then `TextDraw::line()` blends the line into it at minus the piece's column (clipped to it),
+  which is what `TextDraw`'s Opaque writes on PIE. A line taller than the strip's 16 rows goes
+  in bands of 16. Nothing is read back. The box is the advance of what fits in `maxWidth`.
+- **Over in the Painter, left for its first caller:** each clip piece of the line's box read into
+  internal RAM by `Surface::patch()` (a surface line's bytes at most: about 64 × 19 pixels), the
+  line blended over it, written back: two 2D-DMA jobs a tile. Nothing in the window manager or
+  the toolkit draws text on a picture, so it was written, then taken out rather than shipped
+  untested.
+- **Smoothing:** `Painter::Tools::smooth`, `font/smooth` as the window manager last heard it.
+- **Roles followed:** `SystemFonts::watch()` (four listeners) is told after a `font/` change is
+  applied. The window manager keeps `title` and `ui` fonts, opens them again then, and redraws
+  everything.
+- **Titles** in the `title` font, the ink box (ascent + descent) centred in the 20-pixel bar and
+  cut to it (a clipped painter). The bar stays 20 pixels (`WindowFrame::TitleHeight` is a
+  constant a dozen files use); its height from the font is a question for step 7, when the
+  sizes are settled.
+- **Menus** (the window manager's and the toolkit's, `drawMenu()`): `MenuLayout::layout()` takes
+  a `Font` (the `ui` role) and keeps it; an item is at least 20 pixels, else the ink box and 4.
+  Mnemonics underline under the baseline, half the descent down (unscii's last row, as before).
+  The Alt+Tab switcher's title is in `ui` too.
+- **Found on the board:**
+  - **The window manager's task overflowed its stack** (8 KB, 2.5 KB free with unscii) on the
+    first TrueType title: `TextDraw::line()` takes about 5 KB. The board reset. Now
+    `TextDraw::Scratch` (the batch, the pieces and the band) can be the caller's: the window
+    manager keeps one (`TextDraw::scratchBytes()`, internal RAM) in `Painter::Tools`, and a call
+    without one puts it on its stack in a function of its own, so a caller with one never pays
+    for it. The task's free stack stayed at 2.5 KB, rendering misses included.
+  - **A title that wasn't a multiple of 4 pixels wide vanished:** the strip's copies are in
+    4-pixel columns and `startBlit()` refused the piece (`Invalid`, noted and not shown).
+    unscii's widths are multiples of 8, so the old path never met it. The box now ends on a
+    column, bg past the advance.
+- **Checked on the board:** with `font/title` IBM Plex Sans 14 bold and `font/ui` IBM Plex Sans
+  14, titles (active and inactive), the window menu (mnemonics, shortcuts, separators) and the
+  switcher change as the settings do, sharp with `font/smooth` off (two colours, sixteen
+  smoothed). With the defaults (unscii 16) every pixel is as before (the bitmap path, 20-pixel
+  items).
 
 ## 7. ABI impact
 

@@ -17,6 +17,7 @@
 
 BMDS_NAMESPACE_BEGIN
 
+class Font;
 class Painter;
 
 /**
@@ -65,6 +66,13 @@ namespace Mnemonic {
          *        in @p color, no further right than @p right.
          */
         void draw(Painter &painter, uint16_t x, uint16_t y, StringView text, size_t at, uint32_t color, uint32_t right);
+
+        /**
+         * @brief As above, for @p text drawn in @p font (its line's top at @p y): the
+         *        underline half the descent under the baseline (unscii's last row).
+         */
+        void draw(Painter &painter, uint16_t x, uint16_t y, StringView text, size_t at, uint32_t color, uint32_t right,
+                  const Font &font);
 
 } // namespace Mnemonic
 

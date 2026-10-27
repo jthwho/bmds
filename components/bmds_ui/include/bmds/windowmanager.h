@@ -940,6 +940,13 @@ class WindowManager {
                 WindowPalette palette();
 
                 /**
+                 * @brief Opens the `title` and `ui` roles' fonts again (titles; menus and the
+                 *        switcher) and the smoothing (`font/smooth`), and redraws everything: a
+                 *        `font/` setting changed (`SystemFonts::watch()`, from `start()`).
+                 */
+                void fontsChanged();
+
+                /**
                  * @brief Shows window @p id's outline with its top-left corner at
                  *        (@p x, @p y), kept on the screen: a move under way.
                  * @return `Ok`, `NotFound`, `InvalidState`, or `Busy` (another
@@ -1220,6 +1227,8 @@ class WindowManager {
                 static void     bandPixels(void *arg, uint8_t *pixels, size_t stride);
                 static void     unbandPixels(void *arg, uint8_t *pixels, size_t stride);
                 void            changed(uint8_t oldFocus); // wakes the task; repaints titles if the focus moved
+                void            openFontsLocked();         // the title and ui fonts, the smoothing
+                static void     fontsNotify(void *arg);    // SystemFonts::watch()'s
                 Rect            placed(const Rect &rect) const;
                 void            count(const Painter &painter);
                 void            drawError(Error err, const char *what); // counted, and logged (the first few)
@@ -1276,6 +1285,9 @@ class WindowManager {
                 List<BandPiece>   _bandPieces{MemSpace::Psram}; // drawn, to put back
                 List<uint8_t>     _bandUnder{MemSpace::Psram};  // what they covered
                 Painter::Tools    _tools;
+                void             *_textScratch = nullptr; // TextDraw's memory (internal RAM)
+                Font              _titleFont;             // the title role's: window titles
+                Font              _uiFont;                // the ui role's: menus, the switcher
                 GlyphRenderer     _renderer{GlyphRenderer::best()};
                 uint32_t          _updates[UpdateWords] = {}; // windows asking for an update, a bit by number
                 ComposePiece     *_pieces = nullptr;          // a round's plan

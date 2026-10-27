@@ -13,12 +13,14 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/bitmapfont.h>
+#include <bmds/font.h>
 #include <bmds/glyphrenderer.h>
 #include <bmds/icon.h>
 #include <bmds/rect.h>
 #include <bmds/region.h>
 #include <bmds/span.h>
 #include <bmds/stringview.h>
+#include <bmds/textdraw.h>
 #include <bmds/windowpalette.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -64,6 +66,8 @@ class Painter {
                                 const WindowPalette *palette = nullptr; ///< The window manager's colors.
                                 uint8_t              stripHalf = 0;   ///< The half the next piece goes in (2: used up).
                                 uint16_t             stripColumn = 0; ///< And its first free column there.
+                                bool                 smooth = true;   ///< TrueType text smoothed (`font/smooth`).
+                                TextDraw::Scratch   *textScratch = nullptr; ///< `TextDraw`'s memory (not the stack).
                 };
 
                 /**
@@ -132,6 +136,19 @@ class Painter {
                  * @hotpath
                  */
                 Error text(int x, int y, StringView utf8, const BitmapFont &font, uint32_t fg, uint32_t bg,
+                           uint16_t maxWidth);
+
+                /**
+                 * @brief Writes @p utf8 at (@p x, @p y) (the line's top) in @p font, @p fg on a
+                 *        box of @p bg (the advance of what fits in @p maxWidth pixels rounded up to
+                 *        a 4-pixel column, the line height), smoothed as `Tools::smooth` says (`devplan/fonts.md` §4d,
+                 *        Opaque). A bitmap font at its own size takes `GlyphRenderer`'s path;
+                 *        the rest is blended into the strip a piece at a time, in bands of its
+                 *        rows. Nothing is read back.
+                 * @return As the bitmap font's `text()`.
+                 * @hotpath
+                 */
+                Error text(int x, int y, StringView utf8, const Font &font, uint32_t fg, uint32_t bg,
                            uint16_t maxWidth);
 
                 /**
