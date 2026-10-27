@@ -84,6 +84,13 @@ class GlyphCache final : public Memory::Reclaimer {
                 GlyphCache(const GlyphCache &) = delete;
                 GlyphCache &operator=(const GlyphCache &) = delete;
 
+                /**
+                 * @brief Sets the curve each pixel's 8-bit coverage goes through as a glyph
+                 *        is rendered (the contrast: `font/contrast`); null for none. The
+                 *        unpinned glyphs rendered with the old one are forgotten.
+                 */
+                void setCurve(const uint8_t (*curve)[256]);
+
                 /** @brief Sets the budget; entries past it go now (the unpinned). */
                 void setBudget(size_t budgetBytes);
 
@@ -156,6 +163,8 @@ class GlyphCache final : public Memory::Reclaimer {
                 Entry                *_newest = nullptr;
                 Entry                *_oldest = nullptr;
                 size_t                _budget;
+                uint8_t               _curve[256] = {};
+                bool                  _hasCurve = false;
                 size_t                _bytes = 0;
                 size_t                _entries = 0;
                 std::atomic<size_t>   _pinned{0};

@@ -17,7 +17,9 @@ set(BMDS_FONTS_PORTABLE_SRCS
         src/fontname.cpp
         src/glyphcache.cpp
         src/iconfont.cpp
-        src/stbtruetype.c)
+        src/stbtruetype.c
+        src/textblend.cpp
+        src/textdraw.cpp)
 set(BMDS_FONTS_INCLUDES ${CMAKE_CURRENT_LIST_DIR}/../../thirdparty/stb_truetype)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
@@ -53,7 +55,9 @@ add_custom_command(OUTPUT ${BMDS_FONTS_UNSCII_SRC}
 target_sources(${BMDS_FONTS_TARGET} PRIVATE ${BMDS_FONTS_UNSCII_SRC})
 bmds_target_options(${BMDS_FONTS_TARGET})
 # -O2 (the build's -Os is slower on inner loops): the kerning's binary searches (half the time:
-# fonts.md §6a), layout and the cache's hits (§6c), and the rasterizer; stb_truetype is upstream code.
-set_source_files_properties(src/fontface.cpp src/font.cpp src/glyphcache.cpp PROPERTIES COMPILE_OPTIONS -O2)
+# fonts.md §6a), layout and the cache's hits (§6c), the drawing kernels, and the rasterizer;
+# stb_truetype is upstream code.
+set_source_files_properties(src/fontface.cpp src/font.cpp src/glyphcache.cpp src/textblend.cpp src/textdraw.cpp
+                            PROPERTIES COMPILE_OPTIONS -O2)
 set_source_files_properties(src/stbtruetype.c PROPERTIES COMPILE_OPTIONS
                             "-O2;-Wno-shadow;-Wno-unused-parameter;-Wno-sign-compare;-Wno-unused-function")

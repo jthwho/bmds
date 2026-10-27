@@ -1,6 +1,6 @@
 # Fonts: one font library for the desktop, programs and angel
 
-Status: **steps 1 and 2 done** (2026-10-26: §6a, §6c); planned the same day with the user (§8). Fills the
+Status: **steps 1-3 done** (2026-10-26: §6a, §6c, §6d); planned the same day with the user (§8). Fills the
 roadmap's "A system font library (planned with the user 2026-10-15)".
 
 ## 1. Goal
@@ -152,14 +152,20 @@ There are three ways to draw a run, chosen by what the caller gives:
 | **Opaque** | a background color is given (labels, menus, edit boxes) | the box filled with bg, glyphs blended between bg and fg; nothing read back |
 | **Over** | no background (text on a picture) | the pixels under the text read, blended, written back |
 
-- **Kernels** (PIE, with Scalar twins, written for every format below):
-  - 1 bit: a mask selecting fg, at any x (bit shifts across bytes).
-  - 4 bits: per pixel `dst + (fg - dst) × c / 15`, with a 16-entry table for contrast (a gamma
-    correction setting, `font/contrast`, to try on the board).
-  - Glyphs may overlap (negative kerning), so even the Opaque mode blends glyphs onto the filled
-    box rather than writing whole cells.
-- **Target formats:** BGR24 (the surfaces), RGB565, BGRA32 and GRAY8. L8 (indices) only sharp:
-  indices can't be mixed.
+- **How a line is drawn** (`TextDraw::line()`, §6d): laid out, its glyphs fetched from the cache
+  32 at a time (one lock for a run of one face, misses rendered). For each run, bands of rows
+  across its width are composed a glyph at a time into alpha, each pixel the larger of the
+  glyphs covering it (kerned glyphs overlap). Then each row is drawn by one call:
+  - **Over:** `blend()`, `(color × a + pixel × (255 − a) + 127) / 255`, PIE for B, G, R, R, G, B
+    and grey.
+  - **Opaque:** the run's part of the box is filled first, then the same blend (PIE formats), or
+    a 16-color ramp from background to color written where alpha isn't 0 (the rest). Nothing
+    is read from the screen.
+- **Coverage is linear in the kernels** (alpha = level × 17). The contrast curve
+  (`font/contrast`) is applied as a glyph is rendered into the cache, before it is reduced to 4
+  bits; a change empties the cache.
+- **Target formats:** BGR24 (the surfaces), RGB24, RGB565, BGRA32 (alpha becomes
+  a + A × (255 − a) / 255), GRAY8, and palette indexes (`L8`) sharp only: indices can't be mixed.
 - **In the OS (the Painter):** the strip works as today, filled with bg (Opaque) or loaded from
   the surface by the 2D-DMA (Over), then the glyphs are blended in at any x. The run's box keeps
   the 4-pixel column rule at its edges, which the Opaque fill covers. Over is the costly one and
@@ -228,7 +234,7 @@ Everything in §4e, as script calls registered with help lines and locked in `ap
 | `font/terminal` | string | `unscii 16` | The terminal's cells |
 | `font/fallback` | string list | `IBM Plex Sans;IBM Plex Mono` | Faces tried for a missing glyph (then unscii) |
 | `font/smooth` | bool | `true` | Smoothing, unless a call says otherwise |
-| `font/contrast` | int | (found on the board, step 3) | The 4-bit coverage table's gamma |
+| `font/contrast` | int 0-100 | 30 (chosen on the board, §6d) | Coverage c drawn as 255 × (c / 255)^(1 / (1 + k / 100)): darker edges |
 | `font/cache` | int, KB | 512 | The glyph cache's budget |
 
 The sizes are first guesses, settled on the board in step 7; until then the first three say
@@ -419,6 +425,40 @@ picture, for tests and for looking).
 - **Tests:** `tests/host/fontlibrary.cpp`: names, the cache (hits, budget, pins, made-up bold,
   kerning, a run, threads, no memory, no leaks), and the library (scan, styles, roles, fallback,
   bitmap sizes, layout, loading and letting go).
+
+### 6d. Step 3, as built (2026-10-26)
+
+- **`TextBlend`** (bmds_fonts): `compose()` (coverage into alpha, the larger of two), `blend()`
+  (one color by alpha; PIE for B, G, R, R, G, B and grey, 16 pixels a step: three planes, two QACC
+  passes a channel, as the icons' blend), `fill()` (B, G, R four pixels to three words),
+  `makeRamp()` and `paint()`. `simd test text` compares PIE with scalar on 2,000 random cases on
+  the board: the same.
+- **`TextDraw::line()`**: a `TextTarget` (pixels, format, size, stride, clip) and a `TextPaint`
+  (color, a background box or not, smooth or sharp). It draws as far as a width allows and
+  returns the width drawn. `font draw` now draws through it.
+- **`GlyphCache::setCurve()`** and the curve argument of `FontFace::render()`. `font/contrast`
+  defaults to 30, chosen from 0, 30, 60 and 100 drawn on the board: at 0, 13 px text is a little
+  grey and soft; 60 and up start to look bold.
+- **Found on the board:** `SystemFonts` watched the prefix `font/`, which matches no key (a
+  prefix names whole parts: `font`), so no `font/` setting was followed. It watches `font` now,
+  and a change of contrast or budget takes effect at once.
+- **`font.draw`, measured as the design went** (a 57-character line of IBM Plex Sans 13 into
+  640×24 B, G, R; µs a line; internal RAM and PSRAM alike):
+
+  | Design | Over, PIE | On a box | Sharp |
+  |---|---|---|---|
+  | Each glyph's rows blended on their own (10 pixels a call) | 420 | 543 | 364 |
+  | A run's rows composed, a row a call, levels then alpha | 396 | 522 | 411 |
+  | Alpha composed directly, the box filled a run at a time | 318 | 483 | 320 |
+  | Bands composed a glyph at a time, word fills | 272 | 387 | 286 |
+  | On a box: fill, then the PIE blend | 268 | 310 | 285 |
+
+  For comparison, unscii draws 2.2 µs a cell (`simd.glyphs`, PIE); TrueType is now 4.7-5.4 µs a
+  character, laying out included (about 45 µs of the line). `simd.text`, the blend alone over
+  16 rows of 1,024 pixels: B, G, R 680 µs scalar, 178 PIE; grey 522 and 56.
+- **Tests:** `fontlibrary.cpp` covers compose, the ramp, every format's blend against the
+  formula, fills, and lines drawn: over, cached, clipped, off the picture, width-limited, on a
+  box, sharp, indexed, and unscii doubled.
 
 ## 7. ABI impact
 

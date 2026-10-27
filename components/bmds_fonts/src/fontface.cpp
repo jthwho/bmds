@@ -659,7 +659,8 @@ Result<FontFace::GlyphBox> FontFace::box(uint16_t glyph, unsigned pixelSize) con
         return makeResult(b);
 }
 
-Error FontFace::render(uint16_t glyph, unsigned pixelSize, Depth depth, const GlyphBox &box, Span<uint8_t> out) const {
+Error FontFace::render(uint16_t glyph, unsigned pixelSize, Depth depth, const GlyphBox &box, Span<uint8_t> out,
+                       const uint8_t *curve) const {
         if (glyph >= _glyphCount || pixelSize < MinPixelSize || pixelSize > MaxPixelSize) return Error::OutOfRange;
         if (box.width == 0 || box.height == 0) return Error::Ok;
         if (out.size() < box.workBytes()) return Error::BufferTooSmall;
@@ -683,6 +684,9 @@ Error FontFace::render(uint16_t glyph, unsigned pixelSize, Depth depth, const Gl
         if (count > 0) stbtt_Rasterize(&bitmap, 0.35f, vertices, count, s, s, 0.0f, 0.0f, box.x, box.y, 1, &context);
         stbtt_FreeShape(&info, vertices);
         if (context.failed) return Error::NoMem;
+
+        if (curve != nullptr)
+                for (size_t i = 0; i < box.workBytes(); ++i) pixels[i] = curve[pixels[i]];
 
         // Packed in place, row by row: each row's packed bytes never pass its unread ones.
         const size_t stride = box.stride(depth);

@@ -171,6 +171,22 @@ size_t GlyphCache::evict(size_t target) {
         return freed;
 }
 
+void GlyphCache::setCurve(const uint8_t (*curve)[256]) {
+        Mutex::Locker lock(_mutex, WaitForever);
+        if (curve == nullptr ? !_hasCurve : _hasCurve && std::memcmp(_curve, *curve, 256) == 0) return;
+        _hasCurve = curve != nullptr;
+        if (curve != nullptr) std::memcpy(_curve, *curve, 256);
+        // The glyphs rendered with the old curve: every unpinned one.
+        if (_buckets != nullptr) {
+                const size_t budget = _budget;
+                for (Entry *e = _oldest; e != nullptr; e = e->newer) e->used = false;
+                _budget = 0;
+                (void)evict(0);
+                _budget = budget;
+        }
+        return;
+}
+
 void GlyphCache::setBudget(size_t budgetBytes) {
         Mutex::Locker lock(_mutex, WaitForever);
         _budget = budgetBytes;
@@ -182,6 +198,8 @@ Result<const GlyphCache::Glyph *> GlyphCache::acquire(uint16_t faceId, const Fon
                                                       unsigned pixelSize, FontFace::Depth depth, bool bold) {
         if (!prepare()) return makeError<const Glyph *>(Error::NoMem);
         const uint64_t key = keyOf(faceId, glyph, pixelSize, depth, bold);
+        uint8_t        curve[256];
+        bool           hasCurve = false;
         {
                 Mutex::Locker lock(_mutex, WaitForever);
                 if (Entry *e = find(key); e != nullptr) {
@@ -192,6 +210,8 @@ Result<const GlyphCache::Glyph *> GlyphCache::acquire(uint16_t faceId, const Fon
                         return makeResult(static_cast<const Glyph *>(&e->glyph));
                 }
                 ++_misses;
+                hasCurve = _hasCurve;
+                if (hasCurve) std::memcpy(curve, _curve, sizeof(curve));
         }
 
         // A miss: rendered outside the lock, into a byte a pixel in internal RAM, then packed.
@@ -211,7 +231,8 @@ Result<const GlyphCache::Glyph *> GlyphCache::acquire(uint16_t faceId, const Fon
                 work = static_cast<uint8_t *>(Memory::alloc(MemSpace::Internal, box.workBytes()));
                 if (work == nullptr) work = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, box.workBytes()));
                 if (work == nullptr) return fail(Error::NoMem);
-                if (Error rerr = face.render(glyph, pixelSize, depth, box, Span<uint8_t>(work, box.workBytes()));
+                if (Error rerr = face.render(glyph, pixelSize, depth, box, Span<uint8_t>(work, box.workBytes()),
+                                             hasCurve ? curve : nullptr);
                     rerr.isError()) {
                         Memory::free(work);
                         return fail(rerr);

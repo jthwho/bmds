@@ -156,11 +156,13 @@ class FontFace {
                  *        @p box: rows of `box.stride(depth)` bytes, top first.
                  *        @p out holds at least `box.workBytes()` bytes (it is worked in).
                  *        The outline's memory comes from `Internal` (or `Psram` if that
-                 *        is short) and is freed before it returns.
+                 *        is short) and is freed before it returns. @p curve, if given,
+                 *        maps each pixel's 8-bit coverage before it is reduced to @p depth
+                 *        (the contrast, `GlyphCache::setCurve()`).
                  * @return `Ok`, `BufferTooSmall`, `OutOfRange`, `CorruptData`, `NoMem`.
                  */
-                Error render(uint16_t glyph, unsigned pixelSize, Depth depth, const GlyphBox &box,
-                             Span<uint8_t> out) const;
+                Error render(uint16_t glyph, unsigned pixelSize, Depth depth, const GlyphBox &box, Span<uint8_t> out,
+                             const uint8_t *curve = nullptr) const;
 
         private:
                 static constexpr size_t MaxKernLookups = 16;

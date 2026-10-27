@@ -11,13 +11,12 @@
 
 #include <cstdio>
 #include <cstring>
-#include <bmds/bitmapfont.h>
 #include <bmds/command.h>
-#include <bmds/fontface.h>
 #include <bmds/memory.h>
 #include <bmds/png.h>
 #include <bmds/shell.h>
 #include <bmds/systemfonts.h>
+#include <bmds/textdraw.h>
 #include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -93,67 +92,6 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
-        // A line drawn black on white, sharp or smooth, by the CPU (not the drawing kernels).
-        struct Canvas {
-                        uint8_t    *pixels;
-                        int         width, height;
-                        int         baseline;
-                        int         left;
-                        bool        sharp;
-                        Error       error;
-                        const Font *font;
-
-                        void blend(int x, int y, unsigned coverage15) {
-                                if (x < 0 || y < 0 || x >= width || y >= height || coverage15 == 0) return;
-                                uint8_t       *p = pixels + (size_t(y) * width + x) * 3;
-                                const unsigned v = 255 - (255 * coverage15 + 7) / 15;
-                                for (int k = 0; k < 3; ++k)
-                                        if (v < p[k]) p[k] = uint8_t(v);
-                                return;
-                        }
-        };
-
-        bool drawGlyph(void *arg, const Font::Placed &g) {
-                auto     *c = static_cast<Canvas *>(arg);
-                const int penX = c->left + g.x;
-                if (g.bitmap != nullptr) {
-                        const Glyph    glyph = g.bitmap->glyph(g.glyph);
-                        const unsigned bytes = glyph.width / 8u;
-                        const int      top = c->baseline - int(g.ascent);
-                        for (unsigned y = 0; y < g.bitmap->height(); ++y)
-                                for (unsigned x = 0; x < glyph.width; ++x) {
-                                        if ((glyph.rows[y * bytes + x / 8] & (0x80 >> (x % 8))) == 0) continue;
-                                        for (unsigned sy = 0; sy < g.scale; ++sy)
-                                                for (unsigned sx = 0; sx < g.scale; ++sx) {
-                                                        c->blend(penX + int(x * g.scale + sx),
-                                                                 top + int(y * g.scale + sy), 15);
-                                                        if (c->font->isMadeUpBold())
-                                                                c->blend(penX + int(x * g.scale + sx) + 1,
-                                                                         top + int(y * g.scale + sy), 15);
-                                                }
-                                }
-                        return true;
-                }
-                GlyphCache &cache = SystemFonts::cache();
-                auto [glyph, err] = cache.acquire(g.faceIndex, *g.face, uint16_t(g.glyph), c->font->pixelSize(),
-                                                  c->sharp ? FontFace::Depth::Mono : FontFace::Depth::Gray4,
-                                                  c->font->isMadeUpBold());
-                if (err.isError()) {
-                        c->error = err;
-                        return false;
-                }
-                for (unsigned y = 0; y < glyph->height; ++y)
-                        for (unsigned x = 0; x < glyph->width; ++x) {
-                                const uint8_t *row = glyph->rows + y * glyph->stride;
-                                const unsigned v = glyph->depth == FontFace::Depth::Mono
-                                                           ? ((row[x / 8] >> (7 - x % 8)) & 1) * 15
-                                                           : ((x & 1) != 0 ? row[x / 2] & 0x0f : row[x / 2] >> 4);
-                                c->blend(penX + glyph->x + int(x), c->baseline + glyph->y + int(y), v);
-                        }
-                cache.release(glyph);
-                return true;
-        }
-
         Error toFile(void *arg, ByteSpan data) {
                 auto *file = static_cast<FileHandle *>(arg);
                 while (!data.isEmpty()) {
@@ -186,9 +124,16 @@ namespace {
                 auto        *pixels = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, bytes));
                 if (pixels == nullptr) return fail(ctx, "picture", Error::NoMem);
                 std::memset(pixels, 0xff, bytes);
-                Canvas c{pixels, width, height, margin + font.metrics().ascent, margin, sharp, Error::Ok, &font};
-                (void)font.layout(text, drawGlyph, &c);
-                err = c.error;
+                // Drawn as everything draws text: TextDraw, the kernels, the system's glyph cache.
+                TextTarget target;
+                target.pixels = pixels;
+                target.format = TextBlend::Format::Bgr24;
+                target.width = width;
+                target.height = height;
+                target.stride = size_t(width) * 3;
+                TextPaint paint;
+                paint.smooth = !sharp;
+                err = TextDraw::line(target, font, text, margin, margin, paint, 0, Simd::best()).error();
                 if (err.isOk()) {
                         auto [file, oerr] =
                                 Vfs::open(StringView(args[4]), Vfs::Write | Vfs::Create | Vfs::Truncate, ctx.vfs());

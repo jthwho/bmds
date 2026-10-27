@@ -6,6 +6,7 @@
  */
 
 #include <atomic>
+#include <cmath>
 #include <bmds/bitmapfont.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
@@ -42,6 +43,9 @@ namespace {
                      nullptr)
         BMDS_SYSCONF(fontSmooth, "font/smooth", Config::Type::Bool, "true",
                      "Smooth (antialias) TrueType text, unless a program says otherwise", 0, 0, nullptr, nullptr)
+        BMDS_SYSCONF(fontContrast, "font/contrast", Config::Type::Int, "30",
+                     "How much darker smoothed text's edges are drawn: 0 as rendered, 100 the most", 0, 100, nullptr,
+                     nullptr)
         BMDS_SYSCONF(fontCache, "font/cache", Config::Type::Int, "512",
                      "The glyph cache's budget in KB of PSRAM, shared by every program", 64, 8192, nullptr, nullptr)
 
@@ -146,6 +150,18 @@ namespace {
                 if (SysConf::get("font/fallback", value).isOk()) lib.setFallback(value.view());
                 const Result<bool> s = SysConf::getBool("font/smooth");
                 smooth.store(!s.isOk() || s.value());
+                // The contrast: coverage c to 255 × (c / 255)^(1 / (1 + k / 100)), none at 0.
+                const Result<int32_t> k = SysConf::getInt("font/contrast");
+                const int32_t         contrast = k.isOk() ? k.value() : 30;
+                if (contrast <= 0) {
+                        glyphCache->setCurve(nullptr);
+                } else {
+                        uint8_t     curve[256];
+                        const float e = 1.0f / (1.0f + float(contrast) / 100.0f);
+                        for (unsigned i = 0; i < 256; ++i)
+                                curve[i] = uint8_t(std::lround(255.0f * std::pow(float(i) / 255.0f, e)));
+                        glyphCache->setCurve(&curve);
+                }
                 const Result<int32_t> kb = SysConf::getInt("font/cache");
                 glyphCache->setBudget(size_t(kb.isOk() ? kb.value() : 512) * 1024);
                 return;
@@ -187,7 +203,7 @@ namespace {
                 if (Error err = Memory::addReclaimer(&*fontLibrary); err.isError())
                         bmdsWarn("fonts: no memory reclaimer: %s", err.desc());
                 watcher.create();
-                if (Error err = watcher->start("font/", changed, nullptr); err.isError())
+                if (Error err = watcher->start("font", changed, nullptr); err.isError())
                         bmdsWarn("fonts: settings not followed: %s", err.desc());
                 ready.store(true, std::memory_order_release);
                 return;

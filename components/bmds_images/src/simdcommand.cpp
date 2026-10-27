@@ -33,6 +33,7 @@
 #include <bmds/stopwatch.h>
 #include <bmds/system.h>
 #include <bmds/task.h>
+#include <bmds/textblend.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -222,6 +223,41 @@ namespace {
                         }
                 }
                 ctx.printf("blend: 2000 cases, the same\n");
+                return Shell::ExitSuccess;
+        }
+
+        // Text's blend (devplan/fonts.md §4d): one color by alpha (0 and 255 among the rest) over
+        // B, G, R, R, G, B or grey, any length and alignment.
+        int testText(CommandContext &ctx, Noise &noise) {
+                constexpr size_t Most = 600;
+                Block            alpha(MemSpace::Internal, Most + 16), a(MemSpace::Internal, 3 * Most + 32),
+                        b(MemSpace::Internal, 3 * Most + 32);
+                if (alpha.p == nullptr || a.p == nullptr || b.p == nullptr) return Shell::ExitFailure;
+                static constexpr TextBlend::Format Formats[] = {TextBlend::Format::Bgr24, TextBlend::Format::Rgb24,
+                                                                TextBlend::Format::Gray8};
+                for (unsigned c = 0; c < 2000; ++c) {
+                        const size_t            n = noise.below(Most), ao = noise.below(16), po = noise.below(16);
+                        const uint32_t          color = noise.next() & 0xffffff;
+                        const TextBlend::Format f = Formats[noise.below(3)];
+                        for (size_t i = 0; i < Most + 16; ++i) {
+                                const uint32_t k = noise.below(4);
+                                alpha.p[i] = k == 0 ? 0 : k == 1 ? 255 : uint8_t(noise.next() >> 24);
+                        }
+                        noise.fill(a.p, 3 * Most + 32);
+                        std::memcpy(b.p, a.p, 3 * Most + 32);
+                        TextBlend::blend(a.p + po, f, alpha.p + ao, unsigned(n), color, Simd::Kernel::Scalar);
+                        TextBlend::blend(b.p + po, f, alpha.p + ao, unsigned(n), color, Simd::Kernel::Pie);
+                        if (std::memcmp(a.p, b.p, 3 * Most + 32) != 0) {
+                                size_t at = 0;
+                                while (a.p[at] == b.p[at]) ++at;
+                                ctx.printf(
+                                        "text: case %u (%u pixels, format %u, +%u, +%u) differs at byte %u: %u, %u\n",
+                                        c, unsigned(n), unsigned(f), unsigned(ao), unsigned(po), unsigned(at), a.p[at],
+                                        b.p[at]);
+                                return Shell::ExitFailure;
+                        }
+                }
+                ctx.printf("text: 2000 cases, the same\n");
                 return Shell::ExitSuccess;
         }
 
@@ -645,6 +681,7 @@ namespace {
                 {"pngfilter", testPngFilter},
                 {"softjpeg", testSoftJpeg},
                 {"blend", testBlend},
+                {"text", testText},
                 {"repeat16", testRepeat16},
         };
 
@@ -715,6 +752,30 @@ namespace {
 
         // As the painter draws icons: 48 × 48 into a strip in internal RAM, from PSRAM (where the
         // icon themes are) and from internal RAM (the kernel's own speed); time an icon.
+        // Text's blend: rows of a line's glyph coverage (a third of the pixels covered, some partly)
+        // in internal RAM, as the Painter's strip is.
+        Error benchText(BenchContext &ctx) {
+                constexpr size_t Width = 1024, Rows = 16;
+                Block            alpha(MemSpace::Internal, Width), out(MemSpace::Internal, 3 * Width * Rows);
+                if (alpha.p == nullptr || out.p == nullptr) return Error::NoMem;
+                Noise noise;
+                for (size_t i = 0; i < Width; ++i) {
+                        const uint32_t k = noise.below(6);
+                        alpha.p[i] = k < 4 ? 0 : k == 4 ? 255 : uint8_t(noise.next() >> 24);
+                }
+                noise.fill(out.p, 3 * Width * Rows);
+                for (const TextBlend::Format f : {TextBlend::Format::Bgr24, TextBlend::Format::Gray8}) {
+                        const Error err = scalarAndPie(
+                                ctx, f == TextBlend::Format::Bgr24 ? "bgr24_" : "gray8_", "us", 1, [&](Simd::Kernel k) {
+                                        for (size_t r = 0; r < Rows; ++r)
+                                                TextBlend::blend(out.p + r * 3 * Width, f, alpha.p, unsigned(Width),
+                                                                 0x203040, k);
+                                });
+                        if (err.isError()) return err;
+                }
+                return Error::Ok;
+        }
+
         Error benchBlend(BenchContext &ctx) {
                 constexpr size_t Side = 48, Icons = 64;
                 Block in(MemSpace::Psram, 4 * Side * Side * Icons), near(MemSpace::Internal, 4 * Side * Side),
@@ -816,6 +877,8 @@ BMDS_BENCH(simdGlyphs, "simd.glyphs", benchGlyphs, BenchQuick, "Glyphs: 80 cells
 BMDS_BENCH(simdSwap24, "simd.swap24", benchSwap24, BenchQuick, "BGR to RGB: 1920x1080 in PSRAM")
 BMDS_BENCH(simdBlend, "simd.blend", benchBlend, BenchQuick,
            "Icons' alpha: a 48x48 icon from PSRAM and from internal RAM")
+BMDS_BENCH(simdText, "simd.text", benchText, BenchQuick,
+           "Text's blend: a color by alpha over 16 rows of 1024 pixels, B, G, R and grey, internal RAM (us)")
 BMDS_BENCH(simdPngFilter, "simd.pngfilter", benchPngFilter, BenchQuick, "PNG's filters: a 1920-pixel row")
 BMDS_BENCH(simdSoftJpeg, "simd.softjpeg", benchSoftJpeg, BenchQuick,
            "The JPEG decoder: 1920x1080 4:2:0, whole and at a quarter")

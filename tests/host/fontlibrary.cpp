@@ -13,6 +13,7 @@
 #include <doctest.h>
 
 #include <algorithm>
+#include <climits>
 #include <atomic>
 #include <cstring>
 #include <filesystem>
@@ -27,6 +28,8 @@
 #include <bmds/fontlibrary.h>
 #include <bmds/fontname.h>
 #include <bmds/glyphcache.h>
+#include <bmds/textblend.h>
+#include <bmds/textdraw.h>
 #include <bmds/memory.h>
 #include <bmds/utf8.h>
 #include "hostmemory.h"
@@ -521,4 +524,262 @@ TEST_CASE("GlyphCache: a run looked up under one lock; kerning pairs that share 
         const uint32_t hits = cache.stats().kernHits;
         CHECK(cache.kerning(1, face, t, o) == -65);
         CHECK(cache.stats().kernHits == hits + 1);
+}
+
+namespace {
+
+        // The reference: one channel as TextBlend mixes it.
+        uint8_t mixRef(uint32_t c, uint32_t d, uint32_t a) {
+                return uint8_t((c * a + d * (255 - a) + 127) / 255);
+        }
+
+        uint32_t noise(uint32_t &state) {
+                state = state * 1664525u + 1013904223u;
+                return state >> 8;
+        }
+
+} // namespace
+
+TEST_CASE("TextBlend: coverage combined as alpha, the ramp, every format's blend and fill") {
+        using bmds::TextBlend::Format;
+        uint32_t seed = 7;
+        // Coverage rows from any pixel, sharp and smooth, combined (the larger of two) as alpha.
+        for (int c = 0; c < 500; ++c) {
+                uint8_t row[40];
+                for (uint8_t &b : row) b = uint8_t(noise(seed));
+                uint8_t alpha[320], want[320];
+                for (unsigned i = 0; i < 320; ++i) alpha[i] = want[i] = uint8_t(noise(seed) % 16 * 17);
+                const unsigned first = noise(seed) % 100, count = noise(seed) % (300 - first);
+                bmds::TextBlend::compose(row, FontFace::Depth::Mono, first, count, alpha);
+                for (unsigned i = 0; i < count; ++i)
+                        if ((row[(first + i) / 8] & (0x80 >> ((first + i) % 8))) != 0) want[i] = 255;
+                REQUIRE(std::memcmp(alpha, want, 320) == 0);
+                const unsigned gfirst = noise(seed) % 30, gcount = noise(seed) % (80 - gfirst);
+                bmds::TextBlend::compose(row, FontFace::Depth::Gray4, gfirst, gcount, alpha);
+                for (unsigned i = 0; i < gcount; ++i) {
+                        const unsigned px = gfirst + i;
+                        const uint8_t  v = uint8_t(((px & 1) != 0 ? row[px / 2] & 15 : row[px / 2] >> 4) * 17);
+                        if (v > want[i]) want[i] = v;
+                }
+                REQUIRE(std::memcmp(alpha, want, 320) == 0);
+        }
+
+        // The ramp: level 0 the background, 15 the color, between them the blend; painted where not 0.
+        for (Format f : {Format::Bgr24, Format::Rgb24, Format::Bgra32, Format::Rgb565, Format::Gray8, Format::Index8}) {
+                bmds::TextBlend::Ramp ramp;
+                bmds::TextBlend::makeRamp(f, 0x102030, 0xf0e0d0, ramp);
+                const unsigned bpp = bmds::TextBlend::bytesPerPixel(f);
+                uint8_t        bg[4], fg[4], mid[4];
+                bmds::TextBlend::fill(bg, f, 1, 0xf0e0d0);
+                bmds::TextBlend::fill(fg, f, 1, 0x102030);
+                std::memcpy(mid, bg, 4);
+                const uint8_t seven = 7 * 17;
+                bmds::TextBlend::blend(mid, f, &seven, 1, 0x102030, bmds::Simd::Kernel::Scalar);
+                CHECK(std::memcmp(ramp.bytes[0], bg, bpp) == 0);
+                CHECK(std::memcmp(ramp.bytes[15], fg, bpp) == 0);
+                // (RGB565 aside: the ramp mixes the 8-bit colors, a blend the stored pixel's widened bits.)
+                if (f != Format::Rgb565) CHECK(std::memcmp(ramp.bytes[7], f == Format::Index8 ? bg : mid, bpp) == 0);
+                uint8_t       pixels[4 * 4];
+                const uint8_t levels[4] = {0, 255, 7 * 17, 0};
+                std::memset(pixels, 0x5a, sizeof(pixels));
+                bmds::TextBlend::paint(pixels, levels, 4, ramp);
+                CHECK(pixels[0] == 0x5a);
+                CHECK(std::memcmp(pixels + bpp, ramp.bytes[15], bpp) == 0);
+                CHECK(std::memcmp(pixels + 2 * bpp, ramp.bytes[7], bpp) == 0);
+                CHECK(pixels[3 * bpp] == 0x5a);
+        }
+
+        // Each format against the formula, with alpha 0 and 255 among the rest.
+        for (int c = 0; c < 200; ++c) {
+                const uint32_t color = noise(seed) & 0xffffff;
+                const uint32_t r = color >> 16 & 0xff, g = color >> 8 & 0xff, b = color & 0xff;
+                uint8_t        alpha[70];
+                for (uint8_t &a : alpha) {
+                        const uint32_t k = noise(seed) % 4;
+                        a = k == 0 ? 0 : k == 1 ? 255 : uint8_t(noise(seed));
+                }
+                uint8_t before[70 * 4], after[70 * 4];
+                for (uint8_t &v : before) v = uint8_t(noise(seed));
+                const unsigned n = 1 + noise(seed) % 70;
+                for (Format f :
+                     {Format::Bgr24, Format::Rgb24, Format::Bgra32, Format::Rgb565, Format::Gray8, Format::Index8}) {
+                        std::memcpy(after, before, sizeof(after));
+                        bmds::TextBlend::blend(after, f, alpha, n, color, bmds::Simd::Kernel::Pie); // scalar here
+                        const unsigned bpp = bmds::TextBlend::bytesPerPixel(f);
+                        for (unsigned i = 0; i < n; ++i) {
+                                const uint8_t *p = before + i * bpp, *q = after + i * bpp;
+                                const uint32_t a = alpha[i];
+                                switch (f) {
+                                        case Format::Bgr24:
+                                                REQUIRE(q[0] == mixRef(b, p[0], a));
+                                                REQUIRE(q[1] == mixRef(g, p[1], a));
+                                                REQUIRE(q[2] == mixRef(r, p[2], a));
+                                                break;
+                                        case Format::Rgb24:
+                                                REQUIRE(q[0] == mixRef(r, p[0], a));
+                                                REQUIRE(q[2] == mixRef(b, p[2], a));
+                                                break;
+                                        case Format::Bgra32:
+                                                REQUIRE(q[0] == mixRef(b, p[0], a));
+                                                REQUIRE(q[3] == mixRef(255, p[3], a));
+                                                break;
+                                        case Format::Rgb565: {
+                                                const uint32_t v = p[0] | p[1] << 8, w = q[0] | q[1] << 8;
+                                                const uint32_t pr = (v >> 11 & 31) << 3 | (v >> 13 & 7);
+                                                const uint32_t pb = (v & 31) << 3 | (v >> 2 & 7);
+                                                if (a == 0) {
+                                                        REQUIRE(w == v);
+                                                } else {
+                                                        REQUIRE((w >> 11) == (mixRef(r, pr, a) >> 3u));
+                                                        REQUIRE((w & 31) == (mixRef(b, pb, a) >> 3u));
+                                                }
+                                                break;
+                                        }
+                                        case Format::Gray8:
+                                                REQUIRE(q[0] == mixRef(bmds::TextBlend::luma(color), p[0], a));
+                                                break;
+                                        case Format::Index8: REQUIRE(q[0] == (a >= 128 ? uint8_t(color) : p[0])); break;
+                                }
+                        }
+                        REQUIRE(std::memcmp(after + n * bpp, before + n * bpp, sizeof(after) - n * bpp) == 0);
+                }
+        }
+
+        uint8_t pixels[12];
+        bmds::TextBlend::fill(pixels, Format::Bgr24, 4, 0x123456);
+        CHECK(pixels[0] == 0x56);
+        CHECK(pixels[2] == 0x12);
+        CHECK(pixels[11] == 0x12);
+        bmds::TextBlend::fill(pixels, Format::Rgb565, 2, 0xffffff);
+        CHECK(pixels[0] == 0xff);
+        CHECK(pixels[1] == 0xff);
+        bmds::TextBlend::fill(pixels, Format::Bgra32, 1, 0x000000);
+        CHECK(pixels[3] == 0xff);
+}
+
+TEST_CASE("TextDraw: lines drawn over, on a box, clipped, limited, sharp, indexed, from a bitmap font") {
+        using bmds::TextBlend::Format;
+        GlyphCache  cache(256 * 1024);
+        HostFiles   files(true);
+        FontLibrary lib(cache, &files);
+        REQUIRE(lib.addBitmap(bmds::Fonts::unscii16, "unscii", 13) == Error::Ok);
+        REQUIRE(lib.scan(BMDS_FONTS_DIR) == Error::Ok);
+        Font sans = open(lib, "IBM Plex Sans 16");
+
+        constexpr int        W = 200, H = 40;
+        std::vector<uint8_t> pic(size_t(W) * H * 3, 0xff);
+        bmds::TextTarget     t;
+        t.pixels = pic.data();
+        t.format = Format::Bgr24;
+        t.width = W;
+        t.height = H;
+        t.stride = size_t(W) * 3;
+        bmds::TextPaint paint;
+        const auto      dark = [&](int x0, int y0, int x1, int y1) {
+                unsigned n = 0;
+                for (int y = y0; y < y1; ++y)
+                        for (int x = x0; x < x1; ++x) n += pic[(size_t(y) * W + x) * 3] < 0x80;
+                return n;
+        };
+
+        // Over: ink inside the advance and the line, the advance returned.
+        auto [w, err] = bmds::TextDraw::line(t, sans, "To AVA", 10, 5, paint, 0, bmds::Simd::Kernel::Scalar);
+        REQUIRE(err == Error::Ok);
+        CHECK(w == sans.textWidth("To AVA"));
+        const unsigned ink = dark(0, 0, W, H);
+        CHECK(ink > 50);
+        CHECK(dark(10, 5, 10 + int(w) + 2, 5 + sans.metrics().lineHeight) == ink);
+        CHECK(cache.stats().entries > 0);
+
+        // The same again: from the cache, the same pixels.
+        std::vector<uint8_t> first = pic;
+        std::fill(pic.begin(), pic.end(), 0xff);
+        REQUIRE(bmds::TextDraw::line(t, sans, "To AVA", 10, 5, paint, 0, bmds::Simd::Kernel::Scalar).isOk());
+        CHECK(pic == first);
+
+        // Clipped to a column band: nothing outside it.
+        std::fill(pic.begin(), pic.end(), 0xff);
+        t.clipLeft = 20;
+        t.clipRight = 40;
+        REQUIRE(bmds::TextDraw::line(t, sans, "To AVA", 10, 5, paint, 0, bmds::Simd::Kernel::Scalar).isOk());
+        CHECK(dark(0, 0, 20, H) == 0);
+        CHECK(dark(40, 0, W, H) == 0);
+        CHECK(dark(20, 0, 40, H) > 0);
+        t.clipLeft = 0;
+        t.clipRight = INT_MAX;
+
+        // Off the picture on every side: no fault, nothing drawn outside.
+        std::fill(pic.begin(), pic.end(), 0xff);
+        REQUIRE(bmds::TextDraw::line(t, sans, "Wide line of text off the edge", 150, 30, paint, 0,
+                                     bmds::Simd::Kernel::Scalar)
+                        .isOk());
+        REQUIRE(bmds::TextDraw::line(t, sans, "left", -20, -8, paint, 0, bmds::Simd::Kernel::Scalar).isOk());
+
+        // A width limit: whole characters that fit.
+        std::fill(pic.begin(), pic.end(), 0xff);
+        auto [limited, lerr] =
+                bmds::TextDraw::line(t, sans, "Hello, world", 0, 5, paint, 30, bmds::Simd::Kernel::Scalar);
+        REQUIRE(lerr == Error::Ok);
+        CHECK(limited <= 30);
+        CHECK(limited == sans.textWidth(StringView("Hello, world").left(sans.fitting("Hello, world", 30))));
+
+        // On a box: the box filled with the background, nothing outside it touched.
+        std::fill(pic.begin(), pic.end(), 0xff);
+        paint.opaque = true;
+        paint.background = 0x00ff00;
+        auto [bw, berr] = bmds::TextDraw::line(t, sans, "Box", 50, 4, paint, 0, bmds::Simd::Kernel::Scalar);
+        REQUIRE(berr == Error::Ok);
+        const int lh = sans.metrics().lineHeight;
+        unsigned  green = 0, outside = 0;
+        for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x) {
+                        const uint8_t *p = &pic[(size_t(y) * W + x) * 3];
+                        const bool     in = x >= 50 && x < 50 + int(bw) && y >= 4 && y < 4 + lh;
+                        if (!in && (p[0] != 0xff || p[1] != 0xff || p[2] != 0xff)) ++outside;
+                        if (in && p[0] == 0 && p[1] == 0xff && p[2] == 0) ++green;
+                }
+        CHECK(outside == 0);
+        CHECK(green > bw * unsigned(lh) / 2);
+        paint.opaque = false;
+
+        // Sharp: every pixel the color or untouched.
+        std::fill(pic.begin(), pic.end(), 0xff);
+        paint.smooth = false;
+        paint.color = 0x102030;
+        REQUIRE(bmds::TextDraw::line(t, sans, "Sharp", 5, 5, paint, 0, bmds::Simd::Kernel::Scalar).isOk());
+        for (size_t i = 0; i < pic.size(); i += 3)
+                REQUIRE(((pic[i] == 0x30 && pic[i + 2] == 0x10) || (pic[i] == 0xff && pic[i + 2] == 0xff)));
+        paint.smooth = true;
+
+        // Indexes: sharp whatever the paint says.
+        std::vector<uint8_t> idx(size_t(W) * H, 3);
+        bmds::TextTarget     it = t;
+        it.pixels = idx.data();
+        it.format = Format::Index8;
+        it.stride = W;
+        paint.color = 9;
+        REQUIRE(bmds::TextDraw::line(it, sans, "Index", 5, 5, paint, 0, bmds::Simd::Kernel::Scalar).isOk());
+        unsigned nines = 0;
+        for (uint8_t v : idx) {
+                REQUIRE((v == 3 || v == 9));
+                nines += v == 9;
+        }
+        CHECK(nines > 30);
+
+        // A bitmap font doubled: each set bit a 2 × 2 block, its baseline on the line's.
+        Font                 u = open(lib, "unscii 32");
+        std::vector<uint8_t> big(size_t(W) * H * 3, 0xff);
+        bmds::TextTarget     bt = t;
+        bt.pixels = big.data();
+        paint.color = 0;
+        REQUIRE(bmds::TextDraw::line(bt, u, "A", 0, 0, paint, 0, bmds::Simd::Kernel::Scalar).isOk());
+        const bmds::Glyph a = bmds::Fonts::unscii16.glyph('A');
+        for (unsigned y = 0; y < 16; ++y)
+                for (unsigned x = 0; x < 8; ++x) {
+                        const bool set = (a.rows[y] & (0x80 >> x)) != 0;
+                        for (unsigned k = 0; k < 4; ++k) {
+                                const size_t at = (size_t(y * 2 + k / 2) * W + x * 2 + k % 2) * 3;
+                                REQUIRE((big[at] == 0) == set);
+                        }
+                }
 }

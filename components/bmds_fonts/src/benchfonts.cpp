@@ -8,6 +8,7 @@
  * kerned and rendered, from a font file in /rom (read where it lies).
  */
 
+#include <cstdio>
 #include <cstring>
 #include <bmds/bench.h>
 #include <bmds/font.h>
@@ -17,6 +18,7 @@
 #include <bmds/memory.h>
 #include <bmds/stopwatch.h>
 #include <bmds/systemfonts.h>
+#include <bmds/textdraw.h>
 #include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -220,8 +222,59 @@ namespace {
                 });
         }
 
+        // A line drawn as the Painter and programs draw it (TextDraw): smooth over, smooth on a box,
+        // sharp, into B, G, R in internal RAM and in PSRAM, each with both kernels: µs a line.
+        Error runDraw(BenchContext &ctx) {
+                auto [font, ferr] = SystemFonts::library().open(StringView("IBM Plex Sans 13"));
+                if (ferr.isError()) return ferr;
+                static constexpr char Line[] = "The quick brown fox jumps over the lazy dog, To AVA Ta Yo.";
+                constexpr int         W = 640, H = 24;
+                for (const MemSpace space : {MemSpace::Internal, MemSpace::Psram}) {
+                        auto *pixels = static_cast<uint8_t *>(Memory::allocAligned(space, size_t(W) * H * 3, 16));
+                        if (pixels == nullptr) return Error::NoMem;
+                        std::memset(pixels, 0xff, size_t(W) * H * 3);
+                        TextTarget target;
+                        target.pixels = pixels;
+                        target.width = W;
+                        target.height = H;
+                        target.stride = size_t(W) * 3;
+                        Error err;
+                        for (int mode = 0; mode < 3 && err.isOk(); ++mode) {
+                                TextPaint paint;
+                                paint.color = 0x202020;
+                                paint.opaque = mode == 1;
+                                paint.background = 0xe0e0e0;
+                                paint.smooth = mode != 2;
+                                (void)TextDraw::line(target, font, Line, 4, 2, paint, 0, Simd::best()); // glyphs cached
+                                for (const Simd::Kernel k : {Simd::Kernel::Scalar, Simd::Kernel::Pie}) {
+                                        if (k == Simd::Kernel::Pie && !Simd::hasPie()) continue;
+                                        char metric[BenchContext::MaxMetricName + 1];
+                                        std::snprintf(metric, sizeof(metric), "%s_%s_%s_us",
+                                                      space == MemSpace::Internal ? "internal" : "psram",
+                                                      mode == 0   ? "over"
+                                                      : mode == 1 ? "box"
+                                                                  : "sharp",
+                                                      k == Simd::Kernel::Scalar ? "scalar" : "pie");
+                                        err = ctx.measure(metric, "us", BenchBetter::Lower, [&](double &out) {
+                                                Stopwatch watch;
+                                                auto [w, e] = TextDraw::line(target, font, Line, 4, 2, paint, 0, k);
+                                                out = double(watch.elapsedUs());
+                                                return e;
+                                        });
+                                        if (err.isError()) break;
+                                }
+                        }
+                        Memory::free(pixels);
+                        if (err.isError()) return err;
+                }
+                return Error::Ok;
+        }
+
 } // namespace
 
+BMDS_BENCH(fontDraw, "font.draw", runDraw, BenchQuick,
+           "A 57-character line of IBM Plex Sans 13 drawn smooth, on a box and sharp, in internal RAM and PSRAM "
+           "(us a line)")
 BMDS_BENCH_WITH(fontCache, "font.cache", runCache, BenchQuick, RenderParams,
                 "The glyph cache on a TrueType face: a miss, a hit, a cached kerning pair; a line laid out (a "
                 "character)")
