@@ -108,7 +108,7 @@ class NotificationCentre final : public GuiWindow {
 
         private:
                 static constexpr uint16_t Width = 360;
-                static constexpr uint16_t RowHeight = 2 * GuiStyle::TextHeight + 6;
+                uint16_t                  rowHeight() const { return uint16_t(2 * textHeight() + 6); }
 
                 static void clearClicked(void *arg, Button &button);
                 uint16_t    rowsTop() const;

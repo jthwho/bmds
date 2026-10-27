@@ -131,6 +131,9 @@ class ScrollArea : public Widget {
                 /** @brief Sets a line's length across (rounded up to 4) and down (an arrow's or a wheel notch's third). */
                 void setLineSteps(uint16_t x, uint16_t y);
 
+                /** @brief Returns the rows kept above the content (a header's). */
+                uint16_t topMargin() const { return _topMargin; }
+
                 /** @brief Returns how far the content is scrolled left. */
                 uint32_t scrollX() const { return _scrollX; }
 

@@ -80,7 +80,7 @@ class ColorSwatch : public Widget {
                 void     *_clickedArg = nullptr;
                 uintptr_t _data = 0;
                 char      _tip[8] = {};
-                GuiSize   _hint{40, GuiStyle::ButtonHeight};
+                GuiSize   _hint{40, buttonHeight()};
                 bool      _down = false;
 };
 

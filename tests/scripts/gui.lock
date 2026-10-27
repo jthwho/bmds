@@ -339,3 +339,5 @@ property ColorDialog.owner Id RW
 # Step 5c (2026-10-25): a button drawn checked (a palette's tool chosen)
 property Button.checked Bool RW
 property ToolButton.checked Bool RW
+# 2026-10-26: a widget's font (devplan/fonts.md §6i).
+property Widget.font String RW

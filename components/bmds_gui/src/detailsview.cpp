@@ -36,12 +36,19 @@ namespace {
 } // namespace
 
 DetailsView::DetailsView(Widget *parent) : ItemView(parent) {
-        setTopMargin(HeaderHeight);
-        setLineSteps(16, RowHeight);
+        setTopMargin(headerHeight());
+        setLineSteps(16, rowHeight());
+}
+
+void DetailsView::styleChanged() {
+        if (topMargin() != 0) setTopMargin(headerHeight());
+        setLineSteps(16, rowHeight());
+        ItemView::styleChanged();
+        return;
 }
 
 void DetailsView::setHeaderVisible(bool visible) {
-        setTopMargin(visible ? HeaderHeight : 0); // a header() of no height then: not drawn, never pressed
+        setTopMargin(visible ? headerHeight() : 0); // a header() of no height then: not drawn, never pressed
         return;
 }
 
@@ -60,7 +67,7 @@ void DetailsView::setSortIndicator(int column, bool descending) {
 void DetailsView::setColumnWidth(size_t column, uint16_t width) {
         if (column >= _columns) return;
         _widths[column] = HeaderLayout::resized(width, 0);
-        setContentSize(total(), uint32_t(count()) * RowHeight);
+        setContentSize(total(), uint32_t(count()) * rowHeight());
         update();
         return;
 }
@@ -83,7 +90,7 @@ void DetailsView::relayout() {
                 for (size_t c = 0; c < _columns; ++c)
                         _widths[c] = HeaderLayout::resized(model() != nullptr ? model()->columnWidth(c) : 200, 0);
         }
-        setContentSize(total(), uint32_t(count()) * RowHeight);
+        setContentSize(total(), uint32_t(count()) * rowHeight());
         return;
 }
 
@@ -98,11 +105,11 @@ bool DetailsView::inHeader(int x, int y) const {
 }
 
 ContentRect DetailsView::rowRect(size_t row) const {
-        return ContentRect{0, uint32_t(row) * RowHeight, total(), RowHeight};
+        return ContentRect{0, uint32_t(row) * rowHeight(), total(), rowHeight()};
 }
 
 int DetailsView::rowAt(uint32_t x, uint32_t y) const {
-        const size_t row = y / RowHeight;
+        const size_t row = y / rowHeight();
         return row < count() && x < total() ? int(row) : -1;
 }
 
@@ -110,7 +117,7 @@ int DetailsView::rowAt(uint32_t x, uint32_t y) const {
 DragImage::Box DetailsView::dragBox(size_t row) const {
         DragImage::Box b = rowBox(row);
         if (model() == nullptr || _columns == 0) return b;
-        const int named = TextX + int(Fonts::unscii16.textWidth(model()->text(row))) + 4;
+        const int named = TextX + int(font().textWidth(model()->text(row))) + 4;
         const int first = _widths[0];
         b.width = named < first ? named : first;
         return b;
@@ -119,7 +126,7 @@ DragImage::Box DetailsView::dragBox(size_t row) const {
 bool DetailsView::onName(size_t row, uint32_t x, uint32_t y) const {
         (void)y;
         if (model() == nullptr || _columns == 0) return false;
-        const uint32_t w = Fonts::unscii16.textWidth(model()->text(row));
+        const uint32_t w = font().textWidth(model()->text(row));
         return x >= TextX && x < TextX + w && x < _widths[0];
 }
 
@@ -136,9 +143,9 @@ Rect DetailsView::nameRect(size_t row) const {
         const Rect s = w->screenRect();
         const Rect v = viewport();
         const int  x = int(v.x) + TextX - int(scrollX()) - CellPad;
-        const int  y = int(v.y) + int(row) * RowHeight - int(scrollY()) + 1;
+        const int  y = int(v.y) + int(row) * rowHeight() - int(scrollY()) + 1;
         const int  width = _widths[0] > TextX ? _widths[0] - TextX + CellPad : 64;
-        return Rect{uint16_t(s.x + (x > 0 ? x : 0)), uint16_t(s.y + y), uint16_t(width), uint16_t(RowHeight - 2)};
+        return Rect{uint16_t(s.x + (x > 0 ? x : 0)), uint16_t(s.y + y), uint16_t(width), uint16_t(rowHeight() - 2)};
 }
 
 void DetailsView::paint(Painter &painter) {
@@ -165,15 +172,14 @@ void DetailsView::paintHeader(Painter &painter) {
                         drawBevel(painter, whole, style);
                         (void)painter.fill(Bevel::inside(whole, style), face);
                         if (c < _columns && model() != nullptr) {
-                                const int ty = h.y + (h.height - GuiStyle::TextHeight) / 2 + (in ? 1 : 0);
+                                const int ty = h.y + (h.height - textHeight()) / 2 + (in ? 1 : 0);
                                 // Short of the button's right bevel (and the sort arrow), so a cut title
                                 // never draws over the edge.
                                 const int room = (width - 3 * CellPad - (int(c) == _sortColumn ? 16 : 0)) &
                                                  ~int(GuiStyle::Column - 1);
                                 if (room > 0)
-                                        (void)painter.text(x + 2 * CellPad, ty, model()->columnTitle(c),
-                                                           Fonts::unscii16, p.color(Role::FaceText), face,
-                                                           uint16_t(room));
+                                        (void)painter.text(x + 2 * CellPad, ty, model()->columnTitle(c), font(),
+                                                           p.color(Role::FaceText), face, uint16_t(room));
                                 if (int(c) == _sortColumn)
                                         GuiStyle::drawArrow(painter,
                                                             Rect{uint16_t(x + width - 16 > 0 ? x + width - 16 : 0), h.y,
@@ -192,14 +198,14 @@ void DetailsView::paintRows(Painter &painter, const Rect &viewport) {
         const uint32_t       background = p.color(Role::FaceHighlight);
         (void)painter.fill(viewport, background);
         if (model() == nullptr || _columns == 0) return;
-        const size_t first = scrollY() / RowHeight;
-        const size_t last = (scrollY() + viewport.height) / RowHeight;
+        const size_t first = scrollY() / rowHeight();
+        const size_t last = (scrollY() + viewport.height) / rowHeight();
         const bool   focus = showsFocus();
         char         buffer[64];
         for (size_t row = first; row <= last && row < count(); ++row) {
-                const int  y = int(viewport.y) + int(row) * RowHeight - int(scrollY());
+                const int                 y = int(viewport.y) + int(row) * rowHeight() - int(scrollY());
                 int        x = int(viewport.x) - int(scrollX());
-                const int  ty = y + (RowHeight - GuiStyle::TextHeight) / 2;
+                const int                 ty = y + (rowHeight() - textHeight()) / 2;
                 const bool selected = selection().isSelected(row);
                 const ItemModel::Emphasis emphasis = model()->emphasis(row);
                 const uint32_t            text = emphasis == ItemModel::Emphasis::Critical  ? CriticalText
@@ -211,11 +217,11 @@ void DetailsView::paintRows(Painter &painter, const Rect &viewport) {
                                 if (c == 0) {
                                         const Icon *icon = model()->icon(row, 16);
                                         if (icon != nullptr && icon->isValid() && icon->height <= 16)
-                                                (void)painter.image(x + IconX, y + (RowHeight - icon->height) / 2,
+                                                (void)painter.image(x + IconX, y + (rowHeight() - icon->height) / 2,
                                                                     *icon, background);
                                         if (int(row) != editing()) {
                                                 const StringView name = model()->text(row);
-                                                const int        tw = int(Fonts::unscii16.textWidth(name));
+                                                const int        tw = int(font().textWidth(name));
                                                 const int        room =
                                                         width - TextX - CellPad > 0 ? width - TextX - CellPad : 0;
                                                 const int  shown = tw < room ? tw : room;
@@ -225,20 +231,20 @@ void DetailsView::paintRows(Painter &painter, const Rect &viewport) {
                                                 const uint32_t fg =
                                                         selected && focus ? p.color(Role::HighlightText) : text;
                                                 if (room > 0)
-                                                        (void)painter.text(x + TextX, ty, name, Fonts::unscii16, fg, bg,
+                                                        (void)painter.text(x + TextX, ty, name, font(), fg, bg,
                                                                            uint16_t(room));
                                                 if (!selected && focus && int(row) == current())
                                                         focusRect(painter, viewport, bx, y, bw);
                                         }
                                 } else {
                                         const StringView cell = model()->columnText(row, c, Span<char>(buffer));
-                                        const int        tw = int(Fonts::unscii16.textWidth(cell));
+                                        const int        tw = int(font().textWidth(cell));
                                         const int        room = width - 2 * CellPad;
                                         if (room > 0 && !cell.isEmpty()) {
                                                 int tx = x + CellPad;
                                                 if (model()->columnAlign(c) == ItemModel::Align::Right && tw < room)
                                                         tx = (x + width - CellPad - tw) & ~3;
-                                                (void)painter.text(tx, ty, cell, Fonts::unscii16, text, background,
+                                                (void)painter.text(tx, ty, cell, font(), text, background,
                                                                    uint16_t(room));
                                         }
                                 }

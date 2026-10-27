@@ -41,9 +41,7 @@ class MenuTitle final : public Widget {
                         return;
                 }
 
-                uint16_t textWidth() const {
-                        return static_cast<uint16_t>(Fonts::unscii16.textWidth(StringView(_text)));
-                }
+                uint16_t textWidth() const { return static_cast<uint16_t>(font().textWidth(StringView(_text))); }
 
                 void paint(Painter &painter) override {
                         const WindowPalette &p = painter.palette();
@@ -57,11 +55,10 @@ class MenuTitle final : public Widget {
                                 drawBevel(painter, r, Bevel::Style::Thin);
                         }
                         const uint16_t x = static_cast<uint16_t>(r.x + MenuBarLayout::Pad);
-                        const uint16_t y =
-                                static_cast<uint16_t>(r.y + (r.height - GuiStyle::TextHeight) / 2 + (open ? 1 : 0));
+                        const uint16_t y = static_cast<uint16_t>(r.y + (r.height - textHeight()) / 2 + (open ? 1 : 0));
                         const uint32_t fg = p.color(isEnabled() ? Role::FaceText : Role::DisabledText);
-                        (void)painter.text(x, y, StringView(_text), Fonts::unscii16, fg, face, textWidth());
-                        Mnemonic::draw(painter, x, y, StringView(_text), _underline, fg, x + textWidth());
+                        (void)painter.text(x, y, StringView(_text), font(), fg, face, textWidth());
+                        Mnemonic::draw(painter, x, y, StringView(_text), _underline, fg, x + textWidth(), font());
                         return;
                 }
 

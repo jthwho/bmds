@@ -28,8 +28,13 @@ namespace {
         using Role = WindowPalette::Role;
 
         constexpr int16_t  Margin = 8;
-        constexpr int16_t  HeaderHeight = 24;
-        constexpr int16_t  RowHeight = 20;
+        // The header's and a row's height in @p w's font: its ink box and 8 or 4 (24 and 20 at least).
+        int16_t headerHeight(const Widget &w) {
+                return int16_t(w.textHeight() + 8 > 24 ? w.textHeight() + 8 : 24);
+        }
+        int16_t rowHeight(const Widget &w) {
+                return int16_t(w.textHeight() + 4 > 20 ? w.textHeight() + 4 : 20);
+        }
         constexpr int16_t  RowGap = 2;
         constexpr int16_t  Jack = 6;  // a row's square where its wires meet it
         constexpr uint16_t Thin = 2;  // a wire
@@ -122,7 +127,8 @@ void PatchView::refresh() {
 
 GuiSize PatchView::sizeHint() const {
         const size_t rows = _leftCount > _rightCount ? _leftCount : _rightCount;
-        return GuiSize{560, uint16_t(HeaderHeight + (rows < 6 ? 6 : rows) * (RowHeight + RowGap) + 2 * Margin + 20)};
+        return GuiSize{560, uint16_t(headerHeight(*this) + (rows < 6 ? 6 : rows) * (rowHeight(*this) + RowGap) +
+                                     2 * Margin + 20)};
 }
 
 PatchView::Layout PatchView::layout() const {
@@ -134,21 +140,21 @@ PatchView::Layout PatchView::layout() const {
         l.columnWidth = uint16_t(w & ~3);
         l.leftX = column(r.x + Margin);
         l.rightX = int16_t((r.x + r.width - Margin - l.columnWidth) & ~3);
-        l.top = int16_t(r.y + Margin + HeaderHeight);
+        l.top = int16_t(r.y + Margin + headerHeight(*this));
         l.bandLeft = int16_t(l.leftX + l.columnWidth + Jack);
         l.bandRight = int16_t(l.rightX - Jack);
         return l;
 }
 
 int16_t PatchView::rowY(size_t index) const {
-        return int16_t(layout().top + int(index) * (RowHeight + RowGap) + RowHeight / 2);
+        return int16_t(layout().top + int(index) * (rowHeight(*this) + RowGap) + rowHeight(*this) / 2);
 }
 
 int PatchView::rowAt(Side side, int x, int y) const {
         const Layout l = layout();
         const int    left = side == Left ? l.leftX : l.rightX;
         if (x < left - Jack || x >= left + l.columnWidth + Jack || y < l.top) return -1;
-        const int    i = (y - l.top) / (RowHeight + RowGap);
+        const int    i = (y - l.top) / (rowHeight(*this) + RowGap);
         const size_t count = side == Left ? _leftCount : _rightCount;
         return i >= 0 && size_t(i) < count ? i : -1;
 }
@@ -208,20 +214,20 @@ void PatchView::drawSide(Painter &painter, const Layout &l, Side side) const {
                                     : selected ? pal.color(Role::FaceLight)
                                                : pal.color(Role::Client);
                 const uint32_t fg = lit ? pal.color(Role::HighlightText) : pal.color(Role::FaceText);
-                const int16_t  top = int16_t(l.top + int(i) * (RowHeight + RowGap));
-                (void)painter.fill(Rect{uint16_t(x), uint16_t(top), l.columnWidth, uint16_t(RowHeight)}, bg);
-                const int16_t tagWidth = int16_t(Fonts::unscii16.textWidth(StringView(rows[i].tag)));
-                const int16_t textY = int16_t(top + (RowHeight - 16) / 2);
+                const int16_t  top = int16_t(l.top + int(i) * (rowHeight(*this) + RowGap));
+                (void)painter.fill(Rect{uint16_t(x), uint16_t(top), l.columnWidth, uint16_t(rowHeight(*this))}, bg);
+                const int16_t tagWidth = int16_t(font().textWidth(StringView(rows[i].tag)));
+                const int16_t textY = int16_t(top + (rowHeight(*this) - textHeight()) / 2);
                 const int16_t tagX = int16_t((x + l.columnWidth - 4 - tagWidth) & ~3);
-                (void)painter.text(column(x + 4), textY, StringView(rows[i].name), Fonts::unscii16, fg, bg,
+                (void)painter.text(column(x + 4), textY, StringView(rows[i].name), font(), fg, bg,
                                    uint16_t(tagX - column(x + 4) - 8 > 0 ? tagX - column(x + 4) - 8 : 0));
-                (void)painter.text(tagX, textY, StringView(rows[i].tag), Fonts::unscii16,
+                (void)painter.text(tagX, textY, StringView(rows[i].tag), font(),
                                    lit ? fg : pal.color(Role::DisabledText), bg, uint16_t(tagWidth));
                 // The jack: on the band's side.
                 const int16_t jx = side == Left ? int16_t(x + l.columnWidth) : int16_t(x - Jack);
-                (void)painter.fill(
-                        Rect{uint16_t(jx), uint16_t(top + (RowHeight - Jack) / 2), uint16_t(Jack), uint16_t(Jack)},
-                        pal.color(Role::FaceDark));
+                (void)painter.fill(Rect{uint16_t(jx), uint16_t(top + (rowHeight(*this) - Jack) / 2), uint16_t(Jack),
+                                        uint16_t(Jack)},
+                                   pal.color(Role::FaceDark));
         }
         return;
 }
@@ -233,10 +239,10 @@ void PatchView::paint(Painter &painter) {
         (void)painter.fill(r, face);
         const Layout  l = layout();
         const int16_t headY = int16_t(r.y + Margin);
-        (void)painter.text(column(l.leftX + 4), headY, "From (plays)", Fonts::unscii16, pal.color(Role::FaceText), face,
+        (void)painter.text(column(l.leftX + 4), headY, "From (plays)", font(), pal.color(Role::FaceText), face,
                            l.columnWidth);
-        (void)painter.text(column(l.rightX + 4), headY, "To (is played)", Fonts::unscii16, pal.color(Role::FaceText),
-                           face, l.columnWidth);
+        (void)painter.text(column(l.rightX + 4), headY, "To (is played)", font(), pal.color(Role::FaceText), face,
+                           l.columnWidth);
         drawSide(painter, l, Left);
         drawSide(painter, l, Right);
         // The wires; the selected pair's last, thick.
@@ -271,7 +277,7 @@ void PatchView::paint(Painter &painter) {
                                : _leftCount == 0 || _rightCount == 0
                                        ? "No MIDI ports to connect"
                                        : "Drag between ports, or Enter: (dis)connect the selected pair";
-        (void)painter.text(column(r.x + Margin), statusY, StringView(status), Fonts::unscii16,
+        (void)painter.text(column(r.x + Margin), statusY, StringView(status), font(),
                            pal.color(_message[0] != '\0' ? Role::FaceText : Role::DisabledText), face,
                            uint16_t(r.width - 2 * Margin));
         return;

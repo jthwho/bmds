@@ -38,7 +38,8 @@ class TreeView : public ItemView {
                 /** @brief Told that the rows changed (expanded, collapsed, given, removed). */
                 using RowsChanged = void (*)(void *arg, TreeView &view);
 
-                static constexpr uint16_t RowHeight = 18;
+                /** @brief Returns a row's height: its font's ink box and 2 (18 for unscii). */
+                uint16_t                  rowHeight() const { return uint16_t(textHeight() + 2); }
                 static constexpr uint16_t Indent = 16;
 
                 explicit TreeView(Widget *parent);
@@ -119,6 +120,7 @@ class TreeView : public ItemView {
                 ContentRect rowRect(size_t row) const override;
                 size_t      neighbour(size_t row, int dx, int dy) const override;
                 void        relayout() override;
+                void        styleChanged() override;
                 void        activate(size_t row) override;
                 void        paintRows(Painter &painter, const Rect &viewport) override;
                 void        dropHeld(size_t row) override { expand(row); } // a drag held over a folder opens it

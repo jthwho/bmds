@@ -31,8 +31,11 @@ class DetailsView : public ItemView {
                 /** @brief Told that column @p column was clicked (the owner sorts, then shows it). */
                 using SortAsked = void (*)(void *arg, DetailsView &view, size_t column);
 
-                static constexpr uint16_t RowHeight = 18;
-                static constexpr uint16_t HeaderHeight = 20;
+                /** @brief Returns a row's height: its font's ink box and 2 (18 for unscii). */
+                uint16_t rowHeight() const { return uint16_t(textHeight() + 2); }
+
+                /** @brief Returns the header's height: its font's ink box and 4 (20 for unscii). */
+                uint16_t                  headerHeight() const { return uint16_t(textHeight() + 4); }
                 static constexpr size_t   MaxColumns = 8;
 
                 explicit DetailsView(Widget *parent);
@@ -69,6 +72,7 @@ class DetailsView : public ItemView {
                 ContentRect rowRect(size_t row) const override;
                 size_t      neighbour(size_t row, int dx, int dy) const override;
                 void        relayout() override;
+                void           styleChanged() override;
                 void        scrolled() override;
                 void        paintRows(Painter &painter, const Rect &viewport) override;
 

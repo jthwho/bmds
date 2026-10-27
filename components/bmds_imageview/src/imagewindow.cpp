@@ -449,8 +449,8 @@ void ImageWindow::paintPicture(Painter &painter, const Rect &area) {
         if (say != nullptr && pic.isEmpty()) {
                 const uint16_t w = uint16_t(std::strlen(say) * 8);
                 const int      tx = (ax + (area.width > w ? (area.width - w) / 2 : 0)) & ~3;
-                const int ty = ay + (area.height > GuiStyle::TextHeight ? (area.height - GuiStyle::TextHeight) / 2 : 0);
-                (void)painter.text(tx, ty, StringView(say), Fonts::unscii16, TextColor, Ground, area.width);
+                const int      ty = ay + (area.height > textHeight() ? (area.height - textHeight()) / 2 : 0);
+                (void)painter.text(tx, ty, StringView(say), font(), TextColor, Ground, area.width);
         }
         return;
 }

@@ -402,3 +402,7 @@ GUI_PROP(ColorDialog, owner, Id, RW)
  * palette's tool chosen */
 GUI_PROP(Button, checked, Bool, RW)
 GUI_PROP(ToolButton, checked, Bool, RW)
+
+/* ---- 2026-10-26 (devplan/fonts.md §6i): a widget's font: a role (ui, mono, title, terminal, with
+ * a size: "mono 20") or a name ("IBM Plex Sans 14 bold"); "" is its class's */
+GUI_PROP(Widget, font, String, RW)

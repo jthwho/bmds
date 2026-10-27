@@ -777,6 +777,23 @@ TEST_CASE("LineEditModel: editing whole characters, a selection, the limit") {
         CHECK(m.cursor() == 0);
 }
 
+TEST_CASE("TextWrap: in a measure of the caller's (a font's pixels)") {
+        // 'm' 3 wide, everything else 1: proportional text.
+        const bmds::TextWrap::Measure measure = [](void *, StringView piece) {
+                return uint32_t(piece.size() == 1 && piece[0] == 'm' ? 3 : 1);
+        };
+        StringView lines[4];
+        size_t     n = bmds::TextWrap::wrap("mmm iii mm", 9, measure, nullptr, Span<StringView>(lines));
+        REQUIRE(n == 3); // "mmm" fills 9; "iii mm" is 10
+        CHECK(lines[0] == "mmm");
+        CHECK(lines[1] == "iii");
+        CHECK(lines[2] == "mm");
+        n = bmds::TextWrap::wrap("iii iii mm", 9, measure, nullptr, Span<StringView>(lines));
+        REQUIRE(n == 2); // "iii iii" is 7; the space and an m make 11
+        CHECK(lines[0] == "iii iii");
+        CHECK(lines[1] == "mm");
+}
+
 TEST_CASE("TextWrap: words in lines") {
         CHECK(wrapped("There is already an icon named Terminal here.", 20) ==
               std::vector<std::string>{"There is already an", "icon named Terminal", "here."});

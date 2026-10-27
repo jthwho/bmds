@@ -15,6 +15,8 @@
 #include <bmds/bevel.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/font.h>
+#include <bmds/fontname.h>
 #include <bmds/guidrag.h>
 #include <bmds/icon.h>
 #include <bmds/inputevent.h>
@@ -28,16 +30,66 @@
 
 BMDS_NAMESPACE_BEGIN
 
+class GuiApplication;
+
 class GuiWindow;
 
 /** @brief The toolkit's sizes (`devplan/gui.md` §4b, §4e). */
 namespace GuiStyle {
-        constexpr uint16_t TextHeight = 16;   ///< unscii-16's.
-        constexpr uint16_t ButtonPad = 8;     ///< A button's text from its left edge.
-        constexpr uint16_t ButtonHeight = 22; ///< A button's height (a panel's row).
-        constexpr uint16_t Column = 4;        ///< Text starts on a multiple of this.
+        constexpr uint16_t ButtonPad = 8;        ///< A button's text from its left edge.
+        constexpr uint16_t MinButtonHeight = 22; ///< A button's height at least (a panel's row).
+        constexpr uint16_t ButtonInk = 6;        ///< A button's height past its font's ink box.
+        constexpr uint16_t Column = 4;           ///< Text starts on a multiple of this.
         constexpr uint16_t IconSize = 16;     ///< A button's or a menu item's icon.
         constexpr uint16_t IconGap = 4;       ///< Between an icon and its text.
+
+        /**
+         * @brief Returns role @p role's font as the settings last said (`font/ui`...,
+         *        `devplan/fonts.md` §6i): the system's, opened again when they change, after
+         *        which every application restyles (`Widget::restyle()`).
+         * @par Thread Safety
+         * Any task (a copy).
+         */
+        Font font(FontName::Role role = FontName::Role::Ui);
+
+        /**
+         * @brief Has @p app restyle its windows on its loop's thread after the fonts change
+         *        (`GuiApplication::connect()` calls it; `unfollow()` from its destructor).
+         * @return `Ok`, or `Full` (`MaxFollowers` already).
+         */
+        Error follow(GuiApplication &app);
+
+        /** @brief Applications `follow()` keeps. */
+        constexpr size_t MaxFollowers = 32;
+
+        /** @brief Stops telling @p app. */
+        void unfollow(GuiApplication &app);
+
+        /**
+         * @brief Breaks @p text into lines at most @p width pixels wide in @p font
+         *        (`TextWrap::wrap()`: at spaces, at each LF, inside a word too long).
+         * @return The lines written into @p lines.
+         */
+        size_t wrap(StringView text, const Font &font, uint32_t width, Span<StringView> lines);
+
+        /** @brief Returns @p font's ink box in pixels (ascent and descent: 16 for unscii 16). */
+        inline uint16_t textHeight(const Font &font) {
+                const int h = font.metrics().ascent + font.metrics().descent;
+                return static_cast<uint16_t>(h > 0 ? h : 0);
+        }
+
+        /** @brief Returns a button's height for @p font: its ink box and `ButtonInk`, `MinButtonHeight` at least. */
+        inline uint16_t buttonHeight(const Font &font) {
+                const uint16_t h = static_cast<uint16_t>(textHeight(font) + ButtonInk);
+                return h > MinButtonHeight ? h : MinButtonHeight;
+        }
+
+        /** @brief Returns the top of a row of @p font's text centred in @p r (@p down: a pixel lower, pressed in). */
+        inline uint16_t textTop(const Rect &r, const Font &font, bool down = false) {
+                const uint16_t h = textHeight(font);
+                const uint32_t y = r.y + (r.height > h ? (r.height - h) / 2 : 0);
+                return static_cast<uint16_t>(y + (down ? 1 : 0));
+        }
 
         /** @brief Which way `drawArrow()` points. */
         enum class Arrow : uint8_t {
@@ -155,6 +207,42 @@ class Widget {
 
                 /** @brief Asks for its rectangle to be redrawn. */
                 void update();
+
+                /**
+                 * @brief Returns its font: its own (`setFont()`), or its class's role's
+                 *        (`fontRole()`) as the settings say.
+                 */
+                Font font() const;
+
+                /**
+                 * @brief Gives it a font of its own: a name ("IBM Plex Sans 14 bold") or a
+                 *        role ("ui", "mono 20"), which follows the settings; empty: its class's
+                 *        again. A shown window's layouts run again.
+                 * @return `Ok`, `Invalid` (not a font name), `NoMem`.
+                 */
+                Error setFont(StringView name);
+
+                /** @brief Returns its own font's name as given to `setFont()` ("" for its class's). */
+                FontName fontName() const;
+
+                /** @brief Returns its own font's name as text ("ui", "IBM Plex Sans 14 bold"; "" for its class's). */
+                StringView fontText() const;
+
+                /** @brief Returns the role its class writes in when it has no font of its own: `ui`. */
+                virtual FontName::Role fontRole() const { return FontName::Role::Ui; }
+
+                /** @brief Returns its font's ink box (`GuiStyle::textHeight()`). */
+                uint16_t textHeight() const { return GuiStyle::textHeight(font()); }
+
+                /** @brief Returns a button's height in its font (`GuiStyle::buttonHeight()`). */
+                uint16_t buttonHeight() const { return GuiStyle::buttonHeight(font()); }
+
+                /**
+                 * @brief The fonts changed (or this one's did): it and everything in it open
+                 *        their own fonts again (a role follows the settings), are told
+                 *        (`styleChanged()`), lay out again at their sizes, and are redrawn.
+                 */
+                void restyle();
 
                 /** @brief Returns the size it wants (a layout's hint). */
                 virtual GuiSize sizeHint() const { return GuiSize(); }
@@ -382,6 +470,9 @@ class Widget {
                 /** @brief Its size changed (lay children out here). */
                 virtual void resized() {}
 
+                /** @brief Its font or the system's changed: measurements it keeps are out of date. */
+                virtual void styleChanged() {}
+
                 /** @brief Its window was set (`GuiWindow`'s, for the root). */
                 void setWindow(GuiWindow *window) { _window = window; }
 
@@ -392,9 +483,18 @@ class Widget {
                 void fillOutsideChildren(Painter &painter, const Rect &area, uint32_t rgb) const;
 
         private:
+                // A font of its own (few widgets have one: kept apart, in PSRAM).
+                struct OwnFont {
+                                FontName name;
+                                Font     font;
+                                char     text[FontName::MaxText + 1] = {}; // the name, formatted
+                };
+
                 void add(Widget *child);
                 void remove(Widget *child);
+                void restyleTree();
 
+                OwnFont   *_ownFont = nullptr;
                 Widget    *_parent = nullptr;
                 Widget    *_first = nullptr;
                 Widget    *_last = nullptr;

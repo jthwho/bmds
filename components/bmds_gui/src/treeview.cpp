@@ -35,7 +35,7 @@ namespace {
 
 TreeView::TreeView(Widget *parent) : ItemView(parent) {
         setSingleSelection(true);
-        setLineSteps(16, RowHeight);
+        setLineSteps(16, rowHeight());
         setModel(&_model);
 }
 
@@ -155,23 +155,29 @@ int TreeView::selectPath(StringView path) {
         return row;
 }
 
+void TreeView::styleChanged() {
+        setLineSteps(16, rowHeight());
+        ItemView::styleChanged();
+        return;
+}
+
 void TreeView::relayout() {
         uint32_t width = 0;
         for (size_t r = 0; r < _rows.count(); ++r) {
-                const uint32_t right = textX(_rows.row(r).depth) + Fonts::unscii16.textWidth(_rows.name(r)) + 4;
+                const uint32_t right = textX(_rows.row(r).depth) + font().textWidth(_rows.name(r)) + 4;
                 if (right > width) width = right;
         }
-        setContentSize(width, uint32_t(_rows.count()) * RowHeight);
+        setContentSize(width, uint32_t(_rows.count()) * rowHeight());
         return;
 }
 
 ContentRect TreeView::rowRect(size_t row) const {
-        return ContentRect{0, uint32_t(row) * RowHeight, contentWidth() > 0 ? contentWidth() : 1, RowHeight};
+        return ContentRect{0, uint32_t(row) * rowHeight(), contentWidth() > 0 ? contentWidth() : 1, rowHeight()};
 }
 
 int TreeView::rowAt(uint32_t x, uint32_t y) const {
         (void)x;
-        const size_t row = y / RowHeight;
+        const size_t row = y / rowHeight();
         return row < _rows.count() ? int(row) : -1;
 }
 
@@ -257,28 +263,28 @@ Rect TreeView::nameRect(size_t row) const {
         const Rect s = w->screenRect();
         const Rect v = viewport();
         const int  x = int(v.x) + int(textX(_rows.row(row).depth)) - int(scrollX()) - 4;
-        const int  y = int(v.y) + int(row) * RowHeight - int(scrollY()) + 1;
-        return Rect{uint16_t(s.x + (x > 0 ? x : 0)), uint16_t(s.y + y), 160, uint16_t(RowHeight - 2)};
+        const int  y = int(v.y) + int(row) * rowHeight() - int(scrollY()) + 1;
+        return Rect{uint16_t(s.x + (x > 0 ? x : 0)), uint16_t(s.y + y), 160, uint16_t(rowHeight() - 2)};
 }
 
 void TreeView::paintRows(Painter &painter, const Rect &viewport) {
         const WindowPalette &p = painter.palette();
         const uint32_t       background = p.color(Role::FaceHighlight);
         (void)painter.fill(viewport, background);
-        const size_t first = scrollY() / RowHeight;
-        const size_t last = (scrollY() + viewport.height) / RowHeight;
+        const size_t first = scrollY() / rowHeight();
+        const size_t last = (scrollY() + viewport.height) / rowHeight();
         const bool   focus = showsFocus();
         int          pathRows[MaxPathIcons]; // setPathIcon()'s rows, found once
         for (size_t k = 0; k < MaxPathIcons; ++k)
                 pathRows[k] = _pathIcons[k].icon != nullptr ? _rows.find(StringView(_pathIcons[k].path)) : -1;
         for (size_t row = first; row <= last && row < _rows.count(); ++row) {
                 const TreeRows::Row &r = _rows.row(row);
-                const int            y = int(viewport.y) + int(row) * RowHeight - int(scrollY());
+                const int            y = int(viewport.y) + int(row) * rowHeight() - int(scrollY());
                 const int            x = int(viewport.x) - int(scrollX()) + int(r.depth) * Indent;
                 const bool           open = (r.flags & TreeRows::Expanded) != 0;
                 if ((r.flags & TreeRows::HasChildren) != 0) {
                         // The box: an outline, a minus, and a plus's upright while closed.
-                        const int      bx = x + (Indent - BoxSide) / 2, by = y + (RowHeight - BoxSide) / 2;
+                        const int      bx = x + (Indent - BoxSide) / 2, by = y + (rowHeight() - BoxSide) / 2;
                         const uint32_t edge = p.color(Role::FaceShadow), mark = p.color(Role::FaceText);
                         const Rect     parts[] = {cut(bx, by, BoxSide, 1, viewport),
                                                   cut(bx, by + BoxSide - 1, BoxSide, 1, viewport),
@@ -299,17 +305,17 @@ void TreeView::paintRows(Painter &painter, const Rect &viewport) {
                 for (size_t k = 0; k < MaxPathIcons; ++k)
                         if (pathRows[k] == int(row)) icon = _pathIcons[k].icon;
                 if (icon != nullptr && icon->isValid() && icon->height <= 16)
-                        (void)painter.image(x + Indent, y + (RowHeight - icon->height) / 2, *icon, background);
+                        (void)painter.image(x + Indent, y + (rowHeight() - icon->height) / 2, *icon, background);
                 if (int(row) == editing()) continue;
                 const StringView name = _rows.name(row);
                 const int        tx = int(viewport.x) - int(scrollX()) + int(textX(r.depth));
-                const int        tw = int(Fonts::unscii16.textWidth(name));
+                const int        tw = int(font().textWidth(name));
                 const bool       selected = selection().isSelected(row);
                 const bool       current = int(row) == this->current();
                 const uint32_t   bg =
                         drawLabel(painter, viewport, tx - 2, y, tw + 4, selected, focus, current, background);
                 const uint32_t fg = p.color(selected && focus ? Role::HighlightText : Role::FaceText);
-                (void)painter.text(tx, y + (RowHeight - GuiStyle::TextHeight) / 2, name, Fonts::unscii16, fg, bg,
+                (void)painter.text(tx, y + (rowHeight() - textHeight()) / 2, name, font(), fg, bg,
                                    uint16_t(tw > 0 ? tw : 1));
                 if (!selected && focus && current) focusRect(painter, viewport, tx - 2, y, tw + 4);
         }

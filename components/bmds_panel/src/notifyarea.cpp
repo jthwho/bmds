@@ -202,7 +202,7 @@ int NotifyArea::iconAt(int x) const {
 
 GuiSize NotifyArea::sizeHint() const {
         const uint16_t edges = uint16_t(2 * Bevel::width(Bevel::Style::Status));
-        return GuiSize{uint16_t(edges + trayWidth() + (hasClock() ? clockWidth() : 0)), GuiStyle::ButtonHeight};
+        return GuiSize{uint16_t(edges + trayWidth() + (hasClock() ? clockWidth() : 0)), buttonHeight()};
 }
 
 // The time and its room: a character's each side, half of it by the icons (the cells' own edges
@@ -246,7 +246,7 @@ Error NotifyArea::configureClock(StringView format, StringView tipFormat, String
                    f.contains(StringView("%r"));
         tick();
         // Wide enough for any time: a sample's width (padded fields keep it).
-        _textWidth = uint16_t(Fonts::unscii16.textWidth(_time.view()));
+        _textWidth = uint16_t(font().textWidth(_time.view()));
         return Error();
 }
 
@@ -320,14 +320,13 @@ void NotifyArea::paint(Painter &painter) {
         if (hasClock()) {
                 // A character's room before it; by the icons, half (their cells' edges are the rest).
                 const Rect     c = clockRect();
-                const uint16_t tw = uint16_t(Fonts::unscii16.textWidth(_time.view()));
+                const uint16_t tw = uint16_t(font().textWidth(_time.view()));
                 const int      x = _parts == Parts::TrayClock && trayWidth() != 0 ? column(c.x + GuiStyle::Column)
                                    : _parts == Parts::Clock
                                            ? column(c.x + (c.width > tw ? (c.width - tw) / 2 : 0) + GuiStyle::Column / 2)
                                            : column(c.x + Fonts::unscii16.width());
-                const int      y = c.y + (c.height - GuiStyle::TextHeight) / 2;
-                (void)painter.text(x, y, _time.view(), Fonts::unscii16, painter.palette().color(Role::FaceText), face,
-                                   c.width);
+                const int      y = c.y + (c.height - textHeight()) / 2;
+                (void)painter.text(x, y, _time.view(), font(), painter.palette().color(Role::FaceText), face, c.width);
         }
         if (!hasTray()) return;
         const Rect t = trayRect();

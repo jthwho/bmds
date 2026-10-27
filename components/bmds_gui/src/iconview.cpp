@@ -14,6 +14,9 @@
 #include <bmds/glyphrenderer.h>
 #include <bmds/guiwindow.h>
 #include <bmds/iconview.h>
+#include <bmds/textdraw.h>
+#include <bmds/systemfonts.h>
+#include <bmds/simd.h>
 #include <bmds/lineeditmodel.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -54,6 +57,7 @@ class IconView::Canvas {
                 virtual void         backdrop(const Backdrop &backdrop, int x, int y, int w, int h) = 0;
                 virtual void         imageOver(const Backdrop &backdrop, int x, int y, const Icon &icon) = 0;
                 const WindowPalette *palette = nullptr;
+                Font                 font; // the view's
 };
 
 namespace {
@@ -77,7 +81,7 @@ namespace {
                         }
 
                         void text(int x, int y, StringView text, uint32_t fg, uint32_t bg, uint16_t maxWidth) override {
-                                (void)_painter.text(x, y, text, Fonts::unscii16, fg, bg, maxWidth);
+                                (void)_painter.text(x, y, text, font, fg, bg, maxWidth);
                                 return;
                         }
 
@@ -122,15 +126,30 @@ namespace {
                         }
 
                         void text(int x, int y, StringView text, uint32_t fg, uint32_t bg, uint16_t maxWidth) override {
-                                // Whole rows only (the desktop's never are cut).
-                                if (x < _clip.x || y < _clip.y || y + GuiStyle::TextHeight > int(_clip.bottom()))
+                                // Whole rows only (the desktop's never are cut), as the painter draws them.
+                                if (x < _clip.x || y < _clip.y || y + font.metrics().lineHeight > int(_clip.bottom()))
                                         return;
-                                const uint16_t room = static_cast<uint16_t>(
-                                        int(_clip.right()) - x < maxWidth ? int(_clip.right()) - x : maxWidth);
-                                size_t used = 0;
-                                (void)_renderer.drawText(text, Fonts::unscii16, fg, bg,
-                                                         _pixels + size_t(y) * _stride + size_t(x) * 3, _stride, room,
-                                                         used);
+                                TextTarget t;
+                                t.pixels = _pixels;
+                                t.format = TextBlend::Format::Bgr24;
+                                t.width = int(_clip.right());
+                                t.height = int(_clip.bottom());
+                                t.stride = _stride;
+                                t.clipLeft = _clip.x;
+                                t.clipTop = _clip.y;
+                                const uint32_t advance = font.textWidth(text.left(font.fitting(text, maxWidth)));
+                                // The box as the painter's: to a 4-pixel column.
+                                t.clipRight = int(x + ((advance + 3) & ~3u)) < int(_clip.right())
+                                                      ? int(x + ((advance + 3) & ~3u))
+                                                      : int(_clip.right());
+                                TextPaint paint;
+                                paint.color = fg;
+                                paint.background = bg;
+                                paint.opaque = true;
+                                paint.smooth = SystemFonts::smoothing();
+                                for (int r = y; r < y + font.metrics().lineHeight; ++r)
+                                        for (int c = x; c < t.clipRight; ++c) put(uint32_t(c), uint32_t(r), bg);
+                                (void)TextDraw::line(t, font, text, x, y, paint, maxWidth, Simd::Kernel::Scalar);
                                 return;
                         }
 
@@ -172,7 +191,6 @@ namespace {
                         uint8_t      *_pixels;
                         size_t        _stride;
                         Rect          _clip;
-                        GlyphRenderer _renderer{GlyphRenderer::Kernel::Scalar};
         };
 
 } // namespace
@@ -206,11 +224,10 @@ void IconView::setBackdrop(const Backdrop *backdrop) {
 // it does); past two, the second cut and ended with an ellipsis.
 void IconView::lines(size_t row, Lines &out) const {
         constexpr char   Ellipsis[] = "\xe2\x80\xa6"; // U+2026
-        const BitmapFont &font = Fonts::unscii16;
+        const Font       font = this->font();
         const StringView all = model() != nullptr ? model()->text(row) : StringView();
         StringView       views[3];
-        const size_t     n =
-                TextWrap::wrap(all, static_cast<uint16_t>(LineWidth / font.width()), Span<StringView>(views, 3));
+        const size_t     n = GuiStyle::wrap(all, font, LineWidth, Span<StringView>(views, 3));
         out.count = static_cast<uint8_t>(n < 2 ? n : 2);
         for (uint8_t l = 0; l < out.count; ++l) copyLine(out.text[l], views[l].data(), views[l].size());
         if (n >= 3) {
@@ -228,6 +245,10 @@ void IconView::lines(size_t row, Lines &out) const {
         return;
 }
 
+uint16_t IconView::lineStep() const {
+        return static_cast<uint16_t>(font().metrics().lineHeight);
+}
+
 ContentRect IconView::rowRect(size_t row) const {
         if (_arrangement == Arrangement::Flow)
                 return ContentRect{IconLayout::flowX(row, _columns), IconLayout::flowY(row, _columns), W, H};
@@ -237,7 +258,7 @@ ContentRect IconView::rowRect(size_t row) const {
 
 ContentRect IconView::hitRect(size_t row, uint8_t lineCount) const {
         const ContentRect c = rowRect(row);
-        return ContentRect{c.x + Pad, c.y + Pad, W - 2u * Pad, uint32_t(TextTop - Pad) + lineCount * LineHeight};
+        return ContentRect{c.x + Pad, c.y + Pad, W - 2u * Pad, uint32_t(TextTop - Pad) + lineCount * lineStep()};
 }
 
 int IconView::rowAt(uint32_t x, uint32_t y) const {
@@ -259,7 +280,7 @@ bool IconView::onName(size_t row, uint32_t x, uint32_t y) const {
         Lines l;
         lines(row, l);
         const uint32_t top = rowRect(row).y + TextTop;
-        return y >= top && y < top + l.count * LineHeight;
+        return y >= top && y < top + l.count * lineStep();
 }
 
 size_t IconView::neighbour(size_t row, int dx, int dy) const {
@@ -364,7 +385,7 @@ Rect IconView::nameRect(size_t row) const {
         const ContentRect c = rowRect(row);
         const Rect        v = viewport();
         const int         x = int(v.x) + int(c.x) - int(scrollX()), y = int(v.y) + int(c.y) - int(scrollY());
-        return Rect{uint16_t(s.x + x), uint16_t(s.y + y + TextTop), W, LineHeight};
+        return Rect{uint16_t(s.x + x), uint16_t(s.y + y + TextTop), W, lineStep()};
 }
 
 bool IconView::moveSelected(int dx, int dy) {
@@ -435,10 +456,11 @@ void IconView::drawDragRow(DragPicture &picture, size_t row, const WindowPalette
         Lines l;
         lines(row, l);
         for (uint8_t i = 0; i < l.count; ++i) {
-                const int tw = int(Fonts::unscii16.textWidth(StringView(l.text[i])));
-                const int ly = b.y + TextTop + i * LineHeight;
-                picture.fill(b.x + l.x[i] - Pad, ly, tw + 2 * Pad, LineHeight, palette.color(Role::Highlight));
-                picture.text(b.x + l.x[i], ly, StringView(l.text[i]), palette.color(Role::HighlightText), LineWidth);
+                const int tw = int(font().textWidth(StringView(l.text[i])));
+                const int ly = b.y + TextTop + i * lineStep();
+                picture.fill(b.x + l.x[i] - Pad, ly, tw + 2 * Pad, lineStep(), palette.color(Role::Highlight));
+                picture.text(b.x + l.x[i], ly, StringView(l.text[i]), font(), palette.color(Role::HighlightText),
+                             LineWidth);
         }
         return;
 }
@@ -484,18 +506,18 @@ void IconView::drawRow(Canvas &canvas, size_t row, int offsetX, int offsetY) con
         const uint32_t fg = p.color(filled ? Role::HighlightText : _text);
         const uint32_t bg = filled ? p.color(Role::Highlight) : background;
         for (uint8_t i = 0; i < l.count; ++i) {
-                const int tw = int(Fonts::unscii16.textWidth(StringView(l.text[i])));
-                const int lx = x + l.x[i] - Pad, ly = y + TextTop + i * LineHeight, lw = tw + 2 * Pad;
-                if (filled || _backdrop != nullptr) canvas.fill(lx, ly, lw, LineHeight, bg); // a box over a backdrop
+                const int tw = int(font().textWidth(StringView(l.text[i])));
+                const int lx = x + l.x[i] - Pad, ly = y + TextTop + i * lineStep(), lw = tw + 2 * Pad;
+                if (filled || _backdrop != nullptr) canvas.fill(lx, ly, lw, lineStep(), bg); // a box over a backdrop
                 canvas.text(x + l.x[i], ly, StringView(l.text[i]), fg, bg, LineWidth);
                 if (outlined) {
                         // After the text (its rows would cover the top and bottom): an inactive selection
                         // in the highlight, the focus alone in the names' colour.
                         const uint32_t edge = p.color(selected ? Role::Highlight : _text);
                         canvas.fill(lx, ly, lw, 1, edge);
-                        canvas.fill(lx, ly + LineHeight - 1, lw, 1, edge);
-                        canvas.fill(lx, ly + 1, 1, LineHeight - 2, edge);
-                        canvas.fill(lx + lw - 1, ly + 1, 1, LineHeight - 2, edge);
+                        canvas.fill(lx, ly + lineStep() - 1, lw, 1, edge);
+                        canvas.fill(lx, ly + 1, 1, lineStep() - 2, edge);
+                        canvas.fill(lx + lw - 1, ly + 1, 1, lineStep() - 2, edge);
                 }
         }
         return;
@@ -522,6 +544,7 @@ void IconView::drawAll(Canvas &canvas, const Rect &viewport) const {
 
 void IconView::paintRows(Painter &painter, const Rect &viewport) {
         PainterCanvas canvas(painter, viewport);
+        canvas.font = font();
         drawAll(canvas, viewport);
         return;
 }
@@ -531,6 +554,7 @@ void IconView::drawReference(uint8_t *pixels, size_t stride, uint16_t width, uin
         const Rect    v = viewport().intersected(Rect{0, 0, width, height});
         PictureCanvas canvas(pixels, stride, v);
         canvas.palette = &palette;
+        canvas.font = font();
         drawAll(canvas, v);
         return;
 }

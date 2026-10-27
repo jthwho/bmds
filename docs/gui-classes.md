@@ -75,6 +75,7 @@ Abstract.
 | `stretch` | Int | read, written |  |
 | `dropTypes` | List | read, written |  |
 | `geometry` | Rect | read only |  |
+| `font` | String | read, written |  |
 
 | Method | Arguments | Result |
 |---|---|---|

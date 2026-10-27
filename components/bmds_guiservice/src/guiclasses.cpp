@@ -3784,6 +3784,19 @@ namespace {
                 return get_Button_checked(o);
         }
 
+        // ---- A widget's font (devplan/fonts.md §6i): a role or a name; "" its class's
+
+        GuiStatus set_Widget_font(GuiObject &o, const Value &v) {
+                const Error err = o.widget->setFont(v.text);
+                if (err == Error::Invalid) return BadValue;
+                if (err.isError()) return NoMem;
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_Widget_font(GuiObject &o) {
+                return Value::string(o.widget->fontText());
+        }
+
         // ---- The schema's tables, from classes.def
 
         template <typename... T> constexpr uint8_t countOf(T...) {

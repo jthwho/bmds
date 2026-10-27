@@ -44,7 +44,6 @@ class IconView : public ItemView {
                 static constexpr uint16_t IconSide = 32;
                 static constexpr uint16_t Pad = 4;        ///< Around the grid, and in a cell.
                 static constexpr uint16_t LineWidth = 72; ///< A name's line at most (9 characters).
-                static constexpr uint16_t LineHeight = 16;
                 static constexpr size_t   LineBytes = 40; ///< A line kept (9 characters of up to 4 bytes).
 
                 explicit IconView(Widget *parent);
@@ -116,6 +115,7 @@ class IconView : public ItemView {
                 bool        inRange(size_t row, size_t anchor, size_t to) const override;
                 void        relayout() override;
                 void        drawDragRow(DragPicture &picture, size_t row, const WindowPalette &palette) const override;
+                uint16_t    lineStep() const; // a name's line: its font's height
                 void        paintRows(Painter &painter, const Rect &viewport) override;
 
         public:

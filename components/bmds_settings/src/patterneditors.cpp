@@ -275,7 +275,7 @@ void PatternChooser::paint(Painter &painter) {
         const Rect          &g = geometry();
         (void)painter.fill(g, p.color(Role::Face));
         if (_entries.isEmpty()) {
-                (void)painter.text((g.x + 3) & ~3, g.y + 4, "No patterns in the folders below", Fonts::unscii16,
+                (void)painter.text((g.x + 3) & ~3, g.y + 4, "No patterns in the folders below", font(),
                                    p.color(Role::DisabledText), p.color(Role::Face), g.width);
                 return;
         }
@@ -300,9 +300,9 @@ void PatternChooser::paint(Painter &painter) {
                 char             label[64];
                 const size_t     n = SettingsTable::labelOf(StringView(e.name), Span<char>(label, sizeof(label)));
                 const StringView text(label, n);
-                const uint32_t   tw = Fonts::unscii16.textWidth(text);
+                const uint32_t   tw = font().textWidth(text);
                 const int        tx = tw < CellWidth ? cx + int(CellWidth - tw) / 2 : cx;
-                (void)painter.text((tx + 3) & ~3, cy + NameTop, text, Fonts::unscii16, p.color(Role::FaceText),
+                (void)painter.text((tx + 3) & ~3, cy + NameTop, text, font(), p.color(Role::FaceText),
                                    p.color(Role::Face), uint16_t(CellWidth - 4));
         }
         return;

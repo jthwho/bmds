@@ -127,6 +127,15 @@ namespace TextWrap {
          */
         size_t wrap(StringView text, uint16_t columns, Span<StringView> lines);
 
+        /** @brief Returns one character's width (@p piece: its bytes) in a measure of the caller's. */
+        using Measure = uint32_t (*)(void *arg, StringView piece);
+
+        /**
+         * @brief As above in any measure (a font's pixels): lines at most @p width wide, each
+         *        character as wide as @p measure says (added up: kerning left out).
+         */
+        size_t wrap(StringView text, uint32_t width, Measure measure, void *arg, Span<StringView> lines);
+
 } // namespace TextWrap
 
 BMDS_NAMESPACE_END

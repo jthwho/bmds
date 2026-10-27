@@ -117,11 +117,11 @@ GuiSize NumberField::sizeHint() const {
         const int64_t  most = _model.minimum() < 0 && -int64_t(_model.minimum()) > _model.maximum() ? _model.minimum()
                                                                                                     : _model.maximum();
         const int      n = std::snprintf(wide, sizeof(wide), "%lld", static_cast<long long>(most));
-        const uint32_t text = Fonts::unscii16.textWidth(StringView(wide, n > 0 ? size_t(n) : 0));
+        const uint32_t text = font().textWidth(StringView(wide, n > 0 ? size_t(n) : 0));
         uint32_t       width = text + 2 * LineEdit::Pad + 2 * Bevel::width(Bevel::Style::Field) + ArrowWidth + 8;
         if (width < 48) width = 48;
         return GuiSize{static_cast<uint16_t>((width + GuiStyle::Column - 1) & ~uint32_t(GuiStyle::Column - 1)),
-                       GuiStyle::ButtonHeight};
+                       buttonHeight()};
 }
 
 void NumberField::resized() {

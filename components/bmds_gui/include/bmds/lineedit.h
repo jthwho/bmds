@@ -158,8 +158,7 @@ class LineEdit : public Widget {
                 void   moveLine(int by, bool select); // Up, Down
                 void   reveal();                      // the first character shown, so the cursor is
                 void   changed();                     // revealed and redrawn
-                void   paintRun(Painter &painter, const Line &line, uint16_t y, size_t from, size_t to, uint32_t &x,
-                                uint32_t fg, uint32_t bg) const;
+
 
                 LineEditModel _model;
                 size_t        _first = 0; // the first byte shown

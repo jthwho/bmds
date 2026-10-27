@@ -110,13 +110,13 @@ void ToolTip::open() {
         StringView rest(_text);
         while (!rest.isEmpty() && lines < MaxLines) {
                 const StringView line = nextLine(rest);
-                const uint32_t   lw = Fonts::unscii16.textWidth(line);
+                const uint32_t   lw = font().textWidth(line);
                 widest = lw > widest ? lw : widest;
                 ++lines;
         }
         uint32_t w = widest + 2 * Pad + 2;
         w = (w + Align - 1) / Align * Align;
-        const uint16_t h = uint16_t(lines * GuiStyle::TextHeight + 2 * PadY + 2);
+        const uint16_t h = uint16_t(lines * textHeight() + 2 * PadY + 2);
         if (w > screen.width) w = screen.width;
         int x = _x;
         int y = _y + Below;
@@ -158,8 +158,8 @@ void ToolTip::paint(Painter &painter) {
                            bg);
         StringView rest(_text);
         int        y = g.y + 1 + PadY;
-        for (size_t i = 0; i < MaxLines && !rest.isEmpty(); ++i, y += GuiStyle::TextHeight)
-                (void)painter.text(g.x + Pad, y, nextLine(rest), Fonts::unscii16, fg, bg, uint16_t(g.width - 2 - Pad));
+        for (size_t i = 0; i < MaxLines && !rest.isEmpty(); ++i, y += textHeight())
+                (void)painter.text(g.x + Pad, y, nextLine(rest), font(), fg, bg, uint16_t(g.width - 2 - Pad));
         return;
 }
 

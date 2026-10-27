@@ -1,6 +1,6 @@
 # Fonts: one font library for the desktop, programs and angel
 
-Status: **steps 1-6 done** (2026-10-26: §6a, §6c-§6e, §6g, §6h; other fonts tested, §6f); planned the same day with the user (§8). Fills the
+Status: **steps 1-7 done** (2026-10-26/27: §6a, §6c-§6e, §6g-§6i; other fonts tested, §6f); planned the same day with the user (§8). Fills the
 roadmap's "A system font library (planned with the user 2026-10-15)".
 
 ## 1. Goal
@@ -612,6 +612,58 @@ picture, for tests and for looking).
   switcher change as the settings do, sharp with `font/smooth` off (two colours, sixteen
   smoothed). With the defaults (unscii 16) every pixel is as before (the bitmap path, 20-pixel
   items).
+
+### 6i. Step 7, the design and as built (2026-10-26)
+
+- **`GuiStyle`'s fonts at run time** (`bmds_gui`): `GuiStyle::font(role)` is the role's font as
+  the settings last said (a copy: a count taken), opened from `SystemFonts` and opened again
+  when `SystemFonts::watch()` tells of a change. `textHeight(font)` is its ink box (ascent and
+  descent: 16 for unscii), `buttonHeight(font)` that and 6, 22 at least (as now). The constants
+  `TextHeight` and `ButtonHeight` go; `Column`, `ButtonPad`, `IconSize` stay.
+- **A restyle:** each `GuiApplication` is told (posted to its loop) and restyles its windows: a
+  widget's own font opened again (a role follows the settings), `Widget::styleChanged()` for
+  widgets that keep measurements, every layout run again at the window's size, all redrawn.
+  Windows keep their sizes; a dialog sized from its hints is the next one opened.
+- **A widget's font:** `Widget::font()` is its own (`setFont(name)`: a role or a name, kept in
+  PSRAM only for widgets that have one) or its class's role (`fontRole()`: `ui`). Widgets
+  measure and draw with it. The GUI protocol's `font` property (a string, `Widget`, appended to
+  `classes.def`): "" is the class's.
+- **Runs:** `Painter::text(x, y, utf8, font, runs, maxWidth)` draws one line in runs of colours
+  (bytes, fg, bg), the box from x (a column) as before: each run's columns filled with its bg and
+  the line blended in its fg, clipped to them. A line edit's selection is three runs. TrueType
+  advances aren't multiples of 4, so a run can't start a call of its own.
+- **Left in cells:** `TextEdit`, `CodeEdit` and `Terminal` draw an 8 × 16 grid of unscii cells
+  (syntax colours, a cursor a cell wide). A TrueType mono font there needs the cell width from
+  the font and runs at any column: a step of its own. They stay unscii.
+- **The OS's own windows** (the panel's notifications and tray, the patch bay, the Settings
+  app's previews, the updater, the image viewer) measure and draw with the `ui` role.
+- **Then the defaults:** `font/ui` IBM Plex Sans, `font/title` IBM Plex Sans bold, sizes settled
+  on the board (the 20-pixel title bar and 22-pixel rows as the limit). `font/mono` IBM Plex
+  Mono (programs and angel). `font/terminal` stays unscii 16.
+
+- **As built:**
+  - **The defaults:** `font/ui` IBM Plex Sans 13, `font/title` IBM Plex Sans 13 bold,
+    `font/mono` IBM Plex Mono 13 (2026-10-27, on the board). 13 px has an 18-pixel ink box: a
+    title in the 20-pixel bar, two names' lines in the desktop's 76-pixel icon cells, buttons
+    24 high and the panel 30. 14 px (19) is larger and still fits the bar, but the icon cells'
+    second line runs 2 pixels over, and the panel is crowded.
+  - **Measured, not counted:** `TextWrap::wrap()` takes a measure (a font's per-character
+    widths; the cells version is one), and `GuiStyle::wrap()` wraps in a font: line edits, a
+    form's help, message boxes, icon names. Row heights (tree, details, tabs, the patch bay, the
+    notification list, the panel's dialogs and the panel itself) come from the font's ink box.
+  - **Left in unscii:** the editors and the terminal (cells, above), the Settings app's palette
+    preview (a miniature desktop on a 16-pixel grid), the updater's release notes (wrapped in
+    cells) and a drag's count badge.
+  - **The window manager's stack** went from 8 to 10 KB: widgets paint on its task and a glyph
+    is rendered there the first time, which left 1.5 KB free; 3.8 KB now.
+  - **Checked on the board:** the whole desktop restyles live when `font/ui` and `font/title`
+    change (the Widgets app's three tabs, menus, the tree, icon names, the status bar, the
+    panel and its clock); a line edit's selection starts mid-letter-pair; an angel script sets
+    `font` on a label (serif 20, `mono`), a button (bold 18, taller) and a line edit; a bad name
+    is `BadValue`; `progtest fonts` passes with the new defaults; Settings and the terminal look
+    right.
+  - **Not followed live:** the panel's height is set when it starts (a font change shows at
+    the next start), and a dialog sized from its hints is the next one opened.
 
 ## 7. ABI impact
 

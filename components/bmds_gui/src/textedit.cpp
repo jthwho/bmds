@@ -28,7 +28,7 @@ namespace {
         using Kind = TextDocument::EditKind;
 
         constexpr uint16_t CellWidth = 8; // unscii-16's
-        constexpr uint16_t LineHeight = GuiStyle::TextHeight;
+        constexpr uint16_t LineHeight = 16; // unscii-16's: the editors draw in its cells
         constexpr uint16_t DefaultColumns = 80;
         constexpr uint16_t DefaultRows = 25;
         constexpr uint32_t EdgeMs = 50;     // a drag past an edge scrolls this often

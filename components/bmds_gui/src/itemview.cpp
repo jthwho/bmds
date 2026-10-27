@@ -574,18 +574,23 @@ namespace {
 } // namespace
 
 uint32_t ItemView::drawLabel(Painter &painter, const Rect &clip, int x, int y, int width, bool selected, bool focus,
-                             bool current, uint32_t background) {
+                             bool current, uint32_t background) const {
         (void)current;
         if (!selected) return background;
         const uint32_t bg = painter.palette().color(focus ? Role::Highlight : Role::Face);
-        const Rect     r = cutTo(x, y + 1, width, GuiStyle::TextHeight, clip);
+        const Rect     r = cutTo(x, y + 1, width, textHeight(), clip);
         if (!r.isEmpty()) (void)painter.fill(r, bg);
         return bg;
 }
 
-void ItemView::focusRect(Painter &painter, const Rect &clip, int x, int y, int width) {
+void ItemView::styleChanged() {
+        relayout();
+        return;
+}
+
+void ItemView::focusRect(Painter &painter, const Rect &clip, int x, int y, int width) const {
         // The rows above and below the text's (an 18-pixel row), and its sides.
-        const int  h = GuiStyle::TextHeight + 2;
+        const int  h = textHeight() + 2;
         const Rect edges[] = {cutTo(x, y, width, 1, clip), cutTo(x, y + h - 1, width, 1, clip),
                               cutTo(x, y + 1, 1, h - 2, clip), cutTo(x + width - 1, y + 1, 1, h - 2, clip)};
         for (const Rect &e : edges)
@@ -625,11 +630,10 @@ void ItemView::drawDragRow(DragPicture &picture, size_t row, const WindowPalette
         const Icon          *icon = _model->icon(row, 16);
         if (icon != nullptr && icon->isValid()) picture.icon(b.x + 2, b.y + 1, *icon);
         const StringView name = _model->text(row);
-        const int        w = int(Fonts::unscii16.textWidth(name));
+        const int        w = int(font().textWidth(name));
         const int        room = b.width - 22 > 0 ? b.width - 22 : 0;
-        picture.fill(b.x + 20, b.y + 1, (w < room ? w : room) + 4, GuiStyle::TextHeight,
-                     palette.color(Role::Highlight));
-        picture.text(b.x + 22, b.y + 1, name, palette.color(Role::HighlightText), uint16_t(room));
+        picture.fill(b.x + 20, b.y + 1, (w < room ? w : room) + 4, textHeight(), palette.color(Role::Highlight));
+        picture.text(b.x + 22, b.y + 1, name, font(), palette.color(Role::HighlightText), uint16_t(room));
         return;
 }
 

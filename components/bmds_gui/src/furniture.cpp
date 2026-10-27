@@ -49,7 +49,7 @@ namespace {
                         }
 
                         GuiSize sizeHint() const override {
-                                return _width != 0 ? GuiSize{_width, GuiStyle::ButtonHeight - 2} : GuiSize{0, 0};
+                                return _width != 0 ? GuiSize{_width, uint16_t(buttonHeight() - 2)} : GuiSize{0, 0};
                         }
 
                 private:
@@ -83,7 +83,7 @@ Widget *ToolBar::addSeparator() {
 
 GuiSize ToolBar::sizeHint() const {
         GuiSize h = BoxLayout::sizeHint();
-        h.height = static_cast<uint16_t>(GuiStyle::ButtonHeight + 2 * BarMargin);
+        h.height = static_cast<uint16_t>(buttonHeight() + 2 * BarMargin);
         return h;
 }
 

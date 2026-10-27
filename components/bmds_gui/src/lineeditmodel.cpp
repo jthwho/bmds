@@ -136,6 +136,16 @@ void LineEditModel::setCursor(size_t offset, bool select) {
 }
 
 size_t TextWrap::wrap(StringView text, uint16_t columns, Span<StringView> lines) {
+        // Cells: a wide character takes two.
+        const Measure cells = [](void *, StringView piece) {
+                size_t    at = 0;
+                const int w = Utf8::displayWidth(Utf8::decode(piece, at));
+                return uint32_t(w < 0 ? 0 : w);
+        };
+        return wrap(text, uint32_t(columns), cells, nullptr, lines);
+}
+
+size_t TextWrap::wrap(StringView text, uint32_t columns, Measure measure, void *arg, Span<StringView> lines) {
         if (columns == 0) columns = 1;
         size_t count = 0;
         size_t at = 0;
@@ -150,10 +160,9 @@ size_t TextWrap::wrap(StringView text, uint16_t columns, Span<StringView> lines)
                                 broke = true;
                                 break;
                         }
-                        size_t         next = end;
-                        const uint32_t cp = Utf8::decode(text, next);
-                        const int      w = Utf8::displayWidth(cp);
-                        const size_t   width = w < 0 ? 0 : size_t(w);
+                        size_t next = end;
+                        (void)Utf8::decode(text, next);
+                        const size_t width = measure(arg, text.mid(end, next - end));
                         if (cells + width > columns) break;
                         if (text[end] == ' ') lastSpace = end;
                         cells += width;

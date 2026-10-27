@@ -37,7 +37,11 @@ class TabWidget : public Widget {
 
                 static constexpr size_t   MaxTabs = 16;
                 static constexpr size_t   MaxTitle = 31;
-                static constexpr uint16_t RowHeight = 24; ///< The tabs' row, the current one 2 pixels taller.
+                /** @brief Returns the tabs' row (the current one 2 pixels taller): 24, or its font's ink box and 8. */
+                uint16_t rowHeight() const {
+                        const uint16_t h = uint16_t(textHeight() + 8);
+                        return h > 24 ? h : 24;
+                }
                 static constexpr uint16_t Inset = 4;      ///< A page from the frame's outer edge.
 
                 explicit TabWidget(Widget *parent);

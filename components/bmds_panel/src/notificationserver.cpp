@@ -143,9 +143,9 @@ uint16_t NotificationBalloon::setNotification(const Notification &n) {
                 _buttons[i]->setData(uint32_t(i + 1));
                 _buttons[i]->setClicked(actionClicked, this);
         }
-        const uint16_t text = uint16_t((2 + _lineCount) * GuiStyle::TextHeight);
+        const uint16_t text = uint16_t((2 + _lineCount) * textHeight());
         uint16_t       h = uint16_t(Pad + (text > BigIcon ? text : BigIcon) + Pad);
-        if (_n.actionCount > 0) h = uint16_t(h + GuiStyle::ButtonHeight + Pad);
+        if (_n.actionCount > 0) h = uint16_t(h + buttonHeight() + Pad);
         _height = h;
         resized();
         update();
@@ -164,11 +164,10 @@ void NotificationBalloon::resized() {
         for (size_t i = Notification::MaxActions; i-- > 0;) {
                 Button *b = _buttons[i];
                 if (b == nullptr) continue;
-                const uint16_t w = uint16_t((Fonts::unscii16.textWidth(StringView(_n.actions[i])) + 24 + Align - 1) &
-                                            ~uint32_t(Align - 1));
+                const uint16_t w =
+                        uint16_t((font().textWidth(StringView(_n.actions[i])) + 24 + Align - 1) & ~uint32_t(Align - 1));
                 right = uint16_t(right - w);
-                b->setGeometry(
-                        Rect{right, uint16_t(g.bottom() - Pad - GuiStyle::ButtonHeight), w, GuiStyle::ButtonHeight});
+                b->setGeometry(Rect{right, uint16_t(g.bottom() - Pad - buttonHeight()), w, buttonHeight()});
                 right = uint16_t(right - Align);
         }
         return;
@@ -196,15 +195,15 @@ void NotificationBalloon::paint(Painter &painter) {
         const Rect     close = closeRect();
         const uint16_t room = uint16_t(close.x > x + Pad ? close.x - x - Pad : 0);
         uint16_t       y = uint16_t(g.y + Pad);
-        (void)painter.text(x, y, StringView(_n.app), Fonts::unscii16, p.color(Role::DisabledText), face, room);
+        (void)painter.text(x, y, StringView(_n.app), font(), p.color(Role::DisabledText), face, room);
         (void)painter.text(close.x, close.y, StringView(CloseGlyph), Fonts::icons16, p.color(Role::FaceText), face,
                            CloseSide);
-        y = uint16_t(y + GuiStyle::TextHeight);
-        (void)painter.text(x, y, StringView(_n.title), Fonts::unscii16, p.color(Role::FaceText), face, room);
+        y = uint16_t(y + textHeight());
+        (void)painter.text(x, y, StringView(_n.title), font(), p.color(Role::FaceText), face, room);
         const uint16_t width = uint16_t(g.right() - Pad - x);
         for (size_t i = 0; i < _lineCount; ++i) {
-                y = uint16_t(y + GuiStyle::TextHeight);
-                (void)painter.text(x, y, _lines[i], Fonts::unscii16, p.color(Role::FaceText), face, width);
+                y = uint16_t(y + textHeight());
+                (void)painter.text(x, y, _lines[i], font(), p.color(Role::FaceText), face, width);
         }
         return;
 }
@@ -257,19 +256,18 @@ uint16_t NotificationCentre::rowsTop() const {
 
 size_t NotificationCentre::visibleRows() const {
         const Rect    &g = geometry();
-        const uint16_t bottom =
-                uint16_t(g.bottom() - Bevel::width(Bevel::Style::Window) - Pad - GuiStyle::ButtonHeight - Pad);
-        return bottom > rowsTop() ? size_t(bottom - rowsTop()) / RowHeight : 0;
+        const uint16_t bottom = uint16_t(g.bottom() - Bevel::width(Bevel::Style::Window) - Pad - buttonHeight() - Pad);
+        return bottom > rowsTop() ? size_t(bottom - rowsTop()) / rowHeight() : 0;
 }
 
 void NotificationCentre::open(const Rect &anchor) {
         refresh();
         _first = 0;
         const Rect     screen = application().windowManager().screen();
-        const size_t   fit = (screen.height / 2) / RowHeight;
+        const size_t   fit = (screen.height / 2) / rowHeight();
         const size_t   rows = _count == 0 ? 1 : _count < fit ? _count : fit;
-        const uint16_t h = uint16_t(2 * Bevel::width(Bevel::Style::Window) + Pad / 2 + rows * RowHeight + Pad +
-                                    GuiStyle::ButtonHeight + Pad);
+        const uint16_t h = uint16_t(2 * Bevel::width(Bevel::Style::Window) + Pad / 2 + rows * rowHeight() + Pad +
+                                    buttonHeight() + Pad);
         (void)show(MenuLayout::place(Width, h, anchor, screen, false));
         return;
 }
@@ -288,8 +286,7 @@ void NotificationCentre::resized() {
         const uint16_t inner = uint16_t(Bevel::width(Bevel::Style::Window) + Pad);
         if (_clear != nullptr)
                 _clear->setGeometry(Rect{uint16_t(g.right() - inner - 112),
-                                         uint16_t(g.bottom() - inner - GuiStyle::ButtonHeight), 112,
-                                         GuiStyle::ButtonHeight});
+                                         uint16_t(g.bottom() - inner - buttonHeight()), 112, buttonHeight()});
         return;
 }
 
@@ -305,13 +302,13 @@ void NotificationCentre::paint(Painter &painter) {
         const uint16_t right = uint16_t(g.right() - Bevel::width(Bevel::Style::Window) - Pad / 2);
         uint16_t       y = rowsTop();
         if (_count == 0) {
-                (void)painter.text(uint16_t(left + Pad), uint16_t(y + Pad / 2), StringView("No notifications"),
-                                   Fonts::unscii16, p.color(Role::DisabledText), face, uint16_t(right - left));
+                (void)painter.text(uint16_t(left + Pad), uint16_t(y + Pad / 2), StringView("No notifications"), font(),
+                                   p.color(Role::DisabledText), face, uint16_t(right - left));
                 return;
         }
         const int64_t now = Clock::now().ns;
         const size_t  rows = visibleRows();
-        for (size_t r = 0; r < rows && _first + r < _count; ++r, y = uint16_t(y + RowHeight)) {
+        for (size_t r = 0; r < rows && _first + r < _count; ++r, y = uint16_t(y + rowHeight())) {
                 Notification n;
                 if (Notifications::get(_ids[_first + r], n).isError()) continue;
                 if (r > 0)
@@ -324,17 +321,16 @@ void NotificationCentre::paint(Painter &painter) {
                 const uint16_t tx = uint16_t(ix + SmallIcon + Pad);
                 char           when[16];
                 ago(when, now - n.postedNs);
-                const uint16_t whenWidth = uint16_t(Fonts::unscii16.textWidth(StringView(when)));
+                const uint16_t whenWidth = uint16_t(font().textWidth(StringView(when)));
                 const uint16_t closeX = uint16_t((right - CloseSide) & ~uint32_t(Align - 1));
                 const uint16_t whenX = uint16_t((closeX - Pad - whenWidth) & ~uint32_t(Align - 1));
-                (void)painter.text(tx, uint16_t(y + 2), StringView(n.title[0] != '\0' ? n.title : n.app),
-                                   Fonts::unscii16, p.color(Role::FaceText), face,
-                                   uint16_t(whenX > tx + Pad ? whenX - tx - Pad : 0));
-                (void)painter.text(whenX, uint16_t(y + 2), StringView(when), Fonts::unscii16,
-                                   p.color(Role::DisabledText), face, whenWidth);
+                (void)painter.text(tx, uint16_t(y + 2), StringView(n.title[0] != '\0' ? n.title : n.app), font(),
+                                   p.color(Role::FaceText), face, uint16_t(whenX > tx + Pad ? whenX - tx - Pad : 0));
+                (void)painter.text(whenX, uint16_t(y + 2), StringView(when), font(), p.color(Role::DisabledText), face,
+                                   whenWidth);
                 (void)painter.text(closeX, uint16_t(y + 2), StringView(CloseGlyph), Fonts::icons16,
                                    p.color(Role::FaceText), face, CloseSide);
-                (void)painter.text(tx, uint16_t(y + 2 + GuiStyle::TextHeight), firstLine(n.body), Fonts::unscii16,
+                (void)painter.text(tx, uint16_t(y + 2 + textHeight()), firstLine(n.body), font(),
                                    p.color(Role::DisabledText), face, uint16_t(right - tx));
         }
         return;
@@ -342,7 +338,7 @@ void NotificationCentre::paint(Painter &painter) {
 
 void NotificationCentre::mousePressed(const WindowManager::MouseEvent &event) {
         if (event.button != PointerEvent::Left || _count == 0 || event.y < rowsTop()) return;
-        const size_t r = size_t(event.y - rowsTop()) / RowHeight;
+        const size_t r = size_t(event.y - rowsTop()) / rowHeight();
         if (r >= visibleRows() || _first + r >= _count) return;
         const uint32_t id = _ids[_first + r];
         const Rect    &g = geometry();

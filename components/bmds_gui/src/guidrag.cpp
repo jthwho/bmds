@@ -13,6 +13,9 @@
 #include <bmds/bitmapfont.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guidrag.h>
+#include <bmds/list.h>
+#include <bmds/simd.h>
+#include <bmds/textdraw.h>
 #include <bmds/guiwindow.h>
 #include <bmds/inputevent.h>
 #include <bmds/utf8.h>
@@ -90,19 +93,27 @@ void DragPicture::fill(int x, int y, int w, int h, uint32_t rgb) {
         return;
 }
 
-void DragPicture::text(int x, int y, StringView text, uint32_t rgb, uint16_t maxWidth) {
-        const BitmapFont &f = Fonts::unscii16;
-        int         at = 0;
-        for (size_t i = 0; i < text.size();) {
-                const Glyph g = f.glyph(Utf8::decode(text, i));
-                if (at + g.width > maxWidth) break;
-                const size_t bytes = g.width / 8;
-                for (int r = 0; r < f.height(); ++r)
-                        for (int c = 0; c < g.width; ++c)
-                                if ((g.rows[size_t(r) * bytes + size_t(c) / 8] & (0x80u >> (c % 8))) != 0)
-                                        put(x + at + c, y + r, (Ghost << 24) | (rgb & 0xffffff));
-                at += g.width;
-        }
+void DragPicture::text(int x, int y, StringView text, const Font &font, uint32_t rgb, uint16_t maxWidth) {
+        // The line's coverage (white drawn over black, smoothed), then each pixel ghosted by it.
+        const int w = int(maxWidth < _box.width ? maxWidth : _box.width), h = font.metrics().lineHeight;
+        if (w <= 0 || h <= 0 || !font.isValid()) return;
+        List<uint8_t> coverage(MemSpace::Psram);
+        if (coverage.reserve(size_t(w) * size_t(h)).isError()) return;
+        for (size_t i = 0; i < size_t(w) * size_t(h); ++i) (void)coverage.append(0);
+        TextTarget t;
+        t.pixels = coverage.data();
+        t.format = TextBlend::Format::Gray8;
+        t.width = w;
+        t.height = h;
+        t.stride = size_t(w);
+        TextPaint paint;
+        paint.color = 0xffffff;
+        (void)TextDraw::line(t, font, text, 0, 0, paint, maxWidth, Simd::best());
+        for (int r = 0; r < h; ++r)
+                for (int c = 0; c < w; ++c) {
+                        const uint32_t a = coverage[size_t(r) * size_t(w) + size_t(c)];
+                        if (a != 0) put(x + c, y + r, ((a * Ghost / 255) << 24) | (rgb & 0xffffff));
+                }
         return;
 }
 

@@ -113,15 +113,15 @@ void TabWidget::userSet(size_t index) {
 
 Rect TabWidget::pageRect() const {
         const Rect &g = geometry();
-        if (g.width < 2 * Inset || g.height < RowHeight + 2 * Inset) return Rect{g.x, g.y, 0, 0};
-        return Rect{uint16_t(g.x + Inset), uint16_t(g.y + RowHeight + Inset), uint16_t(g.width - 2 * Inset),
-                    uint16_t(g.height - RowHeight - 2 * Inset)};
+        if (g.width < 2 * Inset || g.height < rowHeight() + 2 * Inset) return Rect{g.x, g.y, 0, 0};
+        return Rect{uint16_t(g.x + Inset), uint16_t(g.y + rowHeight() + Inset), uint16_t(g.width - 2 * Inset),
+                    uint16_t(g.height - rowHeight() - 2 * Inset)};
 }
 
 void TabWidget::layout() {
         uint16_t texts[MaxTabs], lefts[MaxTabs], widths[MaxTabs];
         for (size_t i = 0; i < _count; ++i)
-                texts[i] = static_cast<uint16_t>(Fonts::unscii16.textWidth(StringView(_tabs[i].title)));
+                texts[i] = static_cast<uint16_t>(font().textWidth(StringView(_tabs[i].title)));
         (void)TabRow::place(Span<const uint16_t>(texts, _count), uint16_t(geometry().x + Start),
                             Span<uint16_t>(lefts, _count), Span<uint16_t>(widths, _count));
         for (size_t i = 0; i < _count; ++i) {
@@ -145,7 +145,7 @@ GuiSize TabWidget::sizeHint() const {
                 if (p.height > s.height) s.height = p.height;
         }
         s.width = uint16_t(s.width + 2 * Inset);
-        s.height = uint16_t(s.height + RowHeight + 2 * Inset);
+        s.height = uint16_t(s.height + rowHeight() + 2 * Inset);
         return s;
 }
 
@@ -154,9 +154,9 @@ void TabWidget::paint(Painter &painter) {
         const Rect          &g = geometry();
         const uint32_t       face = p.color(Role::Face);
         (void)painter.fill(g, face);
-        if (g.height <= RowHeight) return;
+        if (g.height <= rowHeight()) return;
         // The pages' frame, under the row.
-        const Rect frame{g.x, uint16_t(g.y + RowHeight), g.width, uint16_t(g.height - RowHeight)};
+        const Rect frame{g.x, uint16_t(g.y + rowHeight()), g.width, uint16_t(g.height - rowHeight())};
         drawBevel(painter, frame, Bevel::Style::Raised);
         const uint32_t light = p.color(Role::FaceHighlight), shadow = p.color(Role::FaceShadow),
                        dark = p.color(Role::FaceDark), text = p.color(Role::FaceText);
@@ -169,7 +169,7 @@ void TabWidget::paint(Painter &painter) {
                 const int x = on ? int(t.left) - 2 : t.left;
                 const int w = on ? t.width + 4 : t.width;
                 const int top = g.y + (on ? 0 : Raise);
-                const int h = int(g.y) + RowHeight - top + (on ? 2 : 0);
+                const int h = int(g.y) + rowHeight() - top + (on ? 2 : 0);
                 if (x < g.x || x + w > g.right() || w < 4) continue;
                 (void)painter.fill(Rect{uint16_t(x + 1), uint16_t(top + 1), uint16_t(w - 2), uint16_t(h - 1)}, face);
                 const Rect lit[] = {{uint16_t(x), uint16_t(top + 2), 1, uint16_t(h - 2)},
@@ -184,14 +184,14 @@ void TabWidget::paint(Painter &painter) {
                 const int tx = (t.left + TabRow::Pad) & ~3;
                 const int room = t.left + t.width - TabRow::Pad / 2 - tx;
                 if (room > 0)
-                        (void)painter.text(tx, top + (on ? 4 : 3), StringView(t.title), Fonts::unscii16, text, face,
+                        (void)painter.text(tx, top + (on ? 4 : 3), StringView(t.title), font(), text, face,
                                            uint16_t(room));
         }
         return;
 }
 
 void TabWidget::mousePressed(const WindowManager::MouseEvent &event) {
-        if (event.button != PointerEvent::Left || event.y >= geometry().y + RowHeight) return;
+        if (event.button != PointerEvent::Left || event.y >= geometry().y + rowHeight()) return;
         uint16_t lefts[MaxTabs], widths[MaxTabs];
         for (size_t i = 0; i < _count; ++i) {
                 lefts[i] = _tabs[i].left;

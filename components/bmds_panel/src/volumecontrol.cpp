@@ -114,10 +114,10 @@ void VolumePopup::resized() {
         if (_level != nullptr)
                 _level->setGeometry(
                         Rect{uint16_t(g.x + inner), uint16_t(g.y + inner), uint16_t(g.width - 2 * inner), LevelHeight});
-        const uint16_t buttonTop = uint16_t(g.bottom() - inner - GuiStyle::ButtonHeight);
+        const uint16_t buttonTop = uint16_t(g.bottom() - inner - buttonHeight());
         if (_mute != nullptr)
                 _mute->setGeometry(
-                        Rect{uint16_t(g.x + inner), buttonTop, uint16_t(g.width - 2 * inner), GuiStyle::ButtonHeight});
+                        Rect{uint16_t(g.x + inner), buttonTop, uint16_t(g.width - 2 * inner), buttonHeight()});
         if (_slider != nullptr) {
                 const uint16_t top = uint16_t(g.y + inner + LevelHeight + Margin);
                 const uint16_t bottom = uint16_t(buttonTop - Margin);

@@ -53,7 +53,7 @@ Error PopupEdit::open(const Rect &screen, StringView text, Look look, Done fn, v
         _edit->setMaxLength(LineEditModel::MaxBytes);
         // Its lines counted at its width before it opens, so it opens as tall as they are.
         const uint16_t width = static_cast<uint16_t>((screen.width + 3) & ~3u);
-        _edit->setGeometry(Rect{0, 0, width, GuiStyle::TextHeight});
+        _edit->setGeometry(Rect{0, 0, width, textHeight()});
         _edit->setText(text);
         _edit->selectAll();
         const Error err =
@@ -67,9 +67,9 @@ Error PopupEdit::open(const Rect &screen, StringView text, Look look, Done fn, v
 }
 
 uint16_t PopupEdit::heightFor(size_t lines) const {
-        if (_look == Look::Field) return GuiStyle::ButtonHeight;
+        if (_look == Look::Field) return buttonHeight();
         if (lines > MaxLines) lines = MaxLines;
-        return static_cast<uint16_t>((lines > 0 ? lines : 1) * GuiStyle::TextHeight);
+        return static_cast<uint16_t>((lines > 0 ? lines : 1) * textHeight());
 }
 
 // The text wrapped onto more or fewer lines: as tall as they are, its top where it was.

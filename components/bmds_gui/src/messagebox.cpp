@@ -76,15 +76,16 @@ Result<MessageBox *> MessageBox::open(GuiApplication &app, Kind kind, StringView
         while (n > 0 && n < text.size() && (uint8_t(text[n]) & 0xc0) == 0x80) --n;
         std::memcpy(kept, text.data(), n);
         kept[n] = '\0';
+        const Font   font = GuiStyle::font();
         StringView   lines[MaxLines];
-        const size_t count = TextWrap::wrap(StringView(kept, n), MaxColumns, Span<StringView>(lines, MaxLines));
-        const BitmapFont &font = Fonts::unscii16;
+        const size_t count =
+                GuiStyle::wrap(StringView(kept, n), font, MaxColumns * 8u, Span<StringView>(lines, MaxLines));
         uint16_t     textWidth = MinTextWidth;
         for (size_t i = 0; i < count; ++i) {
                 const uint32_t w = font.textWidth(lines[i]);
                 if (w > textWidth) textWidth = static_cast<uint16_t>(w);
         }
-        const uint16_t textHeight = static_cast<uint16_t>(count * GuiStyle::TextHeight);
+        const uint16_t textHeight = static_cast<uint16_t>(count * font.metrics().lineHeight);
         Answer         answers[MaxButtons];
         size_t         buttonCount = 0;
         switch (buttons) {
@@ -117,7 +118,7 @@ Result<MessageBox *> MessageBox::open(GuiApplication &app, Kind kind, StringView
         if (clientWidth < buttonsWidth + 2 * Margin) clientWidth = static_cast<uint16_t>(buttonsWidth + 2 * Margin);
         clientWidth = static_cast<uint16_t>((clientWidth + 3) & ~3u);
         const uint16_t clientHeight =
-                static_cast<uint16_t>(Margin + bodyHeight + Gap + GuiStyle::ButtonHeight + Margin);
+                static_cast<uint16_t>(Margin + bodyHeight + Gap + GuiStyle::buttonHeight(font) + Margin);
         constexpr uint8_t Decorations = WindowFrame::Border | WindowFrame::TitleBar | WindowFrame::CloseButton;
         const uint16_t    width = WindowFrame::outerWidth(clientWidth, Decorations);
         const uint16_t    height = WindowFrame::outerHeight(clientHeight, Decorations);
@@ -158,7 +159,7 @@ Result<MessageBox *> MessageBox::open(GuiApplication &app, Kind kind, StringView
         for (size_t i = 0; i < buttonCount; ++i) {
                 Button *b = Widget::create<Button>(box, StringView(label(answers[i])));
                 if (b == nullptr) break;
-                b->setGeometry(Rect{uint16_t(x & ~3u), y, widths[i], GuiStyle::ButtonHeight});
+                b->setGeometry(Rect{uint16_t(x & ~3u), y, widths[i], GuiStyle::buttonHeight(font)});
                 b->setClicked(clicked, box);
                 b->setCentered(true);
                 box->_buttonWidgets[box->_buttonCount] = b;
@@ -247,15 +248,15 @@ void MessageBox::paint(Painter &painter) {
                 // No icon in the theme: a badge with its mark.
                 const Look &look = Looks[static_cast<size_t>(_kind)];
                 (void)painter.fill(_iconRect, look.badge);
-                const uint32_t w = Fonts::unscii16.textWidth(StringView(look.mark));
+                const uint32_t w = font().textWidth(StringView(look.mark));
                 (void)painter.text(uint16_t((_iconRect.x + (IconSide - w) / 2) & ~3u),
-                                   uint16_t(_iconRect.y + (IconSide - GuiStyle::TextHeight) / 2), StringView(look.mark),
-                                   Fonts::unscii16, 0xffffff, look.badge, IconSide);
+                                   uint16_t(_iconRect.y + (IconSide - textHeight()) / 2), StringView(look.mark), font(),
+                                   0xffffff, look.badge, IconSide);
         }
         const uint32_t text = palette.color(Role::FaceText);
         for (size_t i = 0; i < _lineCount; ++i)
-                (void)painter.text(_textRect.x, uint16_t(_textRect.y + i * GuiStyle::TextHeight), _lines[i],
-                                   Fonts::unscii16, text, face, _textRect.width);
+                (void)painter.text(_textRect.x, uint16_t(_textRect.y + i * font().metrics().lineHeight), _lines[i],
+                                   font(), text, face, _textRect.width);
         return;
 }
 

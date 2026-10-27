@@ -57,9 +57,8 @@ void TextBlock::setColor(WindowPalette::Role role) {
 }
 
 size_t TextBlock::wrapped(uint16_t width, StringView (&lines)[MaxLines]) const {
-        const uint16_t columns = static_cast<uint16_t>(width / Fonts::unscii16.width());
-        if (_text[0] == '\0' || columns == 0) return 0;
-        return TextWrap::wrap(StringView(_text), columns, Span<StringView>(lines, MaxLines));
+        if (_text[0] == '\0' || width == 0) return 0;
+        return GuiStyle::wrap(StringView(_text), font(), width, Span<StringView>(lines, MaxLines));
 }
 
 GuiSize TextBlock::sizeHint() const {
@@ -67,15 +66,15 @@ GuiSize TextBlock::sizeHint() const {
         const size_t n = wrapped(UINT16_MAX - 7, lines); // only its own line breaks
         uint32_t     width = 0;
         for (size_t i = 0; i < n; ++i) {
-                const uint32_t w = Fonts::unscii16.textWidth(lines[i]);
+                const uint32_t w = font().textWidth(lines[i]);
                 if (w > width) width = w;
         }
-        return GuiSize{columnUp(width), static_cast<uint16_t>(n * GuiStyle::TextHeight)};
+        return GuiSize{columnUp(width), static_cast<uint16_t>(n * textHeight())};
 }
 
 uint16_t TextBlock::heightForWidth(uint16_t width) const {
         StringView lines[MaxLines];
-        return static_cast<uint16_t>(wrapped(width, lines) * GuiStyle::TextHeight);
+        return static_cast<uint16_t>(wrapped(width, lines) * textHeight());
 }
 
 void TextBlock::paint(Painter &painter) {
@@ -88,9 +87,9 @@ void TextBlock::paint(Painter &painter) {
         StringView   lines[MaxLines];
         const size_t n = wrapped(static_cast<uint16_t>(r.right() - x), lines);
         for (size_t i = 0; i < n; ++i) {
-                const uint32_t y = r.y + i * GuiStyle::TextHeight;
-                if (y + GuiStyle::TextHeight > r.bottom()) break;
-                (void)painter.text(x, int(y), lines[i], Fonts::unscii16, fg, bg, static_cast<uint16_t>(r.right() - x));
+                const uint32_t y = r.y + i * textHeight();
+                if (y + textHeight() > r.bottom()) break;
+                (void)painter.text(x, int(y), lines[i], font(), fg, bg, static_cast<uint16_t>(r.right() - x));
         }
         return;
 }
@@ -108,8 +107,8 @@ void FormSection::setTitle(StringView title) {
 }
 
 GuiSize FormSection::sizeHint() const {
-        return GuiSize{columnUp(Fonts::unscii16.textWidth(StringView(_title)) + 16),
-                       static_cast<uint16_t>(Above + GuiStyle::ButtonHeight)};
+        return GuiSize{columnUp(font().textWidth(StringView(_title)) + 16),
+                       static_cast<uint16_t>(Above + buttonHeight())};
 }
 
 void FormSection::paint(Painter &painter) {
@@ -118,16 +117,15 @@ void FormSection::paint(Painter &painter) {
         const uint32_t       bg = p.color(Role::Face);
         (void)painter.fill(r, bg);
         const uint16_t x = columnUp(r.x);
-        const uint32_t top = r.y + Above + (GuiStyle::ButtonHeight - GuiStyle::TextHeight) / 2;
-        if (x >= r.right() || top + GuiStyle::TextHeight > r.bottom()) return;
+        const uint32_t top = r.y + Above + (buttonHeight() - textHeight()) / 2;
+        if (x >= r.right() || top + textHeight() > r.bottom()) return;
         const StringView title(_title);
-        (void)painter.text(x, int(top), title, Fonts::unscii16,
-                           p.color(isEnabled() ? Role::FaceText : Role::DisabledText), bg,
+        (void)painter.text(x, int(top), title, font(), p.color(isEnabled() ? Role::FaceText : Role::DisabledText), bg,
                            static_cast<uint16_t>(r.right() - x));
         // The etched line, from after the title to the right edge, at the text's middle.
-        const uint32_t from = x + Fonts::unscii16.textWidth(title) + 8;
+        const uint32_t from = x + font().textWidth(title) + 8;
         if (from + 8 > r.right()) return;
-        const auto y = static_cast<uint16_t>(top + GuiStyle::TextHeight / 2);
+        const auto y = static_cast<uint16_t>(top + textHeight() / 2);
         const auto w = static_cast<uint16_t>(r.right() - from);
         (void)painter.fill(Rect{uint16_t(from), y, w, 1}, p.color(Role::FaceShadow));
         (void)painter.fill(Rect{uint16_t(from), uint16_t(y + 1), w, 1}, p.color(Role::FaceHighlight));
@@ -180,7 +178,7 @@ uint16_t FormRow::fieldX(uint16_t width) const {
 
 uint16_t FormRow::fieldHeight() const {
         const uint16_t h = _field != nullptr ? _field->sizeHint().height : 0;
-        return h > GuiStyle::ButtonHeight ? h : GuiStyle::ButtonHeight;
+        return h > buttonHeight() ? h : buttonHeight();
 }
 
 GuiSize FormRow::sizeHint() const {
@@ -205,7 +203,7 @@ void FormRow::layout() {
         const uint16_t fw = static_cast<uint16_t>(r.width - fx);
         if (_label != nullptr)
                 _label->setGeometry(Rect{r.x, r.y, _labelWidth < r.width ? _labelWidth : r.width,
-                                         fh < GuiStyle::ButtonHeight ? fh : GuiStyle::ButtonHeight});
+                                         fh < buttonHeight() ? fh : buttonHeight()});
         if (_field != nullptr) _field->setGeometry(Rect{uint16_t(r.x + fx), r.y, fw, fh});
         if (_help != nullptr && _help->isVisible()) {
                 const uint32_t y = uint32_t(r.y) + fh + HelpGap;

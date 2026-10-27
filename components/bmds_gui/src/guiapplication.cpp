@@ -12,6 +12,7 @@
 #include <new>
 #include <bmds/deadline.h>
 #include <bmds/guiapplication.h>
+#include <bmds/log.h>
 #include <bmds/guiclipboard.h>
 #include <bmds/guiwindow.h>
 #include <bmds/interrupt.h>
@@ -22,6 +23,7 @@
 BMDS_NAMESPACE_BEGIN
 
 GuiApplication::~GuiApplication() {
+        GuiStyle::unfollow(*this); // no restyle posted from here on
         // Its tooltip is one of its windows: gone while the application is whole.
         if (_toolTip != nullptr) {
                 _toolTip->~ToolTip();
@@ -54,7 +56,15 @@ Error GuiApplication::connect(size_t display) {
         if (cerr.isError()) return cerr;
         _wm = wm;
         _client = client;
+        if (Error ferr = GuiStyle::follow(*this); ferr.isError())
+                bmdsWarn("gui: an application won't restyle when the fonts change: %s", ferr.desc());
         return Error();
+}
+
+void GuiApplication::restyle() {
+        for (Slot &slot : _slots)
+                if (slot.window != nullptr) slot.window->restyle();
+        return;
 }
 
 void GuiApplication::gone(void *arg) {

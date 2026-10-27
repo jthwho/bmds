@@ -172,10 +172,10 @@ void Graph::paint(Painter &painter) {
         };
         level(_warn, WarnColor);
         level(_crit, CritColor);
-        if (_caption[0] != '\0' && in.height >= GuiStyle::TextHeight + 4) {
+        if (_caption[0] != '\0' && in.height >= textHeight() + 4) {
                 const uint16_t x = uint16_t((in.x + 2 + GuiStyle::Column - 1) & ~(GuiStyle::Column - 1));
                 const uint16_t room = uint16_t(in.right() > x ? in.right() - x : 0);
-                (void)painter.text(x, in.y + 2, StringView(_caption), Fonts::unscii16, CaptionColor, FieldColor, room);
+                (void)painter.text(x, in.y + 2, StringView(_caption), font(), CaptionColor, FieldColor, room);
         }
         return;
 }

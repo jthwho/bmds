@@ -151,6 +151,28 @@ class Painter {
                 Error text(int x, int y, StringView utf8, const Font &font, uint32_t fg, uint32_t bg,
                            uint16_t maxWidth);
 
+                /** @brief A run of a line's text in its colors: bytes up to `end` (from the last run's). */
+                struct TextRun {
+                                uint32_t end = 0;
+                                uint32_t fg = 0;
+                                uint32_t bg = 0;
+                };
+
+                /** @brief Most runs a line takes. */
+                static constexpr size_t MaxRuns = 32;
+
+                /**
+                 * @brief As `text()`, a line in @p runs of colors (a selection's three, syntax
+                 *        colors): each run's columns filled with its bg and the line blended in its
+                 *        fg, clipped to them, so a run may start at any pixel. The last run's bg
+                 *        fills to the box's end. A bitmap font at its own size draws each run as
+                 *        its own `text()` (8-pixel cells).
+                 * @return As `text()`; `Invalid` for no runs or more than `MaxRuns`.
+                 * @hotpath
+                 */
+                Error text(int x, int y, StringView utf8, const Font &font, Span<const TextRun> runs,
+                           uint16_t maxWidth);
+
                 /**
                  * @brief Writes @p cells side by side from (@p x, @p y) in @p font,
                  *        each in its colors and style, at most @p maxWidth pixels.

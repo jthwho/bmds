@@ -116,6 +116,12 @@ class GuiApplication {
                 Error post(Callback fn, void *arg);
 
                 /**
+                 * @brief Restyles every window (`Widget::restyle()`): the fonts changed. On the
+                 *        loop's thread, the lock held (`GuiStyle` posts it).
+                 */
+                void restyle();
+
+                /**
                  * @brief Drops the calls posted with @p arg not made yet (an object
                  *        going away that may have posted to itself).
                  * @nonblocking

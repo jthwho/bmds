@@ -29,12 +29,12 @@ namespace {
 
         BMDS_SYSCONF(fontPaths, "font/paths", Config::Type::String, "/rom/share/fonts;${HOME}/Fonts",
                      "The folders of TrueType fonts, separated by ; (each a text template)", 0, 255, nullptr, nullptr)
-        BMDS_SYSCONF(fontUi, "font/ui", Config::Type::String, "unscii 16",
+        BMDS_SYSCONF(fontUi, "font/ui", Config::Type::String, "IBM Plex Sans 13",
                      "The toolkit's font: a family, a size, bold or italic (devplan/fonts.md)", 0, 0, nullptr,
                      checkName)
-        BMDS_SYSCONF(fontMono, "font/mono", Config::Type::String, "unscii 16",
+        BMDS_SYSCONF(fontMono, "font/mono", Config::Type::String, "IBM Plex Mono 13",
                      "The font for fixed-width text outside the terminal", 0, 0, nullptr, checkName)
-        BMDS_SYSCONF(fontTitle, "font/title", Config::Type::String, "unscii 16",
+        BMDS_SYSCONF(fontTitle, "font/title", Config::Type::String, "IBM Plex Sans 13 bold",
                      "The font of window titles and headings", 0, 0, nullptr, checkName)
         BMDS_SYSCONF(fontTerminal, "font/terminal", Config::Type::String, "unscii 16",
                      "The terminal's font (a bitmap or fixed-width one)", 0, 0, nullptr, checkName)

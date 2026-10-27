@@ -274,23 +274,47 @@ Error Painter::text(int x, int y, StringView utf8, const BitmapFont &font, uint3
 }
 
 Error Painter::text(int x, int y, StringView utf8, const Font &font, uint32_t fg, uint32_t bg, uint16_t maxWidth) {
-        if (!font.isValid()) {
+        const TextRun one{uint32_t(utf8.size()), fg, bg};
+        return text(x, y, utf8, font, Span<const TextRun>(&one, 1), maxWidth);
+}
+
+Error Painter::text(int x, int y, StringView utf8, const Font &font, Span<const TextRun> runs, uint16_t maxWidth) {
+        if (!font.isValid() || runs.isEmpty() || runs.size() > MaxRuns) {
                 note(Error::Invalid);
                 return _error;
         }
         const BitmapFont *bitmap = font.bitmap();
-        if (bitmap != nullptr && font.scale() == 1 && !font.isMadeUpBold())
-                return text(x, y, utf8, *bitmap, fg, bg, maxWidth);
+        if (bitmap != nullptr && font.scale() == 1 && !font.isMadeUpBold()) {
+                // Cells of 8: each run starts on a column of its own.
+                uint32_t at = 0, from = 0;
+                for (const TextRun &r : runs) {
+                        const uint32_t to = r.end < utf8.size() ? r.end : uint32_t(utf8.size());
+                        if (to <= from) continue;
+                        const StringView piece = utf8.mid(from, to - from);
+                        if (at >= maxWidth) break;
+                        (void)text(int(x + at), y, piece, *bitmap, r.fg, r.bg, uint16_t(maxWidth - at));
+                        at += bitmap->textWidth(piece);
+                        from = to;
+                }
+                return _error;
+        }
         const StringView line = utf8.left(font.fitting(utf8, maxWidth));
         const uint32_t   advance = font.textWidth(line);
-        // The box ends on a 4-pixel column (the strip's copies are in fours), bg past the advance.
+        // The box ends on a 4-pixel column (the strip's copies are in fours), the last run's bg past
+        // the advance.
         const auto width = static_cast<uint16_t>(((advance < maxWidth ? advance : maxWidth) + AlignMask) & ~AlignMask);
         const int  height = font.metrics().lineHeight;
         if (width == 0 || height <= 0) return _error;
-        // Each piece filled with bg, then the line blended over it from minus the piece's column:
-        // what TextDraw's Opaque writes on PIE.
+        // Each run's columns: from the last one's end to its text's advance (the last to the box's end).
+        uint16_t ends[MaxRuns];
+        for (size_t i = 0; i < runs.size(); ++i) {
+                const uint32_t to = runs[i].end < line.size() ? runs[i].end : uint32_t(line.size());
+                const uint32_t e = i + 1 == runs.size() ? width : font.textWidth(line.left(to));
+                ends[i] = static_cast<uint16_t>(e < width ? e : width);
+        }
+        // Each run's part of a piece filled with its bg, then the line blended over it in its fg from
+        // minus the piece's column, clipped to the part: what TextDraw's Opaque writes on PIE.
         TextPaint paint;
-        paint.color = fg;
         paint.smooth = _tools.smooth;
         const Simd::Kernel kernel = Simd::best();
         for (int band = 0; band < height && _tools.height != 0; band += _tools.height) {
@@ -300,15 +324,24 @@ Error Painter::text(int x, int y, StringView utf8, const Font &font, uint32_t fg
                         const auto left = static_cast<uint16_t>(width - column);
                         const auto w = static_cast<uint16_t>(room < left ? room & ~AlignMask : left);
                         if (w == 0) return w;
-                        if (strip != nullptr) {
+                        uint16_t start = 0;
+                        for (size_t i = 0; strip != nullptr && i < runs.size(); start = ends[i], ++i) {
+                                // The run's columns in the piece.
+                                const int a = (start > column ? start : column) - column;
+                                const int b = (ends[i] < column + w ? ends[i] : column + w) - column;
+                                if (a >= b) continue;
                                 for (uint16_t r = 0; r < rows; ++r)
-                                        TextBlend::fill(strip + size_t(r) * stride, TextBlend::Format::Bgr24, w, bg);
+                                        TextBlend::fill(strip + size_t(r) * stride + size_t(a) * 3,
+                                                        TextBlend::Format::Bgr24, unsigned(b - a), runs[i].bg);
                                 TextTarget t;
                                 t.pixels = strip;
                                 t.format = TextBlend::Format::Bgr24;
                                 t.width = w;
                                 t.height = rows;
                                 t.stride = stride;
+                                t.clipLeft = a;
+                                t.clipRight = b;
+                                paint.color = runs[i].fg;
                                 const Result<uint32_t> drawn = TextDraw::line(t, font, line, -int(column), -band, paint,
                                                                               0, kernel, _tools.textScratch);
                                 if (drawn.isError()) note(drawn.error());

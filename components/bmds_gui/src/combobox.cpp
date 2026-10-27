@@ -85,11 +85,11 @@ void ComboBox::userSet(int index) {
 GuiSize ComboBox::sizeHint() const {
         uint32_t widest = 0;
         for (size_t i = 0; i < _count; ++i) {
-                const uint32_t w = Fonts::unscii16.textWidth(StringView(_items[i].text));
+                const uint32_t w = font().textWidth(StringView(_items[i].text));
                 if (w > widest) widest = w;
         }
         const uint32_t width = 2u * Bevel::width(Bevel::Style::Field) + TextPad + widest + TextPad + ArrowWidth;
-        return GuiSize{uint16_t(((width < 64 ? 64 : width) + 3u) & ~3u), GuiStyle::ButtonHeight};
+        return GuiSize{uint16_t(((width < 64 ? 64 : width) + 3u) & ~3u), buttonHeight()};
 }
 
 void ComboBox::paint(Painter &painter) {
@@ -118,8 +118,8 @@ void ComboBox::paint(Painter &painter) {
         const int x = (field.x + TextPad + 3) & ~3;
         const int room = int(field.right()) - x - 2;
         if (_current >= 0 && room > 0)
-                (void)painter.text(x, field.y + (field.height - GuiStyle::TextHeight) / 2,
-                                   StringView(_items[_current].text), Fonts::unscii16, fg, bg, uint16_t(room));
+                (void)painter.text(x, field.y + (field.height - textHeight()) / 2, StringView(_items[_current].text),
+                                   font(), fg, bg, uint16_t(room));
         return;
 }
 

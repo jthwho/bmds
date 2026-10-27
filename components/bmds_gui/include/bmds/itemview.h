@@ -283,11 +283,11 @@ class ItemView : public ScrollArea {
                  *        and focused, the face while selected only (an inactive selection).
                  * @return The colour the text goes on.
                  */
-                static uint32_t drawLabel(Painter &painter, const Rect &clip, int x, int y, int width, bool selected,
-                                          bool focus, bool current, uint32_t background);
+                uint32_t drawLabel(Painter &painter, const Rect &clip, int x, int y, int width, bool selected,
+                                   bool focus, bool current, uint32_t background) const;
 
                 /** @brief Draws the focus rectangle around a label, after its text, outside its rows. */
-                static void focusRect(Painter &painter, const Rect &clip, int x, int y, int width);
+                void focusRect(Painter &painter, const Rect &clip, int x, int y, int width) const;
 
                 /** @brief Returns true if the view shows its focus: it has the keys and its window is active. */
                 bool showsFocus() const;
@@ -306,6 +306,7 @@ class ItemView : public ScrollArea {
 
                 void paintContent(Painter &painter, const Rect &viewport) override;
                 void resized() override;
+                void styleChanged() override; // its rows measured again (relayout())
 
         private:
                 void        changed(); // the selection or current row: told, redrawn

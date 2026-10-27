@@ -163,7 +163,10 @@ namespace {
         // A row of buttons in a raised bar: the bevel, a pixel, the buttons, a pixel, the bevel.
         constexpr uint16_t MarginX = 4; // the sides: a 4-pixel column
         constexpr uint16_t MarginY = 3;
-        constexpr uint16_t Height = GuiStyle::ButtonHeight + 2 * MarginY;
+        // Its height: a button's in the ui font and the margins.
+        uint16_t panelHeight() {
+                return uint16_t(GuiStyle::buttonHeight(GuiStyle::font()) + 2 * MarginY);
+        }
         constexpr uint16_t Spacing = 4;
 
         // The main categories (freedesktop.org's), in the launcher's order; the rest are Other.
@@ -271,7 +274,7 @@ namespace {
                         explicit WindowButton(Widget *parent) : Button(parent) { setAcceptsDrops(true); }
                         ~WindowButton() override { stopRaise(); }
 
-                        GuiSize sizeHint() const override { return GuiSize{32, GuiStyle::ButtonHeight}; }
+                        GuiSize sizeHint() const override { return GuiSize{32, buttonHeight()}; }
 
                         void dragEntered(GuiDropEvent &event) override {
                                 event.ignore();
@@ -1686,7 +1689,7 @@ namespace {
                 targets.launch = notifyLaunch;
                 targets.arg = this;
                 _notify = ::new (mem) NotificationServer(_app, targets);
-                _notify->setPanel(_bottom, Height);
+                _notify->setPanel(_bottom, panelHeight());
                 if (Error e = _notify->start(); e.isError()) {
                         say("panel: another server shows notifications (", e.desc(), ")\n");
                         _notify->~NotificationServer();
@@ -1826,7 +1829,7 @@ namespace {
                 (void)menu.addSeparator();
                 (void)menu.addItem("&Date && Time Settings...", ChooseTimeSettings);
                 (void)menu.addItem("Panel &Settings...", ChoosePanelSettings);
-                const int top = self->_bottom ? self->_screen.height - Height : 0;
+                const int top = self->_bottom ? self->_screen.height - panelHeight() : 0;
                 (void)menu.popup(Rect{uint16_t(x), uint16_t(top + y), 0, 0});
                 return;
         }
@@ -2001,11 +2004,12 @@ namespace {
                         }
                 }
                 GuiWindow::Config pc;
-                pc.rect = Rect{0, static_cast<uint16_t>(_bottom ? _screen.height - Height : 0), _screen.width, Height};
+                pc.rect = Rect{0, static_cast<uint16_t>(_bottom ? _screen.height - panelHeight() : 0), _screen.width,
+                               panelHeight()};
                 pc.title = "Panel";
                 pc.decorations = WindowFrame::None;
                 pc.level = WindowManager::Level::Panel;
-                pc.reserve = Height;
+                pc.reserve = panelHeight();
                 pc.focusOnPress = false; // the keys only by Tab: a press on a window's button keeps its focus
                 pc.kind = "panel";
                 void *mem = Memory::alloc(MemSpace::Psram, sizeof(PanelWindow));
@@ -2087,8 +2091,8 @@ namespace {
                 const bool moved = bottom != _bottom;
                 if (moved) {
                         _bottom = bottom;
-                        (void)_panel->move(0, static_cast<uint16_t>(bottom ? _screen.height - Height : 0));
-                        if (_notify != nullptr) _notify->setPanel(_bottom, Height); // the balloons by it
+                        (void)_panel->move(0, static_cast<uint16_t>(bottom ? _screen.height - panelHeight() : 0));
+                        if (_notify != nullptr) _notify->setPanel(_bottom, panelHeight()); // the balloons by it
                 }
                 // A new theme drops the old one's icons: whatever holds them is made again.
                 const StringView theme = setting(bmdsConf_panelIconTheme);

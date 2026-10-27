@@ -23,7 +23,7 @@ namespace {
 
         using Kind = TextDocument::EditKind;
 
-        constexpr uint16_t LineHeight = GuiStyle::TextHeight;
+        constexpr uint16_t LineHeight = 16;     // unscii-16's: the editors draw in its cells
         constexpr uint16_t MarkWidth = 8;       // the diagnostic mark's column, left of the numbers
         constexpr uint16_t BreakMarkWidth = 16; // with breakpoints: their dot, the arrow, then the mark
         constexpr uint32_t MatchLines = 2000; // how far a bracket's match is looked for

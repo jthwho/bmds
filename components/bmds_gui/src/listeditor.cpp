@@ -250,8 +250,9 @@ GuiSize ListEditor::sizeHint() const {
         uint16_t buttons = 0;
         for (const Button *b : _buttons)
                 if (b != nullptr && b->sizeHint().width > buttons) buttons = b->sizeHint().width;
-        const uint32_t listHigh = DetailsView::HeaderHeight + ShownRows * DetailsView::RowHeight + 4;
-        const uint32_t buttonsHigh = ActionCount * GuiStyle::ButtonHeight + (ActionCount - 1) * ButtonGap;
+        // The list's header and rows in its font (as DetailsView's: its ink box and 4, and 2).
+        const uint32_t listHigh = uint32_t(textHeight() + 4) + ShownRows * uint32_t(textHeight() + 2) + 4;
+        const uint32_t buttonsHigh = ActionCount * buttonHeight() + (ActionCount - 1) * ButtonGap;
         return GuiSize{static_cast<uint16_t>(200 + ListGap + buttons),
                        static_cast<uint16_t>(listHigh > buttonsHigh ? listHigh : buttonsHigh)};
 }
@@ -273,8 +274,8 @@ void ListEditor::resized() {
         uint32_t y = r.y;
         for (Button *b : _buttons) {
                 if (b == nullptr) continue;
-                b->setGeometry(Rect{uint16_t(r.right() - bw), uint16_t(y), bw, GuiStyle::ButtonHeight});
-                y += GuiStyle::ButtonHeight + ButtonGap;
+                b->setGeometry(Rect{uint16_t(r.right() - bw), uint16_t(y), bw, buttonHeight()});
+                y += buttonHeight() + ButtonGap;
         }
         return;
 }

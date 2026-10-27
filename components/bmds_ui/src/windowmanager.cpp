@@ -190,7 +190,9 @@ Error WindowManager::start(Display &display, const WindowPalette &palette) {
         if (err.isOk() && !_task.isRunning()) {
                 Task::Config tc;
                 tc.name = "wm";
-                tc.stackBytes = 8192;
+                // Widgets paint here, and a glyph is rendered here the first time it is drawn:
+                // 8 KB left 1.5 KB with the toolkit in TrueType (devplan/fonts.md §6i).
+                tc.stackBytes = 10240;
                 tc.priority = 5;
                 tc.core = 0;
                 err = _task.start(tc, entry, this);

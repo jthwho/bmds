@@ -13,6 +13,7 @@
 #include <bmds/config.h>
 #include <bmds/dragdrop.h>
 #include <bmds/guiclipboard.h>
+#include <bmds/font.h>
 #include <bmds/icon.h>
 #include <bmds/list.h>
 #include <bmds/span.h>
@@ -136,8 +137,8 @@ class DragPicture {
                 /** @brief Fills a rectangle with @p rgb, ghosted. */
                 void fill(int x, int y, int w, int h, uint32_t rgb);
 
-                /** @brief Draws @p text's glyphs (unscii-16) in @p rgb, ghosted, cut at @p maxWidth pixels. */
-                void text(int x, int y, StringView text, uint32_t rgb, uint16_t maxWidth);
+                /** @brief Draws @p text in @p font and @p rgb (its line's top at @p y), ghosted, cut at @p maxWidth pixels. */
+                void text(int x, int y, StringView text, const Font &font, uint32_t rgb, uint16_t maxWidth);
 
                 /** @brief Draws @p count in a solid badge with its top-right corner at (@p right, @p top). */
                 void badge(int right, int top, size_t count);

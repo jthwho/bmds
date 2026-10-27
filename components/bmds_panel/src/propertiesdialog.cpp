@@ -30,7 +30,9 @@ namespace {
 
         constexpr uint16_t Width = 380;                         // the content's
         constexpr uint16_t LabelWidth = 160;                    // the label column ("Original location:")
-        constexpr uint16_t LineHeight = GuiStyle::ButtonHeight; // a label's
+        uint16_t           lineHeight() {                       // a label's
+                return GuiStyle::buttonHeight(GuiStyle::font());
+        }
         constexpr uint16_t IconSide = 32;
         constexpr uint16_t TopHeight = IconSide; // the icon and the name
         constexpr uint16_t RuleHeight = 9;
@@ -387,8 +389,8 @@ Error PropertiesDialog::show(GuiApplication &app, FolderActions &actions, FileIc
                 actions.tell("Properties", "It isn't there any more.");
                 return Error::NotExist;
         }
-        const uint16_t height = uint16_t(TopHeight + RuleHeight + facts->count * LineHeight +
-                                         (facts->filesystem ? GuiStyle::ButtonHeight : 0));
+        const uint16_t height =
+                uint16_t(TopHeight + RuleHeight + facts->count * lineHeight() + (facts->filesystem ? lineHeight() : 0));
         void          *mem = Memory::alloc(MemSpace::Psram, sizeof(PropertiesDialog));
         if (mem == nullptr) {
                 Memory::free(facts);

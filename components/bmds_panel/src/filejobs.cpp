@@ -21,7 +21,9 @@ namespace {
 
         constexpr uint16_t DialogWidth = 360;
         constexpr uint16_t Rows = 5; // a dialog's: labels, the bar, the check box
-        constexpr uint16_t DialogHeight = Rows * GuiStyle::ButtonHeight + (Rows - 1) * 8;
+        uint16_t           dialogHeight() {
+                return uint16_t(Rows * GuiStyle::buttonHeight(GuiStyle::font()) + (Rows - 1) * 8);
+        }
 
         using Kind = FileWorker::Kind;
 
@@ -153,7 +155,7 @@ Error FileJobs::buildProgress() {
         if (_progress != nullptr) return Error::Ok;
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(Dialog));
         if (mem == nullptr) return Error::NoMem;
-        _progress = ::new (mem) Dialog(_app, "Copying", DialogWidth, DialogHeight);
+        _progress = ::new (mem) Dialog(_app, "Copying", DialogWidth, dialogHeight());
         BoxLayout *c = _progress->content();
         if (c != nullptr) {
                 _what = Widget::create<Label>(c);
@@ -255,7 +257,7 @@ Error FileJobs::buildConflict() {
         if (_conflict != nullptr) return Error::Ok;
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(Dialog));
         if (mem == nullptr) return Error::NoMem;
-        _conflict = ::new (mem) Dialog(_app, "Confirm File Replace", DialogWidth, DialogHeight);
+        _conflict = ::new (mem) Dialog(_app, "Confirm File Replace", DialogWidth, dialogHeight());
         BoxLayout *c = _conflict->content();
         bool       made = c != nullptr;
         for (Label *&l : _lines)

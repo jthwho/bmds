@@ -32,7 +32,7 @@ namespace {
         }
 
         uint16_t textWidthOf(const Button &b) {
-                return static_cast<uint16_t>(Fonts::unscii16.textWidth(b.text()));
+                return static_cast<uint16_t>(b.font().textWidth(b.text()));
         }
 
 } // namespace
@@ -75,7 +75,7 @@ Error Dialog::open() {
         if (clientWidth < row + 2 * Margin) clientWidth = static_cast<uint16_t>(row + 2 * Margin);
         clientWidth = static_cast<uint16_t>((clientWidth + 3u) & ~3u);
         const uint16_t clientHeight =
-                static_cast<uint16_t>(Margin + _height + (_count > 0 ? Gap + GuiStyle::ButtonHeight : 0) + Margin);
+                static_cast<uint16_t>(Margin + _height + (_count > 0 ? Gap + buttonHeight() : 0) + Margin);
         const uint16_t width = WindowFrame::outerWidth(clientWidth, Decorations);
         const uint16_t height = WindowFrame::outerHeight(clientHeight, Decorations);
         const Rect     area = application().windowManager().workArea();
@@ -90,8 +90,8 @@ Error Dialog::open() {
 void Dialog::resized() {
         const Rect &g = geometry();
         if (g.width < 2 * Margin || g.height < 2 * Margin) return;
-        const uint16_t buttonsTop = static_cast<uint16_t>(
-                g.height > Margin + GuiStyle::ButtonHeight ? g.height - Margin - GuiStyle::ButtonHeight : 0);
+        const uint16_t buttonsTop =
+                static_cast<uint16_t>(g.height > Margin + buttonHeight() ? g.height - Margin - buttonHeight() : 0);
         const uint16_t contentBottom =
                 _count > 0 && buttonsTop > Gap ? uint16_t(buttonsTop - Gap) : uint16_t(g.height - Margin);
         if (_content != nullptr)
@@ -100,8 +100,8 @@ void Dialog::resized() {
         uint16_t widths[MaxButtons];
         Rect     places[MaxButtons];
         for (size_t i = 0; i < _count; ++i) widths[i] = textWidthOf(*_buttons[i]);
-        ButtonRow::place(Span<const uint16_t>(widths, _count), uint16_t(g.width - Margin), buttonsTop,
-                         GuiStyle::ButtonHeight, Span<Rect>(places, _count));
+        ButtonRow::place(Span<const uint16_t>(widths, _count), uint16_t(g.width - Margin), buttonsTop, buttonHeight(),
+                         Span<Rect>(places, _count));
         for (size_t i = 0; i < _count; ++i) _buttons[i]->setGeometry(places[i]);
         update();
         return;

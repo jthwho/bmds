@@ -106,7 +106,7 @@ void LineEdit::setWrapping(bool wrapping) {
 }
 
 GuiSize LineEdit::sizeHint() const {
-        return GuiSize{DefaultWidth, GuiStyle::ButtonHeight};
+        return GuiSize{DefaultWidth, buttonHeight()};
 }
 
 Rect LineEdit::textArea() const {
@@ -118,23 +118,22 @@ Rect LineEdit::textArea() const {
 
 // The lines shown: wrapped as `TextWrap` breaks them, else the one from the first byte shown.
 size_t LineEdit::lines(Line *out) const {
-        const BitmapFont &font = Fonts::unscii16;
+        const Font       textFont = font();
         const StringView text = drawn();
         const Rect       area = textArea();
         const auto       place = [&](size_t start, size_t end) {
-                const uint32_t w = font.textWidth(text.mid(start, end - start));
+                const uint32_t w = textFont.textWidth(text.mid(start, end - start));
                 const uint16_t x = _centered && w < area.width
                                                  ? static_cast<uint16_t>(area.x + (((area.width - w) / 2) & ~3u))
                                                  : area.x;
                 return Line{start, end, x};
         };
-        if (!_wrapping || area.width < font.width()) {
+        if (!_wrapping || area.width < textFont.metrics().maxAdvance) {
                 out[0] = _first == 0 ? place(0, text.size()) : Line{_first, text.size(), area.x};
                 return 1;
         }
         StringView   views[MaxLines];
-        const size_t n = TextWrap::wrap(text, static_cast<uint16_t>(area.width / font.width()),
-                                        Span<StringView>(views, MaxLines));
+        const size_t n = GuiStyle::wrap(text, textFont, area.width, Span<StringView>(views, MaxLines));
         for (size_t i = 0; i < n; ++i) {
                 const size_t start = static_cast<size_t>(views[i].data() - text.data());
                 out[i] = place(start, start + views[i].size());
@@ -157,7 +156,7 @@ size_t LineEdit::lineOf(const Line *ls, size_t count, size_t offset) const {
 }
 
 void LineEdit::reveal() {
-        const BitmapFont &font = Fonts::unscii16;
+        const Font       textFont = font();
         const StringView text = drawn();
         const size_t     cursor = _model.cursor();
         const uint16_t   width = textArea().width;
@@ -168,7 +167,7 @@ void LineEdit::reveal() {
         if (width == 0) return; // no size yet: when it gets one (resized())
         if (cursor < _first) _first = cursor;
         // On, a character at a time, until the cursor (and a pixel for it) fits.
-        while (_first < cursor && font.textWidth(text.mid(_first, cursor - _first)) + 2 > width) {
+        while (_first < cursor && textFont.textWidth(text.mid(_first, cursor - _first)) + 2 > width) {
                 size_t at = _first;
                 (void)Utf8::decode(text, at);
                 _first = at;
@@ -196,14 +195,14 @@ void LineEdit::changed() {
 }
 
 size_t LineEdit::offsetAt(const Line &line, int x) const {
-        const BitmapFont &font = Fonts::unscii16;
+        const Font       textFont = font();
         const StringView text = drawn();
         int              left = line.x;
         size_t           at = line.start;
         while (at < line.end) {
                 size_t next = at;
                 (void)Utf8::decode(text, next);
-                const int cw = int(font.textWidth(text.mid(at, next - at)));
+                const int cw = int(textFont.textWidth(text.mid(at, next - at)));
                 if (x < left + cw / 2) return at;
                 left += cw;
                 at = next;
@@ -216,14 +215,15 @@ size_t LineEdit::offsetAt(int x, int y) const {
         const size_t n = lines(ls);
         const int    top = textArea().y;
         size_t       i = 0;
-        if (_wrapping && y > top) i = static_cast<size_t>((y - top) / GuiStyle::TextHeight);
+        const int    pitch = font().metrics().lineHeight;
+        if (_wrapping && y > top && pitch > 0) i = static_cast<size_t>((y - top) / pitch);
         return offsetAt(ls[i < n ? i : n - 1], x);
 }
 
 // Up or down a line, to the character nearest the cursor's column; past the first or the last
 // line, to the text's start or end.
 void LineEdit::moveLine(int by, bool select) {
-        const BitmapFont &font = Fonts::unscii16;
+        const Font   textFont = font();
         Line         ls[MaxLines];
         const size_t n = lines(ls);
         const size_t cursor = _model.cursor();
@@ -238,7 +238,7 @@ void LineEdit::moveLine(int by, bool select) {
                 return;
         }
         const Line &line = ls[at];
-        const int   x = int(line.x + font.textWidth(drawn().mid(line.start, cursor - line.start)));
+        const int   x = int(line.x + textFont.textWidth(drawn().mid(line.start, cursor - line.start)));
         _model.setCursor(offsetAt(ls[to], x), select);
         return;
 }
@@ -337,23 +337,6 @@ void LineEdit::mouseReleased(const WindowManager::MouseEvent &event) {
         return;
 }
 
-// Bytes [@p from, @p to) of @p line at @p x (moved on past them), in @p fg on @p bg, cut at the
-// text area's right.
-void LineEdit::paintRun(Painter &painter, const Line &line, uint16_t y, size_t from, size_t to, uint32_t &x,
-                        uint32_t fg, uint32_t bg) const {
-        (void)line;
-        const Rect area = textArea();
-        if (to <= from || x >= area.right()) return;
-        const BitmapFont &font = Fonts::unscii16;
-        const StringView piece = drawn().mid(from, to - from);
-        const uint32_t   w = font.textWidth(piece);
-        const uint16_t   room = static_cast<uint16_t>(area.right() - x);
-        (void)painter.fill(Rect{uint16_t(x), y, uint16_t(w < room ? w : room), GuiStyle::TextHeight}, bg);
-        (void)painter.text(uint16_t(x), y, piece, font, fg, bg, room);
-        x += w;
-        return;
-}
-
 void LineEdit::paint(Painter &painter) {
         const WindowPalette &palette = painter.palette();
         const Rect           outer = geometry();
@@ -364,16 +347,16 @@ void LineEdit::paint(Painter &painter) {
         const uint32_t       selFg = palette.color(Role::HighlightText);
         if (_framed) drawBevel(painter, outer, Bevel::Style::Field);
         (void)painter.fill(in, bg);
-        const BitmapFont &font = Fonts::unscii16;
+        const Font       textFont = font();
+        const uint16_t   lineHeight = static_cast<uint16_t>(textFont.metrics().lineHeight);
         const Rect       area = textArea();
         const StringView text = drawn();
         Line             ls[MaxLines];
         const size_t     n = lines(ls);
         const size_t     selStart = _model.selectionStart(), selEnd = _model.selectionEnd();
         const auto       top = [&](size_t i) {
-                if (_wrapping) return static_cast<uint16_t>(area.y + i * GuiStyle::TextHeight);
-                return static_cast<uint16_t>(
-                        in.y + (in.height > GuiStyle::TextHeight ? (in.height - GuiStyle::TextHeight) / 2 : 0));
+                if (_wrapping) return static_cast<uint16_t>(area.y + i * lineHeight);
+                return static_cast<uint16_t>(in.y + (in.height > textHeight() ? (in.height - textHeight()) / 2 : 0));
         };
         for (size_t i = 0; i < n; ++i) {
                 const Line    &line = ls[i];
@@ -384,18 +367,23 @@ void LineEdit::paint(Painter &painter) {
                         return v < line.start ? line.start : (v > line.end ? line.end : v);
                 };
                 const size_t from = clamp(selStart), to = clamp(selEnd);
-                uint32_t     x = line.x;
-                paintRun(painter, line, y, line.start, from, x, fg, bg);
-                const uint32_t selX = x;
-                paintRun(painter, line, y, from, to, x, selFg, selBg);
+                if (line.x >= area.right()) continue;
+                // One line in three runs: before the selection, it, after it (any pixel apart).
+                const StringView       piece = text.mid(line.start, line.end - line.start);
+                const Painter::TextRun runs[] = {{uint32_t(from - line.start), fg, bg},
+                                                 {uint32_t(to - line.start), selFg, selBg},
+                                                 {uint32_t(piece.size()), fg, bg}};
+                const uint16_t         room = static_cast<uint16_t>(area.right() - line.x);
+                (void)painter.text(line.x, y, piece, textFont, Span<const Painter::TextRun>(runs), room);
                 if (!_framed && to > from) {
                         // Unframed, a line selected to an end is lit a little past it, as a selected label is.
+                        const uint32_t selX = line.x + textFont.textWidth(piece.left(from - line.start));
+                        const uint32_t x = line.x + textFont.textWidth(piece.left(to - line.start));
                         if (from == line.start && selX >= area.x)
-                                (void)painter.fill(Rect{uint16_t(selX - Pad), y, Pad, GuiStyle::TextHeight}, selBg);
+                                (void)painter.fill(Rect{uint16_t(selX - Pad), y, Pad, lineHeight}, selBg);
                         if (to == line.end && x + Pad <= in.right())
-                                (void)painter.fill(Rect{uint16_t(x), y, Pad, GuiStyle::TextHeight}, selBg);
+                                (void)painter.fill(Rect{uint16_t(x), y, Pad, lineHeight}, selBg);
                 }
-                paintRun(painter, line, y, to, line.end, x, fg, bg);
         }
         // The cursor: a line before the character it is at, while it has the keys.
         const GuiWindow *window = this->window();
@@ -404,10 +392,10 @@ void LineEdit::paint(Painter &painter) {
         const size_t at = lineOf(ls, n, cursor);
         const Line  &line = ls[at];
         if (cursor >= line.start) {
-                const uint32_t cx = line.x + font.textWidth(text.mid(line.start, cursor - line.start));
+                const uint32_t cx = line.x + textFont.textWidth(text.mid(line.start, cursor - line.start));
                 const uint16_t y = top(at);
                 if (cx < area.right() + 1u && y < in.bottom())
-                        (void)painter.fill(Rect{uint16_t(cx > 0 ? cx - 1 : 0), y, 1, GuiStyle::TextHeight}, fg);
+                        (void)painter.fill(Rect{uint16_t(cx > 0 ? cx - 1 : 0), y, 1, textHeight()}, fg);
         }
         return;
 }

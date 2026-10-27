@@ -13,6 +13,7 @@
 #include <bmds/bitmapfont.h>
 #include <bmds/guiwindow.h>
 #include <bmds/linelayout.h>
+#include <bmds/systemfonts.h>
 #include <bmds/widget.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -37,12 +38,6 @@ namespace {
 
         uint16_t columnUp(uint32_t x) {
                 return static_cast<uint16_t>((x + GuiStyle::Column - 1) & ~uint32_t(GuiStyle::Column - 1));
-        }
-
-        // A row of text's top in @p r, centered (@p down: a pixel lower, pressed in).
-        uint16_t textTop(const Rect &r, bool down) {
-                const uint32_t y = r.y + (r.height > GuiStyle::TextHeight ? (r.height - GuiStyle::TextHeight) / 2 : 0);
-                return static_cast<uint16_t>(y + (down ? 1 : 0));
         }
 
 } // namespace
@@ -79,6 +74,65 @@ Widget::~Widget() {
                 }
         }
         if (_parent != nullptr) _parent->remove(this);
+        if (_ownFont != nullptr) {
+                _ownFont->~OwnFont();
+                Memory::free(_ownFont);
+        }
+}
+
+Font Widget::font() const {
+        return _ownFont != nullptr && _ownFont->font.isValid() ? _ownFont->font : GuiStyle::font(fontRole());
+}
+
+FontName Widget::fontName() const {
+        return _ownFont != nullptr ? _ownFont->name : FontName();
+}
+
+StringView Widget::fontText() const {
+        return _ownFont != nullptr ? StringView(_ownFont->text) : StringView();
+}
+
+Error Widget::setFont(StringView name) {
+        if (name.isEmpty()) {
+                if (_ownFont == nullptr) return Error::Ok;
+                _ownFont->~OwnFont();
+                Memory::free(_ownFont);
+                _ownFont = nullptr;
+        } else {
+                auto [parsed, err] = FontName::parse(name);
+                if (err.isError()) return Error::Invalid;
+                auto [font, ferr] = SystemFonts::library().open(parsed);
+                if (ferr.isError()) return ferr;
+                if (_ownFont == nullptr) {
+                        void *memory = Memory::alloc(MemSpace::Psram, sizeof(OwnFont));
+                        if (memory == nullptr) return Error::NoMem;
+                        _ownFont = ::new (memory) OwnFont();
+                }
+                _ownFont->name = parsed;
+                _ownFont->font = font;
+                (void)parsed.format(_ownFont->text, sizeof(_ownFont->text));
+        }
+        // The window's layouts again: this one's hint changed.
+        GuiWindow *w = window();
+        if (w != nullptr) static_cast<Widget *>(w)->restyle();
+        return Error::Ok;
+}
+
+void Widget::restyle() {
+        restyleTree();
+        return;
+}
+
+void Widget::restyleTree() {
+        if (_ownFont != nullptr) {
+                auto [font, err] = SystemFonts::library().open(_ownFont->name);
+                if (err.isOk()) _ownFont->font = font;
+        }
+        styleChanged();
+        resized(); // its children laid out again at its size, before they lay out theirs
+        for (Widget *child = _first; child != nullptr; child = child->_next) child->restyleTree();
+        update();
+        return;
 }
 
 void Widget::destroy() {
@@ -286,9 +340,8 @@ GuiSize Label::sizeHint() const {
         const uint32_t frame = _framed ? 2u * Bevel::width(_frame) : 0u;
         char           text[MaxText + 1];
         const size_t   n = shown(text).length;
-        const uint16_t width =
-                columnUp(Fonts::unscii16.textWidth(StringView(text, n)) + 2 * GuiStyle::ButtonPad + frame);
-        return GuiSize{width > _minWidth ? width : _minWidth, GuiStyle::ButtonHeight};
+        const uint16_t width = columnUp(font().textWidth(StringView(text, n)) + 2 * GuiStyle::ButtonPad + frame);
+        return GuiSize{width > _minWidth ? width : _minWidth, buttonHeight()};
 }
 
 void Label::paint(Painter &painter) {
@@ -302,7 +355,7 @@ void Label::paint(Painter &painter) {
         char                     shownText[MaxText + 1];
         const Mnemonic::Stripped m = shown(shownText);
         const StringView         text(shownText, m.length);
-        const uint32_t           width = Fonts::unscii16.textWidth(text);
+        const uint32_t           width = font().textWidth(text);
         uint32_t       x = r.x + GuiStyle::ButtonPad;
         if (_align == Align::Center && width < r.width) x = r.x + (r.width - width) / 2;
         if (_align == Align::Right && width + GuiStyle::ButtonPad < r.width)
@@ -314,14 +367,15 @@ void Label::paint(Painter &painter) {
         if (_highlighted && !text.isEmpty() && x >= r.x + 4) {
                 // Lit around the text only, as a selected label is.
                 const uint32_t right = x + width + 4 < r.right() ? x + width + 4 : r.right();
-                (void)painter.fill(Rect{uint16_t(x - 4), uint16_t(textTop(r, false) - 1), uint16_t(right - (x - 4)),
-                                        uint16_t(GuiStyle::TextHeight + 2)},
+                (void)painter.fill(Rect{uint16_t(x - 4), uint16_t(GuiStyle::textTop(r, font(), false) - 1),
+                                        uint16_t(right - (x - 4)), uint16_t(textHeight() + 2)},
                                    bg);
         }
         if (!text.isEmpty() && x < r.right()) {
-                (void)painter.text(static_cast<uint16_t>(x), textTop(r, false), text, Fonts::unscii16, fg, bg,
+                (void)painter.text(static_cast<uint16_t>(x), GuiStyle::textTop(r, font(), false), text, font(), fg, bg,
                                    static_cast<uint16_t>(r.right() - x));
-                Mnemonic::draw(painter, static_cast<uint16_t>(x), textTop(r, false), text, m.at, fg, r.right());
+                Mnemonic::draw(painter, static_cast<uint16_t>(x), GuiStyle::textTop(r, font(), false), text, m.at, fg,
+                               r.right(), font());
         }
         return;
 }
@@ -409,9 +463,8 @@ void Button::setChecked(bool checked) {
 GuiSize Button::sizeHint() const {
         const uint32_t icon = _icon != nullptr && _icon->isValid() ? GuiStyle::IconSize + GuiStyle::IconGap : 0;
         if (_text[0] == '\0' && icon != 0)
-                return GuiSize{columnUp(GuiStyle::IconSize + GuiStyle::ButtonPad), GuiStyle::ButtonHeight};
-        return GuiSize{columnUp(Fonts::unscii16.textWidth(StringView(_text)) + 2 * GuiStyle::ButtonPad + icon),
-                       GuiStyle::ButtonHeight};
+                return GuiSize{columnUp(GuiStyle::IconSize + GuiStyle::ButtonPad), buttonHeight()};
+        return GuiSize{columnUp(font().textWidth(StringView(_text)) + 2 * GuiStyle::ButtonPad + icon), buttonHeight()};
 }
 
 bool Button::inside(int x, int y) const {
@@ -473,19 +526,21 @@ void Button::paint(Painter &painter) {
         if (_icon != nullptr && _icon->isValid() && _icon->width <= GuiStyle::IconSize &&
             _icon->height <= GuiStyle::IconSize && ix + _icon->width <= r.right()) {
                 // The icon first, a pixel lower pressed in as the text, then the text after a gap.
-                const uint16_t iy = static_cast<uint16_t>(textTop(r, in) + (GuiStyle::TextHeight - _icon->height) / 2);
+                const uint16_t iy =
+                        static_cast<uint16_t>(GuiStyle::textTop(r, font(), in) + (textHeight() - _icon->height) / 2);
                 (void)painter.image(ix, iy, *_icon, bg);
                 x = columnUp(ix + _icon->width + GuiStyle::IconGap);
         }
-        const uint32_t textWidth = Fonts::unscii16.textWidth(StringView(_text));
+        const uint32_t textWidth = font().textWidth(StringView(_text));
         if (_centered && _icon == nullptr && textWidth + 2 * GuiStyle::ButtonPad < r.width)
                 x = column(r.x + (r.width - textWidth) / 2);
         if (_text[0] != '\0' && x + GuiStyle::ButtonPad / 2 < r.right()) {
                 // Cut to the room, with the pad at the right kept; a pixel lower pressed in.
                 const uint32_t room = r.right() - x - GuiStyle::ButtonPad / 2;
-                (void)painter.text(x, textTop(r, in), StringView(_text), Fonts::unscii16, fg, bg,
+                (void)painter.text(x, GuiStyle::textTop(r, font(), in), StringView(_text), font(), fg, bg,
                                    static_cast<uint16_t>(room));
-                Mnemonic::draw(painter, x, textTop(r, in), StringView(_text), _underline, fg, x + room);
+                Mnemonic::draw(painter, x, GuiStyle::textTop(r, font(), in), StringView(_text), _underline, fg,
+                               x + room, font());
         }
         return;
 }
@@ -581,8 +636,8 @@ void CheckBox::toggle() {
 }
 
 GuiSize CheckBox::sizeHint() const {
-        return GuiSize{columnUp(BoxSide + CheckGap + Fonts::unscii16.textWidth(StringView(_text)) + GuiStyle::Column),
-                       GuiStyle::ButtonHeight};
+        return GuiSize{columnUp(BoxSide + CheckGap + font().textWidth(StringView(_text)) + GuiStyle::Column),
+                       buttonHeight()};
 }
 
 void CheckBox::paint(Painter &painter) {
@@ -609,25 +664,25 @@ void CheckBox::paint(Painter &painter) {
         }
         const uint16_t x = columnUp(r.x + BoxSide + CheckGap);
         if (_text[0] == '\0' || x >= r.right()) return;
-        const uint16_t   top = textTop(r, false);
+        const uint16_t   top = GuiStyle::textTop(r, font(), false);
         const StringView text(_text);
-        const uint32_t   width = Fonts::unscii16.textWidth(text);
+        const uint32_t   width = font().textWidth(text);
         const uint16_t   room = uint16_t(r.right() - x);
         const uint32_t   textBg = _highlighted ? p.color(Role::Highlight) : face;
         const uint32_t   textFg = _highlighted ? p.color(Role::HighlightText) : fg;
         if (_highlighted && x >= r.x + 4) {
                 const uint32_t right = x + width + 4 < r.right() ? x + width + 4 : r.right();
-                (void)painter.fill(Rect{uint16_t(x - 4), uint16_t(top - 1), uint16_t(right - (x - 4)),
-                                        uint16_t(GuiStyle::TextHeight + 2)},
-                                   textBg);
+                (void)painter.fill(
+                        Rect{uint16_t(x - 4), uint16_t(top - 1), uint16_t(right - (x - 4)), uint16_t(textHeight() + 2)},
+                        textBg);
         }
-        (void)painter.text(x, top, text, Fonts::unscii16, textFg, textBg, room);
-        Mnemonic::draw(painter, x, top, text, _underline, textFg, r.right());
+        (void)painter.text(x, top, text, font(), textFg, textBg, room);
+        Mnemonic::draw(painter, x, top, text, _underline, textFg, r.right(), font());
         GuiWindow *window = this->window();
         if (hasFocus() && window != nullptr && window->isActive() && top > r.y && x >= r.x + 2) {
                 // The focus: a ring around the text, outside its rows.
                 const uint16_t w = uint16_t((width < room ? width : room) + 4);
-                const Rect     f{uint16_t(x - 2), uint16_t(top - 1), w, uint16_t(GuiStyle::TextHeight + 2)};
+                const Rect     f{uint16_t(x - 2), uint16_t(top - 1), w, uint16_t(textHeight() + 2)};
                 const Rect     ring[] = {{f.x, f.y, f.width, 1},
                                          {f.x, uint16_t(f.bottom() - 1), f.width, 1},
                                          {f.x, uint16_t(f.y + 1), 1, uint16_t(f.height - 2)},
