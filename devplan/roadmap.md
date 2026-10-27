@@ -275,7 +275,10 @@ Plan: [`input.md`](input.md).
     OPL's semantics (not an emulation; the goal about 5 µs a 2-operator voice a 64-frame block,
     a third of the wavetable's), Freedoom's GENMIDI bank (BSD-3, 12 KB) read in place from
     `/rom`, an `fm` port beside `wavetable`, and `synth/system` choosing the system synth, `fm`
-    by default: MIDI with no card.
+    by default: MIDI with no card. Decided 2026-10-27: DMXOPL3 (and Freedoom's) bank in the ROM,
+    one service run twice, benches first; the linear form after listening (the log form measured
+    slower). Step 1 done: `FmSynth`, `Op2Bank`, the banks, `bmds-synthwav`, the benches (8.0 µs a
+    voice-block, the wavetable's 9.9), tests and fuzzing; levels matched to TimGM6mb.
   - [ ] 6b. The patchbay (§24, outlined): a graph fd for programs, an audio graph (client to
     client in a period, devices' playback and capture), and `patchbay`, MIDI and audio wires.
     MIDI done: `patchbay` (drag or keys, kept in `midi/connect`, live); the graph fd waits for

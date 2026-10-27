@@ -141,6 +141,7 @@ add_executable(bmds_host_tests
         imageview.cpp
         notifications.cpp
         synth.cpp
+        fmsynth.cpp
         pipe.cpp
         streampair.cpp
         guiprotocol.cpp
@@ -185,6 +186,7 @@ target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_
         BMDS_IMAGES_DIR="${CMAKE_CURRENT_LIST_DIR}/images"
         BMDS_AUDIO_DIR="${CMAKE_CURRENT_LIST_DIR}/audio"
         BMDS_SYNTH_DIR="${CMAKE_CURRENT_LIST_DIR}/synth"
+        BMDS_OPL_BANKS_DIR="${BMDS_ROOT}/thirdparty/opl-banks"
         BMDS_FONTS_DIR="${BMDS_ROOT}/thirdparty/plex/fonts"
         BMDS_FONTS_TEST_DIR="${CMAKE_CURRENT_LIST_DIR}/fonts"
         BMDS_SPEECH_DIR="${BMDS_ROOT}/thirdparty/svox-pico/lang"
@@ -255,6 +257,13 @@ bmds_target_options(bmds_host_tests)
 add_executable(bmds-elfcheck ${BMDS_ROOT}/tools/elfcheck/main.cpp hostmemory.cpp)
 target_link_libraries(bmds-elfcheck PRIVATE bmds_loader)
 bmds_target_options(bmds-elfcheck)
+
+# bmds-synthwav: a MIDI file rendered to WAV through the synths (tools/synthwav,
+# devplan/audio.md §26), with libbmdsgame's MIDI file walker.
+add_executable(bmds-synthwav ${BMDS_ROOT}/tools/synthwav/main.cpp ${BMDS_ROOT}/sdk/game/smf.c hostmemory.cpp)
+target_include_directories(bmds-synthwav PRIVATE ${BMDS_ROOT}/sdk/include)
+target_link_libraries(bmds-synthwav PRIVATE bmds_synth)
+bmds_target_options(bmds-synthwav)
 
 enable_testing()
 add_test(NAME bmds_host_tests COMMAND bmds_host_tests)

@@ -58,6 +58,15 @@ target_compile_options(soundfont_fuzz PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exc
 target_link_libraries(soundfont_fuzz PRIVATE bmds_core)
 target_link_options(soundfont_fuzz PRIVATE -fsanitize=fuzzer)
 
+# The FM synth and OP2 banks (devplan/audio.md §26).
+add_executable(fmsynth_fuzz fmsynth.cpp ${BMDS_ROOT}/tests/host/hostmemory.cpp ${SYNTH}/src/fmsynth.cpp
+                            ${SYNTH}/src/op2bank.cpp)
+target_include_directories(fmsynth_fuzz PRIVATE ${BMDS_ROOT}/tests/host ${SYNTH}/include ${SYNTH}/src
+                                                ${BMDS_ROOT}/thirdparty/tinysoundfont)
+target_compile_options(fmsynth_fuzz PRIVATE -fno-exceptions -fno-rtti)
+target_link_libraries(fmsynth_fuzz PRIVATE bmds_core)
+target_link_options(fmsynth_fuzz PRIVATE -fsanitize=fuzzer)
+
 # NTP's parser and arithmetic (devplan/network.md §22): bmds_net's portable ntp.cpp alone.
 set(NET ${BMDS_ROOT}/components/bmds_net)
 add_executable(ntp_fuzz ntp.cpp ${NET}/src/ntp.cpp)

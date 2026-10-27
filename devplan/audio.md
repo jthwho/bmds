@@ -2633,12 +2633,145 @@ in `/rom`. `midi/connect`'s default changes before release.
 ### Steps
 
 1. **The engine on the host:** `FmSynth`, `Op2Bank`, the tests, the fuzzing, the WAV tool; the
-   bank built from Freedoom's WAD.
+   two banks in `thirdparty/opl-banks/` (below); the voice loop's bench on the board.
 2. **`SynthEngine`** and the synth fd's `engine` (appended), `synth -e`, `play` following the
    system synth; `progtest synth` for FM.
 3. **The `fm` service** and `synth/system` (the router's route, `midi/connect`'s default
    emptied), `synth/fm`, `synth/fm-bank`, the wavetable's warm font only as the system synth;
    the control panel's rows.
-4. **The ROM** (the bank, Freedoom's licence) and the board's measurements; the user listening.
-5. **Later:** 4-operator voices and WOPL banks; DMXOPL if its licence allows; PIE if measured
-   worthwhile.
+4. **The ROM** (the banks and their licences) and the board's measurements; the user listening.
+5. **Later:** 4-operator voices and WOPL banks; PIE if measured worthwhile.
+
+### Decided (the user, 2026-10-27)
+
+- **The chip's arithmetic (option A):** the operator works as the OPL does, in the log domain: a
+  quarter log-sin table (256 entries) gives the wave's attenuation, every other attenuation is
+  added to it (total level, key scale level, the envelope, tremolo, and the MIDI side's velocity,
+  volume and expression folded into one per-voice figure each 16 frames), and an exponent table
+  (256 entries) turns the sum into a sample, with a shift for the octaves. No multiply in the
+  operator: two lookups and an add, the stepped attenuation that is part of the OPL's sound.
+  Only the pan's two gains multiply, once per voice sample into the mix. Not the chip's output
+  converter (its coarse floating-point DAC): the goal is a light synth, not grit. Chosen for
+  the lowest system cost; measured (below) against the plan's 5 µs.
+- **Two banks, both in the repository and the ROM** (12 KB each, the same OP2 format), in
+  `thirdparty/opl-banks/`, staged as `/rom/share/synth/*.op2` with their licences in
+  `/rom/share/licenses/`:
+  - **DMXOPL3** (`dmxopl3.op2`; MIT, "DMXOPL3 by Sneakernets", the author asking for credit,
+    <https://github.com/sneakernets/DMXOPL>, the repository's `GENMIDI.op2` at e83c144,
+    2018-07-13, the newest; its `GENMIDI - Vanilla.op2` is tweaked for DOS's DMX driver, which
+    we aren't). Made to sound like a Sound Canvas, it uses the OPL3's eight waveforms (square,
+    "camel" sine...), so all eight are in the first engine, not later.
+  - **Freedoom's GENMIDI** (`freedoom.op2`; BSD-3), taken from Freedoom 0.13.0's
+    `freedoom2.wad` by `tools/import-opl-banks`, which reads the release zip `bmds-dist`
+    already caches. **Found:** it is a relative of DMXOPL3, not the OpenBSD-derived OPL2 bank
+    §26 assumed: 110 of its 175 instruments are DMXOPL3's byte for byte, and it uses the OPL3
+    waveforms too. Both are in the repository for the listening; if they sound alike, only
+    DMXOPL3 (the newer) goes in the ROM.
+  - **The default is chosen by ear:** the host WAV tool renders the same files through both,
+    for the user; the expectation is DMXOPL3. `synth/fm-bank` takes any OP2 file (the card's
+    too), so either, or another, is a setting away.
+- **One service, two instances:** `wavetable.cpp`'s service (the port, the ring, the control
+  thread, the idle close, the stream) becomes a `SynthService` over a `SynthEngine`, run as
+  `wavetable` and as `fm`; `synth status` and the control panel read either the same way.
+- **Measured early and often** (`devplan/bench.md`): `bmds_synth` gets a `benchsynth.cpp` in the
+  `bench` table, tagged `audio` where it sounds:
+  - `synth.fm.voice`: one 2-operator voice's 64-frame block (cycles and µs), by waveform, with
+    and without feedback, FM and additive: the inner loop alone, step 1, before the rest is
+    built on it;
+  - `synth.fm.voices` and `synth.wavetable.voices`: 1, 8, 16 and 32 voices sustaining one note
+    each through each engine (µs a block, the share of a core), so the two compare on the board;
+  - `synth.fm.song`: a MIDI file rendered as fast as it goes (the real mix of attacks, releases,
+    drums), its cost a second of sound, for both engines;
+  - the host's `tests/host/` bench of the same voice loop, to see a change's effect before the
+    board.
+- **The wavetable's font is loaded at its first note** (no warm font at boot when it isn't the
+  system synth, as planned), and **a notification tells the user** when that load came from the
+  card (not the font cache): "Wavetable synth: loaded TimGM6mb.sf2 (0.7 s)", posted by the
+  kernel (`Notifications::post`, owner 0) as the load ends, so the hiccup has an explanation.
+  Not for the `fm` engine (its bank is mapped) nor a load the cache answered.
+
+### Measured first (2026-10-27): the voice loop on the board
+
+`bench run synth.fm.voice synth.fm.voices synth.wavetable.voices`, and a temporary
+`synth.fm.exp` of the loop's forms in isolation (one 2-operator voice, sine and sine with
+feedback 3, a 64-frame block, the core at 360 MHz):
+
+| What | µs a block |
+|---|---|
+| The engine as first written (separate passes, log-sin and exponent per sample, stereo mix) | 17.2 a voice (32: 562) |
+| The wavetable, TimGM6mb's organ | 9.9 a voice (32: 318) |
+| The first engine's loops alone (no ticks) | 13.9 |
+| One fused loop (modulator, carrier, mix) | 11.3 |
+| The same, two voices interleaved / unrolled 2 or 4 / tables in TCM or L2 RAM | 11.2-12.1 (no gain) |
+| Full-period log table (sign in it, doubled domains), a mono add | 8.3 |
+| Full-period linear table (the chip's own levels) times a gain, a mono add | 5.7 |
+
+- **Found:** the core issues one instruction a cycle at best and managed about 0.8 here; the
+  log form is about 50 instructions a voice-sample (two dependent table loads an operator, the
+  mirroring, the sign, the shift by the attenuation's octave), so §26's "20-30 cycles" was wrong
+  by about 2x. Where the tables live doesn't matter (flash rodata, L2 RAM and TCM within 5 %;
+  TCM the slowest), nor does interleaving voices: it is instruction-bound, not latency-bound.
+- **The levers:** full-period tables (no mirroring or sign per sample), one fused loop, and
+  voices added into a mono buffer per MIDI channel (3 instructions, not a stereo multiply-add's
+  8), the pan applied per channel per block. With the log form that is about 8.3 µs; with a
+  linear table and one multiply an operator, 5.7 µs: the plan's goal, about 60 % of the
+  wavetable's cost, with no PSRAM traffic.
+
+### Decided: the linear form (the user, 2026-10-27)
+
+The user listened to three of Freedoom's songs rendered both ways (`bmds-synthwav`, the log form
+and the linear one) and chose **the linear form**: the cheaper one, a reasonable trade. Measured
+between them: the same loudness (within 0.1 dB), the spectra 0.07-0.30 dB apart at the median in
+1/3-octave bands (0.8-1.5 dB at the 95th percentile); the samples drift apart, as FM's feedback
+makes any difference grow, but not the sound. This replaces "the chip's arithmetic (option A)"
+above:
+
+- **Waveforms:** `FmTables::Waves`, the eight waveforms' periods (1024 entries each, 16 KB of
+  rodata, made at compile time from the log-sin and exponent tables as the chip makes them: its
+  shapes exactly, its ones' complement negative halves included), doubled, so a level adds to a
+  phase's byte offset with no shift.
+- **Gains:** the attenuations are still added in the chip's units (envelope, total level, key
+  scaling, tremolo, the MIDI volume) and turned into a gain each tick by the chip's exponent
+  table; the gain ramps over the tick. Lost: the chip's coarser rounding of quiet samples.
+- **The loop:** one per voice and block, by feedback and connection (4 instances, 2 KB): a load and
+  a multiply an operator, the voice added into its MIDI channel's sum; each channel panned into
+  the mix once a block. The ticks are worked out first and the block rendered in one call.
+- **The LFOs** from a chip-sample counter moved on each tick (no 64-bit division).
+
+**Measured on the board** (`synth.fm.voices`, 360 MHz, a 64-frame block of 1,333 µs):
+
+| Voices | FM, log form | FM, linear | Wavetable (TimGM6mb) |
+|---|---|---|---|
+| 1 | 24.8 µs | 19.0 µs | 12.3 µs |
+| 8 | 145.9 | 76.0 | 81.3 |
+| 16 | 290.6 | 140.5 | 160.5 |
+| 32 | 562.3 | 269.2 (20 % of a core) | 318.0 (24 %) |
+
+About 8.0 µs a voice (the wavetable's 9.9, and no PSRAM traffic) and 8 µs a block whatever the
+voices. Where the rest goes: the loop is about 5.7 µs of the 8; the envelope's tick (about 150
+instructions, four a block) is 2.4. **Ticking every 32 frames** measured 6.85 µs a voice (15 %
+less), at the cost of fast attacks and decays ramped over 0.67 ms rather than 0.33: not taken,
+for now; a knob if the CPU is needed.
+
+**SIMD (PIE):** not now. The voice loop's work is two table lookups a sample, and PIE has no
+gather; vectorizing across voices would mean computing the waveforms rather than reading the
+chip's, a different sound again. The block-level loops (the channels' pan, the float conversion)
+vectorize, but are a few µs a block. Looked at again if the fixed cost matters.
+
+### Levels (the user, 2026-10-27)
+
+Balanced against TimGM6mb at `synth/gain`'s default (-10 dB): the FM synth's calibration is
++13 dB over the chip's level (a full voice at -18 dBFS), measured on the three songs (they were
+4.8 to 11.1 dB quieter at the same gain). At -10 dB: FM -19.6, -21.9, -26.6 dBFS RMS, peaks -5.5
+to -8.6; TimGM6mb -21.8, -22.2, -22.5, peaks -3.3 to -5.7. Neither clips: TimGM6mb's clipping
+seen first was `bmds-synthwav` rendering at 0 dB; it now defaults to synth/gain's -10.
+
+### As built: step 1 (2026-10-27)
+
+`FmSynth` and `Op2Bank` (portable, `bmds_synth`), `FmTables`; the banks in
+`thirdparty/opl-banks/` with `tools/import-opl-banks`; `bmds-synthwav` (`tools/synthwav`,
+built in `build-host`); the benches `synth.fm.voice`, `synth.fm.voices`,
+`synth.wavetable.voices` (`benchsynth.cpp`); host tests (`tests/host/fmsynth.cpp`, 11 cases);
+`fmsynth_fuzz` (a bank and a MIDI stream on a configuration the input picks): 10 minutes, 24,353
+inputs (each seconds of sound under ASan and UBSan), no fault, no leak, every sample finite.
+Next: step 2, `SynthEngine` and the synth fd's `engine`.

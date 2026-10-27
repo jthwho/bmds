@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+# @file      import-opl-banks
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Imports thirdparty/opl-banks, the FM synth's instrument banks kept in git
+# (devplan/audio.md §26):
+#
+#   import-opl-banks [FREEDOOM_ZIP]
+#
+# - freedoom.op2: the GENMIDI lump of Freedoom 0.13.0's freedoom2.wad, out of
+#   the release zip (default: the one tools/bmds-dist caches), checked against
+#   the hash dist/freedoom/package.toml records; its COPYING.txt beside it.
+# - dmxopl3.op2: DMXOPL3's GENMIDI.op2 and LICENSE at the commit below,
+#   downloaded from GitHub.
+#
+# Checks each is an OP2 bank (the size and the magic) and prints its hash.
+# Never commits: review the diff (and README.md's hashes), then commit it.
+#
+# Python's standard library.
+
+import hashlib
+import os
+import re
+import struct
+import sys
+import urllib.request
+import zipfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+DEST = os.path.join(ROOT, "thirdparty", "opl-banks")
+FREEDOOM_TOML = os.path.join(ROOT, "dist", "freedoom", "package.toml")
+FREEDOOM_ZIP = os.path.expanduser("~/.cache/bmds-dist/sources/freedoom-0.13.0.zip")
+DMXOPL_COMMIT = "e83c144a2e6d3c283e20f9d16d011126931892f5"
+DMXOPL_RAW = "https://raw.githubusercontent.com/sneakernets/DMXOPL/" + DMXOPL_COMMIT + "/"
+
+# DMX's OP2: the magic, 175 instruments of 36 bytes, then their 175 names of 32.
+OP2_MAGIC = b"#OPL_II#"
+OP2_SIZE = 8 + 175 * 36 + 175 * 32
+
+
+def die(message):
+        sys.stderr.write("import-opl-banks: " + message + "\n")
+        sys.exit(1)
+
+
+def check_op2(name, data):
+        if len(data) != OP2_SIZE or not data.startswith(OP2_MAGIC):
+                die(name + ": not an OP2 bank")
+        return
+
+
+def write(name, data):
+        with open(os.path.join(DEST, name), "wb") as f:
+                f.write(data)
+        print("%s  %s" % (hashlib.sha256(data).hexdigest(), name))
+        return
+
+
+def wad_lump(wad, wanted):
+        magic, count, offset = struct.unpack_from("<4sii", wad, 0)
+        if magic not in (b"IWAD", b"PWAD"):
+                die("not a WAD")
+        for i in range(count):
+                pos, size, name = struct.unpack_from("<ii8s", wad, offset + 16 * i)
+                if name.rstrip(b"\0") == wanted:
+                        return wad[pos:pos + size]
+        die("no " + wanted.decode() + " lump")
+        return None
+
+
+def freedoom(zip_path):
+        with open(FREEDOOM_TOML) as f:
+                want = re.search(r'^sha256 = "([0-9a-f]+)"', f.read(), re.M).group(1)
+        with open(zip_path, "rb") as f:
+                got = hashlib.sha256(f.read()).hexdigest()
+        if got != want:
+                die(zip_path + ": its hash isn't dist/freedoom's")
+        with zipfile.ZipFile(zip_path) as z:
+                names = z.namelist()
+                wad = z.read(next(n for n in names if n.endswith("/freedoom2.wad")))
+                copying = z.read(next(n for n in names if n.endswith("/COPYING.txt")))
+        bank = wad_lump(wad, b"GENMIDI")
+        check_op2("freedoom2.wad's GENMIDI", bank)
+        write("freedoom.op2", bank)
+        write("freedoom-COPYING.txt", copying)
+        return
+
+
+def dmxopl():
+        bank = urllib.request.urlopen(DMXOPL_RAW + "GENMIDI.op2").read()
+        check_op2("DMXOPL's GENMIDI.op2", bank)
+        write("dmxopl3.op2", bank)
+        write("dmxopl3-LICENSE", urllib.request.urlopen(DMXOPL_RAW + "LICENSE").read())
+        return
+
+
+def main(argv):
+        if len(argv) > 2:
+                die("usage: import-opl-banks [FREEDOOM_ZIP]")
+        os.makedirs(DEST, exist_ok=True)
+        freedoom(argv[1] if len(argv) == 2 else FREEDOOM_ZIP)
+        dmxopl()
+        return 0
+
+
+if __name__ == "__main__":
+        sys.exit(main(sys.argv))
