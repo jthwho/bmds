@@ -271,7 +271,7 @@ Plan: [`input.md`](input.md).
     `wavetable` midi1, `system>wavetable` by default, the font warm at boot). Step 3 done:
     scheduled MIDI output (`time_ns`, `BMDS_MIDI_CANCEL`, `midiclock`), held notes let go at a
     close, libbmdsgame's `BMDS_GAME_MUSIC_MIDI_OUT`, Doom's `doom/music` (`midi` by default).
-  - [ ] 6d. The FM synth (§26, designed 2026-10-22, the user's request): a voice engine with the
+  - [x] 6d. The FM synth (§26, designed 2026-10-22, the user's request): a voice engine with the
     OPL's semantics (not an emulation; the goal about 5 µs a 2-operator voice a 64-frame block,
     a third of the wavetable's), Freedoom's GENMIDI bank (BSD-3, 12 KB) read in place from
     `/rom`, an `fm` port beside `wavetable`, and `synth/system` choosing the system synth, `fm`
@@ -282,7 +282,10 @@ Plan: [`input.md`](input.md).
     `SynthEngine`, the synth fd's `engine` (ABI, appended), `synth/fm-bank`, `synth -e`, MIDI
     files through FM, DMXOPL3 in `/rom`. Step 3 done: one service run as `fm` and `wavetable`,
     `synth/system` (`fm` by default) routing `system`, `midi/connect` empty by default, no font
-    loaded at boot, a notification when the wavetable's first note loads it.
+    loaded at boot, a notification when the wavetable's first note loads it. Step 4 done: Doom's
+    music through `fm` measured (its voice state moved to the TCM: 1 late period in 45 s beside
+    Doom), a limiter and -4 dB; the media player plays MIDI files through `system`
+    (`mediaplayer.md` §12). Later: 4-operator voices, WOPL banks.
   - [ ] 6b. The patchbay (§24, outlined): a graph fd for programs, an audio graph (client to
     client in a period, devices' playback and capture), and `patchbay`, MIDI and audio wires.
     MIDI done: `patchbay` (drag or keys, kept in `midi/connect`, live); the graph fd waits for

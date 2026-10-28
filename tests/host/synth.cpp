@@ -20,6 +20,7 @@
 #include <vector>
 #include <bmds/decoder.h>
 #include <bmds/mididecoder.h>
+#include <bmds/midisequence.h>
 #include <bmds/soundfont.h>
 #include <bmds/synth.h>
 
@@ -520,4 +521,93 @@ TEST_CASE("Synth: the output's gain") {
         c.gainDb = NAN;
         CHECK(synth.open(*font, c) == Error::Invalid);
         font->destroy();
+}
+
+namespace {
+
+        // A format 0 MIDI file at 480 ticks a quarter, 120 bpm (a tick 1.0417 ms): @p events are
+        // (delta ticks, bytes).
+        std::vector<uint8_t> smf(std::initializer_list<std::pair<uint32_t, std::vector<uint8_t>>> events) {
+                std::vector<uint8_t> track;
+                for (const auto &[delta, bytes] : events) {
+                        uint32_t v = delta;
+                        uint8_t  vlq[5];
+                        int      n = 0;
+                        vlq[n++] = uint8_t(v & 0x7f);
+                        while ((v >>= 7) != 0) vlq[n++] = uint8_t(0x80 | (v & 0x7f));
+                        while (n > 0) track.push_back(vlq[--n]);
+                        track.insert(track.end(), bytes.begin(), bytes.end());
+                }
+                for (uint8_t b : {0x00, 0xff, 0x2f, 0x00}) track.push_back(b);
+                std::vector<uint8_t> f = {'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 0, 0, 1, 0x01, 0xe0, 'M', 'T', 'r', 'k'};
+                const uint32_t       size = uint32_t(track.size());
+                for (int shift : {24, 16, 8, 0}) f.push_back(uint8_t(size >> shift));
+                f.insert(f.end(), track.begin(), track.end());
+                return f;
+        }
+
+} // namespace
+
+TEST_CASE("MidiSequence: a file's messages in time, found by time; the state a seek sends") {
+        bmds::MidiSequence         seq;
+        const std::vector<uint8_t> scale = readFile(std::filesystem::path(BMDS_SYNTH_DIR) / "scale.mid");
+        REQUIRE(seq.load(bmds::ByteSpan(scale.data(), scale.size())) == Error::Ok);
+        REQUIRE(seq.count() > 10);
+        for (size_t i = 1; i < seq.count(); ++i) CHECK(seq.message(i - 1).ms <= seq.message(i).ms);
+        CHECK(seq.lengthMs() > 4000);
+        CHECK(seq.lengthMs() <= 5000);
+        CHECK(seq.indexAt(0) == 0);
+        CHECK(seq.indexAt(seq.lengthMs() + 1) == seq.count());
+        const size_t mid = seq.indexAt(2000);
+        CHECK(seq.message(mid).ms >= 2000);
+        if (mid > 0) CHECK(seq.message(mid - 1).ms < 2000);
+
+        // Made up: a program, a volume, the bend's range and a bend, then notes; the state at 1 s.
+        const std::vector<uint8_t> f = smf({
+                {0, {0xb2, 0, 1}},   // bank 1 on channel 3
+                {0, {0xc2, 40}},     // violin
+                {0, {0xb2, 7, 90}},  // volume
+                {0, {0xb2, 101, 0}}, // RPN 0: the bend's range
+                {0, {0xb2, 100, 0}},
+                {0, {0xb2, 6, 12}},      // 12 semitones
+                {0, {0xe2, 0x00, 0x50}}, // a bend
+                {0, {0x92, 60, 100}},    // a note
+                {480, {0x82, 60, 0}},    // 0.5 s
+                {480, {0xb2, 7, 70}},    // 1 s: the volume again
+                {480, {0x92, 64, 100}},  // 1.5 s
+                {480, {0x82, 64, 0}},
+        });
+        REQUIRE(seq.load(bmds::ByteSpan(f.data(), f.size())) == Error::Ok);
+        CHECK(seq.count() == 12);
+        CHECK(seq.lengthMs() == 2000);
+        bmds::MidiSequence::Message state[bmds::MidiSequence::MaxStateMessages];
+        const size_t                n = seq.stateAt(1250, bmds::Span<bmds::MidiSequence::Message>(state));
+        // Bank, program, volume (70: the later one), RPN 0 = 12 then null, the bend; no notes.
+        std::vector<std::vector<uint8_t>> got;
+        for (size_t i = 0; i < n; ++i) {
+                CHECK(state[i].ms == 1250);
+                got.push_back(std::vector<uint8_t>(state[i].data, state[i].data + state[i].length));
+        }
+        const std::vector<std::vector<uint8_t>> want = {
+                {0xb2, 0, 1},  {0xc2, 40},       {0xb2, 7, 70},    {0xb2, 101, 0},     {0xb2, 100, 0},
+                {0xb2, 6, 12}, {0xb2, 101, 127}, {0xb2, 100, 127}, {0xe2, 0x00, 0x50},
+        };
+        CHECK(got == want);
+        CHECK(seq.stateAt(0, bmds::Span<bmds::MidiSequence::Message>(state)) == 0); // nothing before 0
+
+        // Damaged ones refused, and what was held forgotten.
+        std::vector<uint8_t> junk = f;
+        junk[0] = 'X';
+        CHECK(seq.load(bmds::ByteSpan(junk.data(), junk.size())) == Error::Invalid);
+        CHECK(seq.count() == 0);
+        CHECK(seq.load(bmds::ByteSpan(f.data(), 13)) == Error::Invalid);
+        const std::vector<uint8_t> empty = smf({});
+        CHECK(seq.load(bmds::ByteSpan(empty.data(), empty.size())) == Error::Invalid); // no message
+        for (const auto &entry :
+             std::filesystem::directory_iterator(std::filesystem::path(BMDS_SYNTH_DIR) / "fuzz-midi")) {
+                const std::vector<uint8_t> found = readFile(entry.path());
+                const Error                err = seq.load(bmds::ByteSpan(found.data(), found.size()));
+                CHECK((err == Error::Ok || err == Error::Invalid));
+                if (err.isOk()) (void)seq.stateAt(seq.lengthMs(), bmds::Span<bmds::MidiSequence::Message>(state));
+        }
 }

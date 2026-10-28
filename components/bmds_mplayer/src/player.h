@@ -16,9 +16,11 @@
 #include <bmds/decoder.h>
 #include <bmds/error.h>
 #include <bmds/filehandle.h>
+#include <bmds/midisequence.h>
 #include <bmds/mutex.h>
 #include <bmds/semaphore.h>
 #include <bmds/string.h>
+#include <bmds/sysconf.h>
 #include <bmds/stringview.h>
 #include <bmds/thread.h>
 #include <bmds/vfs.h>
@@ -46,6 +48,13 @@ BMDS_NAMESPACE_BEGIN
  *
  * The device is open only while there is something to play: a stop or the
  * end of the list closes it, and its ring goes.
+ *
+ * **A MIDI file** isn't decoded: its messages go to `/dev/midi` (the system
+ * port, so the system synth plays them, `devplan/mediaplayer.md` §12), each
+ * written `MidiAheadMs` before its time and carrying it. There is no stream:
+ * `status()` reports the player's own clock (the time since the track's
+ * start, less pauses) as a stream's played frames at `MidiRateHz`, so a
+ * report's frames and the window's clock work as for a sound file.
  *
  * @par Thread Safety
  * `play()`, `pause()`, `stop()`, `finish()`, `setGain()`, `status()` and
@@ -86,6 +95,7 @@ class Player {
                                 char          title[MaxTag + 1] = {};
                                 char          artist[MaxTag + 1] = {};
                                 char          album[MaxTag + 1] = {};
+                                char          synth[32] = {}; ///< `Started`, a MIDI file: the system synth's port.
                 };
 
                 /** @brief The ring, in milliseconds of sound (a card's pauses covered). */
@@ -93,6 +103,15 @@ class Player {
 
                 /** @brief A write's sound, in milliseconds: the longest a command waits. */
                 static constexpr uint32_t PeriodMs = 20;
+
+                /** @brief A MIDI message is written this long before its time. */
+                static constexpr uint32_t MidiAheadMs = 100;
+
+                /** @brief After a MIDI file's last message, its notes' releases: then `Ended`. */
+                static constexpr uint32_t MidiTailMs = 2000;
+
+                /** @brief A MIDI file's clock, in frames a second (a stream's rate, for the window). */
+                static constexpr uint32_t MidiRateHz = 48000;
 
                 Player() = default;
                 ~Player() { quit(); }
@@ -179,6 +198,20 @@ class Player {
                 void         reportStopped(uint32_t track);
                 static Error readAt(void *arg, uint64_t offset, WritableByteSpan buf);
 
+                // A MIDI file, through /dev/midi.
+                Error       startMidi(const Command &command);
+                void        seekMidi(uint64_t ms);
+                unsigned    sendSome(); // the milliseconds until it wants to run again
+                void        pauseMidi(bool paused);
+                void        closeMidi();
+                void        sendNow(const uint8_t *data, uint8_t length);
+                bool        sendAt(int64_t timeNs, const uint8_t *data, uint8_t length); // false: no room yet
+                void        sendToAll(uint8_t controller, uint8_t value);
+                void        sendVolumes();
+                uint8_t     volumeOut(uint8_t channel) const; // its volume as the file set it, at the gain
+                uint64_t    midiMs() const;                   // where it is in the file
+                static void systemChanged(void *arg);         // synth/system's watcher (another task)
+
                 // The loop's side.
                 Thread           _thread;
                 Semaphore        _wake{1, 0};
@@ -214,6 +247,19 @@ class Player {
                 uint8_t          *_buffer = nullptr; // a period's sound, PSRAM
                 size_t            _bufferBytes = 0;
                 Command           _taken; // a command being handled
+
+                // A MIDI file's (the thread's; the clock's atomics read by status()).
+                MidiSequence         _sequence;
+                FileHandle::Ptr      _midiHandle;
+                size_t               _next = 0;        // the message to write next
+                uint8_t              _volume[16] = {}; // each channel's volume as the file set it
+                int32_t              _scale = 32768;   // the gain's on the volumes (Q15), as sent
+                int32_t              _scaleGain = 0;   // the gain it was worked out from
+                std::atomic<bool>    _midiOn{false};   // a MIDI file is open
+                std::atomic<int64_t> _zeroNs{0};       // playing: when its time 0 is (monotonic)
+                std::atomic<int64_t> _heldMs{-1};      // paused: where it is (-1: playing)
+                SysConf::Watcher     _systemWatcher;   // synth/system: another synth gets the state
+                std::atomic<bool>    _systemChanged{false};
 };
 
 BMDS_NAMESPACE_END

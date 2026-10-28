@@ -688,3 +688,10 @@ until silicon v3; then test again.
   or the `IDLE` tasks' totals in `tasks` read over an SSH login, were off by up to a second a run.
   Where it goes: `prof start` ... `prof stop; prof dump`, then `tools/bmds-prof`
   (`devplan/sysmon.md` §9).
+- **Hot state beside a busy core: the TCM.** The cores share one L1 data cache, so another core's
+  memory traffic (a game drawing, a big copy) empties it, and whatever every sample touches is
+  fetched again and again. The FM synth's voices in internal RAM made it three times slower beside
+  Doom (late audio periods); in the TCM (`MemSpace::Fast`, 8 KB, about 7.7 KB free; no cache in
+  between, not for PIE's 128-bit accesses), 20 % faster under a synthetic load and no more late
+  periods. Its lookup tables in flash or PSRAM made no difference either way (`devplan/audio.md`
+  §26, step 4). Measure with `bench run synth.fm.voices busy=1`.

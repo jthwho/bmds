@@ -12,6 +12,7 @@
 set(BMDS_SYNTH_PORTABLE_SRCS
         src/fmsynth.cpp
         src/mididecoder.cpp
+        src/midisequence.cpp
         src/op2bank.cpp
         src/synth.cpp
         src/synthlimiter.cpp

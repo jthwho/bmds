@@ -1055,7 +1055,12 @@ void PlayerWindow::started(const Player::Report &r) {
         if (r.title[0] != '\0') (void)t->title.assign(StringView(r.title));
         (void)t->artist.assign(StringView(r.artist));
         (void)t->album.assign(StringView(r.album));
-        formatLine(r.info, t->format, sizeof(t->format));
+        if (r.info.codec == Codec::Midi) {
+                // Through the system port: the synth playing it is what matters, not a rate.
+                std::snprintf(t->format, sizeof(t->format), "MIDI \xc2\xb7 system synth: %s", r.synth);
+        } else {
+                formatLine(r.info, t->format, sizeof(t->format));
+        }
         t->frames = r.info.frames;
         t->rateHz = r.info.rateHz;
         t->estimated = r.info.estimated;
@@ -1083,6 +1088,7 @@ void PlayerWindow::started(const Player::Report &r) {
                 changed(false); // the entry playing
         }
         if (_mode == Mode::Stopped) _mode = Mode::Playing;
+        if (!first && r.track == _shownTrack) showTrack(t); // a seek, or another system synth: its line again
         showMode();
         showPosition();
         showList(false);
@@ -1153,7 +1159,6 @@ void PlayerWindow::ended() {
 void PlayerWindow::failed(const Player::Report &r) {
         const size_t entry = _playlist.current();
         Error        error = r.error;
-        if (r.isMidi && error == Error::NotExist) error = Error::NotFound; // the file is there: its font isn't
         TrackText *t = textOf(r.track);
         if (entry != Playlist::NoEntry && t != nullptr && _playlist.path(entry) == t->path.view())
                 _playlist.setError(entry, error);
@@ -1191,7 +1196,7 @@ const char *PlayerWindow::errorText(Error error) {
                 case Error::NotSupported: return "A sound file in a form this player doesn't play";
                 case Error::CorruptData: return "The file is damaged";
                 case Error::NotExist: return "Not found";
-                case Error::NotFound: return "No SoundFont: install one, or set synth/font";
+                case Error::NotConnected: return "No system synth to play MIDI on: set synth/system";
                 case Error::Busy: return "The sound device is in use (exclusive mode)";
                 case Error::NoMem: return "Out of memory";
                 case Error::NoMedia: return "The card was taken out";

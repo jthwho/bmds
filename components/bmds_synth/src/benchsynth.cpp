@@ -20,6 +20,8 @@
 #include <bmds/string.h>
 #include <bmds/synth.h>
 #include <bmds/synthfile.h>
+#include <bmds/task.h>
+#include <atomic>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -94,6 +96,62 @@ namespace {
                 });
         }
 
+        // A display's load, as a game makes it: a task on the other core copying 4 MB of PSRAM
+        // round and round, pushing the shared L2 cache's lines (flash's and PSRAM's) out.
+        struct Busy {
+                        std::atomic<bool> stop{false};
+                        uint8_t          *a = nullptr;
+                        uint8_t          *b = nullptr;
+                        Task              task;
+
+                        static constexpr size_t Bytes = 2 * 1024 * 1024;
+
+                        static void entry(void *arg) {
+                                auto *self = static_cast<Busy *>(arg);
+                                while (!self->stop.load(std::memory_order_relaxed)) {
+                                        std::memcpy(self->b, self->a, Bytes);
+                                        std::memcpy(self->a, self->b, Bytes);
+                                }
+                                for (;;) Task::sleep(1000);
+                        }
+
+                        Error start() {
+                                a = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, Bytes));
+                                b = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, Bytes));
+                                if (a == nullptr || b == nullptr) return Error::NoMem;
+                                Task::Config tc;
+                                tc.name = "benchbusy";
+                                tc.stackBytes = 2048;
+                                tc.priority = 1;
+                                tc.core = Task::currentCore() == 0 ? 1 : 0;
+                                return task.start(tc, entry, this);
+                        }
+
+                        ~Busy() {
+                                stop.store(true);
+                                Task::sleep(50);
+                                (void)task.stop();
+                                Memory::free(a);
+                                Memory::free(b);
+                        }
+        };
+
+        // With busy=1, measured beside a Busy.
+        Error withBusy(BenchContext &ctx, Error (*fn)(BenchContext &)) {
+                if (ctx.param("busy") != "1") return fn(ctx);
+                void *mem = Memory::alloc(MemSpace::Internal, sizeof(Busy));
+                if (mem == nullptr) return Error::NoMem;
+                auto *busy = ::new (mem) Busy();
+                Error err = busy->start();
+                if (err.isOk()) {
+                        Task::sleep(100);
+                        err = fn(ctx);
+                }
+                busy->~Busy();
+                Memory::free(mem);
+                return err;
+        }
+
         // 1, 8, 16 and 32 voices sustaining, a note each.
         template <typename S> Error measureVoices(BenchContext &ctx, S &synth) {
                 uint32_t playing = 0;
@@ -140,7 +198,7 @@ namespace {
                 return Error::Ok;
         }
 
-        Error runFmVoices(BenchContext &ctx) {
+        Error fmVoices(BenchContext &ctx) {
                 uint8_t *bytes = makeBank(FmCases[3].bytes);
                 if (bytes == nullptr) return Error::NoMem;
                 Op2Bank bank;
@@ -154,7 +212,7 @@ namespace {
         }
 
         // The default font (synth/font), an organ (sustaining, looped).
-        Error runWavetableVoices(BenchContext &ctx) {
+        Error wavetableVoices(BenchContext &ctx) {
                 String path;
                 if (Error err = SoundFonts::defaultFont(path); err.isError()) return err;
                 Synth synth;
@@ -166,14 +224,26 @@ namespace {
                 return err;
         }
 
+        Error runFmVoices(BenchContext &ctx) {
+                return withBusy(ctx, fmVoices);
+        }
+
+        Error runWavetableVoices(BenchContext &ctx) {
+                return withBusy(ctx, wavetableVoices);
+        }
+
+        constexpr BenchParam VoicesParams[] = {
+                {"busy", "0", "1: beside a task copying PSRAM on the other core (a game's load)"},
+        };
+
 } // namespace
 
 BMDS_BENCH(synthFmVoice, "synth.fm.voice", runFmVoice, BenchQuick,
            "One FM voice's 64-frame block (stereo, 48 kHz) by its operators: sine, feedback, additive, a piano "
            "(us a block)")
-BMDS_BENCH(synthFmVoices, "synth.fm.voices", runFmVoices, BenchQuick,
-           "1 to 32 FM voices sustaining, a 64-frame block (us)")
-BMDS_BENCH(synthWavetableVoices, "synth.wavetable.voices", runWavetableVoices, BenchQuick,
-           "1 to 32 wavetable voices (synth/font's organ) sustaining, a 64-frame block (us)")
+BMDS_BENCH_WITH(synthFmVoices, "synth.fm.voices", runFmVoices, BenchQuick, VoicesParams,
+                "1 to 32 FM voices sustaining, a 64-frame block (us)")
+BMDS_BENCH_WITH(synthWavetableVoices, "synth.wavetable.voices", runWavetableVoices, BenchQuick, VoicesParams,
+                "1 to 32 wavetable voices (synth/font's organ) sustaining, a 64-frame block (us)")
 
 BMDS_NAMESPACE_END

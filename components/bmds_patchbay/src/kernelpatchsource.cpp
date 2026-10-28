@@ -7,7 +7,9 @@
  *
  * The patchbay's graph from the kernel's public classes (devplan/audio.md
  * §24): the MIDI router's ports and connections, `Midi`'s watchers, and
- * `midi/connect` (connections kept by name: `SOURCE>DEST`, comma separated).
+ * `midi/connect` (connections kept by name: `SOURCE>DEST`, comma separated), and `synth/system`:
+ * a connection from `system` is the system synth, set there (devplan/audio.md §26: one way to set
+ * it), never kept in `midi/connect`.
  */
 
 #include <cstdio>
@@ -23,6 +25,39 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr const char *ConnectKey = "midi/connect";
+        constexpr const char *SystemKey = "synth/system";
+
+        // Sets and saves @p key.
+        Error setSaved(const char *key, StringView value) {
+                const StringView k(key);
+                Error            err = SysConf::set(k, value);
+                if (err.isOk()) err = SysConf::save(k);
+                return err;
+        }
+
+        // midi/connect without the pairs from @p from (to @p to; empty: to any), saved if it changed.
+        Error dropKept(StringView from, StringView to) {
+                String list(MemSpace::Psram);
+                (void)SysConf::get(StringView(ConnectKey), list);
+                String     out(MemSpace::Psram);
+                bool       dropped = false;
+                StringView rest = list.view();
+                while (!rest.isEmpty()) {
+                        const size_t     comma = rest.indexOf(',');
+                        const StringView item = (comma == StringView::NPos ? rest : rest.left(comma)).trimmed();
+                        rest = comma == StringView::NPos ? StringView() : rest.mid(comma + 1);
+                        if (item.isEmpty()) continue;
+                        const size_t arrow = item.indexOf('>');
+                        if (arrow != StringView::NPos && item.left(arrow).trimmed().equalsIgnoreCase(from) &&
+                            (to.isEmpty() || item.mid(arrow + 1).trimmed().equalsIgnoreCase(to))) {
+                                dropped = true;
+                                continue;
+                        }
+                        if (out.appendf("%s%.*s", out.isEmpty() ? "" : ",", int(item.size()), item.data()).isError())
+                                return Error::NoMem;
+                }
+                return dropped ? setSaved(ConnectKey, out.view()) : Error(Error::Ok);
+        }
 
 } // namespace
 
@@ -80,13 +115,20 @@ Error KernelPatchSource::keep(uint8_t source, uint8_t destination, bool kept) {
         if (kept && !found && out.appendf("%s%s>%s", out.isEmpty() ? "" : ",", from.name, to.name).isError())
                 return Error::NoMem;
         if (kept == found) return Error::Ok; // as it was
-        const StringView key(ConnectKey);
-        Error            err = SysConf::set(key, out.view());
-        if (err.isOk()) err = SysConf::save(key);
-        return err;
+        return setSaved(ConnectKey, out.view());
 }
 
 Error KernelPatchSource::connect(uint8_t source, uint8_t destination) {
+        if (source == Midi::systemPort()) {
+                // The system synth: synth/system names it (the router's route follows, the old one
+                // goes), and what midi/connect kept from system goes with it.
+                auto [to, terr] = Midi::router().port(destination);
+                if (terr.isError()) return Error::NotExist;
+                Error err = dropKept(StringView("system"), StringView());
+                if (err.isOk()) err = setSaved(SystemKey, StringView(to.name));
+                Midi::applySettings();
+                return err;
+        }
         Error err = Midi::router().connect(source, destination);
         if (err == Error::Exists) err = Error::Ok;
         if (err.isOk()) err = keep(source, destination, true);
@@ -94,6 +136,21 @@ Error KernelPatchSource::connect(uint8_t source, uint8_t destination) {
 }
 
 Error KernelPatchSource::disconnect(uint8_t source, uint8_t destination) {
+        if (source == Midi::systemPort()) {
+                // The system synth taken away: no default route (synth/system empty), and a pair
+                // midi/connect kept for it gone too; first, as the settings would bring it back.
+                auto [to, terr] = Midi::router().port(destination);
+                if (terr.isError()) return Error::NotExist;
+                Error  kept = dropKept(StringView("system"), StringView(to.name));
+                String system(MemSpace::Psram);
+                if (kept.isOk() && SysConf::get(StringView(SystemKey), system).isOk() &&
+                    system.view().equalsIgnoreCase(StringView(to.name)))
+                        kept = setSaved(SystemKey, StringView());
+                Midi::applySettings();
+                Error err = Midi::router().disconnect(source, destination);
+                if (err == Error::NotExist) err = Error::Ok;
+                return err.isOk() ? kept : err;
+        }
         const Error kept = keep(source, destination, false); // first: the setting would bring it back
         Error       err = Midi::router().disconnect(source, destination);
         if (err == Error::NotExist) err = Error::Ok;

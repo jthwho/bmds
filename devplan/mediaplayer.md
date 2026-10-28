@@ -650,3 +650,70 @@ the program's side, and freedesktop.org's StatusNotifierItem for what the protoc
     - **Tab and Shift+Tab** in the player move the focus through the seek bar, the buttons, the
       volume and the list, and around, on the board (`win hid`); not changed until the case that
       failed is known.
+
+## 12. MIDI files through the system port (the user, 2026-10-27)
+
+The user: "make the media player use the system midi like everything else. That way we can
+easily change the midi synth." A MIDI file in the player is no longer rendered by its own synth
+into `/dev/dsp`: its events go to `/dev/midi` (`system`), so they play on whatever `synth/system`
+names (the FM synth by default, the wavetable, a USB synth, a network session), as games' music
+does. This replaces §6b's MIDI path and §6h's own font: the synth is chosen in one place.
+
+- **The sequence:** `MidiSequence` (new, `bmds_synth`, portable, host-tested): a Standard MIDI
+  File parsed (TinyMidiLoader, as `MidiDecoder` does) into its channel messages with their times;
+  its length; the state at a time (each channel's program, bank, controllers and bend, the
+  messages that rebuild it). Untrusted input: the parser's bounds, fuzzed with the decoders.
+- **The playback thread** (`Player`), for a MIDI file: opens `/dev/midi` configured `Events`
+  (16-byte records with their time), and writes each message up to `AheadMs` (100) before its
+  time, carrying its time (scheduled output, `audio.md` §25: the kernel's MIDI clock sends it
+  then, a synth places it on its sample). Between writes it sleeps until the next is due (a
+  command wakes it), not polling.
+- **Where it is:** there is no stream; the player keeps a clock of its own (the monotonic time
+  since the track's start, less pauses, in frames at 48 kHz), which `status()` reports as a
+  stream's played frames, so `TrackClock` and the window work unchanged. Its frames count from 0
+  at each track, as a configured stream's do.
+- **Pause:** what is scheduled is cancelled (`BMDS_MIDI_CANCEL`) and every channel gets all notes
+  off (123); the clock stops. **Resume:** the sending goes on from there (a note held across the
+  pause isn't struck again).
+- **Seek:** cancel, all sound off (120), reset controllers (121), then each channel's state at the
+  time (program, bank, volume, pan, expression, sustain off, bend), then on from there.
+- **Stop, quit, a new track:** cancel, all sound off; closing the fd turns off what it left on.
+- **The end:** the last message sent and its time passed, plus `TailMs` (2 s, the releases), then
+  `Ended`, as a decoder's end of file.
+- **Volume:** no stream to turn down: each channel's volume (7) is scaled, as the file sets it, by
+  the cube root of the player's gain (the synths cube it: libbmdsgame's rule, `audio.md` §26), and
+  sent again when the gain changes; muted, 0.
+- **What the window shows:** the format line "MIDI · system synth: fm" (`synth/system`'s port),
+  no rate or channels; errors as for any track ("MIDI: no system synth" when `synth/system` is
+  empty, since nothing would sound).
+- **Lengths without a synth:** the playlist and library read a MIDI file's length through
+  `MidiSequence`, not by opening it as a decoder (which opened a synth on its instruments: the
+  FM bank's mapping was cheap, the wavetable's font a 6 MB load).
+- **Unchanged:** `play FILE.mid`, Open from the file browser when it plays the file itself, and
+  programs' `audio_decode` still render through a synth fd: they want samples (a file written, a
+  program mixing). The MIDI view (§6h) will take its channels from the player's own sequence (it
+  knows every message and when it is heard), not from a decoder.
+- **Tested:** host: `MidiSequence` on `tests/host/synth/scale.mid` and made-up files (times,
+  length, the state at a time, damaged files). Board: a file playing through `fm`, then
+  `synth/system` changed to `wavetable` while it plays (heard on the new one from the next note),
+  pause, seek, the volume, stop, the next track following; `synth status` counting its events.
+
+### As built (2026-10-27)
+
+- **`MidiSequence`** (`bmds/midisequence.h`, `bmds_synth`): as planned; host test on `scale.mid`, a
+  made-up file (times, the state at a time: bank, program, the later volume, RPN 0 and its null, the
+  bend) and the MIDI fuzzer's finds.
+- **`Player`'s MIDI path:** `startMidi()` (the file read whole, 4 MB at most; `NotConnected`,
+  "No system synth to play MIDI on: set synth/system", when `synth/system` is empty), `sendSome()`
+  (the messages within 100 ms written with their times; it sleeps until the next is due, 500 ms at
+  most), `seekMidi()`, `pauseMidi()`, `closeMidi()`, the volumes at the gain's cube root;
+  `status()` the clock; `Report::synth` the system synth's port, shown as "MIDI · system synth:
+  fm · 1:25".
+- **Another system synth while it plays:** a watcher on `synth/system` has the thread apply the
+  route (`Midi::applySettings()`) and send the state at that time again (as a seek), so the new
+  synth plays the right instruments at once; the window shows its name (a restart of the track on
+  show now redraws its line).
+- **Tried on the board:** Freedoom's MAP01 through `fm` (no event dropped once the services' rings
+  grew), `synth/system` switched to `wavetable` mid-song (`fm` idle, the wavetable playing, the
+  line saying so), pause (nothing sent; the wavetable closed 5 s on, and opened again at the
+  resume), a seek by clicking the bar.

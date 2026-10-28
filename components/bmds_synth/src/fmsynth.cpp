@@ -159,6 +159,7 @@ struct FmSynth::State {
                 float    outScale = 0;
                 uint32_t rateHz = 48000;
                 Channel  channels[MidiChannels];
+                const int16_t *waves = &FmTables::Waves.level[0][0]; // the eight waveforms' periods
                 int32_t  mix[BlockFrames * 2];
                 int32_t  sum[BlockFrames];        // a channel's voices
                 uint8_t  order[SynthEngine::MaxVoices]; // the sounding voices by channel, a block's
@@ -403,11 +404,11 @@ namespace {
         }
 
         // An operator from the bank's registers, keyed on: the phase at 0, the attack from silence.
-        void initOp(State::Op &op, const Op2Bank::Operator &o) {
+        void initOp(const State &s, State::Op &op, const Op2Bank::Operator &o) {
                 op = State::Op();
                 op.flags = o.character & 0xf0;
                 op.mult2 = Mult2[o.character & 0x0f];
-                op.wave = FmTables::Waves.level[o.waveform & 0x07];
+                op.wave = s.waves + (o.waveform & 0x07) * FmTables::WavePeriod;
                 const unsigned sl = o.sustainRelease >> 4;
                 op.sustainLevel = uint8_t(sl == 15 ? 31 : sl);
                 op.stage = Attack;
@@ -531,8 +532,8 @@ namespace {
                         if (k == 1) v.pitch += float(int(in.fineTune / 2) - 64) / 32.0f; // DMX's detune
                         v.fbShift = uint8_t(bv.feedback != 0 ? 9 - bv.feedback : 0);
                         v.additive = bv.additive;
-                        initOp(v.op[0], bv.modulator);
-                        initOp(v.op[1], bv.carrier);
+                        initOp(s, v.op[0], bv.modulator);
+                        initOp(s, v.op[1], bv.carrier);
                         tune(s, v);
                         scaleOp(v.op[0], bv.modulator, v.fnum, v.block);
                         scaleOp(v.op[1], bv.carrier, v.fnum, v.block);
@@ -729,7 +730,10 @@ Error FmSynth::open(const Op2Bank &bank, const Config &config) {
         _events = static_cast<Event *>(Memory::alloc(MemSpace::Psram, SynthEngine::QueueEvents * sizeof(Event)));
         if (_events == nullptr) return Error::NoMem;
         const size_t bytes = sizeof(State) + c.maxVoices * sizeof(State::Voice);
-        void        *mem = Memory::alloc(MemSpace::Internal, bytes);
+        // In the TCM when it has room (no cache between: a game's memory traffic on the other core,
+        // which the cores' shared L1 data cache feels, doesn't reach it), else internal RAM.
+        void *mem = Memory::alloc(MemSpace::Fast, bytes);
+        if (mem == nullptr) mem = Memory::alloc(MemSpace::Internal, bytes);
         if (mem == nullptr) {
                 close();
                 return Error::NoMem;

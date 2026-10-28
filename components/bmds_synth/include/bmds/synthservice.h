@@ -22,7 +22,7 @@ BMDS_NAMESPACE_BEGIN
  *        routed to: `fm` by default, as a sound card's FM chip was.
  *
  * While its setting is on (`synth/fm`, `synth/wavetable`), a service's port (kind `system`, a
- * destination) exists. Idle, it costs the port, a ring of 256 events (PSRAM) and a control
+ * destination) exists. Idle, it costs the port, a ring of 1,024 events (16 KB of PSRAM) and a control
  * thread (its stack in PSRAM) waiting. The first event opens a synth on its engine and a
  * real-time stream on `/dev/dsp` (the device's period), and starts the audio thread; 5 s with no
  * events and no voice sounding, both are closed. While the wavetable is the system synth and

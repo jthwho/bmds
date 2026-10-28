@@ -2877,3 +2877,45 @@ The user heard Bricks' and Doom's music through `system` to `fm` at a very low v
   through FM: -25.5 dBFS RMS.
 - **Its cost on the board:** an idle synth's block 8.0 to 10.8 µs (the first version, a frame at a
   time, was 15.8: the block scan was the fix); 32 FM voices 264 µs, as before.
+
+### As built: step 4, the board's measurements (2026-10-27)
+
+- **Doom's music through `system` to `fm`** (its attract mode, 45 s a run, `synth status` and
+  `stats synth*`): first, 5 late periods in 40 s, the synth's render 612 ‰ of real time on average
+  and 1,225-1,715 ‰ at worst (slower than real time); in a second run, with PSRAM nearly full (the
+  wavetable's 6 MB font cached), 319 late in 45 s. The wavetable beside the same Doom: 0 late,
+  332 ‰ on average, 509 ‰ at worst. Alone (the bench) FM was the cheaper (20 % of a core for 32
+  voices, the wavetable's 24 %): Doom made FM three times slower, the wavetable a third slower.
+- **A load to measure with:** `bench run synth.fm.voices busy=1` (and `synth.wavetable.voices`):
+  a task on the other core copying 4 MB of PSRAM round and round, a game's memory traffic made
+  repeatable. 32 voices: FM 273 µs → 1,508 under it, the wavetable 332 → 1,190.
+- **Tried, not the cause:** the waveform tables in PSRAM rather than flash (no change, either way:
+  dropped, no copy); in internal RAM (16 KB of it could not be had beside Doom: FM's audio thread
+  then failed to start, 808 times).
+- **The fix: the FM synth's state (its voices, channels and mix: 1,920 bytes and 112 a voice,
+  5.5 KB for 32) in the TCM** (`MemSpace::Fast`, 7.7 KB free), else internal RAM. No cache stands
+  between: the cores share one L1 data cache, which the other core's traffic empties, and the
+  state is what every sample touches. `busy=1`: 1,508 → 1,200 µs (the wavetable's 1,190); alone
+  273 → 292 µs (the TCM a little slower than a hit in the L1). **Beside Doom: 1 late period in
+  45 s, 316 ‰ on average, 886 ‰ at worst** (the wavetable: 0, 332, 509). It also keeps FM's 5.5 KB
+  out of the internal RAM, which Doom leaves at 17 KB free.
+- **Found:** a saved `midi/connect` of `system>fm` (made in the patchbay, the user's) kept `fm`
+  connected whatever `synth/system` said: switching to the wavetable played both. Told the user.
+- **The services' rings 256 → 1,024 events** (16 KB of PSRAM each): a file's start comes at once
+  (each channel's program and controllers, a player's resets) while the synth and its stream open;
+  the media player's first Freedoom song dropped 61 there.
+
+Step 5 (later): 4-operator voices and WOPL banks; PIE only if a measurement asks.
+
+### The patchbay sets the system synth (the user, 2026-10-27)
+
+A connection from `system` in the patchbay is the system synth: connecting `system` to a port
+sets and saves `synth/system` to its name (the router's route follows, the old one goes) and takes
+any `system>...` pair out of `midi/connect`; disconnecting it from the system synth empties
+`synth/system` (no default route), and a pair `midi/connect` kept for it goes too.
+`KernelPatchSource` does it; other connections are kept in `midi/connect` as before. The user's
+`midi/connect` of `system>fm` (which kept `fm` connected whatever `synth/system` said) came from
+the patchbay before this. **Tried on the board** (the patchbay by its keys): Tab, Down, Enter
+connected `system` to `wavetable` (`synth/system` saved `wavetable`, `midi/connect` emptied,
+`midi0 > midi2`); Enter again disconnected it (`synth/system` empty, no route); Up, Enter
+connected `fm` (`synth/system` `fm`). The user's settings were put back after.

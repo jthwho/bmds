@@ -26,7 +26,7 @@ if(COMMAND idf_component_register)
                                     src/player.cpp
                                     src/playerwindow.cpp
                                PRIV_REQUIRES bmds_audio bmds_core bmds_files bmds_fs bmds_gui bmds_input
-                                             bmds_kernel bmds_synth bmds_ui
+                                             bmds_kernel bmds_midi bmds_synth bmds_sysconf bmds_ui
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 

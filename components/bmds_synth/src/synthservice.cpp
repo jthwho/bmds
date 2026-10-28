@@ -41,7 +41,9 @@ namespace {
         BMDS_SYSCONF(synthFm, "synth/fm", Config::Type::Bool, "true", "The FM synth as the MIDI port fm, always there",
                      0, 0, nullptr, nullptr)
 
-        constexpr size_t   RingEvents = 256;
+        // A file's start comes at once (each channel's program and controllers, a player's resets)
+        // while the synth and its stream open: 256 dropped 61 of a Freedoom song's (2026-10-27).
+        constexpr size_t   RingEvents = 1024;
         constexpr int64_t  IdleNs = 5'000'000'000; // no events, no voices: closed
         constexpr unsigned RetryMs = 5'000;        // a font not there yet (the card mounting)
         constexpr unsigned PreloadTries = 6;
