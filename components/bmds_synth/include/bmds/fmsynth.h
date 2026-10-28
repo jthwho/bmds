@@ -26,7 +26,7 @@ BMDS_NAMESPACE_BEGIN
  * Each is the chip's 2-operator voice: phase accumulators, the OPL3's eight waveforms from its
  * log-sin and exponent tables (attenuations added, no multiply), FM or additive, the modulator's
  * feedback, and the chip's envelopes (its rates, key scaling, sustain level, percussive or
- * sustained), tremolo and vibrato. Envelopes are worked out every 16 frames and ramped between.
+ * sustained), tremolo and vibrato. Envelopes are worked out every 32 frames and ramped between.
  *
  * The MIDI side is what DMX's driver added, here in the engine: programs and the drum channel
  * (10), a bank's double-voice instruments, velocity, volume and expression (TinySoundFont's curves), pan,
@@ -43,7 +43,7 @@ BMDS_NAMESPACE_BEGIN
  */
 class FmSynth : public SynthEngine {
         public:
-                static constexpr size_t TickFrames = 16;  ///< Envelopes and LFOs are worked out this often.
+                static constexpr size_t TickFrames = 32;  ///< Envelopes and LFOs are worked out this often (0.67 ms).
                 static constexpr size_t BlockFrames = 64; ///< A voice renders up to this many frames at once.
 
                 FmSynth() = default;

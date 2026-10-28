@@ -110,7 +110,11 @@ namespace FmTables {
                 }
         }
 
-        /** @brief The eight waveforms' periods: twice the chip's levels (`chipLevel()`). */
+        /**
+         * @brief The eight waveforms' periods: four times the chip's levels (`chipLevel()`), so a
+         *        level times a gain in Q31, the product's high word, is twice the chip's: a phase's
+         *        byte offset.
+         */
         struct WaveTables {
                         int16_t level[8][WavePeriod];
         };
@@ -118,7 +122,7 @@ namespace FmTables {
         constexpr WaveTables makeWaveTables() {
                 WaveTables t{};
                 for (unsigned w = 0; w < 8; ++w)
-                        for (uint32_t p = 0; p < WavePeriod; ++p) t.level[w][p] = int16_t(2 * chipLevel(w, p));
+                        for (uint32_t p = 0; p < WavePeriod; ++p) t.level[w][p] = int16_t(4 * chipLevel(w, p));
                 return t;
         }
 

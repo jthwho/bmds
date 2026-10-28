@@ -15,12 +15,14 @@
 #include <bmds/bench.h>
 #include <bmds/fmsynth.h>
 #include <bmds/memory.h>
+#include <bmds/midisequence.h>
 #include <bmds/op2bank.h>
 #include <bmds/stopwatch.h>
 #include <bmds/string.h>
 #include <bmds/synth.h>
 #include <bmds/synthfile.h>
 #include <bmds/task.h>
+#include <bmds/vfs.h>
 #include <atomic>
 
 BMDS_NAMESPACE_BEGIN
@@ -232,6 +234,90 @@ namespace {
                 return withBusy(ctx, wavetableVoices);
         }
 
+        // ---- A song: a MIDI file rendered as fast as it goes, through each engine
+
+        constexpr size_t SongChunk = 256;
+
+        // The file at @p path into @p seq.
+        Error loadSong(StringView path, MidiSequence &seq) {
+                auto [info, serr] = Vfs::stat(path, Vfs::Context());
+                if (serr.isError()) return serr;
+                if (info.size > MidiSequence::MaxFileBytes) return Error::Invalid;
+                auto [file, err] = Vfs::open(path, Vfs::Read, Vfs::Context());
+                if (err.isError()) return err;
+                const size_t size = size_t(info.size);
+                auto        *data = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, size != 0 ? size : 1));
+                if (data == nullptr) return Error::NoMem;
+                Error rerr = Error::Ok;
+                for (size_t done = 0; done < size && rerr.isOk();) {
+                        auto [n, e] = file->read(WritableByteSpan(data + done, size - done), WaitForever);
+                        rerr = e.isError() ? e : n == 0 ? Error::Invalid : Error::Ok;
+                        done += n;
+                }
+                if (rerr.isOk()) rerr = seq.load(ByteSpan(data, size));
+                Memory::free(data);
+                return rerr;
+        }
+
+        // The song through @p engine once: its messages queued a chunk ahead, every chunk rendered;
+        // the voices sounding summed a chunk.
+        void playSong(SynthEngine &engine, const MidiSequence &seq, uint64_t &voiceChunks, uint64_t &chunks) {
+                engine.reset();
+                float          out[SongChunk * 2];
+                const uint64_t base = engine.stats().frames;
+                const uint64_t end = (uint64_t(seq.lengthMs()) + 2000) * 48;
+                size_t         next = 0;
+                for (uint64_t frame = 0; frame < end; frame += SongChunk) {
+                        while (next < seq.count() && uint64_t(seq.message(next).ms) * 48 < frame + SongChunk) {
+                                const MidiSequence::Message &m = seq.message(next++);
+                                SynthEngine::Event           e;
+                                e.frame = base + uint64_t(m.ms) * 48;
+                                e.length = m.length;
+                                std::memcpy(e.data, m.data, m.length);
+                                (void)engine.queue(e);
+                        }
+                        engine.render(out, SongChunk);
+                        voiceChunks += engine.stats().voices;
+                        ++chunks;
+                }
+                return;
+        }
+
+        Error runSong(BenchContext &ctx) {
+                MidiSequence seq;
+                if (Error err = loadSong(ctx.param("file"), seq); err.isError()) return err;
+                const double seconds = double(seq.lengthMs() + 2000) / 1000.0;
+                for (const SynthEngine::Kind kind : {SynthEngine::Kind::Fm, SynthEngine::Kind::Wavetable}) {
+                        const bool fm = kind == SynthEngine::Kind::Fm;
+                        auto [engine, err] = SynthEngines::open(kind, StringView(), config());
+                        if (err.isError()) {
+                                ctx.note("%s: %s", SynthEngines::name(kind), err.desc());
+                                continue;
+                        }
+                        uint64_t voiceChunks = 0;
+                        uint64_t chunks = 0;
+                        err = ctx.measure(fm ? "fm_us_per_s" : "wavetable_us_per_s", "us", BenchBetter::Lower,
+                                          [&](double &v) {
+                                                  voiceChunks = chunks = 0;
+                                                  Stopwatch watch;
+                                                  playSong(*engine, seq, voiceChunks, chunks);
+                                                  v = double(watch.elapsedUs()) / seconds;
+                                                  return Error(Error::Ok);
+                                          });
+                        if (err.isOk() && chunks != 0)
+                                ctx.report(fm ? "fm_voices_avg" : "wavetable_voices_avg", "voices", BenchBetter::Lower,
+                                           double(voiceChunks) / double(chunks));
+                        SynthEngines::close(engine);
+                        if (err.isError()) return err;
+                }
+                ctx.note("%.1f s of music, %u messages", seconds, unsigned(seq.count()));
+                return Error::Ok;
+        }
+
+        constexpr BenchParam SongParams[] = {
+                {"file", "/sd0/p0/share/bench/scale.mid", "A MIDI file"},
+        };
+
         constexpr BenchParam VoicesParams[] = {
                 {"busy", "0", "1: beside a task copying PSRAM on the other core (a game's load)"},
         };
@@ -243,6 +329,9 @@ BMDS_BENCH(synthFmVoice, "synth.fm.voice", runFmVoice, BenchQuick,
            "(us a block)")
 BMDS_BENCH_WITH(synthFmVoices, "synth.fm.voices", runFmVoices, BenchQuick, VoicesParams,
                 "1 to 32 FM voices sustaining, a 64-frame block (us)")
+BMDS_BENCH_WITH(synthSong, "synth.song", runSong, BenchQuick, SongParams,
+                "A MIDI file rendered as fast as it goes through the FM synth and the wavetable (us a second of it, "
+                "and the voices sounding)")
 BMDS_BENCH_WITH(synthWavetableVoices, "synth.wavetable.voices", runWavetableVoices, BenchQuick, VoicesParams,
                 "1 to 32 wavetable voices (synth/font's organ) sustaining, a 64-frame block (us)")
 

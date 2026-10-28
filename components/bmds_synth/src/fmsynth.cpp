@@ -57,6 +57,24 @@ namespace {
         constexpr float   OffLevel = 504.0f;
         constexpr uint8_t QuickRelease = 60; // all sound off's rate: about 2.7 ms
 
+        // From this attenuation on (78 dB), an operator's output rounds to nothing (a gain of 3 of
+        // 32768 on a level of 8168): its gain is 0, and a voice silent for good is freed then, not
+        // at the chip's 504 (94.5 dB): the last sixth of every release, voices no one hears.
+        constexpr int32_t SilentAtt = 416;
+
+        // A gain under this (16 of 32768, -66 dB) with no step to take is silent.
+        constexpr int32_t SilentGain = 16 << 16;
+
+        bool isSilent(int32_t gain) {
+                return gain < SilentGain && gain > -SilentGain;
+        }
+
+        // A releasing voice (or a percussive one) 48 dB down on its envelope, total level and velocity
+        // alone fades out in a few milliseconds (all sound off's rate) and is freed: measured on
+        // Freedoom's songs, the voices sounding 25.3 → 20.7 on average and the notes stolen at the
+        // limit 1,164 → 424, the sound within 0.04 dB in every 1/3-octave band (2026-10-27).
+        constexpr int32_t FadeAtt = 256;
+
         // Pan gains: 1.0 is 1 << PanBits (a channel's sum of voices at ±8168, times 1024, fits an int32).
         constexpr int PanBits = 10;
 
@@ -74,8 +92,6 @@ namespace {
         // engines; the limiter keeps the peaks below full scale.
         constexpr float CalibrationDb = 13.0f;
 
-        // A gain's 1.0 (the exponent table's 2042 at no attenuation is 0.997 of it).
-        constexpr int GainBits = 15;
 
         enum Stage : uint8_t {
                 Attack,
@@ -93,7 +109,7 @@ struct FmSynth::State {
                                 uint32_t       inc = 0;        // a frame, vibrato applied
                                 uint32_t       baseInc = 0;    // without it
                                 const int16_t *wave = nullptr; // its waveform's period
-                                int32_t        gain = 0;       // now (1.0: 1 << GainBits)
+                                int32_t        gain = 0;       // now (Q31)
                                 int32_t        step = 0;       // added each frame, to the tick's target
                                 float          level = MaxLevel;
                                 uint16_t       fixedAtt = 0; // total level and key scale level (envelope units)
@@ -113,6 +129,7 @@ struct FmSynth::State {
                                 uint32_t age = 0;
                                 float    pitch = 0;  // semitones, without the bend
                                 uint16_t volAtt = 0; // velocity, volume and expression (envelope units)
+                                float    invFnum = 0; // 1 / fnum: vibrato's step, without a division a tick
                                 uint16_t fnum = 0;   // the chip's F-number and block for the pitch:
                                 uint8_t  block = 0;  // key scaling, vibrato's depth
                                 uint8_t  channel = 0;
@@ -123,6 +140,7 @@ struct FmSynth::State {
                                 bool     active = false;
                                 bool     keyOn = false;
                                 bool     held = false; // released while the sustain pedal was down
+                                bool     fading = false; // FadeAtt passed: in its quick release
                 };
 
                 struct Channel {
@@ -180,6 +198,14 @@ namespace {
                 return *reinterpret_cast<const int16_t *>(reinterpret_cast<const uint8_t *>(wave) + offset);
         }
 
+        // An entry (four times the chip's level) at a gain: twice the chip's level (one mulh). Gains
+        // are Q31 (the exponent table's 2042 at no attenuation is 0.997 of 1.0): a tick's steps keep
+        // their fractions, so a slow change at a low level isn't rounded away (in Q15 a step under
+        // one was nothing: a decay ran 11 % slow at 32 frames a tick).
+        inline int32_t atGain(int32_t entry, int32_t gain) {
+                return int32_t((int64_t(entry) * gain) >> 32);
+        }
+
         // A part of a block between ticks: its frames, and the gains' steps a frame.
         struct Segment {
                         uint32_t frames;
@@ -214,14 +240,14 @@ namespace {
                                 mg += ms;
                                 cg += cs;
                                 const uint32_t fb = Fb ? uint32_t((o0 + o1) >> shift) : 0;
-                                const int32_t  m = (entry(mw, ((mp >> 21) + fb) & 0x7fe) * mg) >> GainBits;
+                                const int32_t  m = atGain(entry(mw, ((mp >> 21) + fb) & 0x7fe), mg);
                                 mp += mi;
                                 if (Fb) {
                                         o0 = o1;
                                         o1 = m;
                                 }
                                 const uint32_t at = Additive ? (cp >> 21) & 0x7fe : ((cp >> 21) + uint32_t(m)) & 0x7fe;
-                                const int32_t  c = (entry(cw, at) * cg) >> GainBits;
+                                const int32_t  c = atGain(entry(cw, at), cg);
                                 cp += ci;
                                 *sum++ += Additive ? c + m : c;
                         }
@@ -232,6 +258,42 @@ namespace {
                 co.gain = cg;
                 v.fb0 = o0;
                 v.fb1 = o1;
+                return;
+        }
+
+        // A voice whose modulator is silent the whole block: its carrier alone (no modulation, nothing
+        // added), the modulator's phase moved on and its feedback emptied.
+        void renderCarrier(State::Voice &v, int32_t *sum, const Segment *segments, size_t count) {
+                State::Op     &mo = v.op[0];
+                State::Op     &co = v.op[1];
+                const int16_t *cw = co.wave;
+                uint32_t       cp = co.phase;
+                const uint32_t ci = co.inc;
+                int32_t        cg = co.gain;
+                uint32_t       frames = 0;
+                for (size_t k = 0; k < count; ++k) {
+                        const int32_t  cs = segments[k].carStep;
+                        const uint32_t n = segments[k].frames;
+                        for (uint32_t i = 0; i < n; ++i) {
+                                cg += cs;
+                                *sum++ += atGain(entry(cw, (cp >> 21) & 0x7fe), cg);
+                                cp += ci;
+                        }
+                        frames += n;
+                }
+                co.phase = cp;
+                co.gain = cg;
+                mo.phase += mo.inc * frames;
+                v.fb0 = v.fb1 = 0;
+                return;
+        }
+
+        // A voice silent the whole block: its phases moved on, nothing computed.
+        void skipVoice(State::Voice &v, const Segment *segments, size_t count) {
+                uint32_t frames = 0;
+                for (size_t k = 0; k < count; ++k) frames += segments[k].frames;
+                for (State::Op &op : v.op) op.phase += op.inc * frames;
+                v.fb0 = v.fb1 = 0;
                 return;
         }
 
@@ -292,7 +354,10 @@ namespace {
                                         op.level = 0;
                                         op.stage = Decay;
                                 }
-                                break;
+                                // Not off for being near silence: an attack starts there (a slow one
+                                // stayed above OffLevel for its first tick and was taken for gone, so
+                                // strings and pads never sounded; found 2026-10-27).
+                                return;
                         case Decay:
                                 // The chip stops within a step of the sustain level; a tick's steps
                                 // would overshoot it (at the fastest rate by 66, 12 dB).
@@ -396,6 +461,7 @@ namespace {
                 const float semis = v.pitch + s.channels[v.channel].bendSemis;
                 const float hz = 440.0f * bmdsSynthExp2((semis - 69.0f) / 12.0f);
                 fnumber(hz, v.fnum, v.block);
+                v.invFnum = v.fnum != 0 ? 1.0f / float(v.fnum) : 0.0f;
                 for (State::Op &op : v.op) {
                         const float inc = hz * float(op.mult2) * 0.5f * s.incScale;
                         op.baseInc = op.inc = inc >= 2147483648.0f ? 0x80000000u : uint32_t(inc);
@@ -437,6 +503,23 @@ namespace {
         // A voice's tick: its envelopes advanced and their targets for the next 16 frames (the
         // carrier, and an additive voice's modulator, at the voice's volume), the vibrato. Returns
         // false once it is silent.
+        // True once @p op is silent for good: its envelope and total level alone past `SilentAtt` (the
+        // volume could come back, the envelope can't) in a stage that only falls, its gain at 0.
+        bool goneForGood(const State::Op &op) {
+                const bool falls = op.stage == Off || op.stage == Release || op.stage == Decay ||
+                                   (op.stage == Sustain && (op.flags & Sustaining) == 0);
+                return falls && op.step == 0 && isSilent(op.gain) && int32_t(op.level) + op.fixedAtt >= SilentAtt;
+        }
+
+        // Past FadeAtt for good: releasing (or percussive) and quiet enough on what can't change.
+        bool fadedOut(const State::Op &op, int32_t velocityAtt) {
+                if (op.stage == Off) return true;
+                const bool falls = op.stage == Release || (op.stage == Sustain && (op.flags & Sustaining) == 0);
+                return falls && int32_t(op.level) + op.fixedAtt + velocityAtt >= FadeAtt;
+        }
+
+        void quickRelease(State::Voice &v);
+
         bool tickVoice(const State &s, State::Voice &v, const State::Lfo &lfo) {
                 const State::Channel &c = s.channels[v.channel];
                 for (int k = 0; k < 2; ++k) {
@@ -445,22 +528,29 @@ namespace {
                         int32_t a = int32_t(op.level) + op.fixedAtt;
                         if ((op.flags & Tremolo) != 0) a += lfo.tremolo;
                         if (k == 1 || v.additive) a += v.volAtt;
-                        if (a > MaxLevel) a = MaxLevel;
-                        // The chip's exponent table: 0.1875 dB steps, 8 of its 1/256 octaves.
+                        // The chip's exponent table: 0.1875 dB steps, 8 of its 1/256 octaves; nothing
+                        // from SilentAtt on.
                         const uint32_t l = uint32_t(a) << 3;
                         const int32_t  target =
-                                int32_t((uint32_t(FmTables::Exp[l & 0xff]) << (GainBits - 11)) >> (l >> 8));
+                                a >= SilentAtt ? 0
+                                                : int32_t(((uint32_t(FmTables::Exp[l & 0xff]) << 4) >> (l >> 8)) << 16);
                         op.step = (target - op.gain) / int32_t(FmSynth::TickFrames);
                 }
-                if (v.op[1].stage == Off && (!v.additive || v.op[0].stage == Off)) return false;
+                // Heard no more: the carrier (and an additive voice's modulator) silent for good.
+                if (goneForGood(v.op[1]) && (!v.additive || goneForGood(v.op[0]))) return false;
+                if (!v.fading) {
+                        const int32_t velocityAtt = FmTables::LevelAtt[v.velocity & 0x7f];
+                        if (fadedOut(v.op[1], velocityAtt) && (!v.additive || fadedOut(v.op[0], velocityAtt))) {
+                                quickRelease(v);
+                                v.fading = true;
+                        }
+                }
                 if (c.modulation != 0 || ((v.op[0].flags | v.op[1].flags) & Vibrato) != 0) {
                         const float wheel =
                                 c.modulation != 0
                                         ? bmdsSynthExp2(WheelCents / 1200.0f * float(c.modulation) / 127.0f * lfo.wheel)
                                         : 1.0f;
-                        const float chip =
-                                v.fnum != 0 ? float(int32_t(v.fnum) + vibratoOffset(v.fnum, lfo.vibPos)) / float(v.fnum)
-                                            : 1.0f;
+                        const float chip = 1.0f + float(vibratoOffset(v.fnum, lfo.vibPos)) * v.invFnum;
                         for (State::Op &op : v.op)
                                 op.inc = uint32_t(float(op.baseInc) *
                                                   ((op.flags & Vibrato) != 0 ? chip * wheel : wheel));
@@ -641,7 +731,8 @@ namespace {
 
         // @p n frames (at most a block) from frame @p pos into @p out: each channel's voices summed,
         // then panned into the mix.
-        void renderBlock(State &s, float *out, uint64_t pos, size_t n, uint8_t channels) {
+        // Returns the block's peak (the limiter's to know).
+        float renderBlock(State &s, float *out, uint64_t pos, size_t n, uint8_t channels) {
                 std::memset(s.mix, 0, n * channels * sizeof(int32_t));
                 // The ticks in it: where, and the LFOs there.
                 constexpr size_t MaxTicks = FmSynth::BlockFrames / FmSynth::TickFrames + 1;
@@ -654,16 +745,37 @@ namespace {
                         lfos[ticks] = lfoAt(s, pos + off);
                         ++ticks;
                 }
-                // The sounding voices by channel (a counting sort).
+                // The sounding voices by their channel's pan (a counting sort): channels with the same
+                // pan (most are at the centre) are summed together and panned once; in mono, all.
+                uint8_t  panOf[MidiChannels];
+                int16_t  panL[MidiChannels];
+                int16_t  panR[MidiChannels];
+                uint8_t  pans = 0;
                 uint16_t first[MidiChannels + 1] = {};
+                uint16_t used = 0; // the channels with voices
                 for (size_t i = 0; i < s.voiceCount; ++i)
-                        if (s.voices[i].active) ++first[s.voices[i].channel + 1];
-                for (int c = 0; c < MidiChannels; ++c) first[c + 1] += first[c];
+                        if (s.voices[i].active) used = uint16_t(used | 1u << s.voices[i].channel);
+                for (int c = 0; c < MidiChannels; ++c) {
+                        if ((used & (1u << c)) == 0) continue;
+                        const int16_t l = channels == 2 ? s.channels[c].gainL : 0;
+                        const int16_t r = channels == 2 ? s.channels[c].gainR : 0;
+                        uint8_t       b = 0;
+                        while (b < pans && (panL[b] != l || panR[b] != r)) ++b;
+                        if (b == pans) {
+                                panL[b] = l;
+                                panR[b] = r;
+                                ++pans;
+                        }
+                        panOf[c] = b;
+                }
+                for (size_t i = 0; i < s.voiceCount; ++i)
+                        if (s.voices[i].active) ++first[panOf[s.voices[i].channel] + 1];
+                for (int b = 0; b < pans; ++b) first[b + 1] += first[b];
                 uint16_t next[MidiChannels];
                 std::memcpy(next, first, sizeof(next));
                 for (size_t i = 0; i < s.voiceCount; ++i)
-                        if (s.voices[i].active) s.order[next[s.voices[i].channel]++] = uint8_t(i);
-                for (int c = 0; c < MidiChannels; ++c) {
+                        if (s.voices[i].active) s.order[next[panOf[s.voices[i].channel]]++] = uint8_t(i);
+                for (int c = 0; c < pans; ++c) {
                         if (first[c] == first[c + 1]) continue;
                         std::memset(s.sum, 0, n * sizeof(int32_t));
                         for (uint16_t k = first[c]; k < first[c + 1]; ++k) {
@@ -691,15 +803,29 @@ namespace {
                                 }
                                 v.op[0].gain = startGain[0];
                                 v.op[1].gain = startGain[1];
-                                Renderers[v.fbShift != 0][v.additive](v, s.sum, segments, count);
+                                // An operator silent the whole block (its gain 0 and staying so) isn't
+                                // computed: the carrier alone, or nothing.
+                                bool modSilent = isSilent(startGain[0]);
+                                bool carSilent = isSilent(startGain[1]);
+                                for (size_t i = 0; i < count; ++i) {
+                                        modSilent = modSilent && segments[i].modStep == 0;
+                                        carSilent = carSilent && segments[i].carStep == 0;
+                                }
+                                if (carSilent && (modSilent || !v.additive)) {
+                                        skipVoice(v, segments, count);
+                                } else if (modSilent) {
+                                        renderCarrier(v, s.sum, segments, count);
+                                } else {
+                                        Renderers[v.fbShift != 0][v.additive](v, s.sum, segments, count);
+                                }
                                 if (!alive) {
                                         v.active = false;
                                         --s.sounding;
                                 }
                         }
                         if (channels == 2) {
-                                const int32_t gl = s.channels[c].gainL;
-                                const int32_t gr = s.channels[c].gainR;
+                                const int32_t gl = panL[c];
+                                const int32_t gr = panR[c];
                                 for (size_t k = 0; k < n; ++k) {
                                         s.mix[2 * k] += s.sum[k] * gl;
                                         s.mix[2 * k + 1] += s.sum[k] * gr;
@@ -708,8 +834,12 @@ namespace {
                                 for (size_t k = 0; k < n; ++k) s.mix[k] += s.sum[k] << PanBits;
                         }
                 }
-                for (size_t k = 0; k < n * channels; ++k) out[k] = float(s.mix[k]) * s.outScale;
-                return;
+                float peak = 0.0f;
+                for (size_t k = 0; k < n * channels; ++k) {
+                        out[k] = float(s.mix[k]) * s.outScale;
+                        peak = std::fmax(peak, std::fabs(out[k]));
+                }
+                return peak;
         }
 
 } // namespace
@@ -849,6 +979,7 @@ void FmSynth::render(float *out, size_t frames) {
                 return;
         }
         size_t done = 0;
+        float  peak = 0.0f;
         while (done < frames) {
                 // What is due by this frame, then up to the next event's frame, a block at a time.
                 while (_count > 0 && _events[_head].frame <= _frames + done) {
@@ -861,11 +992,12 @@ void FmSynth::render(float *out, size_t frames) {
                         until = static_cast<size_t>(_events[_head].frame - _frames);
                 while (done < until) {
                         const size_t n = until - done < BlockFrames ? until - done : BlockFrames;
-                        renderBlock(*_state, out + done * channels, _frames + done, n, channels);
+                        peak = std::fmax(peak,
+                                         renderBlock(*_state, out + done * channels, _frames + done, n, channels));
                         done += n;
                 }
         }
-        _stats.limited += _limiter.process(out, frames, channels);
+        _stats.limited += _limiter.process(out, frames, channels, peak);
         _frames += frames;
         if (_state->sounding > _stats.peakVoices) _stats.peakVoices = _state->sounding;
         return;

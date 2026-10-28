@@ -2919,3 +2919,53 @@ the patchbay before this. **Tried on the board** (the patchbay by its keys): Tab
 connected `system` to `wavetable` (`synth/system` saved `wavetable`, `midi/connect` emptied,
 `midi0 > midi2`); Enter again disconnected it (`synth/system` empty, no route); Up, Enter
 connected `fm` (`synth/system` `fm`). The user's settings were put back after.
+
+### More efficient (the user, 2026-10-27)
+
+- **`synth.song`** (new bench): a MIDI file rendered as fast as it goes through both engines (FM on
+  the ROM's bank, the wavetable on `synth/font`): µs a second of it, and the voices sounding on
+  average. `file=` names it. The sustained-voice benches miss what songs do (attacks, releases).
+- **Measured first** (Freedoom's MAP01, `d_runnin`, and Doom II's title, `d_doom2`): FM 199.5 and
+  202.1 ms a second of music (20 % of a core) with 27 voices on average, near the 32; the
+  wavetable 148.6 (19.5 voices) and 219.3 (31.5). A song's profile (host, callgrind): the voices'
+  loops 56 %, the block's mix, pan and conversion 21 %, the ticks 18 %. FM kept more voices alive
+  than the wavetable: DMXOPL3's releases are long, and a voice ran to the chip's 94.5 dB.
+- **Silent operators:** from 78 dB on (`SilentAtt`, 416) an operator's gain is 0 (its output
+  rounded to nothing already); a gain under 16 with no step to take counts as silent. A block
+  where a voice's modulator is silent renders its carrier alone (`renderCarrier`); a voice silent
+  the whole block is skipped (its phases moved on). A voice whose audible operators are silent for
+  good (a falling stage, past 78 dB on the envelope and total level) is freed.
+- **The fade at 48 dB** (`FadeAtt`, 256): a releasing or percussive voice 48 dB down on its
+  envelope, total level and velocity (what can't change) gets all sound off's quick release (a few
+  milliseconds, no click: host-tested) and is freed. Freedoom's songs: voices 25.3 → 20.7 and
+  26.7 → 24.8 on average, notes stolen at the limit 1,164 → 424 and 2,163 → 1,591, every
+  1/3-octave band within 0.04 dB (thresholds of 78, 60 and 48 dB tried; velocity alone changed
+  little). Held, sustaining notes are never faded.
+- **Smaller:** vibrato's step without a division a tick (1 / the F-number kept); the limiter's peak
+  scan folded into the float conversion.
+- **On the board now:** `d_runnin` 168.5 ms a second (-16 %, 20.5 voices), `d_doom2` 193.5 (-4 %,
+  24.5 voices): a voice costs about what a wavetable voice does on a song, and fewer are kept.
+- **Left, each a choice:** ticking every 32 frames (the ticks are 18 %: about -9 %, fast attacks
+  ramped over 0.67 ms); a stereo mix pass per pan rather than per channel (channels sharing a pan,
+  as most do, share one: about -5 %). PIE still can't help the loop (two lookups a sample).
+- **Then (the user's yes, 2026-10-27): ticks every 32 frames, and a pan pass per pan.**
+  - `TickFrames` 32 (0.67 ms). **Found, by it:** gains in Q15 stepped by a sixteenth (now a
+    thirty-second) of the gap, so a step under one was nothing and a slow change at a low level
+    lagged (a decay 11 % slow at 32). Gains are Q31 now: steps keep their fractions, and a level
+    times a gain is one `mulh` (the product's high word; the waveform tables at four times the
+    chip's levels) where it was a multiply and a shift.
+  - **Found, a bug since step 1:** `advance()`'s check for an operator off at 504 ran in the attack
+    too, and an attack starts at 511: a slow one (rates under about 22) was still above 504 after
+    its first 16-frame tick and taken for gone, so **strings and pads never sounded**. The 32-frame
+    tick happened to land below it, which showed it (Doom II's title: 24.8 voices became 30.8, its
+    spectrum 3.3 dB apart at the 95th percentile). The attack no longer goes off; host test added.
+  - **The mix by pan:** the voices sorted by their channel's pan gains, not the channel: channels
+    sharing a pan (most are at the centre) are summed together and panned once; mono, one pass.
+  - **On the board:** `d_runnin` 134.2 ms a second of music (168.5 before: -20 %, 20.6 voices; the
+    wavetable 148.5), `d_doom2` 183.5 with its pads now playing (30.5 voices; the wavetable 219.3):
+    about 6.0 ms a voice a second, from 7.9. A sustained voice 7.3 µs a block (from 8.0). Beside
+    Doom: no late period in 45 s, 185 ‰ on average (from 316), 829 at worst.
+  - **Voices:** Doom II's title is dense (long double-voiced pads): 32 voices, 2,961 notes stolen;
+    48 gives 43 sounding on average and 1,910 stolen; 64, 50 and 798. Kept at 32 (an OPL3 had 18
+    channels; the cost grows with the voices that sound); `max_voices` asks for more.
+  - Fuzzed again (5 minutes, the new paths): no fault.

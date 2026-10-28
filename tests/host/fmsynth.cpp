@@ -431,6 +431,27 @@ TEST_CASE("FmSynth: the envelope's attack, decay and release against the chip's 
                 const double expected = steps / chipSteps(26) / 49716.0;
                 CHECK(crossingSeconds(s, -5 * 0.1875, true) == doctest::Approx(expected).epsilon(0.1).scale(0));
         }
+        SUBCASE("a released note fades out 48 dB down and is freed, without a jump") {
+                BankWriter writer;
+                VoiceSpec  v;
+                v.carrier.sustainRelease = 0x05; // a release of about 1.8 s to -48 dB
+                writer.set(0, v);
+                Player p(writer.bytes());
+                p.send({0xb0, 7, 127});
+                p.send({0x90, 69, 127});
+                p.send({0x80, 69, 0}, Rate / 10);
+                const double       toFade = 256.0 / chipSteps(4u * 5 + 2) / 49716.0; // 48 dB: 256 steps
+                std::vector<float> s = p.render(size_t((toFade - 0.05) * Rate) + Rate / 10);
+                CHECK(p.synth.stats().voices == 1);
+                const std::vector<float> tail = p.render(Rate / 5);
+                CHECK(p.synth.stats().voices == 0);
+                // The last of it 48 dB down, then a few milliseconds' fade: no sample jumps.
+                float jump = 0;
+                for (size_t i = 1; i < tail.size(); ++i) jump = std::max(jump, std::fabs(tail[i] - tail[i - 1]));
+                const float full = *std::max_element(s.begin(), s.begin() + Rate / 10);
+                CHECK(jump < full * 0.01f);
+                CHECK(rms(tail, tail.size() / 2, tail.size()) == 0.0);
+        }
         SUBCASE("a fast decay stops at the sustain level") {
                 // The fastest decay to sustain level 4 (12 dB): the chip stops within a step of it,
                 // a tick's steps must not carry it past (found on DMXOPL3's square lead, 12 dB low).
@@ -447,6 +468,19 @@ TEST_CASE("FmSynth: the envelope's attack, decay and release against the chip's 
                 };
                 CHECK(db(steady(0xff, 0x4f) / steady(0xf0, 0x0f)) == doctest::Approx(-12.0).epsilon(0.02));
                 CHECK(db(steady(0xff, 0x0f) / steady(0xf0, 0x0f)) == doctest::Approx(0.0).scale(1).epsilon(0.05));
+        }
+        SUBCASE("a slow attack sounds") {
+                // Attack rate 1 (about 2.6 s to full): its first ticks are near silence, not off.
+                BankWriter writer;
+                VoiceSpec  v;
+                v.carrier.attackDecay = 0x10;
+                writer.set(0, v);
+                Player p(writer.bytes());
+                p.send({0x90, 69, 127});
+                const std::vector<float> s = p.render(Rate * 2);
+                CHECK(p.synth.stats().voices == 1);
+                CHECK(rms(s, Rate * 3 / 2, Rate * 2) > rms(s, Rate / 2, Rate) * 1.5); // still rising
+                CHECK(rms(s, Rate * 3 / 2, Rate * 2) > 0.001);
         }
         SUBCASE("percussive: falls from the sustain level at the release rate, keyed on") {
                 BankWriter writer;

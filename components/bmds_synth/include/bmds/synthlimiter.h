@@ -35,11 +35,13 @@ class SynthLimiter {
                 void setup(uint32_t rateHz);
 
                 /**
-                 * @brief Limits @p frames frames of @p out (interleaved, @p channels) in place.
+                 * @brief Limits @p frames frames of @p out (interleaved, @p channels) in place;
+                 *        @p peak their largest magnitude when the caller knows it (else below 0: it is
+                 *        found here).
                  * @return The frames it turned down (over the ceiling, or still coming back).
                  * @hotpath
                  */
-                uint32_t process(float *out, size_t frames, unsigned channels);
+                uint32_t process(float *out, size_t frames, unsigned channels, float peak = -1.0f);
 
                 /** @brief Returns the gain now (1: not limiting). */
                 float gain() const { return 1.0f - _gap; }

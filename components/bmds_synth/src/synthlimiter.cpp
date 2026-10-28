@@ -21,28 +21,30 @@ void SynthLimiter::setup(uint32_t rateHz) {
         return;
 }
 
-uint32_t SynthLimiter::process(float *out, size_t frames, unsigned channels) {
+uint32_t SynthLimiter::process(float *out, size_t frames, unsigned channels, float peak) {
         // The gap to 1 is kept, not the gain: it shrinks by a factor each frame, which a float does
         // to the end (a gain stepped toward 1 stalls a few ulps short of it, multiplying for good).
         float gap = _gap;
         if (gap == 0.0f) {
-                // Not limiting: the block's peak first (fabs and fmax, a sample), and nothing more if
-                // it is under the ceiling, as it nearly always is.
-                float        peak = 0.0f;
-                const size_t n = frames * channels;
-                for (size_t i = 0; i < n; ++i) peak = std::fmax(peak, std::fabs(out[i]));
+                // Not limiting: the block's peak first (fabs and fmax, a sample, unless the caller knew
+                // it), and nothing more if it is under the ceiling, as it nearly always is.
+                if (peak < 0.0f) {
+                        peak = 0.0f;
+                        const size_t n = frames * channels;
+                        for (size_t i = 0; i < n; ++i) peak = std::fmax(peak, std::fabs(out[i]));
+                }
                 if (peak <= Ceiling) return 0;
         }
         const float keep = 1.0f - _release;
         uint32_t    limited = 0;
         for (size_t f = 0; f < frames; ++f) {
                 float *frame = out + f * channels;
-                float  peak = 0;
+                float  top = 0;
                 for (unsigned c = 0; c < channels; ++c) {
                         const float a = frame[c] < 0 ? -frame[c] : frame[c];
-                        peak = a > peak ? a : peak;
+                        top = a > top ? a : top;
                 }
-                if (peak * (1.0f - gap) > Ceiling) gap = 1.0f - Ceiling / peak; // at once: never past it
+                if (top * (1.0f - gap) > Ceiling) gap = 1.0f - Ceiling / top; // at once: never past it
                 if (gap > 0.0f) {
                         const float g = 1.0f - gap;
                         for (unsigned c = 0; c < channels; ++c) frame[c] *= g;

@@ -106,6 +106,8 @@ namespace {
                         double   sumSquares = 0;
                         float    peak = 0;
                         uint64_t clipped = 0;
+                        uint64_t voiceChunks = 0; // the voices sounding, summed a chunk
+                        uint64_t chunks = 0;
         };
 
         // Plays @p smf through @p synth (a Synth or an FmSynth) into @p out.
@@ -140,6 +142,8 @@ namespace {
                         if (have != 1 && frame > lastEvent + uint64_t(tailSeconds * Rate)) break;
                         const auto start = std::chrono::steady_clock::now();
                         synth.render(buf, Chunk);
+                        t.voiceChunks += synth.stats().voices;
+                        ++t.chunks;
                         t.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
                         for (size_t i = 0; i < Chunk * 2; ++i) {
                                 const float x = buf[i];
@@ -152,9 +156,10 @@ namespace {
                         frame += Chunk;
                 }
                 const bmds::SynthEngine::Stats st = synth.stats();
-                std::printf("voices: %u at most of %u, %u notes at the limit; %u messages ignored; limited %.2f%% of "
-                            "frames\n",
-                            st.peakVoices, st.maxVoices, st.notesAtLimit, st.ignored,
+                std::printf("voices: %.1f on average, %u at most of %u, %u notes at the limit; %u messages ignored; "
+                            "limited %.2f%% of frames\n",
+                            t.chunks != 0 ? double(t.voiceChunks) / double(t.chunks) : 0.0, st.peakVoices, st.maxVoices,
+                            st.notesAtLimit, st.ignored,
                             st.frames != 0 ? 100.0 * double(st.limited) / double(st.frames) : 0.0);
                 return 0;
         }

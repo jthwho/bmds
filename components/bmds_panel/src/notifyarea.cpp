@@ -292,6 +292,9 @@ void NotifyArea::tick() {
         String          text(MemSpace::Psram);
         if (formatTime(text, StringView(_format), local).isOk() && text.view() != _time.view()) {
                 (void)_time.assign(text.view());
+                // Wider or narrower (9:59 to 10:00, %l's space giving way to a digit; the first time
+                // read): laid out again, or the clock doesn't fit its room and isn't drawn.
+                if (sizeHint().width != geometry().width) _row.relayout();
                 update();
         }
         text.clear();
