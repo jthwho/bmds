@@ -26,8 +26,8 @@ BMDS_NAMESPACE_BEGIN
 namespace Midi {
 
         /**
-         * @brief Boot stage: the router, `/dev/midi*`, and `midi/connect`
-         *        followed. Before the USB host, whose MIDI devices are ports.
+         * @brief Boot stage: the router, `/dev/midi*`, and `midi/connect` and
+         *        `synth/system` followed. Before the USB host, whose MIDI devices are ports.
          * @return `Ok` (a file not added is logged).
          */
         Error init();
@@ -36,7 +36,8 @@ namespace Midi {
         MidiRouter &router();
 
         /**
-         * @brief Applies `midi/connect` if it changed since (a watcher may not read
+         * @brief Applies `midi/connect` and `synth/system` (the route from `system` to
+         *        the system synth; a change takes the old one away) if they changed since (a watcher may not read
          *        settings, so this is called where ports appear and connections are
          *        shown: opening a MIDI file, a USB device mounted or named, the
          *        `midi` command). Reads the settings: never with a lock held that

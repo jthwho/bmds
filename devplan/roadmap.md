@@ -280,7 +280,9 @@ Plan: [`input.md`](input.md).
     slower). Step 1 done: `FmSynth`, `Op2Bank`, the banks, `bmds-synthwav`, the benches (8.0 µs a
     voice-block, the wavetable's 9.9), tests and fuzzing; levels matched to TimGM6mb. Step 2 done:
     `SynthEngine`, the synth fd's `engine` (ABI, appended), `synth/fm-bank`, `synth -e`, MIDI
-    files through FM, DMXOPL3 in `/rom`.
+    files through FM, DMXOPL3 in `/rom`. Step 3 done: one service run as `fm` and `wavetable`,
+    `synth/system` (`fm` by default) routing `system`, `midi/connect` empty by default, no font
+    loaded at boot, a notification when the wavetable's first note loads it.
   - [ ] 6b. The patchbay (§24, outlined): a graph fd for programs, an audio graph (client to
     client in a period, devices' playback and capture), and `patchbay`, MIDI and audio wires.
     MIDI done: `patchbay` (drag or keys, kept in `midi/connect`, live); the graph fd waits for

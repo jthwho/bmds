@@ -10,6 +10,7 @@
  */
 
 #include <atomic>
+#include <cstdio>
 #include <new>
 #include <bmds/log.h>
 #include <bmds/memory.h>
@@ -25,9 +26,13 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         // devplan/audio.md §21: the keys are an interface once shipped.
-        BMDS_SYSCONF(midiConnect, "midi/connect", Config::Type::String, "system>wavetable",
+        BMDS_SYSCONF(midiConnect, "midi/connect", Config::Type::String, "",
                      "MIDI connections made whenever both ports exist: SOURCE>DEST, comma-separated", 0,
                      static_cast<int32_t>(MidiRouter::MaxAutoConnect - 1), nullptr, nullptr)
+        // devplan/audio.md §26: the system synth, the default route's end (the one way to set it).
+        BMDS_SYSCONF(synthSystem, "synth/system", Config::Type::String, "fm",
+                     "The system synth: the MIDI port system (what programs play) goes to; empty: none", 0,
+                     static_cast<int32_t>(MidiRouter::MaxName - 1), nullptr, nullptr)
 
         // A port's counters (devplan/sysmon.md §6): names, units and labels are an interface once
         // shipped.
@@ -93,7 +98,9 @@ namespace {
         struct System {
                         MidiRouter        router;
                         SysConf::Watcher  watcher;
+                        SysConf::Watcher  systemWatcher;        // synth/system
                         std::atomic<bool> connectChanged{true}; // read midi/connect at the next use
+                        char              routed[MidiRouter::MaxName] = {}; // synth/system's port, routed to
                         Mutex             countersLock;         // the counters' registration
                         PortCounters     *counters = nullptr;   // MaxPorts of them, in PSRAM
                         uint8_t           systemPort = MidiRouter::NoPort; // `system` (devplan/audio.md §25)
@@ -171,6 +178,8 @@ Error Midi::init() {
         if (SysConf::isReady()) {
                 const Error err = midi->watcher.start(bmdsConf_midiConnect.key, connectChanged, nullptr);
                 if (err.isError()) bmdsWarn("midi: midi/connect won't be followed: %s", err.desc());
+                const Error serr = midi->systemWatcher.start(bmdsConf_synthSystem.key, connectChanged, nullptr);
+                if (serr.isError()) bmdsWarn("midi: synth/system won't be followed: %s", serr.desc());
         }
         // `system`: what programs play (/dev/midi), a source only; the first port, midi0.
         auto [system, serr] = midi->router.addPort(MidiRouter::Kind::System, MidiRouter::Source, "system", nullptr);
@@ -195,8 +204,30 @@ void Midi::applySettings() {
         System &s = *midi;
         if (!s.connectChanged.exchange(false, std::memory_order_acq_rel) || !SysConf::isReady()) return;
         String list;
-        if (SysConf::get(bmdsConf_midiConnect.key, list).isOk() && s.router.setAutoConnect(list).isError())
-                bmdsWarn("midi: midi/connect is too long");
+        String target;
+        (void)SysConf::get(bmdsConf_midiConnect.key, list);
+        (void)SysConf::get(bmdsConf_synthSystem.key, target);
+        // The system synth changed: the old route goes, unless midi/connect has it too.
+        if (target.view() != StringView(s.routed) && s.routed[0] != '\0' && s.systemPort != MidiRouter::NoPort) {
+                char pair[MidiRouter::MaxName + 8];
+                std::snprintf(pair, sizeof(pair), "system>%s", s.routed);
+                bool listed = false;
+                for (StringView rest = list.view(); !rest.isEmpty() && !listed;) {
+                        const size_t comma = rest.indexOf(',');
+                        listed = rest.left(comma).trimmed() == StringView(pair);
+                        rest = comma == StringView::NPos ? StringView() : rest.mid(comma + 1);
+                }
+                auto [old, ferr] = s.router.find(StringView(s.routed));
+                if (!listed && ferr.isOk()) (void)s.router.disconnect(s.systemPort, old);
+        }
+        std::snprintf(s.routed, sizeof(s.routed), "%.*s", static_cast<int>(target.size()), target.data());
+        // midi/connect's pairs, and system to the system synth.
+        if (!target.isEmpty()) {
+                const bool joined = (list.isEmpty() || list.append(",").isOk()) && list.append("system>").isOk() &&
+                                    list.append(target.view()).isOk();
+                if (!joined) bmdsWarn("midi: no memory for synth/system's route");
+        }
+        if (s.router.setAutoConnect(list).isError()) bmdsWarn("midi: midi/connect is too long");
         return;
 }
 

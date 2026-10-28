@@ -28,9 +28,10 @@
 #include <bmds/semaphore.h>
 #include <bmds/shell.h>
 #include <bmds/synthfile.h>
+#include <bmds/synthservice.h>
+#include <bmds/sysconf.h>
 #include <bmds/thread.h>
 #include <bmds/vfs.h>
-#include <bmds/wavetable.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -111,19 +112,30 @@ namespace {
                 return ctx.usage();
         }
 
-        // synth status: the built-in synth's port (devplan/audio.md §25).
-        int showStatus(CommandContext &ctx) {
-                const Wavetable::Status s = Wavetable::status();
+        // A built-in synth's line (its name, its setting's).
+        void showService(CommandContext &ctx, SynthEngine::Kind kind) {
+                const SynthServices::Status s = SynthServices::status(kind);
+                const char                 *name = SynthServices::portName(kind);
                 if (!s.on) {
-                        ctx.printf("wavetable: off (synth/wavetable)\n");
-                        return Shell::ExitSuccess;
+                        ctx.printf("%s: off (synth/%s)\n", name, name);
+                        return;
                 }
-                ctx.printf("wavetable: midi%u, %s; %lu events, %lu dropped; started %lu times, %lu late periods; "
+                ctx.printf("%s: midi%u, %s; %lu events, %lu dropped; started %lu times, %lu late periods; "
                            "voices %lu at most\n",
-                           static_cast<unsigned>(s.port), s.playing ? "playing" : "idle",
+                           name, static_cast<unsigned>(s.port), s.playing ? "playing" : "idle",
                            static_cast<unsigned long>(s.events), static_cast<unsigned long>(s.dropped),
                            static_cast<unsigned long>(s.starts), static_cast<unsigned long>(s.late),
                            static_cast<unsigned long>(s.peakVoices));
+                return;
+        }
+
+        // synth status: the built-in synths' ports (devplan/audio.md §25, §26), and the system synth.
+        int showStatus(CommandContext &ctx) {
+                showService(ctx, SynthEngine::Kind::Wavetable);
+                showService(ctx, SynthEngine::Kind::Fm);
+                String system;
+                (void)SysConf::get(StringView("synth/system"), system);
+                ctx.printf("system: %s (synth/system)\n", system.isEmpty() ? "none" : system.cStr());
                 return Shell::ExitSuccess;
         }
 
@@ -265,6 +277,6 @@ namespace {
 BMDS_SHELL_COMMAND(synth, runSynth, "[-e fm|wavetable] [-f FILE] [-n NAME] [-p FRAMES] [-v VOICES] | status",
                    "A General MIDI synth: a MIDI port (NAME, synth) playing on /dev/dsp until Ctrl+C, the FM engine "
                    "on an OP2 bank (synth/fm-bank) or the wavetable on a SoundFont (synth/font); by default the "
-                   "system synth's, or FILE's kind; 'status': the built-in one's (the wavetable port)")
+                   "system synth's, or FILE's kind; 'status': the built-in synths' ports and the system synth")
 
 BMDS_NAMESPACE_END

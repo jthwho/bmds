@@ -14,6 +14,7 @@
 #include <bmds/error.h>
 #include <bmds/op2bank.h>
 #include <bmds/synthengine.h>
+#include <bmds/synthlimiter.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -28,7 +29,7 @@ BMDS_NAMESPACE_BEGIN
  * sustained), tremolo and vibrato. Envelopes are worked out every 16 frames and ramped between.
  *
  * The MIDI side is what DMX's driver added, here in the engine: programs and the drum channel
- * (10), a bank's double-voice instruments, velocity, volume and expression (GM's curve), pan,
+ * (10), a bank's double-voice instruments, velocity, volume and expression (TinySoundFont's curves), pan,
  * pitch bend (RPN 0 sets its range), modulation (vibrato), sustain, all notes and sounds off,
  * reset controllers and GM System On. Real-time bytes, pressure and bank select are taken and
  * ignored.
@@ -82,6 +83,7 @@ class FmSynth : public SynthEngine {
                 size_t         _count = 0;
                 uint64_t       _frames = 0;
                 Stats          _stats;
+                SynthLimiter   _limiter;
 };
 
 BMDS_NAMESPACE_END

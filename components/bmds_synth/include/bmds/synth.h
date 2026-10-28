@@ -14,6 +14,7 @@
 #include <bmds/error.h>
 #include <bmds/soundfont.h>
 #include <bmds/synthengine.h>
+#include <bmds/synthlimiter.h>
 
 struct tsf;
 
@@ -88,7 +89,8 @@ class Synth : public SynthEngine {
                 bool initChannels(); // false: no memory (only the first time)
 
                 ::tsf     *_tsf = nullptr;
-                SoundFont *_font = nullptr; // open()'s
+                SoundFont   *_font = nullptr; // open()'s
+                SynthLimiter _limiter;
                 Config   _config;
                 Event   *_events = nullptr; // a ring, in frame order
                 size_t   _head = 0;         // the oldest

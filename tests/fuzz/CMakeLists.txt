@@ -36,7 +36,7 @@ set(AUDIO ${BMDS_ROOT}/components/bmds_audio)
 include(${AUDIO}/codecs.cmake)
 list(TRANSFORM BMDS_CODEC_SRCS PREPEND ${AUDIO}/)
 set(SYNTH ${BMDS_ROOT}/components/bmds_synth)
-set(SYNTH_SRCS ${SYNTH}/src/synth.cpp ${SYNTH}/src/tsf.c ${SYNTH}/src/tml.c ${SYNTH}/src/mididecoder.cpp)
+set(SYNTH_SRCS ${SYNTH}/src/synth.cpp ${SYNTH}/src/synthlimiter.cpp ${SYNTH}/src/tsf.c ${SYNTH}/src/tml.c ${SYNTH}/src/mididecoder.cpp)
 set(SYNTH_INCLUDES ${SYNTH}/include ${SYNTH}/src ${BMDS_ROOT}/thirdparty/tinysoundfont)
 add_executable(decoder_fuzz decoder.cpp ${BMDS_ROOT}/tests/host/hostmemory.cpp ${BMDS_CODEC_SRCS}
                             ${AUDIO}/src/wavfile.cpp ${AUDIO}/src/sampleformat.cpp ${SYNTH_SRCS})
@@ -50,6 +50,7 @@ target_link_options(decoder_fuzz PRIVATE -fsanitize=fuzzer)
 
 # SoundFonts and the synth (devplan/audio.md §22), with stb_vorbis for SF3 fonts.
 add_executable(soundfont_fuzz soundfont.cpp ${BMDS_ROOT}/tests/host/hostmemory.cpp ${SYNTH}/src/synth.cpp
+                              ${SYNTH}/src/synthlimiter.cpp
                               ${SYNTH}/src/tsf.c ${AUDIO}/src/stbvorbis.c)
 target_include_directories(soundfont_fuzz PRIVATE ${BMDS_ROOT}/tests/host ${SYNTH}/include ${SYNTH}/src
                                                   ${BMDS_ROOT}/thirdparty/tinysoundfont ${BMDS_ROOT}/thirdparty/stb_vorbis)
@@ -60,7 +61,7 @@ target_link_options(soundfont_fuzz PRIVATE -fsanitize=fuzzer)
 
 # The FM synth and OP2 banks (devplan/audio.md §26).
 add_executable(fmsynth_fuzz fmsynth.cpp ${BMDS_ROOT}/tests/host/hostmemory.cpp ${SYNTH}/src/fmsynth.cpp
-                            ${SYNTH}/src/op2bank.cpp)
+                            ${SYNTH}/src/op2bank.cpp ${SYNTH}/src/synthlimiter.cpp)
 target_include_directories(fmsynth_fuzz PRIVATE ${BMDS_ROOT}/tests/host ${SYNTH}/include ${SYNTH}/src
                                                 ${BMDS_ROOT}/thirdparty/tinysoundfont)
 target_compile_options(fmsynth_fuzz PRIVATE -fno-exceptions -fno-rtti)

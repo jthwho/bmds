@@ -6,13 +6,16 @@
  * See LICENSE file in the project root folder for license information.
  *
  * A game's music as MIDI through /dev/midi (BMDS_GAME_MUSIC_MIDI_OUT,
- * devplan/audio.md §25): the system port, the wavetable synth by default or
- * wherever it is routed. A thread walks the file and writes each event a
+ * devplan/audio.md §25): the system port, to the system synth (synth/system, the FM
+ * synth by default). A thread walks the file and writes each event a
  * little ahead with its time (scheduled output), so the kernel sends it then
  * and a synth places it on its sample; the thread's own wake-ups don't show.
- * The volume scales each channel's volume (controller 7) as the file sets it.
+ * The volume scales each channel's volume (controller 7) as the file sets it: by its cube root,
+ * as the synths take controller 7 cubed (TinySoundFont's curve, the FM synth's too), so the volume
+ * is an amplitude, as the game's sounds' and its decoded music's are (devplan/audio.md §26).
  */
 
+#include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +39,7 @@ struct bmds_game_midi_out {
                 int             stop;             /* LOAD/STORE */
                 int32_t         gain;             /* 0-32768, LOAD/STORE */
                 int32_t         gain_sent;        /* the thread's */
+                int32_t         scale;            /* gain_sent's on controller 7: its cube root, 0-32768 */
                 uint8_t         volume[CHANNELS]; /* each channel's volume as the file set it */
 };
 
@@ -45,8 +49,15 @@ static int64_t now_ns(void) {
         return ns;
 }
 
-static uint8_t scaled(uint8_t volume, int32_t gain) {
-        return (uint8_t)(((int32_t)volume * gain) >> 15);
+static uint8_t scaled(uint8_t volume, int32_t scale) {
+        return (uint8_t)(((int32_t)volume * scale) >> 15);
+}
+
+/* @p gain (an amplitude, 0-32768) as a scale of controller 7, which the synths cube. */
+static int32_t controller_scale(int32_t gain) {
+        if (gain <= 0) return 0;
+        if (gain >= 32768) return 32768;
+        return (int32_t)(cbrtf((float)gain / 32768.0f) * 32768.0f + 0.5f);
 }
 
 /* Writes @p count bytes as records of up to 5 at @p when (0: now), waiting while the fd's
@@ -73,8 +84,10 @@ static int send(struct bmds_game_midi_out *m, int64_t when, const uint8_t *bytes
 
 /* Every channel's volume, now, at gain @p gain. */
 static void send_volumes(struct bmds_game_midi_out *m, int32_t gain) {
+        m->gain_sent = gain;
+        m->scale = controller_scale(gain);
         for (uint8_t c = 0; c < CHANNELS; ++c) {
-                const uint8_t cc[3] = {(uint8_t)(0xb0u | c), 7, scaled(m->volume[c], gain)};
+                const uint8_t cc[3] = {(uint8_t)(0xb0u | c), 7, scaled(m->volume[c], m->scale)};
                 (void)send(m, 0, cc, 3);
         }
         return;
@@ -94,18 +107,14 @@ static void *midi_thread(void *arg) {
         for (uint8_t c = 0; c < CHANNELS; ++c) m->volume[c] = 100; /* GM's default */
         send_all(m, 121); /* the controllers reset: another program may have left them */
         send_all(m, 123); /* and its notes */
-        m->gain_sent = LOAD(m->gain);
-        send_volumes(m, m->gain_sent);
+        send_volumes(m, LOAD(m->gain));
         int64_t               start = now_ns() + START_NS;
         int64_t               last = 0; /* the latest event, from the start */
         bmds_game_smf_event_t e;
         int                   have = 0;
         while (!LOAD(m->stop)) {
                 const int32_t gain = LOAD(m->gain);
-                if (gain != m->gain_sent) {
-                        m->gain_sent = gain;
-                        send_volumes(m, gain);
-                }
+                if (gain != m->gain_sent) send_volumes(m, gain);
                 if (!have) {
                         const int r = bmds_game_smf_next(&m->smf, &e);
                         if (r <= 0) {
@@ -129,7 +138,7 @@ static void *midi_thread(void *arg) {
                         uint8_t d[3] = {e.data[0], e.data[1], e.data[2]};
                         if ((d[0] & 0xf0u) == 0xb0u && d[1] == 7) {
                                 m->volume[d[0] & 0x0fu] = d[2];
-                                d[2] = scaled(d[2], m->gain_sent);
+                                d[2] = scaled(d[2], m->scale);
                         }
                         if (send(m, when, d, e.length) < 0) break;
                 } else if (send(m, when, e.bytes, e.count) < 0) {

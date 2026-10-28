@@ -14,6 +14,7 @@ set(BMDS_SYNTH_PORTABLE_SRCS
         src/mididecoder.cpp
         src/op2bank.cpp
         src/synth.cpp
+        src/synthlimiter.cpp
         src/tml.c
         src/tsf.c)
 set(BMDS_SYNTH_THIRDPARTY ${CMAKE_CURRENT_LIST_DIR}/../../thirdparty)
@@ -27,7 +28,7 @@ if(COMMAND idf_component_register)
                                     src/benchsynth.cpp
                                     src/synthcommand.cpp
                                     src/synthfile.cpp
-                                    src/wavetable.cpp
+                                    src/synthservice.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS ${BMDS_SYNTH_INCLUDES}
                                REQUIRES bmds_core bmds_kernel bmds_audio bmds_fs bmds_sysconf
@@ -43,5 +44,5 @@ endif()
 bmds_target_options(${BMDS_SYNTH_TARGET})
 target_compile_definitions(${BMDS_SYNTH_TARGET} PRIVATE ${BMDS_SYNTH_DEFINITIONS})
 # The render loop: -O2 (the build's -Os is slower on inner loops); TinySoundFont is upstream code.
-set_source_files_properties(src/synth.cpp src/fmsynth.cpp PROPERTIES COMPILE_OPTIONS -O2)
+set_source_files_properties(src/synth.cpp src/fmsynth.cpp src/synthlimiter.cpp PROPERTIES COMPILE_OPTIONS -O2)
 set_source_files_properties(src/tsf.c src/tml.c PROPERTIES COMPILE_OPTIONS "-O2;-Wno-shadow;-Wno-unused-parameter;-Wno-sign-compare")

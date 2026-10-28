@@ -11,7 +11,7 @@
  *   bmds-synthwav [-b BANK.op2 | -f FONT.sf2] [-g DB] [-v VOICES] [-s SECONDS] IN.mid OUT.wav
  *
  * -b renders through the FM synth on an OP2 bank, -f through the wavetable synth on a
- * SoundFont (one of them is needed); -g is the output's gain in dB (-10, synth/gain's default),
+ * SoundFont (one of them is needed); -g is the output's gain in dB (-4, synth/gain's default),
  * -v the voices (32), -s the release after the last event (2). Writes 48 kHz 16-bit stereo, and
  * prints the level, the voices and the render's speed. Exit status: 0, 1 on a failure, 2 on usage errors.
  */
@@ -152,8 +152,10 @@ namespace {
                         frame += Chunk;
                 }
                 const bmds::SynthEngine::Stats st = synth.stats();
-                std::printf("voices: %u at most of %u, %u notes at the limit; %u messages ignored\n", st.peakVoices,
-                            st.maxVoices, st.notesAtLimit, st.ignored);
+                std::printf("voices: %u at most of %u, %u notes at the limit; %u messages ignored; limited %.2f%% of "
+                            "frames\n",
+                            st.peakVoices, st.maxVoices, st.notesAtLimit, st.ignored,
+                            st.frames != 0 ? 100.0 * double(st.limited) / double(st.frames) : 0.0);
                 return 0;
         }
 
@@ -169,7 +171,7 @@ namespace {
 int main(int argc, char **argv) {
         const char *bankPath = nullptr;
         const char *fontPath = nullptr;
-        double      gain = -10; // synth/gain's default
+        double      gain = -4; // synth/gain's default
         long        voices = 32;
         double      tail = 2;
         int         i = 1;

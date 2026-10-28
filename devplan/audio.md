@@ -2805,3 +2805,75 @@ Next: step 2, `SynthEngine` and the synth fd's `engine`.
 - **Tried on the board:** `progtest synth` (the old struct and a font: wavetable; FM on the ROM's
   bank, 175 presets, 0 bytes of RAM for it; default: FM; engine 3 refused; a SoundFont as a bank:
   EIO), `progtest mididecode` and `play scale.mid` through FM.
+
+### As built: step 3 (2026-10-27)
+
+- **One service, run twice** (`synthservice.cpp`, `bmds/synthservice.h`, in place of
+  `wavetable.cpp`): `SynthServices::init()` (the boot stage `synths`) starts `fm` (midi1, while the
+  new **`synth/fm`** is on, default true) and `wavetable` (midi2, `synth/wavetable`), each a port, a
+  ring of 256 events and a control thread; `status(kind)`. The audio thread, idle close and late
+  counting are as §25's.
+- **`synth/system`** (new, default `fm`; `""` none), read by `Midi::applySettings()`: the route
+  `system>`target is added to `midi/connect`'s pairs, and a change takes the old route away
+  (unless `midi/connect` names it too: the router keeps connections it made). A second watcher
+  follows it; the services call `applySettings()` after any `synth/*` change. **`midi/connect`'s
+  default is now empty.** `SynthEngines::systemKind()` follows it (`wavetable` the wavetable,
+  anything else FM), so `play FILE.mid` and programs' default synth fds go with it.
+- **The warm font** is loaded only while the wavetable is the system synth (and `synth/keep-fonts`
+  is on); idle at boot, no SoundFont is loaded now (`mem`: fonts 0, where TimGM6mb's 5.97 MB was).
+  Chosen live, the font loads at once (in the background); it stays cached after (a cache:
+  given back when memory runs short).
+- **The notification:** when the wavetable's synth took 200 ms or more to open (its font loaded
+  from the card), a low-urgency, transient notification from the kernel says "Wavetable synth:
+  Loaded TimGM6mb.sf2 (0.5 s) for its first note."
+- **`synth status`:** the wavetable's line (as before), then `fm`'s, then `system: fm
+  (synth/system)`. The Settings app's Synthesizer section: the system synth (FM, wavetable or
+  none), `synth/fm`, `synth/fm-bank`, `synth/wavetable`, then the font, gain and keep rows.
+- **Found on the board:** the wavetable's control thread overflowed its 4 KB stack (a panic, the
+  board reset) loading the font on its first note through `SynthFile`, `SynthEngines` and
+  `SoundFonts`: measured 4,244 bytes; 6 KB now (PSRAM), 1.9 KB to spare.
+- **Tried:** at boot `system>fm`, both ports, no font; notes to `system` and `/dev/midi` played by
+  `fm` (4 voices: the piano's two each), idle 5 s after; `synth/system` set live to `wavetable`
+  (the route moved, the first note loaded the font, the notification shown), to `""` (no route),
+  back to `fm`; `progtest midi` and `synth` pass. The settings were put back to their defaults.
+
+### Games' music too quiet through FM (the user, 2026-10-27)
+
+The user heard Bricks' and Doom's music through `system` to `fm` at a very low volume. Found:
+
+- **The level curves differed between the engines.** TinySoundFont takes a note's velocity as an
+  amplitude (`20 log10`) and the volume and expression's product cubed; the FM synth had GM's
+  square law on all three, so a velocity of 64 was -12 dB, not -6. The FM synth now uses
+  TinySoundFont's curves (`FmTables::LevelAtt` is `20 log10`; volume and expression three times
+  it), so a song's balance and a game's volume sound alike through either engine. Calibration
+  checked again over all 35 of Freedoom's songs and Bricks': FM minus TimGM6mb is +0.4 dB at
+  the median (from -7.4 to +5.4 by song: the banks' instruments differ), so +13 dB stands.
+  TimGM6mb's peaks reach +2.6 dBFS on some at -10 dB (it clips there); FM's -2.2 at most.
+- **The games' music volume was cubed.** libbmdsgame's MIDI out (`midiout.c`) scaled controller 7
+  by the game's music volume, which the synths cube: Bricks' 0.6 was -13 dB, Doom's default
+  (about half) about -16 dB, where the game's sounds and its decoded music take the same volume
+  as an amplitude. Now controller 7 is scaled by the gain's cube root: 0.6 is -4.4 dB, a half
+  -6 dB. Bricks and Doom rebuilt (`bmds-dist build blocks doom`) and their programs copied to
+  the card (the old ones in `/sd0/p0/claude/backup`).
+- **Still quiet overall:** MIDI music at `synth/gain`'s -10 dB sits around -22 dBFS RMS (Bricks'
+  -28), 8-14 dB below a mastered MP3. The -10 dB is TimGM6mb's headroom; louder needs a limiter
+  on the synths' output (next, if the user wants it).
+
+### The limiter and a louder default (the user, 2026-10-27)
+
+- **`SynthLimiter`** (`bmds/synthlimiter.h`, portable), at the end of both engines' `render()`, so
+  every path has it (the services, synth fds, MIDI files): a frame whose larger channel would pass
+  -1 dBFS is turned down to it at once; the gain comes back with a 50 ms time constant. While the
+  gain is 1, a block's peak is scanned first (`fabs.s`, `fmax.s` a sample) and nothing more is done
+  under the ceiling. `SynthEngine::Stats::limited` counts the frames it turned down; `bmds-synthwav`
+  prints the share.
+- **Found:** a gain stepped toward 1 in a float stalls short of it (at 0.99994, steps under an ulp):
+  it would have multiplied every sample for good. The gap to 1 is kept instead, shrinking by a
+  factor, set to 0 under 1e-5.
+- **`synth/gain`'s default is -4 dB** (was -10). Over the 36 songs: FM's median -16.0 dBFS RMS
+  (was -22), TimGM6mb's -17.4; peaks at -1 dBFS at most. What the limiter takes (the song's level
+  against +6 dB without it): FM 0.0 dB at the median, 0.4 at worst; TimGM6mb 0.0 at the median,
+  0.5 at the 90th percentile, 3.2 at worst (`d_dead`, which clipped at -10 already). Bricks' music
+  through FM: -25.5 dBFS RMS.
+- **Its cost on the board:** an idle synth's block 8.0 to 10.8 µs (the first version, a frame at a
+  time, was 15.8: the block scan was the fix); 32 FM voices 264 µs, as before.

@@ -69,9 +69,9 @@ namespace {
 
         // The output's level against the chip's, in dB: a voice at full level is ±4084 of 32768, as
         // one of an OPL3's channels (-18 dBFS). Raised so that a song is as loud as through the
-        // wavetable and TimGM6mb (measured on three of Freedoom's songs, 2026-10-27: 4.8 to 11.1 dB
-        // quieter at 0 dB, 7.5 on average); at synth/gain's -10 dB their peaks stay below -4 dBFS.
-        // One gain for both engines.
+        // wavetable and TimGM6mb: over Freedoom's 35 songs and Bricks', FM is 0.4 dB louder at the
+        // median (2026-10-27, both on TinySoundFont's level curves). One gain (synth/gain) for both
+        // engines; the limiter keeps the peaks below full scale.
         constexpr float CalibrationDb = 13.0f;
 
         // A gain's 1.0 (the exponent table's 2042 at no attenuation is 0.997 of it).
@@ -372,9 +372,12 @@ namespace {
                 return lfo;
         }
 
+        // The velocity's, the volume's and the expression's attenuation: TinySoundFont's curves (the
+        // velocity's amplitude, the volume and expression's product cubed), so a song's balance and
+        // a game's volume (controller 7) sound alike through either engine.
         uint16_t volumeAtt(const State::Channel &c, uint8_t velocity) {
-                const uint32_t a = uint32_t(FmTables::LevelAtt[velocity & 0x7f]) + FmTables::LevelAtt[c.volume] +
-                                   FmTables::LevelAtt[c.expression];
+                const uint32_t a = uint32_t(FmTables::LevelAtt[velocity & 0x7f]) +
+                                   3u * (uint32_t(FmTables::LevelAtt[c.volume]) + FmTables::LevelAtt[c.expression]);
                 return uint16_t(a > MaxLevel ? MaxLevel : a);
         }
 
@@ -752,6 +755,7 @@ Error FmSynth::open(const Op2Bank &bank, const Config &config) {
         s.outScale = bmdsSynthExp2((c.gainDb + CalibrationDb) / 6.0206f) / (2.0f * float(1 << PanBits) * 32768.0f);
         _bank = &bank;
         _config = c;
+        _limiter.setup(c.rateHz);
         _head = _count = 0;
         _frames = 0;
         _stats = Stats();
@@ -857,6 +861,7 @@ void FmSynth::render(float *out, size_t frames) {
                         done += n;
                 }
         }
+        _stats.limited += _limiter.process(out, frames, channels);
         _frames += frames;
         if (_state->sounding > _stats.peakVoices) _stats.peakVoices = _state->sounding;
         return;

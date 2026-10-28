@@ -151,7 +151,10 @@ namespace SynthEngines {
         /** @brief The bank the FM engine plays when none is named, while `synth/fm-bank` is unset. */
         inline constexpr const char *DefaultBank = "/rom/share/synth/dmxopl3.op2";
 
-        /** @brief Returns the engine `Kind::Default` stands for with no instruments named: the system synth's. */
+        /**
+         * @brief Returns the engine `Kind::Default` stands for with no instruments named: the
+         *        system synth's (`synth/system`: `wavetable` is the wavetable, anything else FM).
+         */
         SynthEngine::Kind systemKind();
 
         /**

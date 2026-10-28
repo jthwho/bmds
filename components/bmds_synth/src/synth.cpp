@@ -227,6 +227,7 @@ Error Synth::open(SoundFont &font, const Config &config) {
         tsf_set_output(_tsf, c.channels == 2 ? TSF_STEREO_INTERLEAVED : TSF_MONO, static_cast<int>(c.rateHz), c.gainDb);
         _config = c;
         _font = &font;
+        _limiter.setup(c.rateHz);
         _head = _count = 0;
         _frames = 0;
         _stats = Stats();
@@ -344,6 +345,7 @@ void Synth::render(float *out, size_t frames) {
                 tsf_render_float(_tsf, out + done * _config.channels, static_cast<int>(until - done), 0);
                 done = until;
         }
+        _stats.limited += _limiter.process(out, frames, _config.channels);
         _frames += frames;
         const auto voices = static_cast<uint32_t>(tsf_active_voice_count(_tsf));
         if (voices > _stats.peakVoices) _stats.peakVoices = voices;

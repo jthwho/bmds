@@ -24,6 +24,7 @@
 #include <bmds/mididecoder.h>
 #include <bmds/op2bank.h>
 #include <bmds/synth.h>
+#include <bmds/synthlimiter.h>
 
 using bmds::ByteSpan;
 using bmds::Error;
@@ -187,16 +188,22 @@ namespace {
                 return 20.0 * std::log10(ratio);
         }
 
-        // The level in 5 ms windows, in dB below the loudest window, and the first window at or
-        // past @p from that crosses @p threshold dB downward (or upward when @p rising).
+        // The level in 5 ms windows, in dB below the loudest window, and when it crosses
+        // @p threshold dB downward (or upward when @p rising), interpolated between windows.
         double crossingSeconds(const std::vector<float> &s, double threshold, bool rising) {
                 constexpr size_t    Window = Rate / 200;
                 std::vector<double> levels;
                 for (size_t i = 0; i + Window <= s.size(); i += Window) levels.push_back(rms(s, i, i + Window));
                 const double peak = *std::max_element(levels.begin(), levels.end());
+                // The crossing between the windows' centres, interpolated in dB.
+                double before = 0;
                 for (size_t w = 0; w < levels.size(); ++w) {
                         const double d = levels[w] > 0 ? db(levels[w] / peak) : -200;
-                        if (rising ? d >= threshold : (d <= threshold && w > 0)) return double(w * Window) / Rate;
+                        if (w > 0 && (rising ? d >= threshold : d <= threshold)) {
+                                const double f = (threshold - before) / (d - before);
+                                return (double(w - 1) + 0.5 + (f > 0 && f < 1 ? f : 1)) * Window / Rate;
+                        }
+                        before = d;
                 }
                 return -1;
         }
@@ -497,7 +504,7 @@ TEST_CASE("FmSynth: feedback stays bounded; FM and additive voices") {
         CHECK(s != pure.render(Rate));
 }
 
-TEST_CASE("FmSynth: velocity, volume and expression on GM's curve; pan") {
+TEST_CASE("FmSynth: velocity, volume and expression on TinySoundFont's curves; pan") {
         BankWriter writer;
         writer.set(0, VoiceSpec());
         const std::vector<uint8_t> bytes = writer.bytes();
@@ -510,10 +517,10 @@ TEST_CASE("FmSynth: velocity, volume and expression on GM's curve; pan") {
                 return rms(s, Rate / 8, Rate / 4);
         };
         const double full = level(127, 127, 127);
-        // 40 log10(v / 127): each in 0.1875 dB steps.
-        CHECK(db(level(64, 127, 127) / full) == doctest::Approx(40 * std::log10(64.0 / 127)).epsilon(0.03));
-        CHECK(db(level(127, 64, 127) / full) == doctest::Approx(40 * std::log10(64.0 / 127)).epsilon(0.03));
-        CHECK(db(level(127, 127, 32) / full) == doctest::Approx(40 * std::log10(32.0 / 127)).epsilon(0.03));
+        // The velocity's amplitude, the volume and expression cubed (as the wavetable's): 0.1875 dB steps.
+        CHECK(db(level(64, 127, 127) / full) == doctest::Approx(20 * std::log10(64.0 / 127)).epsilon(0.03));
+        CHECK(db(level(127, 64, 127) / full) == doctest::Approx(60 * std::log10(64.0 / 127)).epsilon(0.03));
+        CHECK(db(level(127, 127, 32) / full) == doctest::Approx(60 * std::log10(32.0 / 127)).epsilon(0.03));
         CHECK(level(127, 0, 127) == 0.0); // 96 dB down: the gain is 0
 
         // A volume change reaches a sounding note.
@@ -522,7 +529,7 @@ TEST_CASE("FmSynth: velocity, volume and expression on GM's curve; pan") {
         v.send({0xb0, 7, 64}, Rate / 4);
         const std::vector<float> s = v.render(Rate / 2);
         CHECK(db(rms(s, Rate * 3 / 8, Rate / 2) / rms(s, Rate / 8, Rate / 4)) ==
-              doctest::Approx(40 * std::log10(64.0 / 127) - 40 * std::log10(100.0 / 127)).epsilon(0.03));
+              doctest::Approx(60 * std::log10(64.0 / 127) - 60 * std::log10(100.0 / 127)).epsilon(0.03));
 
         struct Pan {
                         uint8_t value;
@@ -789,4 +796,31 @@ TEST_CASE("FmSynth: a MIDI file decoded through it, as an engine; the engines' k
         bmds::Synth wavetable;
         CHECK(wavetable.kind() == bmds::SynthEngine::Kind::Wavetable);
         CHECK(wavetable.presets() == 0);
+}
+
+TEST_CASE("SynthLimiter: peaks held at the ceiling, quiet samples untouched, the gain back") {
+        bmds::SynthLimiter limiter;
+        limiter.setup(Rate);
+        // Quiet: passed through bit for bit.
+        std::vector<float> quiet(2 * 4800);
+        for (size_t i = 0; i < quiet.size(); ++i) quiet[i] = 0.5f * float(std::sin(double(i) * 0.01));
+        std::vector<float> copy = quiet;
+        CHECK(limiter.process(copy.data(), 4800, 2) == 0);
+        CHECK(copy == quiet);
+        // Loud (twice full scale): never past the ceiling; counted.
+        std::vector<float> loud(2 * 4800);
+        for (size_t i = 0; i < loud.size(); ++i) loud[i] = 2.0f * float(std::sin(double(i / 2) * 0.05));
+        CHECK(limiter.process(loud.data(), 4800, 2) > 4000);
+        float peak = 0;
+        for (float x : loud) peak = std::max(peak, std::fabs(x));
+        CHECK(peak <= bmds::SynthLimiter::Ceiling + 1e-6f);
+        CHECK(peak > bmds::SynthLimiter::Ceiling * 0.99f);
+        CHECK(limiter.gain() < 0.5f);
+        // Then quiet again: the gain comes back (50 ms a time constant), and samples pass untouched.
+        std::vector<float> silence(2 * 48000, 0.0f);
+        (void)limiter.process(silence.data(), 48000, 2);
+        CHECK(limiter.gain() == 1.0f);
+        copy = quiet;
+        CHECK(limiter.process(copy.data(), 4800, 2) == 0);
+        CHECK(copy == quiet);
 }

@@ -23,7 +23,8 @@ BMDS_NAMESPACE_BEGIN
  *
  * The frame count is its own: the frames `render()` has made. An event for a frame already
  * made plays at the next render's start; one for a later frame waits until then, so a player
- * writes ahead and every event lands on its sample. Channel 10 (9 here) is the drums.
+ * writes ahead and every event lands on its sample. Channel 10 (9 here) is the drums. The output
+ * passes a limiter (`SynthLimiter`), so a peak never clips.
  *
  * @par Thread Safety
  * As each engine: one thread at a time.
@@ -71,6 +72,7 @@ class SynthEngine {
                                 uint32_t queued = 0;       ///< Events waiting.
                                 uint32_t queueFull = 0;    ///< Events refused (the queue was full).
                                 uint32_t ignored = 0;      ///< Messages it doesn't take.
+                                uint32_t limited = 0;      ///< Frames its output limiter turned down (`SynthLimiter`).
                 };
 
                 virtual ~SynthEngine() = default;

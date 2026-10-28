@@ -29,8 +29,8 @@ namespace {
         // devplan/audio.md §22: the key is an interface once shipped.
         BMDS_SYSCONF(synthFont, "synth/font", Config::Type::String, SynthFile::DefaultFont,
                      "The SoundFont (SF2 or SF3) synths play when a program names none", 0, 0, nullptr, nullptr)
-        BMDS_SYSCONF(synthGain, "synth/gain", Config::Type::Int, "-10",
-                     "The synths' gain in dB (-40 to 12): headroom, so that many notes at once stay below full scale",
+        BMDS_SYSCONF(synthGain, "synth/gain", Config::Type::Int, "-4",
+                     "The synths' gain in dB (-40 to 12); a limiter keeps the loudest moments below full scale",
                      static_cast<int32_t>(Synth::MinGainDb), static_cast<int32_t>(Synth::MaxGainDb), nullptr, nullptr)
         BMDS_SYSCONF(synthFmBank, "synth/fm-bank", Config::Type::String, SynthEngines::DefaultBank,
                      "The OP2 instrument bank the FM synth plays when a program names none", 0, 0, nullptr, nullptr)
@@ -318,7 +318,13 @@ namespace {
 // ---- The engines
 
 SynthEngine::Kind SynthEngines::systemKind() {
-        return SynthEngine::Kind::Fm; // the system synth's (devplan/audio.md §26)
+        // synth/system names a port: the wavetable's is its engine; FM for anything else (fm, a USB
+        // synth, none), the one engine that needs nothing on the card.
+        String system;
+        if (SysConf::isReady() && SysConf::get(StringView("synth/system"), system).isOk() &&
+            system.view() == StringView("wavetable"))
+                return SynthEngine::Kind::Wavetable;
+        return SynthEngine::Kind::Fm;
 }
 
 SynthEngine::Kind SynthEngines::resolve(SynthEngine::Kind kind, StringView path) {
