@@ -7,7 +7,8 @@
  *
  * The synths' benchmarks (devplan/audio.md §26, bench.md): one FM voice's 64-frame block by its
  * operators' setup, and 1 to 32 sustained voices through each engine, so the two compare on
- * the board. Nothing is played: the blocks are rendered and dropped.
+ * the board; a song through both; the synth module's 32 to 128 voices of a real instrument, on one
+ * core or both (devplan/synthmodule.md). Nothing is played: the blocks are rendered and dropped.
  */
 
 #include <cstdio>
@@ -314,6 +315,161 @@ namespace {
                 return Error::Ok;
         }
 
+        // ---- The synth module's questions (devplan/synthmodule.md step 1): many voices of a real
+        // instrument, its samples read through PSRAM as they play (not one short loop the cache
+        // keeps), on one core or on both at once.
+
+        constexpr uint16_t ModuleVoices = SynthEngine::MaxVoices; // 128 notes, two voices each in stereo
+        constexpr int      ModuleBlocks = 150;                    // 0.2 s: before the piano's shortest samples end
+
+        SynthEngine::Config moduleConfig() {
+                SynthEngine::Config c = config();
+                c.maxVoices = ModuleVoices;
+                return c;
+        }
+
+        template <typename S> void control(S &synth, uint8_t channel, uint8_t number, uint8_t value) {
+                typename S::Event e;
+                e.frame = synth.stats().frames;
+                e.length = 3;
+                e.data[0] = uint8_t(0xb0 | channel);
+                e.data[1] = number;
+                e.data[2] = value;
+                (void)synth.queue(e);
+                return;
+        }
+
+        // @p n notes of program @p number from silence, on 8 channels (not the drums'), a note a
+        // block as a player's would start: each voice at its own place in its sample.
+        void startVoices(Synth &synth, uint8_t number, uint32_t n) {
+                float out[Block * 2];
+                for (uint8_t ch = 0; ch < 8; ++ch) {
+                        control(synth, ch, 120, 0); // all sound off
+                        SynthEngine::Event e;
+                        e.frame = synth.stats().frames;
+                        e.length = 2;
+                        e.data[0] = uint8_t(0xc0 | ch);
+                        e.data[1] = number;
+                        (void)synth.queue(e);
+                }
+                synth.render(out, Block);
+                for (uint32_t i = 0; i < n; ++i) {
+                        SynthEngine::Event e;
+                        e.frame = synth.stats().frames;
+                        e.length = 3;
+                        e.data[0] = uint8_t(0x90 | (i % 8));
+                        e.data[1] = uint8_t(28 + (i / 8) * 4 + (i % 4)); // 28 to 91
+                        e.data[2] = 100;
+                        (void)synth.queue(e);
+                        synth.render(out, Block);
+                }
+                return;
+        }
+
+        // The other core's load: the same voices on a synth of its own, started again and again.
+        struct OtherCore {
+                        std::atomic<bool> stop{false};
+                        std::atomic<bool> stopped{false};
+                        Synth            *synth = nullptr;
+                        uint8_t           number = 0;
+                        uint32_t          voices = 0;
+                        Task              task;
+
+                        static void entry(void *arg) {
+                                auto *self = static_cast<OtherCore *>(arg);
+                                float out[Block * 2];
+                                while (!self->stop.load(std::memory_order_relaxed)) {
+                                        startVoices(*self->synth, self->number, self->voices);
+                                        for (int i = 0; i < 2 * ModuleBlocks && !self->stop.load(); ++i)
+                                                self->synth->render(out, Block);
+                                }
+                                self->stopped.store(true);
+                                for (;;) Task::sleep(1000);
+                        }
+        };
+
+        Error runModule(BenchContext &ctx) {
+                uint64_t number = 0;
+                uint64_t cores = 1;
+                if (Error err = ctx.paramUnsigned("program", number); err.isError()) return err;
+                if (Error err = ctx.paramUnsigned("cores", cores); err.isError()) return err;
+                if (number > 127 || cores < 1 || cores > 2) return Error::Invalid;
+                String path;
+                if (ctx.param("font").isEmpty()) {
+                        if (Error err = SoundFonts::defaultFont(path); err.isError()) return err;
+                } else if (Error err = path.assign(ctx.param("font")); err.isError()) {
+                        return err;
+                }
+                Synth synth;
+                Synth other;
+                auto [font, err] = SoundFonts::openSynth(path.view(), moduleConfig(), synth);
+                if (err.isError()) return err;
+                SoundFont *otherFont = nullptr;
+                if (cores == 2) {
+                        auto [f, oerr] = SoundFonts::openSynth(path.view(), moduleConfig(), other);
+                        otherFont = f;
+                        err = oerr;
+                }
+                ctx.note("%.*s, program %u, %u MB of samples", int(path.view().size()), path.view().data(),
+                         unsigned(number), unsigned((synth.instrumentBytes() + 512 * 1024) >> 20));
+                for (const uint32_t n : {32u, 64u, 96u, 128u}) {
+                        if (err.isError()) break;
+                        void *mem = nullptr;
+                        if (cores == 2) {
+                                mem = Memory::alloc(MemSpace::Internal, sizeof(OtherCore));
+                                if (mem == nullptr) {
+                                        err = Error::NoMem;
+                                        break;
+                                }
+                        }
+                        OtherCore *load = mem != nullptr ? ::new (mem) OtherCore() : nullptr;
+                        if (load != nullptr) {
+                                load->synth = &other;
+                                load->number = uint8_t(number);
+                                load->voices = n;
+                                Task::Config tc;
+                                tc.name = "benchcore";
+                                tc.stackBytes = 4096;
+                                tc.priority = 2;
+                                tc.core = Task::currentCore() == 0 ? 1 : 0;
+                                err = load->task.start(tc, OtherCore::entry, load);
+                        }
+                        uint32_t fewest = ModuleVoices;
+                        char     metric[24];
+                        std::snprintf(metric, sizeof(metric), "notes_%u_us", unsigned(n));
+                        if (err.isOk())
+                                err = ctx.measure(metric, "us", BenchBetter::Lower, [&](double &v) {
+                                        startVoices(synth, uint8_t(number), n);
+                                        float     out[Block * 2];
+                                        Stopwatch watch;
+                                        for (int i = 0; i < ModuleBlocks; ++i) synth.render(out, Block);
+                                        v = double(watch.elapsedUs()) / ModuleBlocks;
+                                        const uint32_t sounding = synth.stats().voices;
+                                        if (sounding < fewest) fewest = sounding;
+                                        return Error(Error::Ok);
+                                });
+                        if (err.isOk())
+                                ctx.note("%s: %u voices sounding at the end (the fewest)", metric, unsigned(fewest));
+                        if (load != nullptr) {
+                                load->stop.store(true);
+                                while (!load->stopped.load()) Task::sleep(5);
+                                (void)load->task.stop();
+                                load->~OtherCore();
+                                Memory::free(mem);
+                        }
+                }
+                if (otherFont != nullptr) SoundFonts::closeSynth(other, otherFont);
+                SoundFonts::closeSynth(synth, font);
+                ctx.note("a 64-frame block is %.0f us of sound", double(BlockUs));
+                return err;
+        }
+
+        constexpr BenchParam ModuleParams[] = {
+                {"program", "0", "The GM program every voice plays (0: the piano, its samples unlooped)"},
+                {"cores", "1", "2: the same voices on a second synth on the other core at the same time"},
+                {"font", "", "A SoundFont (empty: synth/font)"},
+        };
+
         constexpr BenchParam SongParams[] = {
                 {"file", "/sd0/p0/share/bench/scale.mid", "A MIDI file"},
         };
@@ -334,5 +490,9 @@ BMDS_BENCH_WITH(synthSong, "synth.song", runSong, BenchQuick, SongParams,
                 "and the voices sounding)")
 BMDS_BENCH_WITH(synthWavetableVoices, "synth.wavetable.voices", runWavetableVoices, BenchQuick, VoicesParams,
                 "1 to 32 wavetable voices (synth/font's organ) sustaining, a 64-frame block (us)")
+
+BMDS_BENCH_WITH(synthModule, "synth.module", runModule, BenchQuick, ModuleParams,
+                "32 to 128 notes of one wavetable instrument started a block apart, a 64-frame block (us), on "
+                "one core or both")
 
 BMDS_NAMESPACE_END

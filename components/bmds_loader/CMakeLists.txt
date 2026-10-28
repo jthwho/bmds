@@ -24,6 +24,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_LOADER_PURE_SRCS}
                                     src/audiocalls.cpp
+                                    src/benchwindow.cpp
                                     src/cryptocalls.cpp
                                     src/imagecalls.cpp
                                     src/imagewindow.cpp
@@ -43,13 +44,16 @@ if(COMMAND idf_component_register)
                                     src/systable.c
                                INCLUDE_DIRS include ${BMDS_SDK_INCLUDE}
                                REQUIRES bmds_core bmds_kernel bmds_console bmds_fonts bmds_fs bmds_input bmds_sysconf
-                               PRIV_REQUIRES bmds_audio bmds_crypto bmds_drivers bmds_files bmds_images bmds_ui bmds_midi bmds_net bmds_stats bmds_synth bmds_speech bmds_shell esp_hw_support esp_mm
+                               PRIV_REQUIRES bmds_audio bmds_bench bmds_crypto bmds_drivers bmds_files bmds_images bmds_ui bmds_midi bmds_net bmds_stats bmds_synth bmds_speech bmds_shell esp_hw_support esp_mm
                                              esp_timer
                                              freertos
-                               # proccommand.cpp's commands are found through their linker
-                               # section, not by symbol.
+                               # proccommand.cpp's commands and benchwindow.cpp's benchmarks are
+                               # found through their linker sections, not by symbol.
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
+        # benchwindow.cpp reads the PSRAM heap's TLSF bitmaps (IDF's private heap list).
+        set_source_files_properties(src/benchwindow.cpp PROPERTIES INCLUDE_DIRECTORIES "${IDF_PATH}/components/heap"
+                                                         COMPILE_DEFINITIONS MULTI_HEAP_FREERTOS)
 else()
         add_library(bmds_loader STATIC ${BMDS_LOADER_PURE_SRCS})
         target_include_directories(bmds_loader PUBLIC include ${BMDS_SDK_INCLUDE})

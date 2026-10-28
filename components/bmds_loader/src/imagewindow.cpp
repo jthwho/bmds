@@ -70,28 +70,13 @@ namespace ImageWindow {
                         return -1;
                 }
 
-                // The physical page behind heap address @p p: read from the MMU's table, not with
-                // esp_mmu_vaddr_to_paddr(), which turns the caches off for it (asserting on a
-                // program's stack, which is in PSRAM).
-                uint32_t physicalPage(const uint8_t *p) {
-                        const uint32_t id = mmu_ll_get_entry_id(MMU_LL_PSRAM_MMU_ID, uint32_t(uintptr_t(p)));
-                        portENTER_CRITICAL(&mmuLock);
-                        const uint32_t entry = mmu_ll_read_entry(MMU_LL_PSRAM_MMU_ID, id);
-                        portEXIT_CRITICAL(&mmuLock);
-                        return entry & SOC_MMU_PSRAM_VALID_VAL_MASK;
-                }
-
                 // Points the window's page at @p vaddr to the physical page behind @p from (a heap
                 // address), or makes it invalid (@p from null).
                 void setEntry(uint8_t *vaddr, const uint8_t *from) {
-                        const uint32_t id = mmu_ll_get_entry_id(MMU_LL_PSRAM_MMU_ID, uint32_t(uintptr_t(vaddr)));
-                        const uint32_t page = from != nullptr ? physicalPage(from) : 0;
-                        portENTER_CRITICAL(&mmuLock);
                         if (from != nullptr)
-                                mmu_ll_write_entry(MMU_LL_PSRAM_MMU_ID, id, page, MMU_TARGET_PSRAM0);
+                                writeEntry(vaddr, physicalPage(from));
                         else
-                                mmu_ll_set_entry_invalid(MMU_LL_PSRAM_MMU_ID, id);
-                        portEXIT_CRITICAL(&mmuLock);
+                                clearEntry(vaddr);
                         return;
                 }
 
@@ -110,6 +95,47 @@ namespace ImageWindow {
                 }
 
         } // namespace
+
+        // Read from the MMU's table, not with esp_mmu_vaddr_to_paddr(), which turns the caches off
+        // for it (asserting on a program's stack, which is in PSRAM).
+        uint32_t physicalPage(const void *p) {
+                const uint32_t id = mmu_ll_get_entry_id(MMU_LL_PSRAM_MMU_ID, uint32_t(uintptr_t(p)));
+                portENTER_CRITICAL(&mmuLock);
+                const uint32_t entry = mmu_ll_read_entry(MMU_LL_PSRAM_MMU_ID, id);
+                portEXIT_CRITICAL(&mmuLock);
+                return entry & SOC_MMU_PSRAM_VALID_VAL_MASK;
+        }
+
+        void writeEntry(void *vaddr, uint32_t page) {
+                const uint32_t id = mmu_ll_get_entry_id(MMU_LL_PSRAM_MMU_ID, uint32_t(uintptr_t(vaddr)));
+                portENTER_CRITICAL(&mmuLock);
+                mmu_ll_write_entry(MMU_LL_PSRAM_MMU_ID, id, page, MMU_TARGET_PSRAM0);
+                portEXIT_CRITICAL(&mmuLock);
+                return;
+        }
+
+        void writeEntries(void *vaddr, uint32_t firstPage, uint32_t count) {
+                // mmu_ll_write_entry() reads the flash encryption's eFuse three times an entry (about
+                // 3 us): read once here, the two registers written as it writes them.
+                const uint32_t id = mmu_ll_get_entry_id(MMU_LL_PSRAM_MMU_ID, uint32_t(uintptr_t(vaddr)));
+                const uint32_t flags = SOC_MMU_PSRAM_VALID | SOC_MMU_ACCESS_PSRAM |
+                                       (mmu_ll_cache_encryption_enabled() ? SOC_MMU_PSRAM_SENSITIVE : 0);
+                portENTER_CRITICAL(&mmuLock);
+                for (uint32_t i = 0; i < count; ++i) {
+                        REG_WRITE(SPI_MEM_S_MMU_ITEM_INDEX_REG, id + i);
+                        REG_WRITE(SPI_MEM_S_MMU_ITEM_CONTENT_REG, (firstPage + i) | flags);
+                }
+                portEXIT_CRITICAL(&mmuLock);
+                return;
+        }
+
+        void clearEntry(void *vaddr) {
+                const uint32_t id = mmu_ll_get_entry_id(MMU_LL_PSRAM_MMU_ID, uint32_t(uintptr_t(vaddr)));
+                portENTER_CRITICAL(&mmuLock);
+                mmu_ll_set_entry_invalid(MMU_LL_PSRAM_MMU_ID, id);
+                portEXIT_CRITICAL(&mmuLock);
+                return;
+        }
 
         Error init(size_t bytes) {
                 if (state != nullptr || bytes == 0) return Error::Ok;

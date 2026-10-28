@@ -11,10 +11,13 @@
 #include <esp_heap_caps.h>
 #include <esp_memory_utils.h>
 #include <bmds/board.h>
+#include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/mutex.h>
 #include <bmds/staticobject.h>
 #include <bmds/stats.h>
+
+BMDS_DEBUG(Memory)
 
 BMDS_NAMESPACE_BEGIN
 
@@ -84,6 +87,10 @@ namespace {
 
         constexpr size_t CacheLine = Memory::DmaAlign;
 
+        // Large blocks, logged with `log/debug` Memory: what a PSRAM window would take
+        // (devplan/psramwindow.md step 1), the caller's address for bmds-panic's addr2line.
+        constexpr size_t LargeBytes = 64 * 1024;
+
         // A DMA buffer's size: whole cache lines, and one more. The heap keeps
         // the next block's link in the last word of a block (TLSF's
         // prev_phys_block) and writes it through the cache now and then: in a
@@ -101,6 +108,9 @@ void *Memory::alloc(MemSpace space, size_t sizeBytes) {
         void *p = heap_caps_malloc(dmaSize(space, sizeBytes), capsFor(space));
         if (p == nullptr && reclaimed(space, sizeBytes))
                 p = heap_caps_malloc(dmaSize(space, sizeBytes), capsFor(space));
+        if (sizeBytes >= LargeBytes)
+                bmdsDebug("+%u %s %p from %p", unsigned(sizeBytes), memSpaceName(space), p,
+                          __builtin_return_address(0));
         return p;
 }
 
@@ -108,10 +118,19 @@ void *Memory::allocAligned(MemSpace space, size_t sizeBytes, size_t alignBytes) 
         void *p = heap_caps_aligned_alloc(alignBytes, dmaSize(space, sizeBytes), capsFor(space));
         if (p == nullptr && reclaimed(space, sizeBytes + alignBytes))
                 p = heap_caps_aligned_alloc(alignBytes, dmaSize(space, sizeBytes), capsFor(space));
+        if (sizeBytes >= LargeBytes)
+                bmdsDebug("+%u %s %p aligned %u from %p", unsigned(sizeBytes), memSpaceName(space), p,
+                          unsigned(alignBytes), __builtin_return_address(0));
         return p;
 }
 
 void Memory::free(void *ptr) {
+#if BMDS_ENABLE_DEBUG_LOG
+        if (bmdsDebugEnabled && ptr != nullptr) [[unlikely]] {
+                const size_t bytes = heap_caps_get_allocated_size(ptr);
+                if (bytes >= LargeBytes) bmdsDebug("-%u %p", unsigned(bytes), ptr);
+        }
+#endif
         heap_caps_free(ptr);
         return;
 }

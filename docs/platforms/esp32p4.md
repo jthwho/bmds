@@ -257,6 +257,14 @@ until silicon v3; then test again.
   with PIE: 1 ms with the source cached, 6.6 ms from PSRAM). Design for fewer bytes: rows
   repeated by the scan's descriptors rather than written twice, damage rather than whole frames,
   sources brought into internal RAM by DMA rather than read by the CPU.
+- **Two cores reading PSRAM slow each other, and the display's scan makes it worse** (measured
+  2026-10-28, `synth.module`, `devplan/synthmodule.md` §2a): wavetable voices reading 13 MB of
+  samples cost about 10 µs a 64-frame block on one core, cache misses and all; on both cores at
+  once, 7-30 % more each headless, 34-55 % more with the 720p scan running. Samples that fit
+  the cache lose 9 %. A two-core figure holds only for the display state it was measured in.
+- **PSRAM fragments:** after a large allocation failed and the font cache freed 19 MB, 30 MB were
+  free but no block over 13 MB until a reboot. Take large buffers once, early (the synth module's
+  arena), rather than counting on a big block late.
 - **The DW-GDMA clears each descriptor's valid bit when it finishes the block**, and has no
   setting that stops it: a circular list has to be made valid again as it runs (the scanout does
   it from its block interrupts). `dw_gdma_ll_lli_set_block_markers(lli, en_intr, is_last,
@@ -569,6 +577,16 @@ until silicon v3; then test again.
     recovery firmware. Read the entry instead, through the same index/content register pair the
     writes use, under a spinlock: `mmu_ll_read_entry()` & `SOC_MMU_PSRAM_VALID_VAL_MASK` is the
     physical page.
+  - **`mmu_ll_write_entry()` costs ~4.2 µs an entry** (measured 2026-10-28, `memory.window.mapping`,
+    `devplan/psramwindow.md` §2a): it reads the flash encryption's eFuse three times an entry.
+    Read it once (`mmu_ll_cache_encryption_enabled()`) and write `SPI_MEM_S_MMU_ITEM_INDEX_REG`
+    and `..._CONTENT_REG` directly (page | `SOC_MMU_PSRAM_VALID` | `SOC_MMU_ACCESS_PSRAM`, and
+    `SOC_MMU_PSRAM_SENSITIVE` if encrypted): ~0.19 µs an entry.
+  - **`esp_cache_msync()` invalidating PSRAM costs ~7 µs whatever the size** (64 KB or 8 MB):
+    the cache is swept, not the range. Invalidate a range in one call, not a page at a time
+    (~6.5 µs a call). Checked: 8 MB in one call left 0 stale words.
+  - **The AXI GDMA reads and writes window addresses** (pages mapped outside the heap's range)
+    at full speed, correctly (`esp_async_memcpy()`: 71.9 MB/s, as through the heap's).
   - **Writing entries with the caches on is safe** for addresses nobody uses yet. IDF's own
     mappings stall the other core by an interrupt, which can't land inside a critical section,
     and the flash's partitions use the other MMU (`SPI_MEM_C`, not `SPI_MEM_S`).

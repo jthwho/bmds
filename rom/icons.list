@@ -201,3 +201,6 @@ audio-patchbay                  flat-color  flow_chart
 
 # --- Network filesystems (devplan/netfs.md step 4)
 folder-remote                   glyphs      cloud
+
+# --- MIDI files (devplan/audio.md §26): FileFormat's name for audio/midi
+audio-midi                      glyphs      music

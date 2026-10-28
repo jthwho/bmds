@@ -97,6 +97,12 @@ Plans: [`display.md`](display.md), [`windows.md`](windows.md), [`gui.md`](gui.md
 - [x] Line-rendered scanout (`display.md` §5): a ring of line buffers in internal RAM streamed by the DSI DMA, refilled per block; measured; free-running.
 - [x] Framebuffer (`display.md` §5b, §5c): first an RGB565 double buffer widened into a ring; now surface 0, an RGB888 surface in PSRAM the DW-GDMA scans directly, single or double buffered, swapped at a frame's start; the ring paths removed.
 - [x] PSRAM at 200 MHz (`psram.md`): `memtest`, verified at 80 and 200 MHz in a separate build; the default since 2026-10-05 (surface 0 needs it).
+- [ ] Large PSRAM allocations through the MMU (`psramwindow.md`, planned 2026-10-28, the user's
+  question): `ImageWindow` generalised into a `PsramWindow` for all 32 MB of spare addresses;
+  `Memory::alloc()` maps large blocks from 64 KB-aligned heap runs, so a cut-up heap doesn't
+  fail them, choosing heap or window by the heap's fragmentation (the user: the window when
+  mapping is cheap, no fixed threshold); DMA engines verified through it one by one; `Memory::realloc()` growing in
+  place.
 - [ ] Desktop and windows (`windows.md`): a flat desktop, a bare-bones window manager (windows drawn directly on surface 0, outline moves), unscii-16; the terminal as the first program. Done: `TerminalScreen`; step 1 (regions, the compose plan, the font); step 2 (surface 0); step 3 (the window manager on surface 0, the `win` command); step 4 (the Painter: a PIE glyph kernel, text overlapped with the 2D-DMA, scrolling, unaligned fills); step 5 (the terminal program: a shell in a window, `win term`/`win type`). Done (2026-10-16): rounds paced from their own end (callers no longer starved), a round's drawing batched into few 2D-DMA jobs, and queries answered during a round (§4m-§4o).
   - Decided (2026-10-05): surface 0, an RGB888 PSRAM framebuffer scanned directly by the DW-GDMA; every surface single-buffered unless it asks for two; windows drawn directly on surface 0 by default, backing surfaces and DMA-read secondary surfaces later as per-window options; outline moves (`windows.md` §0).
 - [ ] Window manager affordances (`windows.md` §8, step 8): decorations under the application's control, minimize/maximize/close buttons, resize handles and pointer shapes, pointer hiding, the wheel scrolling a terminal, context menus (the desktop's starts programs), a panel with a launcher and a window list. Done: decorations the window chooses, title-bar buttons, minimize and maximize (8a, §4f); resize handles and pointer shapes (8b, §4g); pointer control (8c, §4h); the wheel and terminal scrollback (8d, §4i). Done: `/boot`, a persistent FAT partition on the flash always mounted, with `/boot/profile` and `/boot/autoexec.sh` (`storage.md` §13). Done: `/bin` of built-in programs, with every shell command but the shell-only ones as an applet, and `env` (`programs.md` §17). Done: built-in applications as ordinary applications (step 9): pseudo-terminals (`pty.md`), GUI applications connect first, the terminal is `/bin/terminal`. Done: context menus and the panel on a GUI toolkit (`gui.md`): `bmds_gui` (an event loop, widgets, menus), window levels, mouse events, popups and a work area in the window manager, the window menu, `/bin/panel` (a launcher from Desktop Entry files in `/boot/applications` and packages' `share/applications`, a window list, a clock; its layout from `/boot/config/panel.conf`), `terminal -e`, and `/boot`'s defaults installed from the repository's `boot/`. Done: new windows cascade; the toolkit, menus and title-bar buttons in the classic 3D look; Alt+Tab with a list in the screen's middle, Alt+F4, Alt+Space, Alt+drag, Always on Top (`gui.md` §4e-§4g); icons: the Flat Color set at 16 and 32 pixels as a theme on the card, a PNG decoder, icons built into programs (`BMDS_NOTE_ICON`), a second theme (Glyphs, `IconTheme=glyphs`) (§4h, §4j); the Windows key opens the launcher, snapping to the top and sides, rolling up (§4k). Done: the terminal's own colors, from `/boot/config/terminal.conf` (the 16 ANSI colors too), and resources in the window manager for `win color terminal-*` (§4l). Done: desktop icons, 32 pixels, from `/boot/desktop`'s Desktop Entry files (`[Desktop] Icons`), a double click to start one (§4m). Done: desktop icons dragged to other cells of their grid, their places kept in `/boot/config/desktop.conf` (§4m). Done: Alt+Tab as a grid of 32-pixel icons (§4n); the window manager's own desktop menu from `/boot/config/wm.conf`, a terminal without the panel (§4o); busy programs no longer set off the task watchdog (`processes.md` §3.11). Done: Win+arrows and Alt+F10, Ctrl+Shift+Windows for a terminal, minimizing only with a window list to come back from (§4p). Done: the panel ends when its bar or desktop window is closed. Next: copy and paste (`clipboard.md`), then keys for the desktop's icons.
@@ -285,7 +291,16 @@ Plan: [`input.md`](input.md).
     loaded at boot, a notification when the wavetable's first note loads it. Step 4 done: Doom's
     music through `fm` measured (its voice state moved to the TCM: 1 late period in 45 s beside
     Doom), a limiter and -4 dB; the media player plays MIDI files through `system`
-    (`mediaplayer.md` §12). Later: 4-operator voices, WOPL banks.
+    (`mediaplayer.md` §12). Made cheaper (2026-10-28): voices freed once inaudible, envelopes
+    every 32 frames, Q31 gains, channels sharing a pan mixed together: d_runnin 200 → 134 ms a
+    second of music (the wavetable's 149), d_doom2 184 (219); slow-attack pads, silent since
+    step 1, sound again. Later: 4-operator voices, WOPL banks.
+  - [ ] 6e. The synth module (`synthmodule.md`, planned 2026-10-28, the user's use case): the
+    board as a live sound module with no display; a performance of 16 parts, each a preset from
+    any SF2 or SF3, only their samples loaded; a `module` port, two cores, reverb and chorus,
+    later the board as a USB audio device, SFZ, streaming. Decided: performances in JSON, driven
+    over SSH, voices and a voice mode (poly stealing, mono priority, legato) a part; later a web
+    page on a web server for applications, and the mix out as AES67.
   - [ ] 6b. The patchbay (§24, outlined): a graph fd for programs, an audio graph (client to
     client in a period, devices' playback and capture), and `patchbay`, MIDI and audio wires.
     MIDI done: `patchbay` (drag or keys, kept in `midi/connect`, live); the graph fd waits for
@@ -397,6 +412,9 @@ Plan: [`input.md`](input.md).
     steps a new master's first offset, a new parent's timescale is taken at once, NTP gets its
     rate back from PTP and takes a large rate error whole. Left: the grandmaster's tests;
     where to pick up, and the hardware wanted: §31h.
+  - [ ] HTTP serving for applications (the user, 2026-10-28; to plan): a web server in the
+    kernel or the SDK that applications serve their pages and JSON APIs from, behind the system's
+    users and passwords; first users the synth module's configuration (`synthmodule.md` §3h).
   - [x] Updates (`update.md`, the user's ask, 2026-10-13; fetching from a URL postponed): a signed `.bmup` package (firmware, ROM,
     recovery) pushed onto the card over SSH or copied there, checked, and applied by a recovery
     firmware in `ota_1`; `update check|apply|status`, `reboot recovery`; headless or graphical

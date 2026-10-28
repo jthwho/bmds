@@ -234,7 +234,7 @@ namespace {
                 n.urgency = Notification::Urgency::Low;
                 n.flags = Notification::Transient;
                 std::snprintf(n.app, sizeof(n.app), "Synthesizer");
-                std::snprintf(n.icon, sizeof(n.icon), "audio-x-midi");
+                std::snprintf(n.icon, sizeof(n.icon), "audio-midi");
                 std::snprintf(n.title, sizeof(n.title), "Wavetable synth");
                 StringView file = path;
                 for (size_t i = path.size(); i > 0; --i) {

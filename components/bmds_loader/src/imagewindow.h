@@ -91,6 +91,30 @@ namespace ImageWindow {
         /** @brief Counts a program with shared pages that became a plain copy. */
         void countFallback();
 
+        /**
+         * @brief Returns the physical page behind PSRAM address @p p (a heap address, or a
+         *        mapped window one), read from the MMU's table under its lock.
+         * @isrsafe
+         */
+        uint32_t physicalPage(const void *p);
+
+        /**
+         * @brief Points the PSRAM page at @p vaddr (an address outside the heap's range that the
+         *        caller reserved) to physical page @p page, under the MMU's lock. The caller keeps
+         *        the caches right (the file's notes). For `memory.window` (`devplan/psramwindow.md`
+         *        step 1) until `PsramWindow` takes these over.
+         */
+        void writeEntry(void *vaddr, uint32_t page);
+
+        /**
+         * @brief `writeEntry()` for @p count pages from @p vaddr, to physical pages from
+         *        @p firstPage on, under one hold of the MMU's lock.
+         */
+        void writeEntries(void *vaddr, uint32_t firstPage, uint32_t count);
+
+        /** @brief Makes the PSRAM page at @p vaddr invalid, under the MMU's lock. */
+        void clearEntry(void *vaddr);
+
 } // namespace ImageWindow
 
 BMDS_NAMESPACE_END
