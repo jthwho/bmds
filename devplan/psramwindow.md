@@ -119,6 +119,47 @@ log; the switch is there for it.
   checks use `esp_ptr_external_ram()` or `esp_ptr_dma_ext_capable()`. `Memory::alloc()`'s
   callers that need that say so (a flag), rather than the window guessing.
 
+## 2b. As built (2026-10-28, steps 2-5)
+
+- **`PageWindow` and `PageRuns`** (`bmds_core`, host-tested: first fit and last fit, the longest
+  free range, growth in place, gathering from a cut-up fake heap, too many runs, a 2,000-step
+  soak). Found by the tests: the first run's size has to leave two pages (the heap's header in
+  front, the line after), or every first try fails and halving gives too little.
+- **`PsramWindow`** (`bmds_kernel`, boot stage `window` right after the console): all 32 MB of
+  free addresses (512 pages) at `0x4A000000`, entries written directly (16 a hold of the
+  spinlock), whole-range invalidation, the heap's pages checked in order at boot.
+- **`Memory`:** `alloc(space, bytes, Options)` (alignment, `Lifetime::System` from the top,
+  `heapOnly`), `realloc()` (in place in the window, else one copy), `windowUsage()`, and
+  `isExternal()` knowing the whole window (`setProgramWindow()` gone). The policy of §3c with
+  `AlwaysBytes` 256 KB and L from TLSF's bitmaps (checked against IDF's walk at boot; the walk if
+  they disagree). Task and thread stacks are `heapOnly`, and so are programs' private pages
+  (`ImageWindow` maps them itself).
+- **`ImageWindow`** takes its ranges from `PsramWindow` (programs' share capped by
+  `CONFIG_BMDS_IMAGE_WINDOW_MB`), its entries written directly and its ranges invalidated whole:
+  `programs.launch` 5.8 ms.
+- **DMA** (step 4, `memory.window.dma`): the DW-GDMA, the 2D-DMA, the PPA and the JPEG codec
+  copy both ways between window and heap buffers bit for bit (the AXI GDMA and the card before).
+  So `PsramDma` goes through the window too and the contiguous reserve is 0; the swap chain's
+  image check is `Memory::isExternal()` (it refused window images); the SD card sends window
+  buffers straight to DMA only when the L2's line aligns them. Surface 0's buffers are
+  `Lifetime::System`: the display scans them from the window's top (`0x4BAA0000`), 0 underruns
+  under `memory.traffic`. The crypto engine still checks IDF's way (window buffers by the CPU).
+- **Programs' `mem_realloc`** and the synth's `realloc` are `Memory::realloc()`.
+- **Shown:** `mem`'s `window` line (pages used, the longest free range, blocks and runs, the
+  policy's choices, fallbacks, growth), and `mem.window` in the system's counters.
+- **Measured** (`memory.window.mapping`, `.fragment`):
+
+  | | 64 KB | 1 MB | 8 MB |
+  |---|---|---|---|
+  | `Memory::alloc()` through the window | (heap) | 38 µs | 85 µs |
+  | `Memory::free()` of it | 3 µs | 21 µs | 54 µs |
+
+  The heap cut into 1 MB holes (13.4 MB free, its largest block 3 MB): a 6.7 MB block in 6 runs,
+  144-230 µs, every word right. `realloc` from 1 to 8 MB a megabyte at a time: 7 of 7 in place.
+- **Today's failure, again:** the font cache holding 19 MB (FluidR3's piano and strings,
+  TimGM6mb), an 18.9 MB font loaded: the first try out of memory, the cache emptied, the second
+  through the window (18.6 MB in 1.39 s). Before, the second failed on the cut-up heap.
+
 ## 3. The design
 
 ### 3a. One window for both
@@ -272,22 +313,21 @@ Nothing changes in the API: a pointer, contiguous, usable until `free()`. Differ
    the caches' invalidation); the large allocations a day of use makes (sizes, lifetimes: fonts,
    programs, decoders); reading L from TLSF's bitmap against the sysmon's sample. Settle
    `AlwaysBytes` and how L is read.
-2. **`PsramWindow`** in `bmds_kernel`, the bookkeeping in `bmds_core` (host tests: first fit,
-   runs gathered from a fake heap, records, growth, a fragmentation soak); `ImageWindow` moved
-   onto it, its behaviour unchanged (`programs.launch` and the loader's tests as before).
-3. **Large `Psram` allocations through it** (§3b, the policy §3c), `mem`'s line, the stats. On
-   the board, today's failure repeated: the 24.5 MB font loaded after the cache held 19 MB of
-   others and gave them back (`synth.module`), and a `memory.fragment` bench that cuts the heap up
-   on purpose and asks for most of what is free; the policy's choices counted over a day of use.
-4. **DMA verified** engine by engine through window addresses (a pattern in, read back), the
-   display's first (§3f: the DW-GDMA scan with `display stress` and its underruns, the 2D-DMA,
-   the PPA), then AXI-GDMA, JPEG and I²S; each check moved to `Memory::isExternal()` as it
-   passes; then `PsramDma` through the window (§3e), and the policy's reserve goes to 0.
-5. **`Memory::realloc()`** with growth in place (§3d); programs' `mem_realloc` and the synth's
-   allocator on it.
+2. **Done (§2b).** `PsramWindow` in `bmds_kernel`, the bookkeeping in `bmds_core` (host tests:
+   first fit, runs gathered from a fake heap, growth, a soak); `ImageWindow` moved onto it.
+3. **Done (§2b).** Large `Psram` allocations through it (§3b, the policy §3c), `mem`'s line, the
+   counters. On the board, the font cache's failure repeated (an 18.9 MB font after 19 MB of
+   others given back) and `memory.window.fragment`, which cuts the heap up on purpose. Still to
+   come: the policy's choices counted over a day of use (`mem.window`).
+4. **Done (§2b).** DMA verified engine by engine through window addresses (`memory.window.dma`:
+   the DW-GDMA, the 2D-DMA, the PPA, JPEG; the AXI GDMA and the card before; I²S never sees PSRAM,
+   its buffers are IDF's in internal RAM); the swap chain's check moved to `Memory::isExternal()`;
+   `PsramDma` through the window, the policy's reserve 0.
+5. **Done (§2b).** `Memory::realloc()` with growth in place (§3d); programs' `mem_realloc` and the
+   synth's allocator on it.
 
-Then `synthmodule.md` §3b's arena taken at start can go: the module allocates its samples when
-it loads a performance, as anything else does.
+So `synthmodule.md` §3b's arena taken at start went: the module allocates its samples when it
+loads a performance, as anything else does.
 
 ## 6. Budget (estimates)
 

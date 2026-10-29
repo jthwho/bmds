@@ -330,7 +330,11 @@ Error SdCard::transfer(uint64_t sector, uint8_t *buf, size_t bytes, bool write) 
 
         esp_err_t espErr = ESP_OK;
         // Straight to DMA if the host can reach the buffer.
-        if ((esp_ptr_dma_capable(buf) || Memory::isExternal(buf, bytes)) && // a program's mapped pages too
+        // Window addresses (large blocks, programs' pages) aren't PSRAM to IDF, so its check asks
+        // only internal RAM's alignment of them: the L2's line is asked here.
+        const bool window = !esp_ptr_dma_capable(buf) && Memory::isExternal(buf, bytes) && !esp_ptr_external_ram(buf);
+        const bool lineAligned = (reinterpret_cast<uintptr_t>(buf) | bytes) % Memory::DmaAlign == 0;
+        if ((esp_ptr_dma_capable(buf) || Memory::isExternal(buf, bytes)) && (!window || lineAligned) &&
             card->host.check_buffer_alignment(card->host.slot, buf, bytes)) {
                 espErr = write ? sdmmc_write_sectors(card, buf, first, count)
                                : sdmmc_read_sectors(card, buf, first, count);

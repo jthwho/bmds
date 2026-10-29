@@ -41,7 +41,7 @@ namespace {
 
 } // namespace
 
-Error Surface::start(uint16_t width, uint16_t height, Buffering buffering) {
+Error Surface::start(uint16_t width, uint16_t height, Buffering buffering, Memory::Lifetime lifetime) {
         if (isStarted()) return Error::InvalidState;
         if (width == 0 || height == 0 || width % Align != 0) return Error::Invalid;
         _width = width;
@@ -50,7 +50,10 @@ Error Surface::start(uint16_t width, uint16_t height, Buffering buffering) {
         const size_t bytes = stride() * height;
         const int    count = buffering == Buffering::Double ? 2 : 1;
         for (int i = 0; i < count; ++i) {
-                _buffers[i] = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::PsramDma, bytes, BufferAlign));
+                Memory::Options o;
+                o.alignBytes = BufferAlign;
+                o.lifetime = lifetime;
+                _buffers[i] = static_cast<uint8_t *>(Memory::alloc(MemSpace::PsramDma, bytes, o));
                 if (_buffers[i] == nullptr) {
                         stop();
                         return Error::NoMem;

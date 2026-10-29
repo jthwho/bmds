@@ -14,6 +14,7 @@
 #include <bmds/blitchain.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/memory.h>
 #include <bmds/rect.h>
 #include <bmds/result.h>
 #include <bmds/semaphore.h>
@@ -105,13 +106,16 @@ class Surface {
 
                 /**
                  * @brief Allocates the buffers (PSRAM, DMA-capable), black, and the
-                 *        2D-DMA it draws with.
+                 *        2D-DMA it draws with. @p lifetime `System` for surface 0's, kept
+                 *        while the display runs (placed apart from blocks that come and go:
+                 *        `devplan/psramwindow.md` §3f).
                  * @return `Ok`, `Invalid` (a zero size, a width not a multiple of
                  *         `Align`), `InvalidState` (started), `NoMem`, or the
                  *         driver's error.
                  * @blocking
                  */
-                Error start(uint16_t width, uint16_t height, Buffering buffering);
+                Error start(uint16_t width, uint16_t height, Buffering buffering,
+                            Memory::Lifetime lifetime = Memory::Lifetime::Normal);
 
                 /** @brief Frees everything. Not while a scanout shows it. Idempotent. */
                 void stop();

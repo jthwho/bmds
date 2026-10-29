@@ -20,7 +20,10 @@ BMDS_NAMESPACE_BEGIN
 Error Task::start(const Config &config, Entry entry, void *arg) {
         if (_handle != nullptr) return Error::InvalidState;
         auto *tcb = static_cast<StaticTask_t *>(Memory::alloc(MemSpace::Internal, sizeof(StaticTask_t)));
-        auto *stack = static_cast<StackType_t *>(Memory::alloc(config.stackSpace, config.stackBytes));
+        // A stack stays on the heap: IDF's cache-disabling paths judge a stack by its address.
+        Memory::Options stackOptions;
+        stackOptions.heapOnly = true;
+        auto *stack = static_cast<StackType_t *>(Memory::alloc(config.stackSpace, config.stackBytes, stackOptions));
         if (tcb == nullptr || stack == nullptr) {
                 Memory::free(tcb);
                 Memory::free(stack);

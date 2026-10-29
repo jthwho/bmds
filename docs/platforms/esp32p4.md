@@ -516,7 +516,9 @@ until silicon v3; then test again.
 - **Opening the console's USB serial port with DTR and RTS set low first reset the chip**
   (pyserial, 2026-10-11): the boot log showed `rst:0x17 (CHIP_USB_UART_RESET)`. Opening it with
   pyserial's defaults doesn't: `tools/bmdsboard.py` (`bmds-run`, `bmds-compat`) left the uptime
-  running (2026-10-12). Which line change USB-Serial/JTAG takes for its reset wasn't pinned down.
+  running (2026-10-12). The cause (2026-10-28, two more unwanted resets): the kernel raises both
+  lines on open, and pyserial then applies `dtr` before `rts`, so `dtr = False; rts = False` passes
+  through DTR low with RTS high, the state USB-Serial/JTAG resets the chip on. Leave both alone.
   Capturing a panic still means having the port open before it happens.
 
 ## 4d. The full-speed USB PHYs (`devplan/audio.md` §23)
@@ -586,7 +588,18 @@ until silicon v3; then test again.
     the cache is swept, not the range. Invalidate a range in one call, not a page at a time
     (~6.5 µs a call). Checked: 8 MB in one call left 0 stale words.
   - **The AXI GDMA reads and writes window addresses** (pages mapped outside the heap's range)
-    at full speed, correctly (`esp_async_memcpy()`: 71.9 MB/s, as through the heap's).
+    at full speed, correctly (`esp_async_memcpy()`: 71.9 MB/s, as through the heap's). So do the
+    DW-GDMA (memory to memory, and the display's scan of surface 0 from the window: 0 underruns
+    under `memory.traffic`), the 2D-DMA, the PPA and the JPEG codec, both ways, bit for bit
+    (`memory.window.dma`, 2026-10-28). Every DMA reaches PSRAM through the same MMU.
+  - **IDF's address checks don't know window addresses:** `esp_ptr_external_ram()` and
+    `esp_ptr_dma_ext_capable()` are false for them. The SD host's alignment check then asks
+    internal RAM's alignment (BMDS asks the L2's line itself); IDF's PPA driver's own operations
+    (`ppa_do_*`) refuse them (BMDS drives the PPA itself). `Memory::isExternal()` knows both.
+  - **DW-GDMA's event callbacks must be in IRAM and their argument in internal RAM**
+    (`dw_gdma_channel_register_event_callbacks()` refuses others with `ESP_ERR_INVALID_ARG`), and a
+    test whose copy never finished hung in `dw_gdma_channel_abort()` (it waits for the channel to
+    stop): disable such a channel instead.
   - **Writing entries with the caches on is safe** for addresses nobody uses yet. IDF's own
     mappings stall the other core by an interrupt, which can't land inside a critical section,
     and the flash's partitions use the other MMU (`SPI_MEM_C`, not `SPI_MEM_S`).

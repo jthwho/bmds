@@ -168,12 +168,11 @@ alongside the whole-font one.
 Loading takes as long as its samples take to read: 1.64 s for 24.1 MB (measured), plus SF3's
 decoding. While it loads, the module is silent, and it says so (§3h).
 
-**Its memory, taken once:** a large block is only sure to exist early (§2a: fragmentation). The
-module takes its sample arena when `synth/module` starts it (at boot, before other users), sized
-by `synth/module/memory` (default: what is free less a margin, about 26 MB headless), and keeps it
-while it is on. Performances are loaded into the arena, replacing what it held, never as a new
-allocation; the font cache isn't used for them. Once large allocations go through the MMU
-(`psramwindow.md`), fragmentation can't fail a load and the arena can go.
+**Its memory:** a performance's samples are one block, allocated when it loads, freed when the
+next replaces it; the font cache isn't used for them. A large block on a cut-up heap was the
+risk (§2a: fragmentation), so an arena taken at start was planned. Large blocks now go through
+the MMU (`psramwindow.md` §2b, 2026-10-28), gathered from wherever the heap has pages, so no arena
+is needed.
 
 ### 3c. Where it runs: a third synth service, `module`
 
@@ -314,7 +313,6 @@ it is).
 | `synth/module/performances` | Path | `~/synth/performances` | Where performances are. |
 | `synth/module/performance` | String | (empty) | The one loaded at start (empty: none, silent). |
 | `synth/module/voices` | Int | `128` | The pool: every part's voices together, at most 256. |
-| `synth/module/memory` | Int | `0` | The sample arena in MB, taken at start (0: what is free less a margin). |
 | `synth/module/channel` | Int | `0` | The control channel for program changes choosing a performance (0: off). |
 
 ## 5. Steps
@@ -356,7 +354,7 @@ applications (then the module's page); AES67 (`network.md`, after PTP).
 
 - **Firmware:** the subset loader and merged font 6 KB, the service's third engine and commands
   4 KB, reverb and chorus 4 KB, USB audio 8-10 KB (TinyUSB's class and ours).
-- **RAM:** nothing while `synth/module` is off. On: the sample arena (about 26 MB of PSRAM
-  headless), two render threads' stacks and buffers (a few KB of internal RAM), the effects'
+- **RAM:** nothing while `synth/module` is off. On: the performance's samples (up to about
+  26 MB of PSRAM headless), two render threads' stacks and buffers (a few KB of internal RAM), the effects'
   delay lines (up to a few hundred KB).
 - **CPU:** about half of each core at 128 voices (measured), the effects about 10 % of one.

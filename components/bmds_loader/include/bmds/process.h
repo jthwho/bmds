@@ -302,6 +302,8 @@ class Process {
                 struct LineInput; // the line editor and its line, once the program reads the console
 
                 void         releaseProgram();
+                void            unlink(Block *b); // from the allocations' list, under the lock
+                void            link(Block *b);
                 Vfs::Context vfs() const;
                 bool         isConsole(const FileHandle *h) const;
                 int32_t      readConsole(void *buf, uint32_t size);

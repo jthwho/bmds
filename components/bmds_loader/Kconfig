@@ -11,15 +11,17 @@ menu "BMDS loader"
             go first; all of them when memory runs short. 0 keeps none.
 
     config BMDS_IMAGE_WINDOW_MB
-        int "Addresses for programs' shared pages (MB of the PSRAM window)"
+        int "Most of the PSRAM window programs' pages may hold at once (MB)"
         default 16
         range 0 32
         help
             Instances of a program share the 64 KB pages of its image that no
             relocation touches and nothing writes, mapped from its cache entry
-            through the MMU into a range of these addresses each; the rest of
-            each instance is its own (devplan/programs.md section 14.2). Costs
-            addresses, not memory. 0 makes every program a plain copy.
+            through the MMU into a range of the PSRAM window each; the rest of
+            each instance is its own (devplan/programs.md section 14.2). The
+            window is shared with large blocks (devplan/psramwindow.md); this
+            caps programs' part of it. Costs addresses, not memory. 0 makes
+            every program a plain copy.
 
     config BMDS_PROGRAM_RT_PRIORITY_LOW
         int "Lowest kernel priority of real-time program threads"

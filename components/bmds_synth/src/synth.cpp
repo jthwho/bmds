@@ -94,7 +94,23 @@ void bmdsSynthFree(void *ptr) {
 
 void *bmdsSynthRealloc(void *ptr, size_t bytes) {
         if (ptr == nullptr) return bmdsSynthMalloc(bytes);
-        const size_t old = bmds::headerOf(ptr).bytes;
+        const bmds::Header h = bmds::headerOf(ptr);
+        const bool         dma = bytes >= bmds::DmaFrom;
+        if (dma == (h.bytes >= bmds::DmaFrom) && bytes <= bmds::MaxAllocBytes) {
+                // The same kind of block: resized by Memory (a large one grows in place in the
+                // PSRAM window), the header and the data where they were in it.
+                auto *block = static_cast<uint8_t *>(
+                        bmds::Memory::realloc(dma ? bmds::MemSpace::PsramDma : bmds::MemSpace::Psram,
+                                              static_cast<uint8_t *>(ptr) - h.offset, bytes + h.offset));
+                if (block == nullptr) {
+                        bmds::allocFailures.fetch_add(1, std::memory_order_relaxed);
+                        return nullptr;
+                }
+                const bmds::Header resized{bytes, h.offset};
+                std::memcpy(block + h.offset - sizeof(resized), &resized, sizeof(resized));
+                return block + h.offset;
+        }
+        const size_t old = h.bytes;
         void        *grown = bmdsSynthMalloc(bytes);
         if (grown == nullptr) return nullptr;
         std::memcpy(grown, ptr, old < bytes ? old : bytes);

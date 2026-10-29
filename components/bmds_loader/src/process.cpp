@@ -837,12 +837,42 @@ void Process::memFree(void *ptr) {
 void *Process::memRealloc(void *ptr, uint32_t size, uint32_t flags) {
         if (ptr == nullptr) return memAlloc(size, 0, flags);
         if ((flags & ~KnownMemFlags) != 0) return nullptr;
-        const Block *old = static_cast<Block *>(ptr) - 1;
-        void        *p = memAlloc(size, 0, flags);
-        if (p == nullptr) return nullptr;
-        std::memcpy(p, ptr, old->size < size ? old->size : size);
-        memFree(ptr);
-        return p;
+        // Through Memory::realloc(): a large block grows in place in the PSRAM window, else moves
+        // with its header (the pad keeps the program's pointer aligned, BMDS_MEM_ALIGN at least).
+        Block         *b = static_cast<Block *>(ptr) - 1;
+        const uint32_t pad = b->offset;
+        if (size > SIZE_MAX - pad) return nullptr;
+        unlink(b);
+        const uint32_t old = b->size;
+        auto          *moved = static_cast<uint8_t *>(
+                Memory::realloc(spaceFor(flags), static_cast<uint8_t *>(ptr) - pad, size + pad, BMDS_MEM_ALIGN));
+        Block *nb = moved != nullptr ? reinterpret_cast<Block *>(moved + pad) - 1 : b;
+        if (moved != nullptr) nb->size = size;
+        link(nb);
+        if (moved == nullptr) return nullptr;
+        Mutex::Locker locker(_lock, WaitForever);
+        _allocatedBytes = _allocatedBytes - old + size;
+        return moved + pad;
+}
+
+void Process::unlink(Block *b) {
+        Mutex::Locker locker(_lock, WaitForever);
+        if (b->prev != nullptr) {
+                b->prev->next = b->next;
+        } else {
+                _blocks = b->next;
+        }
+        if (b->next != nullptr) b->next->prev = b->prev;
+        return;
+}
+
+void Process::link(Block *b) {
+        Mutex::Locker locker(_lock, WaitForever);
+        b->prev = nullptr;
+        b->next = _blocks;
+        if (_blocks != nullptr) _blocks->prev = b;
+        _blocks = b;
+        return;
 }
 
 int32_t Process::open(const char *path, uint32_t flags) {

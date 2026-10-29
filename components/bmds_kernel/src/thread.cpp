@@ -78,7 +78,10 @@ Thread::~Thread() {
 Error Thread::start(const Config &config, Entry entry, void *arg) {
         if (_impl != nullptr) return Error::InvalidState;
         void *mem = Memory::alloc(MemSpace::Internal, sizeof(Record));
-        auto *stack = static_cast<uint8_t *>(Memory::alloc(config.stackSpace, config.stackBytes));
+        // A stack stays on the heap: IDF's cache-disabling paths judge a stack by its address.
+        Memory::Options stackOptions;
+        stackOptions.heapOnly = true;
+        auto *stack = static_cast<uint8_t *>(Memory::alloc(config.stackSpace, config.stackBytes, stackOptions));
         if (mem == nullptr || stack == nullptr) {
                 Memory::free(mem);
                 Memory::free(stack);

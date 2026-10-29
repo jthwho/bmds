@@ -18,6 +18,7 @@
 #include <bmds/ethernetdevice.h>
 #include <bmds/flashdisk.h>
 #include <bmds/netstack.h>
+#include <bmds/psramwindow.h>
 #include <bmds/filehandle.h>
 #include <bmds/i2cbus.h>
 #include <bmds/input.h>
@@ -92,6 +93,8 @@ namespace {
 
         constexpr bmds::Boot::Stage SystemStages[] = {
                 {"console", bmds::UsbSerialConsole::init},
+                {"window",
+                 bmds::PsramWindow::init}, // the PSRAM addresses after the heap's: large blocks, programs' pages
                 {"i2c", bmds::I2cBus::init},
                 {"vfs", bmds::Vfs::init},
                 {"flash", bmds::FlashDisk::init},     // /flash: the board's own files, the update's records

@@ -5,11 +5,11 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The PSRAM window's measurements (devplan/psramwindow.md step 1): what mapping heap pages into
- * spare addresses costs by size, the CPU and the AXI GDMA through those addresses against the
- * heap's own for the same physical pages, and finding the heap's largest free block by IDF's walk
- * against TLSF's bitmaps. The addresses are those the image window leaves, reserved on first use
- * and kept until a reset.
+ * The PSRAM window's measurements (devplan/psramwindow.md): what mapping heap pages into the
+ * window costs by size, and a large block's allocation and free through `Memory`; the CPU and
+ * the AXI GDMA through window addresses against the heap's own for the same physical pages; the
+ * heap's largest free block by IDF's walk against TLSF's bitmaps. A run takes a range of the
+ * window for itself and gives it back.
  */
 
 #include <cstdio>
@@ -17,12 +17,11 @@
 #include <esp_async_memcpy.h>
 #include <esp_cache.h>
 #include <esp_heap_caps.h>
-#include <esp_private/esp_mmu_map_private.h>
 #include <bmds/bench.h>
 #include <bmds/memory.h>
+#include <bmds/psramwindow.h>
 #include <bmds/semaphore.h>
 #include <bmds/stopwatch.h>
-#include "imagewindow.h"
 
 // IDF's private heap list (a measurement's prototype), its lock type first.
 #include <multi_heap_platform.h>
@@ -33,30 +32,28 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        constexpr size_t   Page = 64 * 1024;
-        constexpr uint32_t WindowPages = 256; // 16 MB: what the image window leaves of the 32
-        constexpr size_t   Line = 128;        // the L2 cache's line
+        constexpr size_t Page = PsramWindow::PageBytes;
+        constexpr size_t Line = 128; // the L2 cache's line
 
-        uint8_t *window = nullptr; // reserved once, kept
-
-        Error reserveWindow() {
-                if (window != nullptr) return Error::Ok;
-                const void     *start = nullptr;
-                const esp_err_t err = esp_mmu_map_reserve_block_with_caps(
-                        size_t(WindowPages) * Page, mmu_mem_caps_t(MMU_MEM_CAP_EXEC | MMU_MEM_CAP_32BIT),
-                        MMU_TARGET_PSRAM0, &start);
-                if (err != ESP_OK) return Error::fromEspErr(err);
-                window = static_cast<uint8_t *>(const_cast<void *>(start));
-                for (uint32_t p = 0; p < WindowPages; ++p) ImageWindow::clearEntry(window + size_t(p) * Page);
-                return Error::Ok;
-        }
+        // A range of the window, held for one run.
+        struct Range {
+                        uint8_t *at = nullptr;
+                        uint32_t pages = 0;
+                        explicit Range(uint32_t count) : pages(count) { at = PsramWindow::takeRange(count, true); }
+                        ~Range() {
+                                if (at != nullptr) PsramWindow::giveRange(at, pages);
+                        }
+        };
 
         // A heap block of whole pages (one run), and a line after it for the heap's own writes.
         struct Run {
                         uint8_t *p = nullptr;
                         size_t   bytes = 0;
                         explicit Run(size_t size) : bytes(size) {
-                                p = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::Psram, size + Line, Page));
+                                Memory::Options o;
+                                o.alignBytes = Page;
+                                o.heapOnly = true;
+                                p = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, size + Line, o));
                         }
                         ~Run() { Memory::free(p); }
         };
@@ -64,59 +61,35 @@ namespace {
         // Each cache's lines of @p bytes at @p p dropped: one call, or a page at a time.
         void invalidate(uint8_t *p, size_t bytes, bool byPage) {
                 if (!byPage) {
-                        (void)esp_cache_msync(p, bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                        PsramWindow::invalidate(p, bytes);
                         return;
                 }
-                for (size_t off = 0; off < bytes; off += Page)
-                        (void)esp_cache_msync(p + off, Page, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-                return;
-        }
-
-        // A run's pages are in order (the heap's mapping is linear; checked by the mapping bench):
-        // 16 entries a hold of the MMU's lock.
-        void writeEntries(const Run &run) {
-                const uint32_t first = ImageWindow::physicalPage(run.p);
-                const uint32_t count = uint32_t(run.bytes / Page);
-                for (uint32_t i = 0; i < count; i += 16)
-                        ImageWindow::writeEntries(window + size_t(i) * Page, first + i,
-                                                  count - i < 16 ? count - i : 16);
-                return;
-        }
-
-        // An entry at a time, as IDF writes them.
-        void writeEntriesSlow(const Run &run) {
-                for (size_t off = 0; off < run.bytes; off += Page)
-                        ImageWindow::writeEntry(window + off, ImageWindow::physicalPage(run.p + off));
-                return;
-        }
-
-        void clearEntries(size_t bytes) {
-                for (size_t off = 0; off < bytes; off += Page) ImageWindow::clearEntry(window + off);
+                for (size_t off = 0; off < bytes; off += Page) PsramWindow::invalidate(p + off, Page);
                 return;
         }
 
         // The heap's lines dropped, the entries written, the window's stale lines dropped.
-        void map(const Run &run, bool byPage) {
-                invalidate(run.p, run.bytes, byPage);
-                writeEntries(run);
-                invalidate(window, run.bytes, byPage);
+        void map(uint8_t *window, const Run &run) {
+                PsramWindow::invalidate(run.p, run.bytes);
+                PsramWindow::mapHeap(window, run.p, uint32_t(run.bytes / Page));
+                PsramWindow::invalidate(window, run.bytes);
                 return;
         }
 
         // Its dirty lines dropped, then the entries made invalid.
-        void unmap(size_t bytes, bool byPage) {
-                invalidate(window, bytes, byPage);
-                clearEntries(bytes);
+        void unmap(uint8_t *window, size_t bytes) {
+                PsramWindow::invalidate(window, bytes);
+                PsramWindow::clear(window, uint32_t(bytes / Page));
                 return;
         }
 
         // ---- Mapping's cost by size
 
         Error runMapping(BenchContext &ctx) {
-                if (Error err = reserveWindow(); err.isError()) return err;
                 for (const size_t kb : {64u, 1024u, 8192u, 16384u}) {
-                        Run run(kb * 1024);
-                        if (run.p == nullptr) return Error::NoMem;
+                        Run   run(kb * 1024);
+                        Range window(uint32_t(kb * 1024 / Page));
+                        if (run.p == nullptr || window.at == nullptr) return Error::NoMem;
                         char name[40];
                         auto part = [&](const char *what, auto &&timed) {
                                 std::snprintf(name, sizeof(name), "%s_%u_kb_us", what, unsigned(kb));
@@ -127,70 +100,26 @@ namespace {
                         };
                         Error err = part("map", [&] {
                                 Stopwatch w;
-                                map(run, true);
+                                map(window.at, run);
                                 const double us = double(w.elapsedUs());
-                                unmap(run.bytes, true);
+                                unmap(window.at, run.bytes);
                                 return us;
                         });
                         if (err.isOk())
                                 err = part("unmap", [&] {
-                                        map(run, true);
+                                        map(window.at, run);
                                         Stopwatch w;
-                                        unmap(run.bytes, true);
-                                        return double(w.elapsedUs());
-                                });
-                        if (err.isOk())
-                                err = part("map_whole", [&] {
-                                        Stopwatch w;
-                                        map(run, false);
-                                        const double us = double(w.elapsedUs());
-                                        unmap(run.bytes, false);
-                                        return us;
-                                });
-                        if (err.isOk())
-                                err = part("unmap_whole", [&] {
-                                        map(run, false);
-                                        Stopwatch w;
-                                        unmap(run.bytes, false);
+                                        unmap(window.at, run.bytes);
                                         return double(w.elapsedUs());
                                 });
                         if (err.isOk())
                                 err = part("entries", [&] {
                                         Stopwatch w;
-                                        writeEntriesSlow(run);
+                                        PsramWindow::mapHeap(window.at, run.p, uint32_t(run.bytes / Page));
                                         const double us = double(w.elapsedUs());
-                                        clearEntries(run.bytes);
+                                        PsramWindow::clear(window.at, uint32_t(run.bytes / Page));
                                         return us;
                                 });
-                        if (err.isOk())
-                                err = part("entries_batched", [&] {
-                                        // The heap's pages are in order (checked below): 16 entries a lock.
-                                        const uint32_t first = ImageWindow::physicalPage(run.p);
-                                        const uint32_t count = uint32_t(run.bytes / Page);
-                                        Stopwatch      w;
-                                        for (uint32_t i = 0; i < count; i += 16)
-                                                ImageWindow::writeEntries(window + size_t(i) * Page, first + i,
-                                                                          count - i < 16 ? count - i : 16);
-                                        const double us = double(w.elapsedUs());
-                                        clearEntries(run.bytes);
-                                        return us;
-                                });
-                        if (err.isOk())
-                                err = part("entries_fast", [&] {
-                                        const uint32_t first = ImageWindow::physicalPage(run.p);
-                                        Stopwatch      w;
-                                        ImageWindow::writeEntries(window, first, uint32_t(run.bytes / Page));
-                                        const double us = double(w.elapsedUs());
-                                        clearEntries(run.bytes);
-                                        return us;
-                                });
-                        if (err.isOk()) {
-                                const uint32_t first = ImageWindow::physicalPage(run.p);
-                                uint32_t       apart = 0;
-                                for (size_t off = 0; off < run.bytes; off += Page)
-                                        apart += ImageWindow::physicalPage(run.p + off) != first + off / Page ? 1 : 0;
-                                if (apart != 0) ctx.note("%u KB: %u pages out of order", unsigned(kb), unsigned(apart));
-                        }
                         if (err.isOk())
                                 err = part("inval_paged", [&] {
                                         Stopwatch w;
@@ -203,17 +132,28 @@ namespace {
                                         invalidate(run.p, run.bytes, false);
                                         return double(w.elapsedUs());
                                 });
+                        // Through Memory, as anything large is now: the policy, the runs gathered,
+                        // the record, the map; then the free.
                         if (err.isOk())
-                                err = part("gather", [&] {
+                                err = part("alloc", [&] {
                                         Stopwatch    w;
-                                        Run          other(kb * 1024);
+                                        void        *p = Memory::alloc(MemSpace::Psram, kb * 1024);
                                         const double us = double(w.elapsedUs());
-                                        return other.p != nullptr ? us : -1.0;
+                                        const bool   mapped = PsramWindow::contains(p, 0);
+                                        Memory::free(p);
+                                        return p == nullptr ? -1.0 : mapped ? us : -2.0;
+                                });
+                        if (err.isOk())
+                                err = part("free", [&] {
+                                        void     *p = Memory::alloc(MemSpace::Psram, kb * 1024);
+                                        Stopwatch w;
+                                        Memory::free(p);
+                                        return p == nullptr ? -1.0 : double(w.elapsedUs());
                                 });
                         if (err.isError()) return err;
                 }
-                ctx.note("map: the heap's lines dropped, the entries written (16 a lock), the window's lines dropped "
-                         "(a page at a time); entries: IDF's write an entry at a time; gather: one aligned heap block");
+                ctx.note("map: the heap's lines dropped, the entries written, the window's lines dropped; alloc and "
+                         "free: Memory's (-1: none, -2: from the heap)");
                 return Error::Ok;
         }
 
@@ -256,10 +196,11 @@ namespace {
         }
 
         Error runSpeed(BenchContext &ctx) {
-                if (Error err = reserveWindow(); err.isError()) return err;
-                Run run(SpeedBytes);
-                if (run.p == nullptr) return Error::NoMem;
-                map(run, true);
+                Run   run(SpeedBytes);
+                Range range(uint32_t(SpeedBytes / Page));
+                if (run.p == nullptr || range.at == nullptr) return Error::NoMem;
+                uint8_t *const window = range.at;
+                map(window, run);
                 size_t wrong = 0;
                 Error  err = Error::Ok;
                 for (int through = 0; through < 2 && err.isOk(); ++through) {
@@ -357,7 +298,7 @@ namespace {
                         }
                         (void)esp_async_memcpy_uninstall(mcp);
                 }
-                unmap(run.bytes, true);
+                unmap(window, run.bytes);
                 return err;
         }
 
@@ -436,11 +377,84 @@ namespace {
                 return err;
         }
 
+        // ---- A heap cut up on purpose, then a block larger than any of its holes
+
+        constexpr size_t   HoleBytes = 1u << 20;
+        constexpr uint32_t MaxHoles = 64;
+
+        Error runFragment(BenchContext &ctx) {
+                // 1 MB blocks held on the heap until a few MB are left, then every other one freed:
+                // the free memory in 1 MB holes.
+                Memory::Options heap;
+                heap.heapOnly = true;
+                void    *blocks[MaxHoles * 2] = {};
+                uint32_t n = 0;
+                while (n < MaxHoles * 2 && heap_caps_get_free_size(MALLOC_CAP_SPIRAM) > 4 * HoleBytes) {
+                        blocks[n] = Memory::alloc(MemSpace::Psram, HoleBytes, heap);
+                        if (blocks[n] == nullptr) break;
+                        ++n;
+                }
+                for (uint32_t i = 0; i < n; i += 2) {
+                        Memory::free(blocks[i]);
+                        blocks[i] = nullptr;
+                }
+                const size_t free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+                const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+                const size_t want = (free / 2) / Page * Page; // half of what is free, in one block
+                ctx.note("the heap cut up: %u KB free, its largest block %u KB; asking for %u KB",
+                         unsigned(free / 1024), unsigned(largest / 1024), unsigned(want / 1024));
+                const Memory::WindowUsage before = Memory::windowUsage();
+                void                     *big = nullptr;
+                Error                     err = ctx.measure("alloc_us", "us", BenchBetter::Lower, [&](double &v) {
+                        Memory::free(big);
+                        Stopwatch w;
+                        big = Memory::alloc(MemSpace::Psram, want);
+                        v = double(w.elapsedUs());
+                        return big != nullptr ? Error(Error::Ok) : Error(Error::NoMem);
+                });
+                const Memory::WindowUsage after = Memory::windowUsage();
+                if (big != nullptr) {
+                        // Every page written and read back through the one block.
+                        auto *w = static_cast<uint32_t *>(big);
+                        for (size_t i = 0; i < want / 4; ++i) w[i] = patternWord(i, 0x3c);
+                        size_t wrong = 0;
+                        for (size_t i = 0; i < want / 4; ++i) wrong += w[i] != patternWord(i, 0x3c) ? 1 : 0;
+                        ctx.note("%s, %u runs, %u words wrong",
+                                 PsramWindow::contains(big, want) ? "through the window" : "from the heap",
+                                 unsigned(after.runs - before.runs), unsigned(wrong));
+                }
+                Memory::free(big);
+                for (uint32_t i = 0; i < n; ++i) Memory::free(blocks[i]);
+                if (err.isError()) return err;
+
+                // Grown by realloc from 1 MB to 8 MB a megabyte at a time: in place while the
+                // addresses after it are free, its first megabyte kept.
+                const uint32_t grownBefore = Memory::windowUsage().grownInPlace;
+                auto          *g = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, HoleBytes));
+                if (g == nullptr) return Error::NoMem;
+                for (size_t i = 0; i < HoleBytes / 4; ++i) g[i] = patternWord(i, 0x5e);
+                uint32_t moved = 0;
+                for (size_t mb = 2; mb <= 8; ++mb) {
+                        auto *r = static_cast<uint32_t *>(Memory::realloc(MemSpace::Psram, g, mb * HoleBytes));
+                        if (r == nullptr) break;
+                        moved += r != g ? 1 : 0;
+                        g = r;
+                }
+                size_t wrong = 0;
+                for (size_t i = 0; i < HoleBytes / 4; ++i) wrong += g[i] != patternWord(i, 0x5e) ? 1 : 0;
+                Memory::free(g);
+                ctx.note("realloc 1 to 8 MB: %u grown in place, %u moved, %u words wrong",
+                         unsigned(Memory::windowUsage().grownInPlace - grownBefore), unsigned(moved), unsigned(wrong));
+                return err;
+        }
+
 } // namespace
 
+BMDS_BENCH(memoryWindowFragment, "memory.window.fragment", runFragment, BenchQuick,
+           "The PSRAM heap cut into 1 MB holes, then one block of half what is free: through the window (us)")
 BMDS_BENCH(memoryWindowMapping, "memory.window.mapping", runMapping, BenchQuick,
-           "Heap pages mapped into spare PSRAM addresses: the map, unmap, MMU entries, the caches' invalidation (a "
-           "page at a time and whole) and an aligned block's allocation, at 64 KB to 16 MB (us)")
+           "Heap pages mapped into the PSRAM window: the map, unmap, MMU entries, the caches' invalidation (a page at "
+           "a time and whole), and a block's allocation and free through Memory, at 64 KB to 16 MB (us)")
 BMDS_BENCH(memoryWindowSpeed, "memory.window.speed", runSpeed, BenchQuick,
            "8 MB of PSRAM through window addresses against the heap's own: CPU writes and reads, the AXI GDMA's copy, "
            "and aliasing checked (MB/s)")

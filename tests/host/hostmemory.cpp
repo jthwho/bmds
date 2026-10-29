@@ -10,6 +10,8 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
+#include <malloc.h>
 #include <bmds/memory.h>
 
 namespace {
@@ -68,6 +70,39 @@ void *bmds::Memory::allocAligned(MemSpace space, size_t sizeBytes, size_t alignB
         if (!mayAllocate() && !(reclaimed(space, sizeBytes) && mayAllocate())) return nullptr;
         // aligned_alloc wants the size to be a multiple of the alignment.
         return counted(std::aligned_alloc(alignBytes, (sizeBytes + alignBytes - 1) & ~(alignBytes - 1)));
+}
+
+void *bmds::Memory::alloc(MemSpace space, size_t sizeBytes, const Options &options) {
+        return options.alignBytes != 0 ? allocAligned(space, sizeBytes, options.alignBytes) : alloc(space, sizeBytes);
+}
+
+// The host's heap has no window: a new block and a copy, as the target's realloc of a heap block.
+void *bmds::Memory::realloc(MemSpace space, void *ptr, size_t sizeBytes, size_t alignBytes) {
+        Options o;
+        o.alignBytes = alignBytes;
+        if (ptr == nullptr) return alloc(space, sizeBytes, o);
+        if (sizeBytes == 0) {
+                free(ptr);
+                return nullptr;
+        }
+        const size_t old = malloc_usable_size(ptr);
+        void        *grown = alloc(space, sizeBytes, o);
+        if (grown == nullptr) return nullptr;
+        std::memcpy(grown, ptr, old < sizeBytes ? old : sizeBytes);
+        free(ptr);
+        return grown;
+}
+
+bmds::Memory::WindowUsage bmds::Memory::windowUsage() {
+        return WindowUsage();
+}
+
+bmds::Memory::WindowHistory bmds::Memory::windowHistory() {
+        return WindowHistory();
+}
+
+void bmds::Memory::clearWindowHistory() {
+        return;
 }
 
 void bmds::Memory::free(void *ptr) {

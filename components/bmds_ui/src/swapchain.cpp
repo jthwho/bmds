@@ -304,7 +304,8 @@ Error SwapChain::setImage(uint8_t slot, const Image &image) {
                         return Error::Invalid;
                 const size_t   bytes = size_t(image.stride) * (image.height - 1u) + image.width * bpp;
                 const uint8_t *last = image.pixels + bytes - 1;
-                const bool     psram = esp_ptr_dma_ext_capable(image.pixels) && esp_ptr_dma_ext_capable(last);
+                // PSRAM: the heap's, or the window's (the 2D-DMA reads both: devplan/psramwindow.md §2b).
+                const bool     psram = Memory::isExternal(image.pixels, bytes);
                 const bool     internal = esp_ptr_dma_capable(image.pixels) && esp_ptr_dma_capable(last);
                 if (!psram && !internal) return Error::Invalid;
                 // Written back only: nothing invalidated, so the program's memory beside it is untouched.

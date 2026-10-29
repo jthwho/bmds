@@ -18,6 +18,7 @@ if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_DRIVERS_PORTABLE_SRCS}
                                     src/benchdisplay.cpp
                                     src/benchmemory.cpp
+                                    src/benchwindowdma.cpp
                                     src/display.cpp
                                     src/displaycommand.cpp
                                     src/displayppa.cpp

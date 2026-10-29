@@ -352,6 +352,10 @@ namespace {
                 const Args args = ctx.args();
                 if (args.size() == 2 && StringView(args[1]) == "mark") return runMemMark(ctx);
                 if (args.size() == 2 && StringView(args[1]) == "new") return runMemNew(ctx);
+                if (args.size() == 2 && StringView(args[1]) == "clear") {
+                        Memory::clearWindowHistory();
+                        return Shell::ExitSuccess;
+                }
                 if ((args.size() == 2 || args.size() == 3) && StringView(args[1]) == "blocks") {
                         uint32_t min = 1024;
                         if (args.size() == 3) {
@@ -377,6 +381,37 @@ namespace {
                         memCell(s.largestFreeBlock, human, cells[3]);
                         ctx.printf("%-11s %10s %10s %10s %10s\n", memSpaceName(space), cells[0], cells[1], cells[2],
                                    cells[3]);
+                }
+                // The PSRAM window (devplan/psramwindow.md §3g): its pages in use and longest free
+                // range, Memory's large blocks in it, and how the policy has chosen since boot.
+                const Memory::WindowUsage w = Memory::windowUsage();
+                if (w.pages != 0) {
+                        memCell(size_t(w.pages) * 64 * 1024, human, cells[0]);
+                        memCell(size_t(w.used) * 64 * 1024, human, cells[1]);
+                        memCell(size_t(w.longest) * 64 * 1024, human, cells[2]);
+                        memCell(size_t(w.bytes), human, cells[3]);
+                        ctx.printf("%-11s %10s  used %s, longest free %s; blocks %u (%u runs, %s); heap %u, window "
+                                   "%u (size %u, fit %u, cut up %u, reserve %u); fell back %u/%u; grown %u\n",
+                                   "window", cells[0], cells[1], cells[2], unsigned(w.blocks), unsigned(w.runs),
+                                   cells[3], unsigned(w.byHeap), unsigned(w.bySize + w.byFit + w.byCutUp + w.byReserve),
+                                   unsigned(w.bySize), unsigned(w.byFit), unsigned(w.byCutUp), unsigned(w.byReserve),
+                                   unsigned(w.toWindow), unsigned(w.toHeap), unsigned(w.grownInPlace));
+                        // The same across resets, and its peaks (§3g).
+                        const Memory::WindowHistory h = Memory::windowHistory();
+                        memCell(size_t(h.peakUsed) * 64 * 1024, human, cells[0]);
+                        memCell(h.lowestLargest, human, cells[1]);
+                        memCell(h.freeThen, human, cells[2]);
+                        const unsigned hours = unsigned(h.seconds / 3600);
+                        const unsigned minutes = unsigned(h.seconds / 60 % 60);
+                        ctx.printf("%-11s %4u:%02u:%02u  %u boots; heap %u, window %u (size %u, fit %u, cut up %u, "
+                                   "reserve %u); fell back %u/%u; grown %u; failed %u; most used %s, blocks %u, runs "
+                                   "%u; heap's largest down to %s (of %s free)\n",
+                                   "history", hours, minutes, unsigned(h.seconds % 60), unsigned(h.boots),
+                                   unsigned(h.byHeap), unsigned(h.bySize + h.byFit + h.byCutUp + h.byReserve),
+                                   unsigned(h.bySize), unsigned(h.byFit), unsigned(h.byCutUp), unsigned(h.byReserve),
+                                   unsigned(h.toWindow), unsigned(h.toHeap), unsigned(h.grownInPlace),
+                                   unsigned(h.failed), cells[0], unsigned(h.peakBlocks), unsigned(h.mostRuns),
+                                   h.freeThen != 0 ? cells[1] : "-", h.freeThen != 0 ? cells[2] : "-");
                 }
                 // What the caches hold (the loader's programs, the synth's fonts): counted as used
                 // above, given back when an allocation would fail. A line each.
@@ -620,10 +655,12 @@ BMDS_SHELL_COMMAND(logger, runLogger, "[-s] [-p PRI] [-t TAG] [MESSAGE...]",
 BMDS_SHELL_COMMAND(log, runLog, "[show]",
                    "Show the log level and debug modules (sysconf's log/level and log/debug set them); "
                    "show the log history")
-BMDS_SHELL_COMMAND(mem, runMem, "[-h | mark | new | blocks [MIN]]",
-                   "Show memory usage per memory space, and what caches hold (bytes; -h: 16.55M, 432.43k); "
+BMDS_SHELL_COMMAND(mem, runMem, "[-h | mark | new | blocks [MIN] | clear]",
+                   "Show memory usage per memory space, the PSRAM window's choices since boot and across resets, "
+                   "and what caches hold (bytes; -h: 16.55M, 432.43k); "
                    "'mark' records the heap blocks in use, 'new' lists those in use now that weren't then; "
-                   "'blocks' lists internal RAM's blocks in use of MIN bytes (1024) or more")
+                   "'blocks' lists internal RAM's blocks in use of MIN bytes (1024) or more; "
+                   "'clear' starts the window's history across resets again")
 BMDS_SHELL_COMMAND(reboot, runReboot, "[recovery | panic]",
                    "Restart the system; 'recovery': into the recovery firmware (updates, repairs). In recovery, "
                    "restart into the main firmware if it checks good. 'panic': restart by a panic, to test the "

@@ -97,8 +97,8 @@ Plans: [`display.md`](display.md), [`windows.md`](windows.md), [`gui.md`](gui.md
 - [x] Line-rendered scanout (`display.md` §5): a ring of line buffers in internal RAM streamed by the DSI DMA, refilled per block; measured; free-running.
 - [x] Framebuffer (`display.md` §5b, §5c): first an RGB565 double buffer widened into a ring; now surface 0, an RGB888 surface in PSRAM the DW-GDMA scans directly, single or double buffered, swapped at a frame's start; the ring paths removed.
 - [x] PSRAM at 200 MHz (`psram.md`): `memtest`, verified at 80 and 200 MHz in a separate build; the default since 2026-10-05 (surface 0 needs it).
-- [ ] Large PSRAM allocations through the MMU (`psramwindow.md`, planned 2026-10-28, the user's
-  question): `ImageWindow` generalised into a `PsramWindow` for all 32 MB of spare addresses;
+- [x] Large PSRAM allocations through the MMU (`psramwindow.md`, planned 2026-10-28, the user's
+  question; built the same day, §2b): `ImageWindow` generalised into a `PsramWindow` for all 32 MB of spare addresses;
   `Memory::alloc()` maps large blocks from 64 KB-aligned heap runs, so a cut-up heap doesn't
   fail them, choosing heap or window by the heap's fragmentation (the user: the window when
   mapping is cheap, no fixed threshold); DMA engines verified through it one by one; `Memory::realloc()` growing in

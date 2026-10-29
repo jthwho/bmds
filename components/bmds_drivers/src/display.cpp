@@ -261,7 +261,7 @@ Error Display::start(const VideoTiming &mode, Surface::Buffering buffering, uint
         c.onRestartArg = this;
         c.laneMbps = laneMbps;
         _timing = timing;
-        Error err = _surface.start(timing.hActive, timing.vActive, buffering);
+        Error err = _surface.start(timing.hActive, timing.vActive, buffering, Memory::Lifetime::System);
         if (err.isOk()) err = _bridge.configure(timing, d.dsiLanes, true);
         if (err.isOk()) err = _scanout.start(c, _surface);
         if (err.isOk()) err = _bridge.resetReceiver();

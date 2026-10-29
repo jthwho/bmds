@@ -142,6 +142,40 @@ namespace {
                 return;
         }
 
+        // The PSRAM window (devplan/psramwindow.md §3g): its pages, Memory's blocks, the policy's choices.
+        constexpr Stat::Desc WindowDescs[] = {
+                {"pages", Unit::Count, Kind::Info, 0, {}, "", "Its 64 KB pages (0: off)"},
+                {"used", Unit::Count, Kind::Level, Stat::KeepHistory, {}, "", "Pages in use (large blocks, programs)"},
+                {"longest", Unit::Count, Kind::Level, 0, {}, "", "The longest range of free pages"},
+                {"blocks", Unit::Count, Kind::Level, 0, {}, "", "Large blocks mapped now"},
+                {"runs", Unit::Count, Kind::Level, 0, {}, "", "The heap runs behind them"},
+                {"bytes", Unit::Bytes, Kind::Level, Stat::KeepHistory, {}, "", "What they hold"},
+                {"by_heap", Unit::Count, Kind::Total, 0, {}, "", "Large requests the policy sent to the heap"},
+                {"by_size", Unit::Count, Kind::Total, 0, {}, "", "Sent to the window: large enough always"},
+                {"by_fit",
+                 Unit::Count,
+                 Kind::Total,
+                 0,
+                 {},
+                 "",
+                 "Sent to the window: the heap's largest block too small"},
+                {"by_cut_up", Unit::Count, Kind::Total, 0, {}, "", "Sent to the window: the heap cut up"},
+                {"by_reserve", Unit::Count, Kind::Total, 0, {}, "", "Sent to the window: the heap's reserve kept"},
+                {"to_window", Unit::Count, Kind::Total, 0, {}, "", "Heap failures the window served"},
+                {"to_heap", Unit::Count, Kind::Total, 0, {}, "", "Window failures the heap served"},
+                {"grown_in_place", Unit::Count, Kind::Total, 0, {}, "", "Reallocations grown without a copy"},
+        };
+
+        void readWindow(void *, Span<int64_t> values) {
+                const Memory::WindowUsage u = Memory::windowUsage();
+                const int64_t             v[] = {u.pages,          u.used,     u.longest, u.blocks,      u.runs,
+                                                 int64_t(u.bytes), u.byHeap,   u.bySize,  u.byFit,       u.byCutUp,
+                                                 u.byReserve,      u.toWindow, u.toHeap,  u.grownInPlace};
+                static_assert(sizeof(v) / sizeof(v[0]) == sizeof(WindowDescs) / sizeof(WindowDescs[0]));
+                for (size_t i = 0; i < values.size() && i < sizeof(v) / sizeof(v[0]); ++i) values[i] = v[i];
+                return;
+        }
+
         // ---- system, clock ---------------------------------------------------------------------
 
         constexpr Stat::Desc SystemDescs[] = {
@@ -219,6 +253,7 @@ namespace {
                                 {MemDescs, countOf(MemDescs), readMem, reinterpret_cast<void *>(uintptr_t(4)),
                                  adjustMem},
                         };
+                        Stats::Group     window{WindowDescs, countOf(WindowDescs), readWindow, nullptr};
                         Stats::Group     system{SystemDescs, countOf(SystemDescs), readSystem, nullptr};
                         Stats::Group     clock{ClockDescs, countOf(ClockDescs), readClock, nullptr};
                         SysConf::Watcher settings;
@@ -241,6 +276,8 @@ Error Sysmon::init() {
                 c.mem[i].setName(memGroupName(MemSpace(i)));
                 if ((err = Stats::add(c.mem[i])).isError()) return err;
         }
+        c.window.setName("mem.window");
+        if ((err = Stats::add(c.window)).isError()) return err;
         c.system.setName("system");
         c.clock.setName("clock");
         if ((err = Stats::add(c.system)).isError()) return err;
