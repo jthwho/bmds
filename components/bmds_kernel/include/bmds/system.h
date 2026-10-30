@@ -53,7 +53,7 @@ class System {
                 /** @brief Returns microseconds since reset. @nonblocking */
                 static uint64_t uptimeUs();
 
-                /** @brief Restarts the chip. Flush consoles first. */
+                /** @brief Restarts the chip, the records kept across resets saved first (`Kept::flush()`). Flush consoles first. */
                 [[noreturn]] static void restart();
 
                 /**
@@ -64,6 +64,12 @@ class System {
 
                 /** @brief Why the chip last reset: "power-on", "panic", "software (reboot)"... */
                 static const char *resetReason();
+
+                /** @brief Why the chip last reset, as a number (`resetReasonName()`; kept by `Boots`). */
+                static int resetReasonCode();
+
+                /** @brief Names reset reason @p code as `resetReason()` does ("unknown" if not one). */
+                static const char *resetReasonName(int code);
 
                 /** @brief A firmware in the flash (devplan/update.md §4). */
                 enum class Firmware : uint8_t {

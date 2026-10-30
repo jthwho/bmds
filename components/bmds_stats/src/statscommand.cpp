@@ -13,10 +13,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <bmds/boots.h>
 #include <bmds/clock.h>
+#include <bmds/datetime.h>
+#include <bmds/string.h>
 #include <bmds/command.h>
 #include <bmds/shell.h>
 #include <bmds/stats.h>
+#include "keptcounters.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -114,6 +118,33 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // The counters kept across boots (devplan/keptstate.md §5).
+        int showKept(CommandContext &ctx) {
+                const KeptCounters::Summary sum = KeptCounters::summary();
+                String                      since(MemSpace::Psram);
+                Timestamp                   started;
+                if (Boots::wallTime(sum.startUs, started))
+                        (void)formatTime(since, "%Y-%m-%d %H:%M:%S", ctx.displayZone().localTime(started));
+                else
+                        (void)since.append("this boot's start");
+                ctx.printf("Kept since %s, %u boot%s.\n", since.data(), unsigned(sum.boots), sum.boots == 1 ? "" : "s");
+                ctx.printf("%-36s %-5s %20s %20s\n", "COUNTER", "KEPT", "NOW", "ALL BOOTS");
+                KeptCounters::Row rows[32];
+                const size_t      n = KeptCounters::rows(Span<KeptCounters::Row>(rows, 32));
+                for (size_t i = 0; i < n; ++i) {
+                        const KeptCounters::Row &r = rows[i];
+                        char                     now[24] = "-";
+                        char                     all[24] = "-";
+                        if (r.thisBoot != Stat::Unavailable) std::snprintf(now, sizeof(now), "%" PRId64, r.thisBoot);
+                        if (r.allBoots != Stat::Unavailable) std::snprintf(all, sizeof(all), "%" PRId64, r.allBoots);
+                        const char *mode = r.mode == KeptCounters::Mode::Low    ? "low"
+                                           : r.mode == KeptCounters::Mode::High ? "high"
+                                                                                : "total";
+                        ctx.printf("%-36s %-5s %20s %20s\n", r.name, mode, now, all);
+                }
+                return Shell::ExitSuccess;
+        }
+
         int runStats(CommandContext &ctx) {
                 const Args args = ctx.args();
                 size_t     at = 1;
@@ -125,6 +156,14 @@ namespace {
                         at += 2;
                 }
                 const char *word = at < args.size() ? args[at] : nullptr;
+                if (word != nullptr && std::strcmp(word, "kept") == 0 && watchS == 0) {
+                        if (at + 1 == args.size()) return showKept(ctx);
+                        if (at + 2 == args.size() && std::strcmp(args[at + 1], "clear") == 0) {
+                                KeptCounters::clear();
+                                return Shell::ExitSuccess;
+                        }
+                        return ctx.usage();
+                }
                 if (word != nullptr && std::strcmp(word, "clear") == 0 && at + 1 == args.size()) {
                         Stats::clearProblems();
                         return Shell::ExitSuccess;
@@ -151,7 +190,8 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(stats, runStats, "[-w SECONDS] [PATTERN | rules [PATTERN] | problems | clear]",
-                   "Show the system's counters, their rules, or the problems seen; -w watches first")
+BMDS_SHELL_COMMAND(stats, runStats, "[-w SECONDS] [PATTERN | rules [PATTERN] | problems | clear] | kept [clear]",
+                   "Show the system's counters, their rules, or the problems seen; -w watches first. 'kept': the "
+                   "lows, highs and totals kept across resets ('kept clear' starts them again)")
 
 BMDS_NAMESPACE_END

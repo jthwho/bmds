@@ -289,6 +289,17 @@ Nothing changes in the API: a pointer, contiguous, usable until `free()`. Differ
   allocation that would succeed now** (the window's longest free range against the heap's pages
   in runs), not only the heap's largest block. `mem` gets a `window` line (pages used, ranges,
   runs, the longest free range).
+- **The policy's counts survive resets** (built 2026-10-29): what `mem`'s `history` line shows,
+  for judging the thresholds over days of use. The same counts as the `window` line, summed over
+  boots, with peaks (window pages used, blocks, the most runs one block took), the heap's lowest
+  largest free block the policy saw (and its free bytes then), large requests that failed, the
+  boots and the time since it started (the RTC timer, which keeps counting across resets).
+  A `KeptRecord` in RTC_NOINIT memory (`keptstate.md` §2c: two checked copies, written
+  alternately). The LP RAM is slow (about 500 ns a word), so an allocation only marks the
+  history changed and the `kept` thread saves it every 10 s (`sysmon/keep-interval`) and before
+  a clean restart: a hardware reset or a panic loses at most that. A power-up, a firmware with
+  another layout, a boot through the recovery firmware or `mem clear` starts it again; the boot
+  log says which. Checked through `reboot`, a USB control-line reset and `reboot panic`.
 
 ## 4. Costs and limits
 

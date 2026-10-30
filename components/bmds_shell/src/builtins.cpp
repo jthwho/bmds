@@ -13,7 +13,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <esp_heap_caps.h>
+#include <bmds/boots.h>
 #include <bmds/console.h>
+#include <bmds/datetime.h>
 #include <bmds/log.h>
 #include <bmds/logtext.h>
 #include <bmds/memory.h>
@@ -609,6 +611,53 @@ namespace {
                 return ctx.shell().interrupt().sleep(ms).isOk() ? Shell::ExitSuccess : Shell::ExitInterrupted;
         }
 
+        // ---- boots: the record of the last boots (devplan/keptstate.md §4).
+
+        void appendDuration(String &out, int64_t us) {
+                const uint64_t s = us > 0 ? uint64_t(us) / 1000000 : 0;
+                if (s >= 86400) (void)out.appendf("%ud ", unsigned(s / 86400));
+                (void)out.appendf("%u:%02u:%02u", unsigned(s / 3600 % 24), unsigned(s / 60 % 60), unsigned(s % 60));
+                return;
+        }
+
+        int runBoots(CommandContext &ctx) {
+                const Args args = ctx.args();
+                if (args.size() == 2 && StringView(args[1]) == "clear") {
+                        Boots::clear();
+                        return Shell::ExitSuccess;
+                }
+                if (args.size() != 1) return ctx.usage();
+                Boots::Entry   entries[Boots::MaxEntries];
+                const size_t   n = Boots::list(Span<Boots::Entry>(entries, Boots::MaxEntries));
+                const TimeZone zone = ctx.displayZone();
+                ctx.printf("%-19s  %-12s  %-12s  %-38s  %s\n", "started", "ran", "quiet before", "ended by",
+                           "firmware");
+                String line(MemSpace::Psram);
+                for (size_t i = 0; i < n; ++i) {
+                        const Boots::Entry &e = entries[i];
+                        line.clear();
+                        Timestamp started;
+                        if (Boots::wallTime(e.startUs, started))
+                                (void)formatTime(line, "%Y-%m-%d %H:%M:%S", zone.localTime(started));
+                        else
+                                (void)line.append("-");
+                        while (line.size() < 21) (void)line.append(" ");
+                        const size_t at = line.size();
+                        // A boot ran until the next began; this one, so far.
+                        appendDuration(line, i == 0 ? int64_t(System::uptimeUs()) : entries[i - 1].startUs - e.startUs);
+                        while (line.size() < at + 14) (void)line.append(" ");
+                        if (i == 0)
+                                (void)line.append("-");
+                        else
+                                appendDuration(line, entries[i - 1].startUs - e.aliveUs);
+                        while (line.size() < at + 28) (void)line.append(" ");
+                        (void)line.appendf("%-38s  %.*s", i == 0 ? "(running)" : System::resetReasonName(e.endReason),
+                                           int(sizeof(e.firmware)), e.firmware);
+                        ctx.printf("%.*s\n", int(line.size()), line.data());
+                }
+                return Shell::ExitSuccess;
+        }
+
         int runReboot(CommandContext &ctx) {
                 const Args args = ctx.args();
                 const bool recovery = args.size() == 2 && StringView(args[1]) == "recovery";
@@ -661,6 +710,10 @@ BMDS_SHELL_COMMAND(mem, runMem, "[-h | mark | new | blocks [MIN] | clear]",
                    "'mark' records the heap blocks in use, 'new' lists those in use now that weren't then; "
                    "'blocks' lists internal RAM's blocks in use of MIN bytes (1024) or more; "
                    "'clear' starts the window's history across resets again")
+BMDS_SHELL_COMMAND(boots, runBoots, "[clear]",
+                   "List the last boots: when each started, how long it ran, how long before its end it was last "
+                   "seen alive (a hang shows as a long time), what ended it, the firmware. 'clear' starts the "
+                   "list again")
 BMDS_SHELL_COMMAND(reboot, runReboot, "[recovery | panic]",
                    "Restart the system; 'recovery': into the recovery firmware (updates, repairs). In recovery, "
                    "restart into the main firmware if it checks good. 'panic': restart by a panic, to test the "

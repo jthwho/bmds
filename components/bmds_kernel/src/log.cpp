@@ -9,9 +9,11 @@
  */
 
 #include <cinttypes>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <esp_attr.h>
+#include <esp_cache.h>
 #include <esp_log_write.h>
 #include <esp_private/panic_internal.h>
 #include <rom/cache.h>
@@ -66,11 +68,31 @@ namespace {
 
         EXT_RAM_NOINIT_ATTR Persistent persistent;
 
+        // The header's counters again in the LP RAM, which a reset leaves alone and the caches don't
+        // hold (devplan/keptstate.md §3): PSRAM's header can be lost dirty in a hardware reset.
+        // `head` is stored after its bytes are written back, so it never runs ahead of them. Fields
+        // stored one at a time (the LP RAM: about 500 ns a word).
+        struct RtcCounters {
+                        uint32_t magic;
+                        uint32_t capacity;
+                        uint64_t head;
+                        uint64_t saved;
+                        int64_t  wallMinusUptimeNs;
+        };
+        constexpr uint32_t RtcMagic = 0x43474f4c; // "LOGC"
+
+        RTC_NOINIT_ATTR RtcCounters rtcCounters;
+
         // The header was written by a boot of this firmware (power-on contents pass with odds of
         // about 2^-64).
         bool isValid(const Persistent &p) {
                 return p.magic == PersistentMagic && p.capacity == HistoryBytes &&
                        (p.saved <= p.head || p.saved == Log::NoFiles);
+        }
+
+        bool isValid(const RtcCounters &r) {
+                return r.magic == RtcMagic && r.capacity == HistoryBytes &&
+                       (r.saved <= r.head || r.saved == Log::NoFiles);
         }
 
         void resetPersistent(Persistent &p) {
@@ -79,6 +101,20 @@ namespace {
                 p.head = 0;
                 p.saved = 0;
                 p.wallMinusUptimeNs = 0;
+                RtcCounters &r = rtcCounters;
+                r.magic = 0;
+                r.capacity = HistoryBytes;
+                r.head = 0;
+                r.saved = 0;
+                r.wallMinusUptimeNs = 0;
+                r.magic = RtcMagic;
+                return;
+        }
+
+        void writeBackBytes(const void *at, size_t len) {
+                if (len > 0)
+                        (void)esp_cache_msync(const_cast<void *>(at), len,
+                                              ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
                 return;
         }
 
@@ -110,7 +146,8 @@ namespace {
                 return static_cast<size_t>(ret) < avail ? static_cast<size_t>(ret) : avail - 1;
         }
 
-        void appendHistory(Persistent &p, const char *text, size_t len) {
+        // Into the ring only (the panic's path: it writes the caches back itself).
+        void appendRing(Persistent &p, const char *text, size_t len) {
                 if (len > HistoryBytes) {
                         text += len - HistoryBytes;
                         p.head += len - HistoryBytes;
@@ -121,6 +158,21 @@ namespace {
                 std::memcpy(p.history + offset, text, first);
                 std::memcpy(p.history, text + first, len - first);
                 p.head += len;
+                return;
+        }
+
+        // Into the ring, its bytes written back from the caches (by address, under IDF's lock: safe
+        // beside the other core's cache operations), then `head` stored in the LP RAM: what a hardware
+        // reset leaves is up to date (about 5 µs a line, devplan/keptstate.md §3).
+        void appendHistory(Persistent &p, const char *text, size_t len) {
+                const uint64_t from = p.head + (len > HistoryBytes ? len - HistoryBytes : 0);
+                appendRing(p, text, len);
+                const size_t offset = static_cast<size_t>(from % HistoryBytes);
+                const size_t n = static_cast<size_t>(p.head - from);
+                const size_t first = n < HistoryBytes - offset ? n : HistoryBytes - offset;
+                writeBackBytes(p.history + offset, first);
+                writeBackBytes(p.history, n - first);
+                if (isValid(rtcCounters)) rtcCounters.head = p.head;
                 return;
         }
 
@@ -204,6 +256,18 @@ Error Log::init() {
         LogState &s = state.create();
         if (HistoryBytes > 0) {
                 Persistent &p = persistent;
+                // The LP RAM's counters, when they pass, over PSRAM's header (which a hardware reset
+                // may have dropped dirty): the bytes up to their `head` were written back.
+                uint64_t           pastPsram = 0;
+                const RtcCounters &r = rtcCounters;
+                if (isValid(r)) {
+                        if (isValid(p) && r.head > p.head) pastPsram = r.head - p.head;
+                        p.magic = PersistentMagic;
+                        p.capacity = HistoryBytes;
+                        p.head = r.head;
+                        p.saved = r.saved;
+                        p.wallMinusUptimeNs = r.wallMinusUptimeNs;
+                }
                 // The previous boot's lines not yet in the files: put back in front of this boot's.
                 char    *old = nullptr;
                 size_t   oldLen = 0;
@@ -217,11 +281,15 @@ Error Log::init() {
                         s.recoveredWallMinusUptimeNs = p.wallMinusUptimeNs;
                 }
                 resetPersistent(p);
+                writeBackBytes(&p.magic, offsetof(Persistent, history) - offsetof(Persistent, magic));
                 if (old != nullptr || lost > 0) {
                         char line[CONFIG_BMDS_LOG_LINE_MAX];
+                        char past[64] = "";
+                        if (pastPsram > 0)
+                                std::snprintf(past, sizeof(past), "; %" PRIu64 " bytes past PSRAM's header", pastPsram);
                         std::snprintf(line, sizeof(line),
-                                      "--- recovered: the previous boot's unsaved lines (reset: %s) ---\n",
-                                      System::resetReason());
+                                      "--- recovered: the previous boot's unsaved lines (reset: %s%s) ---\n",
+                                      System::resetReason(), past);
                         appendHistory(p, line);
                         if (lost > 0) {
                                 std::snprintf(line, sizeof(line), "--- %" PRIu64 " bytes of them lost ---\n", lost);
@@ -324,6 +392,11 @@ void Log::setSaved(uint64_t position, int64_t wallMinusUptimeNs) {
         if (position != NoFiles && position > p.head) position = p.head;
         p.saved = position;
         p.wallMinusUptimeNs = wallMinusUptimeNs;
+        RtcCounters &r = rtcCounters;
+        if (isValid(r)) {
+                r.wallMinusUptimeNs = wallMinusUptimeNs;
+                r.saved = position;
+        }
         return;
 }
 
@@ -415,9 +488,10 @@ namespace {
                 if (c == '\r') return;
                 if (c == '\n') {
                         if (!panicLineOpen) return; // blank lines left out
-                        appendHistory(p, "\n", 1);
+                        appendRing(p, "\n", 1);
                         panicLineOpen = false;
                         writeBack(); // in case the handler hangs until the hardware watchdog
+                        if (isValid(rtcCounters)) rtcCounters.head = p.head;
                         return;
                 }
                 if (!panicLineOpen) {
@@ -440,10 +514,10 @@ namespace {
                         } while (v != 0);
                         while (digits++ < 5) *--at = ' ';
                         *--at = '[';
-                        appendHistory(p, at, static_cast<size_t>(end - at));
+                        appendRing(p, at, static_cast<size_t>(end - at));
                         panicLineOpen = true;
                 }
-                appendHistory(p, &c, 1);
+                appendRing(p, &c, 1);
                 return;
         }
 

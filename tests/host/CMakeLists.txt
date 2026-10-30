@@ -57,6 +57,7 @@ add_executable(bmds_host_tests
         settings.cpp
         imagecache.cpp
         memtest.cpp
+        keptrecord.cpp
         pagewindow.cpp
         error.cpp
         ethernet.cpp

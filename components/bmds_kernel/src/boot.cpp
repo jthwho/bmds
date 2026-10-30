@@ -13,6 +13,7 @@
 #include <freertos/task.h>
 #include <bmds/assert.h>
 #include <bmds/boot.h>
+#include <bmds/boots.h>
 #include <bmds/clock.h>
 #include <bmds/detail/platform.h>
 #include <bmds/random.h>
@@ -64,7 +65,8 @@ namespace {
         // The boot stages, in order. Lives in rodata.
         constexpr Stage Stages[] = {
                 {"memory", initMemory},          {"random", Random::init}, // before anything reads it
-                {"clock", Clock::init},          {"stats", Stats::init},   // before any component adds its counters
+                {"clock", Clock::init},          {"boots", Boots::init},   // the last boot ended, this one recorded
+                {"stats", Stats::init},                                    // before any component adds its counters
                 {"notify", Notifications::init},                           // before a program can post one
                 {"simd", Simd::setUp}, // PIE's misaligned access on, for good: before any kernel runs
         };

@@ -18,6 +18,7 @@
 #include <bmds/ethernetdevice.h>
 #include <bmds/flashdisk.h>
 #include <bmds/netstack.h>
+#include <bmds/kept.h>
 #include <bmds/psramwindow.h>
 #include <bmds/filehandle.h>
 #include <bmds/i2cbus.h>
@@ -106,6 +107,7 @@ namespace {
                 {"logs", bmds::LogFiles::init},       // /dev/log; the log's files in log/dir once it mounts
                 {"update", bmds::Update::init},       // the last update's result logged (devplan/update.md)
                 {"sysmon", bmds::Sysmon::init},       // the tasks' CPU time, the system's counters
+                {"kept", bmds::Kept::init},           // the records kept across resets saved (keptstate.md)
                 {"audio", bmds::AudioDevice::init},   // dsp0: made, not started; follows audio/dsp0/...
                 {"midi", bmds::Midi::init},           // the router, /dev/midi*; before USB's MIDI devices
                 {"clipboard", bmds::Clipboard::init}, // its configuration in /cfg; /dev/clip0

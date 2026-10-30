@@ -19,6 +19,7 @@ set(BMDS_CORE_SRCS
         src/desktopentry.cpp
         src/dragdrop.cpp
         src/fft.cpp
+        src/keptrecord.cpp
         src/pagewindow.cpp
         src/pngdecoder.cpp
         src/randompool.cpp

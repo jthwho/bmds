@@ -16,6 +16,8 @@
 #include <sdkconfig.h>
 #include <esp_async_memcpy.h>
 #include <esp_cache.h>
+#include <esp_heap_caps.h>
+#include <rom/cache.h>
 #include <bmds/bench.h>
 #include <bmds/memory.h>
 #include <bmds/memtest.h>
@@ -265,8 +267,95 @@ namespace {
                 return cacheOps(ctx, "internal_64k", MemSpace::InternalDma, 64 * 1024);
         }
 
+        // The LP RAM (RTC memory), uncached, as records kept across resets use it
+        // (devplan/keptstate.md): a log line's copy, 4 KB written and read, a word's store.
+        Error runRtc(BenchContext &ctx) {
+                constexpr size_t Bytes = 4096;
+                struct Buffers {
+                                uint8_t *rtc = static_cast<uint8_t *>(heap_caps_malloc(Bytes, MALLOC_CAP_RTCRAM));
+                                uint8_t *src = static_cast<uint8_t *>(Memory::alloc(MemSpace::Internal, Bytes));
+                                ~Buffers() {
+                                        heap_caps_free(rtc);
+                                        Memory::free(src);
+                                }
+                } b;
+                if (b.rtc == nullptr || b.src == nullptr) return Error::NoMem;
+                uint8_t *rtc = b.rtc;
+                uint8_t *src = b.src;
+                std::memset(src, 'x', Bytes);
+                auto ns = [](uint32_t cycles) {
+                        return double(cycles) * 1000.0 / CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+                };
+                Error err = ctx.measure("line_100_ns", "ns", BenchBetter::Lower, [&](double &out) {
+                        Stopwatch watch;
+                        for (size_t i = 0; i < 32; ++i) std::memcpy(rtc + i * 101 % (Bytes - 128), src, 100);
+                        out = ns(watch.cycles()) / 32;
+                        return Error(Error::Ok);
+                });
+                if (err.isError()) return err;
+                err = ctx.measure("write_4k_us", "us", BenchBetter::Lower, [&](double &out) {
+                        Stopwatch watch;
+                        std::memcpy(rtc, src, Bytes);
+                        out = ns(watch.cycles()) / 1000;
+                        return Error(Error::Ok);
+                });
+                if (err.isError()) return err;
+                err = ctx.measure("read_4k_us", "us", BenchBetter::Lower, [&](double &out) {
+                        Stopwatch watch;
+                        std::memcpy(src, rtc, Bytes);
+                        out = ns(watch.cycles()) / 1000;
+                        return Error(Error::Ok);
+                });
+                if (err.isError()) return err;
+                {
+                        // Against it: a line written into PSRAM, then its cache lines written back
+                        // by address (L1, then L2), as the log could after each line.
+                        Block psram(MemSpace::Psram, Bytes);
+                        if (psram.p == nullptr) return Error::NoMem;
+                        err = ctx.measure("psram_line_writeback_ns", "ns", BenchBetter::Lower, [&](double &out) {
+                                uint32_t cycles = 0;
+                                for (size_t i = 0; i < 32; ++i) {
+                                        uint8_t *at = psram.p + i * 101 % (Bytes - 128);
+                                        std::memcpy(at, src, 100);
+                                        Stopwatch  watch;
+                                        const auto addr = uint32_t(uintptr_t(at));
+                                        (void)Cache_WriteBack_Addr(CACHE_MAP_L1_DCACHE, addr, 100);
+                                        (void)Cache_WriteBack_Addr(CACHE_MAP_L2_CACHE, addr, 100);
+                                        cycles += watch.cycles();
+                                }
+                                out = ns(cycles) / 32;
+                                return Error(Error::Ok);
+                        });
+                        if (err.isError()) return err;
+                        err = ctx.measure("psram_line_msync_ns", "ns", BenchBetter::Lower, [&](double &out) {
+                                uint32_t cycles = 0;
+                                for (size_t i = 0; i < 32; ++i) {
+                                        uint8_t *at = psram.p + i * 101 % (Bytes - 128);
+                                        std::memcpy(at, src, 100);
+                                        Stopwatch watch;
+                                        (void)esp_cache_msync(
+                                                at, 100, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+                                        cycles += watch.cycles();
+                                }
+                                out = ns(cycles) / 32;
+                                return Error(Error::Ok);
+                        });
+                        if (err.isError()) return err;
+                }
+                err = ctx.measure("store_ns", "ns", BenchBetter::Lower, [&](double &out) {
+                        volatile uint32_t *w = reinterpret_cast<volatile uint32_t *>(rtc);
+                        Stopwatch          watch;
+                        for (uint32_t i = 0; i < 256; ++i) w[i] = i;
+                        out = ns(watch.cycles()) / 256;
+                        return Error(Error::Ok);
+                });
+                return err;
+        }
+
 } // namespace
 
+BMDS_BENCH(memoryRtc, "memory.rtc", runRtc, BenchQuick,
+           "The LP RAM (RTC memory, uncached): a 100-byte line copied, 4 KB written and read, a word stored")
 BMDS_BENCH(memoryCache, "memory.cache", runCache, BenchQuick,
            "The cache's write-back (of dirty and clean lines) and invalidate, by size: us each")
 BMDS_BENCH_WITH(memoryPsramCpu, "memory.psram.cpu", runPsramCpu, BenchQuick, PsramParams,

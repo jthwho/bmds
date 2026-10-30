@@ -12,6 +12,7 @@
 #include <freertos/task.h>
 #include <bmds/clock.h>
 #include <bmds/cputime.h>
+#include <bmds/kept.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/staticobject.h>
@@ -20,6 +21,7 @@
 #include <bmds/sysconf.h>
 #include <bmds/sysmon.h>
 #include <bmds/system.h>
+#include "keptcounters.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -34,6 +36,10 @@ namespace {
         BMDS_SYSCONF(sysmonInterval, "sysmon/interval", Config::Type::Int, "1000",
                      "The system monitor's sampling interval in ms, while anything watches", 100, 60000, nullptr,
                      nullptr)
+        BMDS_SYSCONF(sysmonKeepInterval, "sysmon/keep-interval", Config::Type::Int, "10",
+                     "Seconds between saves of what survives a reset (the boots' record, the kept counters, the "
+                     "window's history; devplan/keptstate.md); 0: only at a clean restart",
+                     0, 3600, nullptr, nullptr)
         BMDS_SYSCONF(sysmonLimits, "sysmon/limits", Config::Type::String, "",
                      "Overrides of the counters' rules: NAME:SETTING[,SETTING];... (devplan/sysmon.md 3.3)", 0, 0,
                      nullptr, nullptr)
@@ -220,6 +226,8 @@ namespace {
         void applySettings() {
                 if (auto [ms, err] = SysConf::getInt(bmdsConf_sysmonInterval.key); err.isOk())
                         Stats::setInterval(uint32_t(ms));
+                if (auto [seconds, err] = SysConf::getInt(bmdsConf_sysmonKeepInterval.key); err.isOk())
+                        Kept::setInterval(uint32_t(seconds) * 1000);
                 String limits(MemSpace::Psram);
                 if (SysConf::get(bmdsConf_sysmonLimits.key, limits).isError()) return;
                 size_t bad = 0;
@@ -282,6 +290,7 @@ Error Sysmon::init() {
         c.clock.setName("clock");
         if ((err = Stats::add(c.system)).isError()) return err;
         if ((err = Stats::add(c.clock)).isError()) return err;
+        if ((err = KeptCounters::init()).isError()) return err;
         applySettings();
         return c.settings.start("sysmon", settingsChanged, nullptr);
 }

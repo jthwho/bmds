@@ -15,6 +15,7 @@
 #include <sdkconfig.h>
 #include <bmds/board.h>
 #include <bmds/detail/platform.h>
+#include <bmds/kept.h>
 #include <bmds/system.h>
 #include <bmds/thread.h>
 #include <bmds/version.h>
@@ -59,6 +60,7 @@ uint64_t System::uptimeUs() {
 }
 
 void System::restart() {
+        Kept::flush(); // the records kept across resets, saved now (devplan/keptstate.md §2c)
         esp_restart();
 }
 
@@ -68,7 +70,15 @@ void System::panic(const char *message) {
 
 // As the boot log says it: a panic or watchdog is told apart from a flash's or a reboot's.
 const char *System::resetReason() {
-        switch (esp_reset_reason()) {
+        return resetReasonName(resetReasonCode());
+}
+
+int System::resetReasonCode() {
+        return int(esp_reset_reason());
+}
+
+const char *System::resetReasonName(int code) {
+        switch (esp_reset_reason_t(code)) {
                 case ESP_RST_POWERON: return "power-on";
                 case ESP_RST_EXT: return "external pin";
                 case ESP_RST_SW: return "software (reboot)";

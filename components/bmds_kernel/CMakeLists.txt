@@ -30,10 +30,12 @@ if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_KERNEL_PORTABLE_SRCS}
                                     src/assert.cpp
                                     src/boot.cpp
+                                    src/boots.cpp
                                     src/clockinit.cpp
                                     src/critical.cpp
                                     src/crosscore.cpp
                                     src/esperr_check.cpp
+                                    src/kept.cpp
                                     src/log.cpp
                                     src/logstream.cpp
                                     src/memory.cpp

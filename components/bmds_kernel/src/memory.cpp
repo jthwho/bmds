@@ -15,6 +15,8 @@
 #include <esp_memory_utils.h>
 #include <bmds/board.h>
 #include <bmds/detail/platform.h>
+#include <bmds/kept.h>
+#include <bmds/keptrecord.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/mutex.h>
@@ -227,54 +229,31 @@ namespace {
                         Memory::WindowUsage   counts;
                         Memory::WindowHistory history; // its seconds unused: from historyStartUs
                         int64_t               historyStartUs = 0;
-                        uint32_t              historySequence = 0;
+                        bool                  historyChanged = false; // since the keeper saved it
         };
 
         constinit StaticObject<Window> window; // made when the window starts (boot)
 
-        // The history across resets (§3g): two copies in RTC memory, which a reset leaves alone and
-        // the caches don't hold (the CPU caches only addresses below the peripherals', so nothing
-        // is lost dirty). Each is written whole, its magic last, so a reset partway leaves the
-        // other. Power-up leaves garbage, and another firmware its own things: the magic, size and
-        // check tell. Bytes, not the struct: no constructor may run over it.
-        struct HistoryCopy {
-                        uint32_t magic;
-                        uint32_t size;
-                        uint32_t sequence;
-                        uint32_t reserved;
-                        int64_t  startUs; // Detail::persistentTimeUs() when it started
-                        alignas(8) uint8_t counts[sizeof(Memory::WindowHistory)];
-                        uint32_t check;
+        // The history across resets (§3g, devplan/keptstate.md §2c): in RTC memory, which a reset
+        // leaves alone, saved by the window's keeper (the LP RAM is too slow to write on each
+        // allocation: about 500 ns a word). A reset loses at most a keeper's interval.
+        struct HistoryRecord {
+                        Memory::WindowHistory counts;  // its seconds unused: from startUs
+                        int64_t               startUs; // Detail::persistentTimeUs() when it started
         };
 
         constexpr uint32_t HistoryMagic = 0x48574d42; // "BMWH"
 
-        RTC_NOINIT_ATTR HistoryCopy historyCopies[2];
+        RTC_NOINIT_ATTR uint32_t historyStore[KeptRecord::storageWords(sizeof(HistoryRecord))];
+        constinit KeptRecord     historyRecord(historyStore, sizeof(HistoryRecord), HistoryMagic);
 
-        uint32_t checkOf(const HistoryCopy &c) {
-                // FNV-1a over everything before the check.
-                const auto *bytes = reinterpret_cast<const uint8_t *>(&c);
-                uint32_t    h = 2166136261u;
-                for (size_t i = 0; i < offsetof(HistoryCopy, check); ++i) {
-                        h ^= bytes[i];
-                        h *= 16777619u;
-                }
-                return h;
-        }
-
-        // Writes the history into the older copy. Under the window's lock.
+        // Under the window's lock.
         void saveHistory(Window &w) {
-                HistoryCopy &c = historyCopies[++w.historySequence & 1];
-                c.magic = 0;
-                std::atomic_thread_fence(std::memory_order_seq_cst);
-                c.size = sizeof(HistoryCopy);
-                c.sequence = w.historySequence;
-                c.reserved = 0;
-                c.startUs = w.historyStartUs;
-                std::memcpy(c.counts, &w.history, sizeof(c.counts));
-                c.check = checkOf(c);
-                std::atomic_thread_fence(std::memory_order_seq_cst);
-                c.magic = HistoryMagic;
+                HistoryRecord r{};
+                r.counts = w.history;
+                r.startUs = w.historyStartUs;
+                historyRecord.save(&r);
+                w.historyChanged = false;
                 return;
         }
 
@@ -285,22 +264,27 @@ namespace {
                 return;
         }
 
-        // At boot: the newer good copy, this boot counted, or a new history.
+        // At boot: the kept history, this boot counted, or a new one.
         void loadHistory(Window &w) {
-                const HistoryCopy *newest = nullptr;
-                for (const HistoryCopy &c : historyCopies) {
-                        if (c.magic != HistoryMagic || c.size != sizeof(HistoryCopy) || c.check != checkOf(c)) continue;
-                        if (newest == nullptr || int32_t(c.sequence - newest->sequence) > 0) newest = &c;
-                }
-                if (newest != nullptr && newest->startUs <= Detail::persistentTimeUs()) {
-                        std::memcpy(&w.history, newest->counts, sizeof(w.history));
+                HistoryRecord r;
+                if (historyRecord.load(&r) && r.startUs <= Detail::persistentTimeUs()) {
+                        w.history = r.counts;
                         w.history.boots += 1;
-                        w.historyStartUs = newest->startUs;
-                        w.historySequence = newest->sequence;
+                        w.historyStartUs = r.startUs;
+                        bmdsInfo("Memory: the window's history kept, boot %u", unsigned(w.history.boots));
                 } else {
                         startHistory(w);
+                        bmdsInfo("Memory: the window's history started");
                 }
                 saveHistory(w);
+                return;
+        }
+
+        // The keeper (Kept): the history saved if it changed.
+        void keepHistory(void *) {
+                Window       &w = *window;
+                Mutex::Locker locker(w.lock, WaitForever);
+                if (w.historyChanged) saveHistory(w);
                 return;
         }
 
@@ -382,7 +366,7 @@ namespace {
                 w.counts.runs += uint32_t(n);
                 w.counts.bytes += sizeBytes;
                 notePeaks(w, uint32_t(n));
-                saveHistory(w);
+                w.historyChanged = true;
                 return at;
         }
 
@@ -455,7 +439,7 @@ namespace {
                 w.counts.grownInPlace += 1;
                 w.history.grownInPlace += 1;
                 notePeaks(w, b->runCount);
-                saveHistory(w);
+                w.historyChanged = true;
                 return true;
         }
 
@@ -522,7 +506,7 @@ namespace {
                         h.lowestLargest = largest;
                         h.freeThen = free;
                 }
-                saveHistory(w);
+                w.historyChanged = true;
                 return;
         }
 
@@ -531,7 +515,7 @@ namespace {
                 Mutex::Locker locker(w.lock, WaitForever);
                 ++(toWindow ? w.counts.toWindow : w.counts.toHeap);
                 ++(toWindow ? w.history.toWindow : w.history.toHeap);
-                saveHistory(w);
+                w.historyChanged = true;
                 return;
         }
 
@@ -541,7 +525,7 @@ namespace {
                 Window       &w = *window;
                 Mutex::Locker locker(w.lock, WaitForever);
                 ++w.history.failed;
-                saveHistory(w);
+                w.historyChanged = true;
                 return;
         }
 
@@ -581,7 +565,7 @@ Error MemoryWindow::init() {
         if (window.isCreated() || !PsramWindow::isReady()) return Error::Ok;
         findTlsf();
         loadHistory(window.create());
-        return Error::Ok;
+        return Kept::add(keepHistory, nullptr);
 }
 
 void *Memory::alloc(MemSpace space, size_t sizeBytes, const Options &options) {

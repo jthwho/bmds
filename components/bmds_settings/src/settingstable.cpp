@@ -376,6 +376,7 @@ namespace SettingsTable {
                         section("Monitoring"),
                         {.key = "sysmon/enable", .label = "CPU time", .flags = AtBoot},
                         {.key = "sysmon/interval", .label = "Sampled every", .unit = "ms"},
+                        {.key = "sysmon/keep-interval", .label = "Kept across resets every", .unit = "s"},
                         {.key = "sysmon/limits", .label = "Rules"},
                         {.key = "bench/folder", .label = "Benchmark results in", .editor = E::Folder},
                         {.key = "bench/paths", .label = "Benchmarks from", .editor = E::List},

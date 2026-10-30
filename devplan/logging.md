@@ -290,6 +290,11 @@ cold power-up, which must not produce a false "recovered" block.
 - **Not tested:** a real cold power-up, since the board's power can't be cut remotely; the
   header check covers it, as on the first boot after the flash. A hardware watchdog's reset
   (only what was written back survives) was not tested either.
+- **Since 2026-10-29 a hardware reset loses nothing either** (`keptstate.md` §3): each line is
+  written back from the caches as it's appended, and the header's counters are kept in the LP RAM
+  as well, stored after the bytes; at boot they replace PSRAM's header. A line logged 30 ms before
+  a USB control-line reset came back, with the marker's "32 bytes past PSRAM's header": PSRAM's
+  own header had lost exactly that line.
 - **Limits:**
   - The recovered lines keep uptime stamps when the previous boot had no clock at its last
     `setSaved()`.

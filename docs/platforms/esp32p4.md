@@ -177,6 +177,18 @@ until silicon v3; then test again.
   program pages written through their window addresses and left dirty ran libgcc's `lui` as the
   file had it (a load from the bare offset); writing back the range below the writable data fixed
   it (`devplan/programs.md` §19).
+- **The LP RAM (RTC memory, 0x50108000) isn't cached:** the PMA entry that makes memory
+  cacheable stops at `SOC_PERIPHERAL_LOW` (0x50000000; `cpu_region_protect.c`), so a store there
+  reaches it at once, and RTC_NOINIT data survives any reset short of power-up with no write-back
+  (unlike PSRAM's `.noinit`, which the log writes back before a software reset and loses on a
+  hardware one). The records kept across resets use it (`devplan/keptstate.md`); a USB
+  control-line reset, `reboot` and a panic all kept them (2026-10-29).
+- **But the LP RAM is slow: about 500 ns a 32-bit store, reads too** (`memory.rtc`,
+  2026-10-29): a 100-byte line copied in takes 14.5 µs, 4 KB 518 µs. Keep records in ordinary RAM
+  and copy them in now and then (`Kept`), never per event. For the log, writing a line's cache
+  lines back to PSRAM is cheaper: 2.8 µs by the ROM's address calls, 3.8 µs through
+  `esp_cache_msync()` (which holds the cache's spinlock: use it whenever the other core runs, as
+  the ROM's calls and IDF's share the cache's operation registers).
 - **The bootloader must fit 24 KB** with the partition table at 0x8000 (`check_sizes.py` fails the
   build at 0x6000). `CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC` took ours 16 bytes over; dropping
   `CONFIG_BOOTLOADER_COMPILE_TIME_DATE` gave back 64.
