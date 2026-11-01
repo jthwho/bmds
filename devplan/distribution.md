@@ -45,6 +45,10 @@ The builder uses Python's standard library only (3.11 or newer, for `tomllib`).
 
 ## 4. Installing
 
+*Since 2026-10-30 through packages (`packages.md` §19): `bmds-dist package` makes a `.bmpk` of
+each, and `bmds-dist install` sends them and runs `pkg install` on the board, which makes the
+links itself. What follows is how it was, kept while the release still ships the tree.*
+
 - **Over the serial cable:** `tools/bmds-dist install [-p port] [--root /sd0/p0]` creates the directories, sends the files with YMODEM (as `bmds-run` does), then has the board make the links (`sh etc/dist/links.sh`). A full BusyBox install takes about 10 s.
 - **With the card in a PC:** copy `build-dist/rootfs` onto it, links excepted, then run `sh /sd0/p0/etc/dist/links.sh` once on the board. Emulated links need the FAT System attribute, which tools on a PC don't set (Cygwin's `cp` excepted); the board makes them itself.
 - Installing again replaces files; links are remade with `ln -sf`.

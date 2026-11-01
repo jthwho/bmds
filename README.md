@@ -22,6 +22,7 @@ BMDS uses FreeRTOS (via ESP-IDF) as its kernel and provides everything above it:
 | [`docs/HARDWARE.md`](docs/HARDWARE.md) | Board and SoC reference |
 | [`docs/BUILDING.md`](docs/BUILDING.md) | Toolchain setup, building, flashing, testing |
 | [`CODING_STANDARDS.md`](CODING_STANDARDS.md) | Coding conventions |
+| [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) | Third-party software and licences |
 | [`devplan/`](devplan/) | Roadmap and subsystem design plans |
 
 ## License

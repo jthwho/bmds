@@ -18,6 +18,7 @@
 #include <vector>
 #include <bmds/blake2s.h>
 #include <bmds/ed25519.h>
+#include <bmds/signedcontainer.h>
 #include <bmds/updatepackage.h>
 
 using bmds::Span;
@@ -60,19 +61,24 @@ namespace {
                 const size_t         count = sections.size();
                 const size_t         head = UpdatePackage::HeaderBytes + count * UpdatePackage::SectionBytes + 64;
                 std::vector<uint8_t> v(head, 0);
+                uint8_t              unused[64];
+                Ed25519::sign(Seed, "", 0, unused, key.bytes);
+                uint8_t id[bmds::SignedContainer::KeyIdBytes];
+                bmds::SignedContainer::keyId(key, id);
                 std::memcpy(v.data(), "BMUP", 4);
                 put16(v, 4, 1);
-                put16(v, 6, 136);
+                put16(v, 6, 144);
                 put32(v, 12, uint32_t(count));
-                put32(v, 16, 1);
-                put16(v, 20, 103);
-                std::memcpy(v.data() + 24, "olimex_esp32p4_pc", 17);
-                std::memcpy(v.data() + 56, "0.2.0", 5);
-                v[88] = 0xab;
-                v[120] = 0x10; // made at 16 s
-                put16(v, 128, 0);
-                put16(v, 130, 2);
-                put16(v, 132, 1);
+                std::memcpy(v.data() + 16, id, sizeof(id));
+                put32(v, 24, 1);
+                put16(v, 28, 103);
+                std::memcpy(v.data() + 32, "olimex_esp32p4_pc", 17);
+                std::memcpy(v.data() + 64, "0.2.0", 5);
+                v[96] = 0xab;
+                v[128] = 0x10; // made at 16 s
+                put16(v, 136, 0);
+                put16(v, 138, 2);
+                put16(v, 140, 1);
                 size_t offset = head;
                 for (size_t i = 0; i < count; ++i) {
                         const size_t e = UpdatePackage::HeaderBytes + i * UpdatePackage::SectionBytes;
@@ -151,7 +157,7 @@ TEST_CASE("Update packages: one made by tools/mkupdate") {
         size_t head = 0;
         REQUIRE(UpdatePackage::headBytes(Span<const uint8_t>(v.data(), UpdatePackage::HeaderBytes), head) ==
                 Verdict::Ok);
-        CHECK(head == 136 + 2 * 48 + 64);
+        CHECK(head == 144 + 2 * 48 + 64);
         UpdatePackage::Package p;
         REQUIRE(parse(v, p) == Verdict::Ok);
         CHECK(std::string(p.board) == "olimex_esp32p4_pc");
@@ -159,8 +165,10 @@ TEST_CASE("Update packages: one made by tools/mkupdate") {
         CHECK(std::string(p.versionText) == "0.1.0");
         CHECK(p.version == UpdatePackage::Version{0, 1, 0});
         CHECK(p.sectionCount == 2);
-        CHECK(UpdatePackage::verify(p, Span<const uint8_t>(v.data(), head), Span<const UpdatePackage::Key>(&key, 1)) ==
-              Verdict::Ok);
+        size_t index = 1;
+        CHECK(UpdatePackage::verify(p, Span<const uint8_t>(v.data(), head), Span<const UpdatePackage::Key>(&key, 1),
+                                    index) == Verdict::Ok);
+        CHECK(index == 0);
         const UpdatePackage::Section *notes = p.find(UpdatePackage::SectionType::Notes);
         REQUIRE(notes != nullptr);
         CHECK(std::string(reinterpret_cast<const char *>(v.data() + notes->offset), notes->size) ==
@@ -200,22 +208,33 @@ TEST_CASE("Update packages: built, checked, and each fault refused") {
         CHECK(p.madeAt == 16);
         CHECK(p.buildId[0] == 0xab);
         CHECK(p.sectionCount == 3);
+        size_t     index = 9;
+        const auto verify = [&](const std::vector<uint8_t> &bytes, const UpdatePackage::Package &parsed,
+                                Span<const UpdatePackage::Key> keys) {
+                return UpdatePackage::verify(parsed, Span<const uint8_t>(bytes.data(), parsed.headBytes), keys, index);
+        };
         const auto keys = [&](const UpdatePackage::Key &k) {
                 return Span<const UpdatePackage::Key>(&k, 1);
         };
-        const Span<const uint8_t> head(v.data(), p.headBytes);
-        CHECK(UpdatePackage::verify(p, head, keys(key)) == Verdict::Ok);
+        CHECK(verify(v, p, keys(key)) == Verdict::Ok);
+        CHECK(index == 0);
         UpdatePackage::Key other = key;
         other.bytes[0] ^= 1;
-        CHECK(UpdatePackage::verify(p, head, keys(other)) == Verdict::BadSignature);
+        CHECK(verify(v, p, keys(other)) == Verdict::BadSignature);
         const UpdatePackage::Key both[2] = {other, key};
-        CHECK(UpdatePackage::verify(p, head, Span<const UpdatePackage::Key>(both, 2)) == Verdict::Ok);
+        CHECK(verify(v, p, Span<const UpdatePackage::Key>(both, 2)) == Verdict::Ok);
+        CHECK(index == 1);
 
         SUBCASE("a byte of the signed head changed") {
-                v[60] ^= 1; // the version
+                v[68] ^= 1; // the version
                 REQUIRE(parse(v, p) == Verdict::Ok);
-                CHECK(UpdatePackage::verify(p, Span<const uint8_t>(v.data(), p.headBytes), keys(key)) ==
-                      Verdict::BadSignature);
+                CHECK(verify(v, p, keys(key)) == Verdict::BadSignature);
+        }
+        SUBCASE("the key id names another key") {
+                v[16] ^= 1;
+                resign(v); // by the right key, but the id says otherwise: the key isn't tried
+                REQUIRE(parse(v, p) == Verdict::Ok);
+                CHECK(verify(v, p, keys(key)) == Verdict::BadSignature);
         }
         SUBCASE("not a package, a newer one, a damaged one") {
                 std::vector<uint8_t> w = v;
@@ -237,13 +256,13 @@ TEST_CASE("Update packages: built, checked, and each fault refused") {
                 put32(w, 12, 17);
                 CHECK(parse(w, p) == Verdict::Malformed);
                 w = v;
-                w[24] = 0x07; // not printable
+                w[32] = 0x07; // not printable
                 CHECK(parse(w, p) == Verdict::Malformed);
                 w = v;
-                w[60 + 20] = 'x'; // text after the version's NUL
+                w[64 + 20] = 'x'; // text after the version's NUL
                 CHECK(parse(w, p) == Verdict::Malformed);
                 w = v;
-                put16(w, 134, 1); // the version's reserved u16
+                put16(w, 142, 1); // the version's reserved u16
                 CHECK(parse(w, p) == Verdict::Malformed);
         }
         SUBCASE("sections outside the file, inside the head, or twice") {
@@ -268,4 +287,37 @@ TEST_CASE("Update packages: built, checked, and each fault refused") {
                         CHECK(std::strlen(UpdatePackage::verdictText(Verdict(i))) > 0);
                 }
         }
+}
+
+TEST_CASE("Update packages: an app image's chip revisions, judged as the bootloader does") {
+        constexpr uint16_t P4 = 18; // CONFIG_IDF_FIRMWARE_CHIP_ID
+        // A header as IDF writes for ESP32P4_SELECTS_REV_LESS_V3: v0.0 to v1.99.
+        uint8_t image[UpdatePackage::AppHeaderBytes] = {0xe9, 3};
+        image[12] = P4;
+        image[17] = 199;
+        UpdatePackage::ChipRevisions r;
+        REQUIRE(UpdatePackage::appRevisions(Span<const uint8_t>(image, sizeof(image)), P4, r));
+        CHECK(r.min == 0);
+        CHECK(r.max == 199);
+        CHECK(UpdatePackage::runsOn(r, 103, false)); // our boards: v1.3
+        CHECK_FALSE(UpdatePackage::runsOn(r, 300, false));
+        CHECK(UpdatePackage::runsOn(r, 300, true)); // the eFuse that disables the check
+
+        // v3.1 and up; no greatest (0 or 0xFFFF).
+        image[15] = 301 & 0xff;
+        image[16] = 301 >> 8;
+        image[17] = image[18] = 0xff;
+        REQUIRE(UpdatePackage::appRevisions(Span<const uint8_t>(image, sizeof(image)), P4, r));
+        CHECK(r.min == 301);
+        CHECK_FALSE(UpdatePackage::runsOn(r, 103, false));
+        CHECK_FALSE(UpdatePackage::runsOn(r, 103, true)); // the least is always checked
+        CHECK(UpdatePackage::runsOn(r, 9999, false));
+        r.max = 0;
+        CHECK(UpdatePackage::runsOn(r, 9999, false));
+
+        // Not an app image for this chip.
+        CHECK_FALSE(UpdatePackage::appRevisions(Span<const uint8_t>(image, sizeof(image) - 1), P4, r));
+        CHECK_FALSE(UpdatePackage::appRevisions(Span<const uint8_t>(image, sizeof(image)), 13, r));
+        image[0] = 0;
+        CHECK_FALSE(UpdatePackage::appRevisions(Span<const uint8_t>(image, sizeof(image)), P4, r));
 }

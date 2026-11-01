@@ -35,6 +35,7 @@
 #include <bmds/multicastfilter.h>
 
 #include "lwipwire.h"
+#include "rxcopies.h"
 
 namespace {
 
@@ -193,6 +194,38 @@ TEST_CASE("lwIP: loopback through the scheduled poll") {
         CHECK(ping(nullptr, "10.0.0.1") == 1); // an interface's own address loops back too
         CHECK(calls.empty());
         CHECK(heapUsed() == used);
+}
+
+TEST_CASE("RxCopies: slots handed out and back, the pool empty, a frame too big") {
+        // devplan/network.md §32. The harness's pool, filled and emptied: no other user meanwhile.
+        setUp();
+        const bmds::RxCopies::Usage before = bmds::RxCopies::usage();
+        REQUIRE(before.used == 0);
+        uint8_t frame[bmds::RxCopies::SlotBytes + 1];
+        for (size_t i = 0; i < sizeof(frame); ++i) frame[i] = static_cast<uint8_t>(i);
+        CHECK(bmds::RxCopies::copy(frame, sizeof(frame)) == nullptr);
+        std::vector<struct pbuf *> held;
+        for (size_t i = 0; i < before.slots; ++i) {
+                struct pbuf *p = bmds::RxCopies::copy(frame, 60 + i % 1400);
+                REQUIRE(p != nullptr);
+                CHECK(p->tot_len == 60 + i % 1400);
+                CHECK(std::memcmp(p->payload, frame, p->len) == 0);
+                CHECK(bmds::RxCopies::isCopy(p));
+                held.push_back(p);
+        }
+        CHECK(bmds::RxCopies::copy(frame, 60) == nullptr);
+        CHECK(bmds::RxCopies::usage().empty == before.empty + 1);
+        CHECK(bmds::RxCopies::usage().most == before.slots);
+        CHECK(bmds::RxCopies::init(4096) == bmds::Error::Busy);
+        struct pbuf *heap = pbuf_alloc(PBUF_RAW, 60, PBUF_RAM);
+        CHECK_FALSE(bmds::RxCopies::isCopy(heap));
+        pbuf_free(heap);
+        for (struct pbuf *p : held) pbuf_free(p);
+        CHECK(bmds::RxCopies::usage().used == 0);
+        struct pbuf *again = bmds::RxCopies::copy(frame, 60); // the slots back for use
+        CHECK(again != nullptr);
+        if (again != nullptr) pbuf_free(again);
+        CHECK(bmds::RxCopies::usage().used == 0);
 }
 
 TEST_CASE("MulticastFilter: users counted per address, order kept") {

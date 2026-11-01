@@ -3,6 +3,9 @@
 name = "ssh-copy-id"
 version = "1"
 description = "Put this machine's SSH key in a server's authorized_keys (through dbclient)"
+title = "ssh-copy-id"
+category = "Network"
+depends = ["dropbear"]
 license = "MIT"
 source_tree = "programs/ssh-copy-id"
 license_files = ["../../LICENSE"]

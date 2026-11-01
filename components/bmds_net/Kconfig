@@ -39,4 +39,14 @@ menu "BMDS network"
             holds up to about 50 KB (a bulk transfer one way measured 28 KB); with less room
             senders wait and received frames are dropped and retransmitted.
 
+    config BMDS_NET_RX_COPIES_KB
+        int "Received frames' copies (KB of PSRAM)"
+        default 512
+        range 0 8192
+        help
+            What TCP's windows hold (devplan/network.md §32): lwIP keeps a few of the Ethernet
+            ring's buffers in place and copies frames past them into these slots, 1.5 KB each.
+            512 KB holds two connections' full windows (251 KB each). 0: copies go to the heap
+            above, and its size bounds the windows in practice.
+
 endmenu

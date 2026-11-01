@@ -14,13 +14,15 @@ set(BMDS_LWIP_DIR ${CMAKE_CURRENT_LIST_DIR}/../../thirdparty/lwip/src)
 
 set(BMDS_NET_PORTABLE_SRCS
         src/ethernet.cpp
+        src/httpclient.cpp
         src/icmpratelimit.cpp
         src/multicastfilter.cpp
         src/netclassifier.cpp
         src/netmountlist.cpp
         src/ntp.cpp
         src/ptp.cpp
-        src/ptpport.cpp)
+        src/ptpport.cpp
+        src/rxcopies.cpp)
 
 # lwIP: the core, IPv4, DNS and mDNS's responder (IPv6 is vendored for later, not built yet).
 set(BMDS_LWIP_SRCS
@@ -60,6 +62,7 @@ if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_NET_PORTABLE_SRCS}
                                     ${BMDS_LWIP_SRCS}
                                     src/ethernetdevice.cpp
+                                    src/httptls.cpp
                                     src/netcommand.cpp
                                     src/netflow.cpp
                                     src/netinterface.cpp
@@ -81,13 +84,19 @@ if(COMMAND idf_component_register)
                                     src/netmounts.cpp
                                     src/sshservice.cpp
                                     src/timesync.cpp
+                                    src/tlsbench.cpp
+                                    src/tlsgcm.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS ${BMDS_LWIP_INCLUDES}
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_fs bmds_shell bmds_sysconf esp_driver_gpio esp_driver_gptimer esp_hw_support esp_mm
+                               PRIV_REQUIRES bmds_bench bmds_board bmds_fs bmds_shell bmds_sysconf esp_driver_gpio esp_driver_gptimer esp_hw_support esp_mm
+                                             mbedtls
                                              hal soc
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
+        # AES-GCM's one-shots with the 8-bit GHASH (src/tlsgcm.h, devplan/network.md §33).
+        target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_aes_gcm_crypt_and_tag"
+                                                         "-Wl,--wrap=esp_aes_gcm_auth_decrypt")
 else()
         add_library(bmds_lwip STATIC ${BMDS_LWIP_SRCS})
         target_include_directories(bmds_lwip PUBLIC ${BMDS_LWIP_INCLUDES})

@@ -414,7 +414,7 @@ namespace {
                                   : "the same version");
                 const DateTime t = DateTime::fromSeconds(p.madeAt);
                 say(_made, "Made %04ld-%02u-%02u, signed with %s", static_cast<long>(t.year), t.month, t.day,
-                    r.problem == nullptr ? (r.devKey ? "the dev key" : "a release key") : "?");
+                    r.problem == nullptr ? (r.devKey ? "the dev key" : "a trusted key") : "?");
                 if (r.problem != nullptr) {
                         say(_verdict, "Can't be installed: %s", r.problem);
                 } else {

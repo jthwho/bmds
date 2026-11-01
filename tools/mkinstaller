@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+# @file      mkinstaller
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Makes the web installer's firmware and pages (devplan/release.md §4; the page is installer/).
+#
+#   mkinstaller local [--build DIR] [--out DIR] [--variant NAME]
+#       For trying a build without a web server: OUT/bmds-installer.html, the page as one file
+#       (its scripts inlined: a page opened from a file can't load modules or fetch), and
+#       OUT/firmware/, the build's images with flash.json. Open the HTML in Chrome or Edge and
+#       choose the firmware folder. Defaults: --build build, --out BUILD/installer, --variant p4r1.
+#
+# flash.json, the firmware's descriptor (format 1): name, version, variant, chip, chipRevision
+# {min, max} (from the app image's header: what the bootloader accepts), flashSize, flashMode,
+# flashFreq, and images [{name, file, offset, size, sha256}] from the build's flasher_args.json.
+#
+# Python's standard library only.
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import shutil
+import struct
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+INSTALLER = os.path.join(ROOT, "installer")
+
+# The modules installer.js imports, by the specifier it imports them with.
+MODULES = {
+    "./vendor/esptool-js/esptool.js": os.path.join(INSTALLER, "vendor", "esptool-js", "esptool.js"),
+    "./md5.js": os.path.join(INSTALLER, "md5.js"),
+}
+
+APP_MAGIC = 0xE9
+APP_DESC_MAGIC = 0xABCD5432
+
+
+def fail(message):
+    sys.exit("mkinstaller: " + message)
+
+
+def app_info(path):
+    """The app image's chip revisions (header bytes 15-18) and version (its esp_app_desc_t)."""
+    with open(path, "rb") as f:
+        head = f.read(256)
+    if len(head) < 80 or head[0] != APP_MAGIC:
+        fail("%s isn't an app image" % path)
+    rev_min, rev_max = struct.unpack_from("<HH", head, 15)
+    if struct.unpack_from("<I", head, 32)[0] != APP_DESC_MAGIC:
+        fail("%s has no app description" % path)
+    version = head[48:80].split(b"\0")[0].decode()
+    return {"min": rev_min, "max": rev_max}, version
+
+
+def make_firmware(build, out, variant):
+    """Copies the build's images into OUT and writes flash.json; returns the descriptor."""
+    args_path = os.path.join(build, "flasher_args.json")
+    if not os.path.exists(args_path):
+        fail("no %s: build first" % args_path)
+    with open(args_path) as f:
+        args = json.load(f)
+    names = {}
+    for key, entry in args.items():
+        if isinstance(entry, dict) and "offset" in entry and "file" in entry:
+            names[int(entry["offset"], 16)] = key
+    os.makedirs(out, exist_ok=True)
+    images = []
+    app = None
+    for offset_text, rel in sorted(args["flash_files"].items(), key=lambda kv: int(kv[0], 16)):
+        offset = int(offset_text, 16)
+        source = os.path.normpath(os.path.join(build, rel))
+        if not os.path.exists(source):
+            fail("%s is missing (the recovery firmware is built in build-recovery)" % source)
+        name = names.get(offset, os.path.splitext(os.path.basename(rel))[0])
+        if name == "app":
+            app = source
+        file = os.path.basename(rel)
+        shutil.copyfile(source, os.path.join(out, file))
+        with open(source, "rb") as f:
+            data = f.read()
+        images.append({"name": name, "file": file, "offset": offset, "size": len(data),
+                       "sha256": hashlib.sha256(data).hexdigest()})
+    if app is None:
+        fail("flasher_args.json names no app")
+    revisions, version = app_info(app)
+    settings = args["flash_settings"]
+    descriptor = {
+        "format": 1,
+        "name": "BMDS",
+        "version": version,
+        "variant": variant,
+        "chip": "ESP32-P4",
+        "chipRevision": revisions,
+        "flashSize": settings["flash_size"],
+        "flashMode": settings["flash_mode"],
+        "flashFreq": settings["flash_freq"],
+        "images": images,
+    }
+    with open(os.path.join(out, "flash.json"), "w") as f:
+        json.dump(descriptor, f, indent=2)
+        f.write("\n")
+    return descriptor
+
+
+def one_file_page(out_path):
+    """installer/index.html with installer.js inlined and its imports mapped to data: URLs."""
+    with open(os.path.join(INSTALLER, "index.html")) as f:
+        page = f.read()
+    with open(os.path.join(INSTALLER, "installer.js")) as f:
+        script = f.read()
+    tag = '<script type="module" src="installer.js"></script>'
+    if tag not in page:
+        fail("installer/index.html no longer loads installer.js as expected")
+    if "</script" in script:
+        fail("installer.js contains </script, which can't be inlined")
+    imports = {}
+    for specifier, path in MODULES.items():
+        with open(path, "rb") as f:
+            imports[specifier] = "data:text/javascript;base64," + base64.b64encode(f.read()).decode()
+    inlined = ('<script type="importmap">%s</script>\n<script type="module">\n%s</script>'
+               % (json.dumps({"imports": imports}), script))
+    with open(out_path, "w") as f:
+        f.write(page.replace(tag, inlined))
+    return
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Makes the web installer's firmware and pages.")
+    sub = parser.add_subparsers(dest="command", required=True)
+    local = sub.add_parser("local", help="a one-file page and a firmware folder, for trying a build")
+    local.add_argument("--build", default=os.path.join(ROOT, "build"))
+    local.add_argument("--out")
+    local.add_argument("--variant", default="p4r1")
+    args = parser.parse_args()
+
+    out = args.out or os.path.join(args.build, "installer")
+    firmware = os.path.join(out, "firmware")
+    shutil.rmtree(firmware, ignore_errors=True)
+    descriptor = make_firmware(args.build, firmware, args.variant)
+    page = os.path.join(out, "bmds-installer.html")
+    one_file_page(page)
+    total = sum(im["size"] for im in descriptor["images"])
+    rev = descriptor["chipRevision"]
+    print("%s: BMDS %s (%s), %d images, %.1f MB, chip revisions v%d.%d to v%d.%d"
+          % (firmware, descriptor["version"], descriptor["variant"], len(descriptor["images"]),
+             total / 1048576, rev["min"] // 100, rev["min"] % 100, rev["max"] // 100, rev["max"] % 100))
+    print("%s: open it in Chrome or Edge, then choose the firmware folder" % page)
+    return
+
+
+if __name__ == "__main__":
+    main()

@@ -40,16 +40,7 @@ namespace {
                 return true;
         }
 
-        constexpr uint8_t Magic[4] = {'B', 'M', 'U', 'P'};
-
 } // namespace
-
-const UpdatePackage::Section *UpdatePackage::Package::find(SectionType type) const {
-        for (size_t i = 0; i < sectionCount; ++i) {
-                if (sections[i].type == static_cast<uint32_t>(type)) return &sections[i];
-        }
-        return nullptr;
-}
 
 bool UpdatePackage::parseVersion(const char *text, Version &out) {
         uint16_t parts[3] = {};
@@ -70,74 +61,52 @@ bool UpdatePackage::parseVersion(const char *text, Version &out) {
 
 const char *UpdatePackage::verdictText(Verdict v) {
         switch (v) {
-                case Verdict::Ok: return "good";
                 case Verdict::NotAPackage: return "not an update package";
                 case Verdict::NewerFormat: return "a newer package format than this firmware reads";
                 case Verdict::Malformed: return "a damaged package";
-                case Verdict::Truncated: return "cut short";
-                case Verdict::BadSignature: return "its signature doesn't check";
-                case Verdict::BadHash: return "its contents don't match their hash";
+                default: return SignedContainer::verdictText(v);
         }
-        return "?";
 }
 
 UpdatePackage::Verdict UpdatePackage::headBytes(Span<const uint8_t> header, size_t &bytes) {
-        if (header.size() < 8 || std::memcmp(header.data(), Magic, 4) != 0) return Verdict::NotAPackage;
-        const uint8_t *h = header.data();
-        if (u16(h + 4) != Format) return u16(h + 4) > Format ? Verdict::NewerFormat : Verdict::Malformed;
-        if (header.size() < HeaderBytes) return Verdict::Truncated;
-        if (u16(h + 6) != HeaderBytes) return Verdict::Malformed;
-        const uint32_t count = u32(h + 12);
-        if (count > MaxSections) return Verdict::Malformed;
-        bytes = HeaderBytes + count * SectionBytes + Ed25519::SignatureBytes;
-        return Verdict::Ok;
+        return SignedContainer::headBytes(header, ContainerKind, bytes);
 }
 
 UpdatePackage::Verdict UpdatePackage::parse(Span<const uint8_t> head, uint64_t fileBytes, Package &out) {
-        size_t        need = 0;
-        const Verdict v = headBytes(head, need);
-        if (v != Verdict::Ok) return v;
-        if (head.size() < need || fileBytes < need) return Verdict::Truncated;
-        const uint8_t *h = head.data();
-        // Flags this code doesn't know may change what the package means: refused, not ignored.
-        if (u32(h + 8) != 0) return Verdict::NewerFormat;
         out = Package{};
-        out.sectionCount = u32(h + 12);
-        out.abiVersion = u32(h + 16);
-        out.minChipRevision = u16(h + 20);
-        if (u16(h + 22) != 0) return Verdict::Malformed;
-        if (!text(h + 24, out.board) || !text(h + 56, out.versionText)) return Verdict::Malformed;
-        std::memcpy(out.buildId, h + 88, sizeof(out.buildId));
-        out.madeAt = i64(h + 120);
-        out.version = Version{u16(h + 128), u16(h + 130), u16(h + 132)};
-        if (u16(h + 134) != 0) return Verdict::Malformed;
-        out.signedBytes = HeaderBytes + out.sectionCount * SectionBytes;
-        out.headBytes = need;
-        for (size_t i = 0; i < out.sectionCount; ++i) {
-                const uint8_t *e = h + HeaderBytes + i * SectionBytes;
-                Section       &s = out.sections[i];
-                s.type = u32(e);
-                if (u32(e + 4) != 0) return Verdict::NewerFormat;
-                s.offset = u32(e + 8);
-                s.size = u32(e + 12);
-                std::memcpy(s.hash, e + 16, HashBytes);
-                if (s.type == 0) return Verdict::Malformed;
-                if (s.offset < need) return Verdict::Malformed;
-                if (uint64_t(s.offset) + s.size > fileBytes) return Verdict::Truncated;
-                for (size_t j = 0; j < i; ++j) {
-                        if (out.sections[j].type == s.type) return Verdict::Malformed;
-                }
-        }
-        std::memcpy(out.signature, h + out.signedBytes, sizeof(out.signature));
+        const Verdict v = SignedContainer::parse(head, fileBytes, ContainerKind, out);
+        if (v != Verdict::Ok) return v;
+        const uint8_t *h = head.data() + SignedContainer::PrefixBytes;
+        out.abiVersion = u32(h);
+        out.minChipRevision = u16(h + 4);
+        if (u16(h + 6) != 0) return Verdict::Malformed;
+        if (!text(h + 8, out.board) || !text(h + 40, out.versionText)) return Verdict::Malformed;
+        std::memcpy(out.buildId, h + 72, sizeof(out.buildId));
+        out.madeAt = i64(h + 104);
+        out.version = Version{u16(h + 112), u16(h + 114), u16(h + 116)};
+        if (u16(h + 118) != 0) return Verdict::Malformed;
         return Verdict::Ok;
 }
 
-UpdatePackage::Verdict UpdatePackage::verify(const Package &package, Span<const uint8_t> head, Span<const Key> keys) {
-        if (head.size() < package.signedBytes) return Verdict::Truncated;
-        for (const Key &k : keys) {
-                if (Ed25519::verify(package.signature, k.bytes, head.data(), package.signedBytes)) return Verdict::Ok;
-        }
-        return Verdict::BadSignature;
+UpdatePackage::Verdict UpdatePackage::verify(const Package &package, Span<const uint8_t> head, Span<const Key> keys,
+                                             size_t &index) {
+        return SignedContainer::verify(package, head, keys, index);
+}
+
+bool UpdatePackage::appRevisions(Span<const uint8_t> image, uint16_t chipId, ChipRevisions &out) {
+        constexpr uint8_t AppMagic = 0xe9;
+        if (image.size() < AppHeaderBytes) return false;
+        const uint8_t *h = image.data();
+        if (h[0] != AppMagic || u16(h + 12) != chipId) return false;
+        out.min = u16(h + 15);
+        out.max = u16(h + 17);
+        return true;
+}
+
+bool UpdatePackage::runsOn(const ChipRevisions &revisions, uint16_t revision, bool ignoreMax) {
+        if (revision < revisions.min) return false;
+        const bool maxSet = revisions.max != 0 && revisions.max != 0xffff;
+        return !maxSet || ignoreMax || revision <= revisions.max;
 }
 
 BMDS_NAMESPACE_END

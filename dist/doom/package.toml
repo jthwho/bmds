@@ -4,6 +4,8 @@
 name = "doom"
 version = "2026.10.11-e257a09"
 description = "Doom: doomgeneric (Chocolate Doom), full screen, with sound and music on the synth"
+title = "Doom"
+depends = ["freedoom"]
 license = "GPL-2.0-only"
 source = "https://github.com/ozkl/doomgeneric/archive/e257a09527062bfb986b6e5e0780839b6cbd5b71.tar.gz"
 sha256 = "26f8f60daa6c6e4d3c01e5eac9fb700d592dede803d13ac848154ff356b2a2e7"

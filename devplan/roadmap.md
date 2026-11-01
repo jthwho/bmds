@@ -449,6 +449,20 @@ Plan: [`input.md`](input.md).
     by a kernel service once the network is up, and a network mount's icon in the file browser.
     Step 5 done: sshfs's requests in parallel (4 workers; `ls -l` during a copy twice as fast).
 
+## Release
+
+- [ ] Release (`release.md`, planned 2026-10-30 with the user): GitHub as the public mirror, a web
+  installer on Pages (esptool-js, both chip variants), the card as a zip, releases signed with the
+  dev key (no official key), `tools/release`, the licence and history audit, the README with
+  scripted screenshots.
+- [ ] Packages (`packages.md`, planned 2026-10-30 with the user): `pkg` and `.bmpk` in place of the
+  card zip, apt/dpkg-like with dependencies and meta packages, repositories on the card or over
+  HTTPS (GitHub Pages and release assets), several trusted keys (`keys/trusted.pub`, renamed),
+  the board formatting the card, the first run.
+- [ ] Preso (`preso.md`, planned 2026-10-30 with the user): decks in Marp's Markdown, themes in
+  INI files with retro ones built in, transitions, notes over SSH, the clicker and pad through
+  Controls, live demos from a slide; an SDK program on the card.
+
 ## Phase 8 — Self-Hosting
 
 - [x] Scripting for children and amateurs (`scripting.md`, planned 2026-10-21): AngelScript in

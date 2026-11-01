@@ -1,3 +1,3 @@
-# Only the dev key's private half belongs here: a release key's never enters the repository.
+# Only the dev key's private half belongs here: a trusted key's never enters the repository.
 *.key
 !dev.key

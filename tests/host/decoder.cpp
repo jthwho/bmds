@@ -39,7 +39,8 @@ namespace {
         Error readVector(void *arg, uint64_t offset, bmds::WritableByteSpan buf) {
                 const auto &v = *static_cast<const std::vector<uint8_t> *>(arg);
                 if (offset > v.size() || v.size() - offset < buf.size()) return Error::EndOfFile;
-                std::memcpy(buf.data(), v.data() + offset, buf.size());
+                if (!buf.isEmpty())
+                        std::memcpy(buf.data(), v.data() + offset, buf.size()); // an empty file has no data()
                 return Error::Ok;
         }
 

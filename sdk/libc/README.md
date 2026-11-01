@@ -10,7 +10,8 @@ musl, <https://musl.libc.org/>, the C library BMDS programs link statically
   `generic`, and every `src/*/<arch>` directory but `riscv32`), `crt/` and
   `ldso/` (BMDS has its own startup code and no dynamic linker), `compat/`
   (time32, which riscv32 never had) and `dist/`.
-- **Changes** (`patches/bmds.diff`, against the pruned release):
+- **Changes** (`patches/bmds.diff`, against the release; `patch -p1` in
+  its top folder):
   - `arch/riscv32/syscall_arch.h`: system calls go to `__bmds_syscall()`
     (`sdk/crt/linux.c`), not `ecall`.
   - `src/setjmp/riscv32/setjmp.S`, `longjmp.S`: with single-precision float

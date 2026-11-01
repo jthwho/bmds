@@ -20,7 +20,7 @@
 #       With --partitions, each image is checked against its partition's size.
 #   mkupdate info FILE [--pub PUB]...
 #       Shows a package and checks its sections' hashes and its signature: against the
-#       keys in PUB, or keys/dev.pub and keys/release.pub (keys/README.md). Exits 1 if anything doesn't check.
+#       keys in PUB, or keys/dev.pub and keys/trusted.pub (keys/README.md). Exits 1 if anything doesn't check.
 
 import argparse
 import hashlib
@@ -29,17 +29,13 @@ import struct
 import sys
 import time
 
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-from cryptography.exceptions import InvalidSignature
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bmdscontainer as bc  # noqa: E402
 
 MAGIC = b'BMUP'
 FORMAT = 1
-HEADER_BYTES = 136
-SECTION_BYTES = 48
-SIGNATURE_BYTES = 64
-HEADER = '<4sHHIIIHH32s32s32sqHHHH'
-MAX_SECTIONS = 16
+HEADER_BYTES = 144
+BODY = '<IHH32s32s32sqHHHH'  # the header after the container's prefix
 
 FIRMWARE, ROM, RECOVERY, NOTES = 1, 2, 3, 4
 NAMES = {FIRMWARE: 'firmware', ROM: 'rom', RECOVERY: 'recovery', NOTES: 'notes'}
@@ -49,9 +45,8 @@ APP_MAGIC = 0xE9
 APP_DESC_OFFSET = 32  # the image header (24) and the first segment's (8)
 APP_DESC_MAGIC = 0xABCD5432
 
-
-ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
-KEYS = os.path.join(ROOT, 'keys')
+ROOT = bc.ROOT
+KEYS = bc.KEYS
 
 
 def abi_version():
@@ -83,10 +78,10 @@ def fail(msg):
 
 
 def field(text, what):
-    data = text.encode('ascii')
-    if len(data) > 32 or any(b < 0x20 or b > 0x7e for b in data):
-        fail('%s "%s" must be at most 32 printable ASCII characters' % (what, text))
-    return data.ljust(32, b'\0')
+    try:
+        return bc.text_field(text, 32, what)
+    except bc.ContainerError as e:
+        fail(str(e))
 
 
 def app_info(image, what):
@@ -124,40 +119,17 @@ def partition_sizes(csv):
 
 
 def load_key(path):
-    with open(path, 'rb') as f:
-        key = serialization.load_pem_private_key(f.read(), password=None)
-    if not isinstance(key, Ed25519PrivateKey):
-        fail('%s is not an Ed25519 key' % path)
-    return key
-
-
-def public_hex(key):
-    return key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
-
-
-def load_pubs(paths):
-    """(key, its file and comment) for each key in the files."""
-    keys = []
-    for path in paths:
-        for line in open(path):
-            parts = line.split(None, 2)
-            if len(parts) >= 2 and parts[0] == 'ed25519':
-                name = os.path.basename(path) + (': ' + parts[2].strip() if len(parts) > 2 else '')
-                keys.append((Ed25519PublicKey.from_public_bytes(bytes.fromhex(parts[1])), name))
-    return keys
+    try:
+        return bc.load_key(path)
+    except bc.ContainerError as e:
+        fail(str(e))
 
 
 def cmd_keygen(args):
-    if os.path.exists(args.key):
-        fail('%s exists: not overwriting a key' % args.key)
-    key = Ed25519PrivateKey.generate()
-    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-                            serialization.NoEncryption())
-    fd = os.open(args.key, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, 'wb') as f:
-        f.write(pem)
-    with open(args.pub, 'w') as f:
-        f.write('ed25519 %s %s\n' % (public_hex(key), args.comment))
+    try:
+        bc.keygen(args.key, args.pub, args.comment)
+    except bc.ContainerError as e:
+        fail(str(e))
     print('private key: %s (keep it safe, out of the repository)' % args.key)
     print('public key:  %s' % args.pub)
 
@@ -168,9 +140,8 @@ def cmd_make(args):
         print('signing with the dev key (only dev firmware accepts it)')
     key = load_key(args.key)
     if args.accept:
-        mine = public_hex(key)
-        raw = (serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-        if not any(k.public_bytes(*raw).hex() == mine for k, _ in load_pubs(args.accept)):
+        mine = bc.public_bytes(key)
+        if not any(k == mine for k, _ in bc.load_pubs(args.accept)):
             fail('%s is not a key %s accepts (keys/README.md)' % (args.key, ' or '.join(args.accept)))
     if args.abi is None:
         args.abi = abi_version()
@@ -205,22 +176,11 @@ def cmd_make(args):
             if part and len(data) > sizes.get(part, 0):
                 fail('%s (%d bytes) is bigger than %s (%d)' % (NAMES[kind], len(data), part, sizes.get(part, 0)))
 
-    head_bytes = HEADER_BYTES + len(images) * SECTION_BYTES + SIGNATURE_BYTES
-    header = struct.pack(HEADER, MAGIC, FORMAT, HEADER_BYTES, 0, len(images), args.abi, min_rev, 0,
-                         field(args.board, 'the board'), field(version, 'the version'), build_id,
-                         int(time.time()), *number, 0)
-    assert len(header) == HEADER_BYTES
-    table = b''
-    offset = head_bytes
-    for kind, data in images:
-        table += struct.pack('<IIII32s', kind, 0, offset, len(data), hashlib.blake2s(data).digest())
-        offset += len(data)
-    signed = header + table
+    body = struct.pack(BODY, args.abi, min_rev, 0, field(args.board, 'the board'), field(version, 'the version'),
+                       build_id, int(time.time()), *number, 0)
+    assert bc.PREFIX_BYTES + len(body) == HEADER_BYTES
     with open(args.out, 'wb') as f:
-        f.write(signed)
-        f.write(key.sign(signed))
-        for _, data in images:
-            f.write(data)
+        f.write(bc.build(MAGIC, FORMAT, body, images, key))
     print('%s: %s for %s, %s' % (args.out, version or '(no firmware)', args.board,
                                  ', '.join('%s %d bytes' % (NAMES[k], len(d)) for k, d in images)))
 
@@ -228,39 +188,22 @@ def cmd_make(args):
 def cmd_info(args):
     with open(args.file, 'rb') as f:
         data = f.read()
-    if data[:4] != MAGIC:
-        fail('%s is not an update package' % args.file)
-    (magic, fmt, hbytes, flags, count, abi, min_rev, _, board, version, build_id,
-     made, major, minor, patch, _) = struct.unpack_from(HEADER, data, 0)
-    if fmt != FORMAT or hbytes != HEADER_BYTES or count > MAX_SECTIONS:
-        fail('%s: format %d, header %d, %d sections: not one this tool reads' % (args.file, fmt, hbytes, count))
-    signed = HEADER_BYTES + count * SECTION_BYTES
+    try:
+        c = bc.Container(data, MAGIC, FORMAT, HEADER_BYTES, 'an update package')
+    except bc.ContainerError as e:
+        fail('%s: %s' % (args.file, e))
+    (abi, min_rev, _, board, version, build_id, made, major, minor, patch, _) = struct.unpack(BODY, c.body)
     print('board:    %s' % board.rstrip(b'\0').decode())
     print('version:  %d.%d.%d (%s)' % (major, minor, patch, version.rstrip(b'\0').decode()))
     print('build id: %s' % build_id.hex())
     print('made:     %s' % time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(made)))
     print('abi:      %d; least chip revision v%d.%d' % (abi, min_rev // 100, min_rev % 100))
-    good = True
-    for i in range(count):
-        kind, sflags, offset, size, digest = struct.unpack_from('<IIII32s', data, HEADER_BYTES + i * SECTION_BYTES)
-        ok = hashlib.blake2s(data[offset:offset + size]).digest() == digest and offset + size <= len(data)
-        good = good and ok
+    for kind, offset, size, ok in c.sections:
         print('%-9s %9d bytes at %9d: %s' % (NAMES.get(kind, 'type %d' % kind) + ':', size, offset,
                                              'hash good' if ok else 'HASH BAD'))
-    pubs = args.pub or [p for p in (os.path.join(KEYS, 'dev.pub'), os.path.join(KEYS, 'release.pub'))
-                        if os.path.exists(p)]
-    sig = data[signed:signed + SIGNATURE_BYTES]
-    signer = None
-    for k, name in load_pubs(pubs):
-        try:
-            k.verify(sig, data[:signed])
-            signer = name
-            break
-        except InvalidSignature:
-            pass
-    print('signed:   %s' % ('by ' + signer if signer else 'BY NONE OF THE KEYS'))
-    good = good and signer is not None
-    sys.exit(0 if good else 1)
+    signer = c.signer(bc.load_pubs(args.pub or bc.default_pubs()))
+    print('signed:   %s' % ('by ' + signer if signer else 'BY NONE OF THE KEYS (key id %s)' % c.key_id.hex()))
+    sys.exit(0 if c.hashes_good() and signer is not None else 1)
 
 
 def main():

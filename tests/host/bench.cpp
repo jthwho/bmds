@@ -154,8 +154,8 @@ TEST_CASE("BenchContext: unsigned parameters") {
 
 TEST_CASE("Stopwatch: microseconds and cycles go forward") {
         bmds::Stopwatch watch;
-        volatile int    sink = 0;
-        for (int i = 0; i < 100000; ++i) sink = sink + i;
+        volatile unsigned sink = 0; // unsigned: the sum passes INT_MAX
+        for (unsigned i = 0; i < 100000; ++i) sink = sink + i;
         CHECK(watch.elapsedUs() >= 0);
         CHECK(watch.cycles() > 0);
         watch.restart();

@@ -37,6 +37,8 @@
 #include "netstats.h"
 #include "ntpclient.h"
 #include "ptpservice.h"
+#include "rxcopies.h"
+#include "tlsgcm.h"
 
 extern "C" {
 unsigned char *bmds_lwip_heap = nullptr;
@@ -138,10 +140,13 @@ namespace {
 Error NetStack::init() {
         // lwIP's heap, and the pools carved from it, in internal DMA memory (lwipopts.h).
         bmds_lwip_heap = static_cast<unsigned char *>(
-                Memory::allocAligned(MemSpace::InternalDma, MEM_SIZE + 2 * MEM_ALIGNMENT, MEM_ALIGNMENT));
+                Memory::allocAligned(MemSpace::InternalDma, BMDS_LWIP_HEAP_BYTES, MEM_ALIGNMENT));
         if (bmds_lwip_heap == nullptr) return Error::NoMem;
+        Error err = RxCopies::init(size_t(CONFIG_BMDS_NET_RX_COPIES_KB) * 1024);
+        if (err.isError()) return err;
+        err = TlsGcm::init();
+        if (err.isError()) return err;
         stack.create();
-        Error err = Error::Ok;
         {
                 Locker lock;
                 lwip_init();

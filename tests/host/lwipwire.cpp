@@ -28,6 +28,8 @@
 #include <bmds/assert.h>
 #include <bmds/netstack.h>
 
+#include "rxcopies.h"
+
 namespace LwipWire {
 
         std::vector<Call> calls;
@@ -37,6 +39,9 @@ namespace LwipWire {
         namespace {
 
                 u32_t nowMs = 0;
+
+                // The received copies' pool: four of the firmware's full windows.
+                constexpr size_t CopiesBytes = 1024 * 1024;
 
                 // NetStack's core lock, and the network thread's wake.
                 std::mutex                   core;
@@ -81,10 +86,14 @@ namespace LwipWire {
                                 while (!p->inbox.empty()) {
                                         std::vector<uint8_t> frame = std::move(p->inbox.front());
                                         p->inbox.pop_front();
-                                        struct pbuf *q =
-                                                pbuf_alloc(PBUF_RAW, static_cast<u16_t>(frame.size()), PBUF_RAM);
-                                        if (q == nullptr) continue; // dropped, as a full ring would
-                                        (void)pbuf_take(q, frame.data(), static_cast<u16_t>(frame.size()));
+                                        // A copy in PSRAM, as the firmware's past the ring's share
+                                        // (rxcopies.h); else the heap.
+                                        struct pbuf *q = bmds::RxCopies::copy(frame.data(), frame.size());
+                                        if (q == nullptr) {
+                                                q = pbuf_alloc(PBUF_RAW, static_cast<u16_t>(frame.size()), PBUF_RAM);
+                                                if (q == nullptr) continue; // dropped, as a full ring would
+                                                (void)pbuf_take(q, frame.data(), static_cast<u16_t>(frame.size()));
+                                        }
                                         if (p->netif.input(q, &p->netif) != ERR_OK) pbuf_free(q);
                                 }
                         }
@@ -160,8 +169,9 @@ namespace LwipWire {
                 static bool done = false;
                 if (done) return;
                 done = true;
-                static unsigned char heap[MEM_SIZE + 2 * MEM_ALIGNMENT] __attribute__((aligned(MEM_ALIGNMENT)));
+                static unsigned char heap[BMDS_LWIP_HEAP_BYTES] __attribute__((aligned(MEM_ALIGNMENT)));
                 bmds_lwip_heap = heap;
+                REQUIRE(bmds::RxCopies::init(CopiesBytes).isOk());
                 lwip_init();
                 const uint8_t macA[6] = {0x02, 0, 0, 0, 0, 0x0a};
                 const uint8_t macB[6] = {0x02, 0, 0, 0, 0, 0x0b};

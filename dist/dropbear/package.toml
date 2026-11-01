@@ -2,6 +2,8 @@
 name = "dropbear"
 version = "2025.88"
 description = "SSH: the server (dropbear, started by the kernel when net/ssh/server is on), the client (ssh, dbclient), scp, dropbearkey"
+title = "Dropbear SSH"
+category = "Network"
 license = "MIT"
 source = "https://matt.ucc.asn.au/dropbear/releases/dropbear-2025.88.tar.bz2"
 sha256 = "783f50ea27b17c16da89578fafdb6decfa44bb8f6590e5698a4e4d3672dc53d4"

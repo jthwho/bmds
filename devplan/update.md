@@ -33,7 +33,11 @@ One file, `NAME.bmup`, made on the host by `tools/mkupdate` from a build:
 
 - **Header** (fixed, little-endian, `uint32_t size` first as the ABI's structs): magic `BMUP`,
   format 1, flags; the firmware's version and build id (`PROJECT_VER`, the app's ELF SHA); the
-  board's name and the least chip revision; `BMDS_ABI_VERSION`; the section count.
+  board's name and the least chip revision; `BMDS_ABI_VERSION`; the section count. Since
+  2026-10-30 (format still 1, nothing shipped) the container is `SignedContainer`, shared with
+  packages (`packages.md` §3, §17): the header is 144 bytes and carries the signing key's id, so
+  the firmware tries only that key. A board running firmware from before reads the new packages as
+  damaged: it needs one flash over the cable.
 - **Sections:** a table of {type, offset, size, BLAKE2s-256}: `1` the main firmware (`ota_0`'s
   image), `2` the ROM (`rom`'s, its `BMRO` header first), `3` the recovery firmware (`ota_1`'s),
   `4` release notes (UTF-8 text, shown by the Updater). Any may be left out; unknown types are
@@ -42,14 +46,17 @@ One file, `NAME.bmup`, made on the host by `tools/mkupdate` from a build:
   bytes after the table. The public keys are built into both firmwares from `keys/`.
 - **The acceptance mode** (the user's, 2026-10-13; independent of debug or release builds):
   `CONFIG_BMDS_UPDATE_KEYS_DEV` (the default) accepts the dev key, whose private half is in the
-  repository so anyone can sign a dev package, and the release keys;
-  `CONFIG_BMDS_UPDATE_KEYS_RELEASE` accepts only the release keys (`keys/release.pub`, one or
-  more), and the build fails without one. A release key's private half never enters the
+  repository so anyone can sign a dev package, and the trusted keys;
+  `CONFIG_BMDS_UPDATE_KEYS_TRUSTED` accepts only the trusted keys (`keys/trusted.pub`, one or
+  more), and the build fails without one. A trusted key's private half never enters the
   repository (`keys/.gitignore` refuses any `*.key` but `dev.key`).
 - **Checked before anything is written:** the signature, each section's hash (streamed from the
   card), the board and chip revision, each image's size against its partition, and the images'
   own headers (the app image's magic and its appended SHA-256, as the bootloader checks; the ROM's
-  `BMRO` header and hash).
+  `BMRO` header and hash). Each app image's chip revisions too, least and greatest, by the
+  bootloader's rule (`UpdatePackage::runsOn()`, added 2026-10-30, `release.md` §3a): the package's
+  least revision alone let firmware for silicon before v3 onto v3 silicon, which nothing would
+  then start.
 
 The parser and checks are in `bmds_core` (host-tested, fuzzed); reading from the card and writing
 flash are in the kernel.
@@ -189,7 +196,7 @@ flash are in the kernel.
   text, sections cut off, inside the head or twice. **Fuzzed** (`updatepackage_fuzz`, seeded with
   `test.bmup`): 573,000 inputs in 5 minutes (each parsed one also verified), nothing found.
 - **The keys** (§2's acceptance mode; `keys/README.md`): `keys/dev.key` and `dev.pub`, made by
-  `mkupdate keygen`; `keys/release.pub` when the user makes a release key (outside the
+  `mkupdate keygen`; `keys/trusted.pub` when the user makes a trusted key (outside the
   repository). `bmds_update_keys()` (`cmake/bmds.cmake`) turns the mode's `.pub` files into
   `updatekeys.inc` at configure time (reconfigured when `keys/` changes; a release mode with no
   key is a configure error, checked), and `bmds_kernel`'s `UpdateKeys::accepted()` and
@@ -506,7 +513,9 @@ starts at about 0.61 s; a USB keyboard is there at about 1.3 s.
   before the desktop starts. Recovery's screen says "Recovery Mode" as for `reboot recovery`.
 
 **The user's choices (2026-10-14):** fetching **postponed** (the plan above stands for when it
-comes back); the key is **Esc**; the restart limit **3**.
+comes back); the key is **Esc**; the restart limit **3**. **Fetching came back with packages
+(2026-10-31, packages.md §23):** `update fetch [--check] [URL]` and `update/url` as above; the
+Updater's buttons wait for the store.
 
 ## 18. As built: step 5, the crash counter and Esc (2026-10-14)
 

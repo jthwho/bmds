@@ -3,6 +3,8 @@
 name = "freedoom"
 version = "0.13.0"
 description = "Freedoom: free levels, art, sounds and music for Doom (Phase 1 and Phase 2)"
+title = "Freedoom"
+category = "Game"
 license = "BSD-3-Clause"
 source = "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip"
 sha256 = "3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59"

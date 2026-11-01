@@ -79,17 +79,17 @@ menu "BMDS kernel"
             are accepted.
 
         config BMDS_UPDATE_KEYS_DEV
-            bool "Dev: the dev key (keys/dev.pub) or a release key"
+            bool "Dev: the dev key (keys/dev.pub) or a trusted key"
             help
                 Accepts packages signed with the dev key, whose private
                 half is in the repository (anyone can sign with it), and
-                the release keys.
+                the trusted keys.
 
-        config BMDS_UPDATE_KEYS_RELEASE
-            bool "Release: a release key (keys/release.pub) only"
+        config BMDS_UPDATE_KEYS_TRUSTED
+            bool "Trusted: a trusted key (keys/trusted.pub) only"
             help
-                Accepts only packages signed with a release key. The
-                build fails if keys/release.pub holds none.
+                Accepts only packages signed with a trusted key. The
+                build fails if keys/trusted.pub holds none.
     endchoice
 
 endmenu

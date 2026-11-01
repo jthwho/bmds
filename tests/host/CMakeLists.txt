@@ -17,6 +17,7 @@ add_subdirectory(${BMDS_ROOT}/components/bmds_bench ${CMAKE_BINARY_DIR}/bmds_ben
 add_subdirectory(${BMDS_ROOT}/components/bmds_kernel ${CMAKE_BINARY_DIR}/bmds_kernel)
 add_subdirectory(${BMDS_ROOT}/components/bmds_console ${CMAKE_BINARY_DIR}/bmds_console)
 add_subdirectory(${BMDS_ROOT}/components/bmds_shell ${CMAKE_BINARY_DIR}/bmds_shell)
+add_subdirectory(${BMDS_ROOT}/components/bmds_pkg ${CMAKE_BINARY_DIR}/bmds_pkg)
 add_subdirectory(${BMDS_ROOT}/components/bmds_fs ${CMAKE_BINARY_DIR}/bmds_fs)
 add_subdirectory(${BMDS_ROOT}/components/bmds_files ${CMAKE_BINARY_DIR}/bmds_files)
 add_subdirectory(${BMDS_ROOT}/components/bmds_loader ${CMAKE_BINARY_DIR}/bmds_loader)
@@ -131,7 +132,12 @@ add_executable(bmds_host_tests
         ptp.cpp
         leapseconds.cpp
         updatepackage.cpp
+        pkg.cpp
+        packages.cpp
+        http.cpp
+        httpclient.cpp
         shacrypt.cpp
+        ghash.cpp
         logtext.cpp
         topview.cpp
         hostname.cpp
@@ -174,13 +180,16 @@ add_executable(bmds_host_tests
         ymodem.cpp
         zoneinfo.cpp)
 target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest)
+# The network stack's private headers the harness uses (rxcopies.h).
+target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/components/bmds_net/src)
 # littlefs's header for littlefs.cpp (devplan/storage.md §13c); its code is bmds_fs's, so the
 # same definitions.
 target_include_directories(bmds_host_tests PRIVATE ${BMDS_ROOT}/thirdparty/littlefs)
 target_compile_definitions(bmds_host_tests PRIVATE
         BMDS_TEST_LEAPSECONDS="${BMDS_ROOT}/thirdparty/tzdata/leap-seconds.list"
         BMDS_TEST_UPDATE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/update"
-        BMDS_TEST_KEYS_DIR="${BMDS_ROOT}/keys")
+        BMDS_TEST_KEYS_DIR="${BMDS_ROOT}/keys"
+        BMDS_TEST_PKG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pkg")
 target_compile_definitions(bmds_host_tests PRIVATE LFS_NO_MALLOC LFS_NO_DEBUG LFS_NO_WARN LFS_NO_ERROR)
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
         BMDS_CORPUS_DIR="${CMAKE_CURRENT_LIST_DIR}/corpus"
@@ -251,7 +260,7 @@ if(Python3_Interpreter_FOUND)
 endif()
 # libbmdsgui's transport is a given fd on the host (devplan/guiprograms.md §8).
 set_source_files_properties(${BMDS_ROOT}/sdk/gui/gui.c PROPERTIES COMPILE_DEFINITIONS BMDS_GUI_HOST)
-target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_bench bmds_kernel bmds_console bmds_shell bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_fonts bmds_speech bmds_input bmds_ui bmds_gui bmds_clipboard
+target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_bench bmds_kernel bmds_console bmds_shell bmds_pkg bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_fonts bmds_speech bmds_input bmds_ui bmds_gui bmds_clipboard
         bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_settings bmds_panel bmds_imageview bmds_net bmds_lwip)
 bmds_target_options(bmds_host_tests)
 

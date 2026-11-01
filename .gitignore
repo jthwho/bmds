@@ -23,3 +23,6 @@ COMMIT_MSG
 
 # The bench's results copied from boards (tools/bmds-bench)
 bench-results/
+
+# tools/release output
+release/

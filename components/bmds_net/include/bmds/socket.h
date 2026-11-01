@@ -440,7 +440,10 @@ class Socket final : public Stream {
 
                 // Under the core lock.
                 void    *_pcb = nullptr;      // lwIP's tcp_pcb, udp_pcb or raw_pcb; null once freed
-                void    *_received = nullptr; // TCP: the pbuf chain not yet read
+                // TCP: what is not yet read, lwIP's chains linked end to end (a chain's 16-bit
+                // tot_len isn't the queue's: a scaled window holds more than 64 KB).
+                void               *_received = nullptr;
+                void               *_receivedLast = nullptr; // its last pbuf
                 size_t   _receivedBytes = 0;
                 Datagram _datagrams[MaxDatagrams];
                 size_t   _datagramHead = 0;

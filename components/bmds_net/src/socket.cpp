@@ -18,6 +18,7 @@
 #include <lwip/raw.h>
 #include <lwip/tcp.h>
 #include <lwip/udp.h>
+#include <cstdint>
 #include <cstring>
 #include <bmds/clock.h>
 #include <bmds/interrupt.h>
@@ -28,12 +29,10 @@
 
 #include "lwipport.h"
 #include "pbufmarks.h"
+#include "rxcopies.h"
 #include "socketfastpath.h"
 
 BMDS_NAMESPACE_BEGIN
-
-// TCP's unread segments are one pbuf chain, whose length is 16 bits: the window bounds it.
-static_assert(TCP_WND + TCP_OOSEQ_MAX_PBUFS * TCP_MSS < 0xffff, "TCP's unread data fits a pbuf chain");
 
 namespace {
 
@@ -137,10 +136,69 @@ namespace {
                 return;
         }
 
+        // TCP's unread pbufs (`Socket::_received`): chains linked end to end, so neither a
+        // chain's 16-bit tot_len nor pbuf_copy_partial()'s counts apply. Copies @p count bytes
+        // from the queue's start into @p pieces, from @p skip bytes into them.
+        void copyQueued(const struct pbuf *p, Span<const WritableByteSpan> pieces, size_t skip, size_t count) {
+                size_t at = 0; // into p
+                for (const WritableByteSpan &piece : pieces) {
+                        if (count == 0) break;
+                        if (skip >= piece.size()) {
+                                skip -= piece.size();
+                                continue;
+                        }
+                        uint8_t *to = piece.data() + skip;
+                        size_t   room = piece.size() - skip < count ? piece.size() - skip : count;
+                        count -= room;
+                        skip = 0;
+                        while (room > 0) {
+                                if (at == p->len) {
+                                        p = p->next;
+                                        at = 0;
+                                        continue;
+                                }
+                                const size_t n = p->len - at < room ? p->len - at : room;
+                                std::memcpy(to, static_cast<const uint8_t *>(p->payload) + at, n);
+                                to += n;
+                                at += n;
+                                room -= n;
+                        }
+                }
+                return;
+        }
+
+        // Frees the queue's first @p count bytes (and empty pbufs before what is left), a pbuf
+        // at a time. @return What is left.
+        struct pbuf *freeQueued(struct pbuf *p, size_t count) {
+                while (p != nullptr && (count > 0 || p->len == 0)) {
+                        if (p->len > count) {
+                                (void)pbuf_remove_header(p, count);
+                                break;
+                        }
+                        struct pbuf *done = p;
+                        count -= p->len;
+                        p = p->next;
+                        done->next = nullptr;
+                        pbuf_free(done);
+                }
+                return p;
+        }
+
+        // tcp_recved() counts in 16 bits.
+        void receivedBy(struct tcp_pcb *pcb, size_t bytes) {
+                while (bytes > 0) {
+                        const u16_t n = bytes < 0xffff ? static_cast<u16_t>(bytes) : u16_t(0xffff);
+                        tcp_recved(pcb, n);
+                        bytes -= n;
+                }
+                return;
+        }
+
         // A received pbuf a socket keeps: a copy if it is the driver's buffer, so the
-        // receive ring gets it back at once. Null without memory (@p p is freed).
+        // receive ring gets it back at once (one in PSRAM already is: rxcopies.h). Null
+        // without memory (@p p is freed).
         struct pbuf *keepable(struct pbuf *p) {
-                if ((p->flags & PBUF_FLAG_IS_CUSTOM) == 0) return p;
+                if ((p->flags & PBUF_FLAG_IS_CUSTOM) == 0 || RxCopies::isCopy(p)) return p;
                 struct pbuf *copy = pbuf_clone(PBUF_RAW, PBUF_RAM, p);
                 if (copy != nullptr) PbufMarks::copyArrival(copy, p);
                 pbuf_free(p);
@@ -244,12 +302,15 @@ struct SocketCallbacks {
                                 pbuf_free(p);
                                 return ERR_OK;
                         }
-                        if (s._received == nullptr) {
+                        // Linked, not pbuf_cat()'s: the queue passes 64 KB (copyQueued()).
+                        if (s._received == nullptr)
                                 s._received = p;
-                        } else {
-                                pbuf_cat(static_cast<struct pbuf *>(s._received), p);
-                        }
+                        else
+                                static_cast<struct pbuf *>(s._receivedLast)->next = p;
                         s._receivedBytes += p->tot_len;
+                        struct pbuf *last = p;
+                        while (last->next != nullptr) last = last->next;
+                        s._receivedLast = last;
                         s._readable.release();
                         s._pollers.notify();
                         return ERR_OK;
@@ -466,8 +527,9 @@ void Socket::closePcb() {
 }
 
 void Socket::dropReceived() {
-        if (_received != nullptr) pbuf_free(static_cast<struct pbuf *>(_received));
+        (void)freeQueued(static_cast<struct pbuf *>(_received), SIZE_MAX); // all of it
         _received = nullptr;
+        _receivedLast = nullptr;
         _receivedBytes = 0;
         for (; _datagramCount > 0; --_datagramCount) {
                 pbuf_free(static_cast<struct pbuf *>(_datagrams[_datagramHead].pbuf));
@@ -1332,7 +1394,7 @@ Error Socket::shutdown(bool receiving, bool sending) {
         if (receiving && !_receiveShut) {
                 _receiveShut = true;
                 if (_type == Type::Stream && _pcb != nullptr && _receivedBytes > 0)
-                        tcp_recved(static_cast<struct tcp_pcb *>(_pcb), static_cast<u16_t>(_receivedBytes));
+                        receivedBy(static_cast<struct tcp_pcb *>(_pcb), _receivedBytes);
                 dropReceived();
         }
         if (sending && !_sendShut) {
@@ -1611,17 +1673,16 @@ Result<Socket::Received> Socket::receiveLocked(Span<const WritableByteSpan> piec
                         return makeError<Received>(Error::WouldBlock);
                 }
                 const size_t n = room < _receivedBytes ? room : _receivedBytes;
-                auto        *chain = static_cast<struct pbuf *>(_received);
-                copyOut(chain, 0, pieces, skip, n);
+                copyQueued(static_cast<const struct pbuf *>(_received), pieces, skip, n);
                 if ((flags & Peek) == 0) {
-                        if (n == _receivedBytes) {
-                                pbuf_free(chain);
-                                _received = nullptr;
-                        } else {
-                                _received = pbuf_free_header(chain, static_cast<u16_t>(n));
-                        }
                         _receivedBytes -= n;
-                        if (_pcb != nullptr) tcp_recved(static_cast<struct tcp_pcb *>(_pcb), static_cast<u16_t>(n));
+                        _received = freeQueued(static_cast<struct pbuf *>(_received), n);
+                        if (_receivedBytes == 0) { // and any empty pbufs after the last byte
+                                (void)freeQueued(static_cast<struct pbuf *>(_received), 0);
+                                _received = nullptr;
+                        }
+                        if (_received == nullptr) _receivedLast = nullptr;
+                        if (_pcb != nullptr) receivedBy(static_cast<struct tcp_pcb *>(_pcb), n);
                 }
                 r.bytes = n;
                 r.length = n;

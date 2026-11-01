@@ -25,9 +25,11 @@
 #include <lwip/opt.h>
 #include <bmds/clock.h>
 #include <bmds/interrupt.h>
+#include <bmds/netstack.h>
 #include <bmds/socket.h>
 
 #include "lwipwire.h"
+#include "rxcopies.h"
 
 using bmds::ByteSpan;
 using bmds::Error;
@@ -189,6 +191,77 @@ TEST_CASE("Socket: TCP connect, accept, both ways, half close") {
                 CHECK((c->readiness() & bmds::Stream::HungUp) != 0);
         }
         finish(used);
+}
+
+TEST_CASE("Socket: TCP's scaled window: more than 64 KB unread, read in odd pieces") {
+        // devplan/network.md §32: the window is 251 KB, what it holds the received copies' (PSRAM)
+        // slots, and a socket's unread data passes a pbuf chain's 16-bit length.
+        setUp();
+        const size_t used = heapUsed();
+        {
+                NetThread net;
+                Sock      l = make(Socket::Type::Stream);
+                REQUIRE(l->bind({ip("10.0.0.2"), 7010}).isOk());
+                REQUIRE(l->listen(1).isOk());
+                Sock c = make(Socket::Type::Stream);
+                onA(c);
+                REQUIRE(c->connect({ip("10.0.0.2"), 7010}, 0).isOk());
+                auto [h, aerr] = l->accept(nullptr, 0);
+                REQUIRE(aerr.isOk());
+                Sock s = adopt(std::move(h));
+                CHECK(s->option(Option::ReceiveBuffer).value() == TCP_WND);
+
+                std::vector<uint8_t> out(600'000);
+                for (size_t i = 0; i < out.size(); ++i) out[i] = static_cast<uint8_t>(i * 13 + (i >> 11));
+                std::atomic<bool> done{false};
+                std::thread       sender([&] {
+                        (void)send(*c, out.data(), out.size());
+                        done.store(true);
+                });
+
+                // Nothing read: the sender stops once the window is full, well past 64 KB.
+                const size_t frames = (TCP_WND - TCP_MSS) / TCP_MSS; // a segment's worth of slack
+                CHECK(eventually([&] {
+                        bmds::NetStack::Locker lock;
+                        return bmds::RxCopies::usage().used >= frames;
+                }));
+                CHECK_FALSE(done.load());
+
+                // Read in pieces that cross the delivered chains' ends, with a look first now and
+                // then.
+                const size_t         sizes[] = {1, 7, 1500, 1461, 70'000, 3, 65'536, 129'000};
+                std::vector<uint8_t> in;
+                std::vector<uint8_t> buf(129'000);
+                for (size_t k = 0; in.size() < out.size(); ++k) {
+                        const size_t want = sizes[k % (sizeof(sizes) / sizeof(sizes[0]))];
+                        if (k % 5 == 0) {
+                                uint8_t peeked[10];
+                                auto [p, perr] = receive(*s, peeked, sizeof(peeked), Socket::Peek);
+                                REQUIRE(perr.isOk());
+                                REQUIRE(p.bytes > 0);
+                                CHECK(std::memcmp(peeked, out.data() + in.size(), p.bytes) == 0);
+                        }
+                        auto [r, err] = receive(*s, buf.data(), want);
+                        REQUIRE(err.isOk());
+                        REQUIRE(r.bytes > 0);
+                        REQUIRE(r.bytes <= want);
+                        in.insert(in.end(), buf.data(), buf.data() + r.bytes);
+                }
+                sender.join();
+                CHECK(in == out);
+
+                // Some unread when it closes: the queue is freed whole.
+                CHECK(send(*c, out.data(), 100'000).value() == 100'000);
+                CHECK(eventually([&] {
+                        bmds::NetStack::Locker lock;
+                        return bmds::RxCopies::usage().used >= 100'000 / TCP_MSS;
+                }));
+                s.close();
+                c.close();
+        }
+        finish(used);
+        bmds::NetStack::Locker lock;
+        CHECK(bmds::RxCopies::usage().used == 0);
 }
 
 TEST_CASE("Socket: TCP refused, not waiting, timeouts") {

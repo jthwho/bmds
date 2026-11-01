@@ -3,6 +3,8 @@
 name = "sftp-server"
 version = "1"
 description = "SFTP for the SSH server: scp, sftp, sshfs and file managers' sftp:// reach the card"
+title = "SFTP server"
+category = "Network"
 license = "MIT"
 source_tree = "programs/sftp-server"
 license_files = ["../../LICENSE"]

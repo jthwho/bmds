@@ -72,7 +72,7 @@ namespace Update {
                         UpdatePackage::Package package;
                         /** The first problem, in English, or null when the package is good. */
                         const char *problem = nullptr;
-                        bool        devKey = false; ///< Signed by the dev key (not a release key).
+                        bool        devKey = false; ///< Signed by the dev key (not a trusted key).
                         /** The package's version against the main firmware's in `ota_0`. */
                         int order = 0;
                         /** `ota_0`'s version text (its app description), "" if none. */
@@ -90,6 +90,16 @@ namespace Update {
          * @blocking
          */
         Error check(StringView path, Report &out, Progress progress, void *arg);
+
+        /**
+         * @brief Checks a package's head alone (`update fetch --check`, devplan/update.md §17): @p head
+         *        holds its first bytes (at least its head), @p fileBytes its size. The signature, the
+         *        board, the chip revision and the version against the main firmware's; not the
+         *        sections, which aren't there.
+         * @return As `check()`.
+         * @blocking
+         */
+        Error checkHead(Span<const uint8_t> head, uint64_t fileBytes, Report &out);
 
         /**
          * @brief Applies the package at @p path. In the main firmware: checks it, writes its recovery

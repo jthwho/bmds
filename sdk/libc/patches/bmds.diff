@@ -1,6 +1,5 @@
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/arch/riscv32/syscall_arch.h musl/arch/riscv32/syscall_arch.h
---- /home/jth/.cache/bmds-scratch/musl-pristine/arch/riscv32/syscall_arch.h	2026-10-04 12:44:05.190751894 -0700
-+++ musl/arch/riscv32/syscall_arch.h	2026-10-04 12:44:25.695565887 -0700
+--- a/arch/riscv32/syscall_arch.h
++++ b/arch/riscv32/syscall_arch.h
 @@ -1,80 +1,47 @@
 +/* BMDS: programs run on a function table, not ecall. Every system call
 + * goes to __bmds_syscall() (sdk/crt/linux.c in the program), which carries
@@ -94,9 +93,8 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/arch/riscv32/syscall_arch.
 -#define VDSO_CGT_VER "LINUX_2.6" */
 -
  #define IPC_64 0
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/setjmp/riscv32/longjmp.S musl/src/setjmp/riscv32/longjmp.S
---- /home/jth/.cache/bmds-scratch/musl-pristine/src/setjmp/riscv32/longjmp.S	2026-10-04 12:44:05.255431306 -0700
-+++ musl/src/setjmp/riscv32/longjmp.S	2026-10-04 12:44:14.620893719 -0700
+--- a/src/setjmp/riscv32/longjmp.S
++++ b/src/setjmp/riscv32/longjmp.S
 @@ -1,3 +1,12 @@
 +/* BMDS: single-precision float registers (ilp32f) are saved with fsw/flw. */
 +#if defined(__riscv_flen) && __riscv_flen == 32
@@ -141,9 +139,8 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/setjmp/riscv32/longjmp
  #endif
  
  	seqz a0, a1
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/setjmp/riscv32/setjmp.S musl/src/setjmp/riscv32/setjmp.S
---- /home/jth/.cache/bmds-scratch/musl-pristine/src/setjmp/riscv32/setjmp.S	2026-10-04 12:44:05.255491848 -0700
-+++ musl/src/setjmp/riscv32/setjmp.S	2026-10-04 12:44:14.614455254 -0700
+--- a/src/setjmp/riscv32/setjmp.S
++++ b/src/setjmp/riscv32/setjmp.S
 @@ -1,3 +1,12 @@
 +/* BMDS: single-precision float registers (ilp32f) are saved with fsw/flw. */
 +#if defined(__riscv_flen) && __riscv_flen == 32
@@ -188,9 +185,8 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/setjmp/riscv32/setjmp.
  #endif
  
  	li a0, 0
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/signal/riscv32/restore.s musl/src/signal/riscv32/restore.s
---- /home/jth/.cache/bmds-scratch/musl-pristine/src/signal/riscv32/restore.s	2026-10-04 12:44:05.256120344 -0700
-+++ musl/src/signal/riscv32/restore.s	1969-12-31 16:00:00.000000000 -0800
+--- a/src/signal/riscv32/restore.s
++++ b/src/signal/riscv32/restore.s
 @@ -1,8 +0,0 @@
 -.global __restore
 -.type __restore, %function
@@ -200,9 +196,8 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/signal/riscv32/restore
 -__restore_rt:
 -	li a7, 139 # SYS_rt_sigreturn
 -	ecall
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/clone.s musl/src/thread/riscv32/clone.s
---- /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/clone.s	2026-10-04 12:44:05.283749001 -0700
-+++ musl/src/thread/riscv32/clone.s	1969-12-31 16:00:00.000000000 -0800
+--- a/src/thread/riscv32/clone.s
++++ b/src/thread/riscv32/clone.s
 @@ -1,34 +0,0 @@
 -# __clone(func, stack, flags, arg, ptid, tls, ctid)
 -#           a0,    a1,    a2,  a3,   a4,  a5,   a6
@@ -238,9 +233,8 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/clone.s
 -	# Exit
 -	li a7, 93 # SYS_exit
 -	ecall
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/syscall_cp.s musl/src/thread/riscv32/syscall_cp.s
---- /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/syscall_cp.s	2026-10-04 12:44:05.283785751 -0700
-+++ musl/src/thread/riscv32/syscall_cp.s	1969-12-31 16:00:00.000000000 -0800
+--- a/src/thread/riscv32/syscall_cp.s
++++ b/src/thread/riscv32/syscall_cp.s
 @@ -1,29 +0,0 @@
 -.global __cp_begin
 -.hidden __cp_begin
@@ -271,9 +265,8 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/syscall
 -	ret
 -__cp_cancel:
 -	tail __cancel
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/__unmapself.s musl/src/thread/riscv32/__unmapself.s
---- /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/__unmapself.s	2026-10-04 12:44:05.283712314 -0700
-+++ musl/src/thread/riscv32/__unmapself.s	1969-12-31 16:00:00.000000000 -0800
+--- a/src/thread/riscv32/__unmapself.s
++++ b/src/thread/riscv32/__unmapself.s
 @@ -1,7 +0,0 @@
 -.global __unmapself
 -.type __unmapself, %function
@@ -282,9 +275,8 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/riscv32/__unmap
 -	ecall
 -	li a7, 93  # SYS_exit
 -	ecall
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/internal/pthread_impl.h musl/src/internal/pthread_impl.h
---- /home/jth/.cache/bmds-scratch/musl-pristine/src/internal/pthread_impl.h
-+++ musl/src/internal/pthread_impl.h
+--- a/src/internal/pthread_impl.h
++++ b/src/internal/pthread_impl.h
 @@ -194,8 +194,9 @@
  extern hidden unsigned __default_stacksize;
  extern hidden unsigned __default_guardsize;
@@ -297,9 +289,8 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/internal/pthread_impl.
  
  #define DEFAULT_STACK_MAX (8<<20)
  #define DEFAULT_GUARD_MAX (1<<20)
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/pthread_create.c musl/src/thread/pthread_create.c
---- /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/pthread_create.c
-+++ musl/src/thread/pthread_create.c
+--- a/src/thread/pthread_create.c
++++ b/src/thread/pthread_create.c
 @@ -285,9 +285,12 @@
  		}
  		guard = 0;
@@ -327,9 +318,8 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/thread/pthread_create.
  
  	/* All clone failures translate to EAGAIN. If explicit scheduling
  	 * was requested, attempt it before unlocking the thread list so
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_getparam.c musl/src/sched/sched_getparam.c
---- /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_getparam.c	2026-10-12 13:03:19.257915614 -0700
-+++ musl/src/sched/sched_getparam.c	2026-10-12 13:03:26.334488837 -0700
+--- a/src/sched/sched_getparam.c
++++ b/src/sched/sched_getparam.c
 @@ -4,5 +4,6 @@
  
  int sched_getparam(pid_t pid, struct sched_param *param)
@@ -338,9 +328,8 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_getparam.c
 +	/* BMDS: the thread's, as glibc's (devplan/processes.md §3.12). */
 +	return syscall(SYS_sched_getparam, pid, param);
  }
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_getscheduler.c musl/src/sched/sched_getscheduler.c
---- /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_getscheduler.c	2026-10-12 13:03:19.257915614 -0700
-+++ musl/src/sched/sched_getscheduler.c	2026-10-12 13:03:26.334569093 -0700
+--- a/src/sched/sched_getscheduler.c
++++ b/src/sched/sched_getscheduler.c
 @@ -4,5 +4,6 @@
  
  int sched_getscheduler(pid_t pid)
@@ -349,9 +338,8 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_getschedul
 +	/* BMDS: the thread's, as glibc's (devplan/processes.md §3.12). */
 +	return syscall(SYS_sched_getscheduler, pid);
  }
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_setparam.c musl/src/sched/sched_setparam.c
---- /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_setparam.c	2026-10-12 13:03:19.257915614 -0700
-+++ musl/src/sched/sched_setparam.c	2026-10-12 13:03:26.334728088 -0700
+--- a/src/sched/sched_setparam.c
++++ b/src/sched/sched_setparam.c
 @@ -4,5 +4,6 @@
  
  int sched_setparam(pid_t pid, const struct sched_param *param)
@@ -360,9 +348,8 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_setparam.c
 +	/* BMDS: the thread's, as glibc's (devplan/processes.md §3.12). */
 +	return syscall(SYS_sched_setparam, pid, param);
  }
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_setscheduler.c musl/src/sched/sched_setscheduler.c
---- /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_setscheduler.c	2026-10-12 13:03:19.257915614 -0700
-+++ musl/src/sched/sched_setscheduler.c	2026-10-12 13:03:26.334826829 -0700
+--- a/src/sched/sched_setscheduler.c
++++ b/src/sched/sched_setscheduler.c
 @@ -4,5 +4,6 @@
  
  int sched_setscheduler(pid_t pid, int sched, const struct sched_param *param)
@@ -371,17 +358,18 @@ diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/sched/sched_setschedul
 +	/* BMDS: the thread's, as glibc's (devplan/processes.md §3.12). */
 +	return syscall(SYS_sched_setscheduler, pid, sched, param);
  }
-diff -ruN /home/jth/.cache/bmds-scratch/musl-pristine/src/conf/sysconf.c musl/src/conf/sysconf.c
---- /home/jth/.cache/bmds-scratch/musl-pristine/src/conf/sysconf.c	2026-10-19 10:59:12.532843684 -0700
-+++ musl/src/conf/sysconf.c	2026-10-19 10:59:12.586052857 -0700
-@@ -201,6 +201,10 @@
+--- a/src/conf/sysconf.c
++++ b/src/conf/sysconf.c
+@@ -201,7 +201,11 @@
  		return DELAYTIMER_MAX;
  	case JT_NPROCESSORS_CONF & 255:
  	case JT_NPROCESSORS_ONLN & 255: ;
-+		/* BMDS: the system's cores; a program's first thread is pinned to one of them. */
-+		long __bmds_nprocessors(void);
-+		long cores = __bmds_nprocessors();
-+		if (cores > 0) return cores;
- 		unsigned char set[128] = {1};
+-		unsigned char set[128] = {1};
++                /* BMDS: the system's cores; a program's first thread is pinned to one of them. */
++                long __bmds_nprocessors(void);
++                long cores = __bmds_nprocessors();
++                if (cores > 0) return cores;
++                unsigned char set[128] = {1};
  		int i, cnt;
  		__syscall(SYS_sched_getaffinity, 0, sizeof set, set);
+ 		for (i=cnt=0; i<sizeof set; i++)

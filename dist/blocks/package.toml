@@ -3,6 +3,7 @@
 name = "blocks"
 version = "1"
 description = "Blocks: falling blocks (the guideline's rules), with sound and Korobeiniki on the synth"
+title = "Blocks"
 license = "MIT"
 source_tree = "programs/blocks"
 license_files = ["../../LICENSE"]

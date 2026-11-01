@@ -162,6 +162,41 @@ elseif(NOT BOOTLOADER_BUILD)
         set(BMDS_ROM_OPL ${BMDS_ROOT_DIR}/thirdparty/opl-banks)
         set(BMDS_ROM_BANKS --file share/synth/dmxopl3.op2=${BMDS_ROM_OPL}/dmxopl3.op2
                            --file share/licenses/dmxopl3/LICENSE=${BMDS_ROM_OPL}/dmxopl3-LICENSE)
+        # The licenses of the code built into the firmware (devplan/release.md §6, docs/THIRD_PARTY.md):
+        # BMDS's own, ESP-IDF's, the toolchain's C library, the SDK's (musl, in the programs here), and the
+        # vendored libraries.
+        set(BMDS_ROM_TP ${BMDS_ROOT_DIR}/thirdparty)
+        get_filename_component(BMDS_ROM_CC_DIR ${CMAKE_C_COMPILER} DIRECTORY)
+        set(BMDS_ROM_NEWLIB ${BMDS_ROM_CC_DIR}/../share/licenses/newlib/COPYING.NEWLIB)
+        set(BMDS_ROM_NOTICE_PAIRS
+            bmds/LICENSE=${BMDS_ROOT_DIR}/LICENSE
+            esp-idf/LICENSE=${IDF_PATH}/LICENSE
+            freertos/LICENSE.md=${IDF_PATH}/components/freertos/FreeRTOS-Kernel/LICENSE.md
+            mbedtls/LICENSE=${IDF_PATH}/components/mbedtls/mbedtls/LICENSE
+            newlib/COPYING.NEWLIB=${BMDS_ROM_NEWLIB}
+            musl/COPYRIGHT=${BMDS_ROOT_DIR}/sdk/libc/musl/COPYRIGHT
+            lwip/COPYING=${BMDS_ROM_TP}/lwip/COPYING
+            littlefs/LICENSE.md=${BMDS_ROM_TP}/littlefs/LICENSE.md
+            fatfs/LICENSE.txt=${BMDS_ROM_TP}/fatfs/LICENSE.txt
+            tinyusb/LICENSE=${BMDS_ROM_TP}/tinyusb/LICENSE
+            monocypher/LICENCE.md=${BMDS_ROM_TP}/monocypher/LICENCE.md
+            tinysoundfont/LICENSE=${BMDS_ROM_TP}/tinysoundfont/LICENSE
+            stb_truetype/LICENSE=${BMDS_ROM_TP}/stb_truetype/LICENSE
+            stb_vorbis/LICENSE=${BMDS_ROM_TP}/stb_vorbis/LICENSE
+            dr_flac/LICENSE=${BMDS_ROM_TP}/dr_flac/LICENSE
+            minimp3/LICENSE=${BMDS_ROM_TP}/minimp3/LICENSE
+            tjpgd/LICENSE=${BMDS_ROM_TP}/tjpgd/LICENSE)
+        set(BMDS_ROM_NOTICES)
+        set(BMDS_ROM_NOTICE_FILES)
+        foreach(pair ${BMDS_ROM_NOTICE_PAIRS})
+                string(REGEX REPLACE "=.*" "" name ${pair})
+                string(REGEX REPLACE "^[^=]*=" "" source ${pair})
+                if(NOT EXISTS ${source})
+                        message(FATAL_ERROR "A firmware license is missing: ${source}")
+                endif()
+                list(APPEND BMDS_ROM_NOTICES --file share/licenses/${name}=${source})
+                list(APPEND BMDS_ROM_NOTICE_FILES ${source})
+        endforeach()
         add_custom_command(OUTPUT ${BMDS_ROM_BIN} ${BMDS_ROM_HASH}
                            COMMAND ${BMDS_STORAGE_PYTHON} ${BMDS_MKROM} image ${BMDS_ROM_BIN}
                                    --max-bytes ${BMDS_ROM_PARTITION_BYTES} ${BMDS_ROM_TREE}
@@ -169,14 +204,14 @@ elseif(NOT BOOTLOADER_BUILD)
                                    --file share/icons/bmds.LICENSES=${BMDS_ROM_OUT}/bmds.LICENSES
                                    ${BMDS_ROM_ZONES} ${BMDS_ROM_LEAP} ${BMDS_ROM_SSH} ${BMDS_ROM_SPEECH}
                                    ${BMDS_ROM_PADS} ${BMDS_ROM_PATTERNS} ${BMDS_ROM_FONTS} ${BMDS_ROM_BANKS}
-                                   --hash-header ${BMDS_ROM_HASH}
+                                   ${BMDS_ROM_NOTICES} --hash-header ${BMDS_ROM_HASH}
                            DEPENDS ${BMDS_MKROM} ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/bmds.LICENSES
                                    ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
                                    ${BMDS_ROM_SSHFS}/bin/sshfs ${BMDS_ROM_COPYID}/bin/ssh-copy-id
                                    ${BMDS_ROM_ANGEL}/bin/angel ${BMDS_ROM_ANGEL_EXAMPLES} ${BMDS_ROM_TREE_FILES} ${BMDS_ROM_ZONES_FILE} ${BMDS_ROM_LEAP_FILE}
                                    ${BMDS_ROM_SPEECH_FILES} ${BMDS_ROM_PADS_FILE} ${BMDS_ROM_PATTERN_FILES}
                                    ${BMDS_ROM_FONT_FILES} ${BMDS_ROM_PLEX}/LICENSE.txt ${BMDS_ROM_OPL}/dmxopl3.op2
-                                   ${BMDS_ROM_OPL}/dmxopl3-LICENSE
+                                   ${BMDS_ROM_OPL}/dmxopl3-LICENSE ${BMDS_ROM_NOTICE_FILES}
                            VERBATIM)
         target_sources(${COMPONENT_LIB} PRIVATE ${BMDS_ROM_HASH})
         target_include_directories(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})

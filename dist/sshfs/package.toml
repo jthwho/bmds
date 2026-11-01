@@ -3,6 +3,9 @@
 name = "sshfs"
 version = "1"
 description = "Mount a directory of an SSH server over SFTP (through dbclient)"
+title = "sshfs"
+category = "Network"
+depends = ["dropbear"]
 license = "MIT"
 source_tree = "programs/sshfs"
 license_files = ["../../LICENSE"]

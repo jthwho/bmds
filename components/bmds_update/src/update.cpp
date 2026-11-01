@@ -19,6 +19,7 @@
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/timers.h>
+#include <hal/efuse_hal.h>
 #include <sdkconfig.h>
 #include <bmds/blake2s.h>
 #include <bmds/clock.h>
@@ -50,7 +51,6 @@ namespace {
         constexpr size_t   JobStackBytes = 12 * 1024;
         constexpr uint32_t SectorBytes = 4096;
         constexpr uint32_t EraseStepBytes = 256 * 1024; // a multiple of the 64 KB erase block
-        constexpr uint8_t  AppMagic = 0xE9;
         // How long recovery shows how an update ended before it restarts.
         constexpr unsigned RestartPauseMs = 2000;
         // How long the main firmware's balloon about an update shows (a failure's stays: critical).
@@ -68,6 +68,7 @@ namespace {
 
         enum class Mode : uint8_t {
                 Check,
+                CheckHead, // the head in `head` alone (`Update::checkHead()`)
                 ApplyMain,
                 ApplyRecovery
         };
@@ -83,6 +84,8 @@ namespace {
                         FileHandle::Ptr  file;
                         uint8_t         *chunk = nullptr;
                         uint8_t          head[UpdatePackage::MaxHeadBytes];
+                        size_t           headBytes = 0; // CheckHead: what `head` holds
+                        uint64_t         fileBytes = 0; // CheckHead: the whole file's size
                         Error            result;
         };
 
@@ -156,32 +159,19 @@ namespace {
                 return Error::Ok;
         }
 
-        // The checks of devplan/update.md §2. True for a good package.
-        Result<bool> checkPackage(Job &job) {
+        // The head's checks (devplan/update.md §2): the signature, the board, the chip revision, the
+        // version against the main firmware's. True for a good head.
+        Result<bool> checkHead(Job &job, Span<const uint8_t> head, uint64_t fileBytes) {
                 Update::Report &r = *job.report;
-                r = Update::Report{};
-                Vfs::Context context;
-                auto [file, oerr] = Vfs::open(job.path, Vfs::Read, context);
-                if (oerr.isError()) return makeError<bool>(oerr);
-                job.file = file;
-                auto [fileBytes, serr] = job.file->stream().seek(0, Stream::SeekFrom::End);
-                if (serr.isError()) return makeError<bool>(serr);
-
-                const size_t headRead = fileBytes < sizeof(job.head) ? size_t(fileBytes) : sizeof(job.head);
-                Error        err = readAt(job, 0, job.head, headRead);
-                if (err.isError()) return makeError<bool>(err);
-                const Span<const uint8_t> head(job.head, headRead);
-                UpdatePackage::Verdict    v = UpdatePackage::parse(head, fileBytes, r.package);
+                UpdatePackage::Verdict v = UpdatePackage::parse(head, fileBytes, r.package);
                 if (v != UpdatePackage::Verdict::Ok) return refuse(job, UpdatePackage::verdictText(v));
                 const Span<const UpdatePackage::Key> keys = UpdateKeys::accepted();
-                v = UpdatePackage::Verdict::BadSignature;
-                for (size_t i = 0; i < keys.size() && v != UpdatePackage::Verdict::Ok; ++i) {
-                        v = UpdatePackage::verify(r.package, head, keys.mid(i, 1));
-                        if (v == UpdatePackage::Verdict::Ok) r.devKey = UpdateKeys::isDevKey(i);
-                }
+                size_t                               keyIndex = 0;
+                v = UpdatePackage::verify(r.package, head, keys, keyIndex);
+                if (v == UpdatePackage::Verdict::Ok) r.devKey = UpdateKeys::isDevKey(keyIndex);
                 if (v != UpdatePackage::Verdict::Ok) {
                         return refuse(job, UpdateKeys::isDevMode() ? "it isn't signed by a key this firmware accepts"
-                                                                   : "it isn't signed by a release key");
+                                                                   : "it isn't signed by a trusted key");
                 }
                 {
                         Blake2s h;
@@ -207,6 +197,25 @@ namespace {
                 esp_chip_info_t chip;
                 esp_chip_info(&chip);
                 if (chip.revision < r.package.minChipRevision) return refuse(job, "it needs a newer chip revision");
+                return makeResult(true);
+        }
+
+        // The checks of devplan/update.md §2. True for a good package.
+        Result<bool> checkPackage(Job &job) {
+                Update::Report &r = *job.report;
+                r = Update::Report{};
+                Vfs::Context context;
+                auto [file, oerr] = Vfs::open(job.path, Vfs::Read, context);
+                if (oerr.isError()) return makeError<bool>(oerr);
+                job.file = file;
+                auto [fileBytes, serr] = job.file->stream().seek(0, Stream::SeekFrom::End);
+                if (serr.isError()) return makeError<bool>(serr);
+
+                const size_t headRead = fileBytes < sizeof(job.head) ? size_t(fileBytes) : sizeof(job.head);
+                Error        err = readAt(job, 0, job.head, headRead);
+                if (err.isError()) return makeError<bool>(err);
+                auto [headGood, herr] = checkHead(job, Span<const uint8_t>(job.head, headRead), uint64_t(fileBytes));
+                if (herr.isError() || !headGood) return Result<bool>(headGood, herr);
 
                 uint64_t total = 0;
                 for (size_t i = 0; i < r.package.sectionCount; ++i) {
@@ -228,10 +237,15 @@ namespace {
                                 if (err.isError()) return makeError<bool>(err);
                                 if (at == 0 && (s.type == uint32_t(SectionType::Firmware) ||
                                                 s.type == uint32_t(SectionType::Recovery))) {
-                                        const uint16_t chipId = uint16_t(job.chunk[12] | (job.chunk[13] << 8));
-                                        if (n < 24 || job.chunk[0] != AppMagic ||
-                                            chipId != CONFIG_IDF_FIRMWARE_CHIP_ID) {
+                                        UpdatePackage::ChipRevisions revisions;
+                                        if (!UpdatePackage::appRevisions(Span<const uint8_t>(job.chunk, n),
+                                                                         CONFIG_IDF_FIRMWARE_CHIP_ID, revisions)) {
                                                 return refuse(job, "an app image isn't one for this chip");
+                                        }
+                                        // As the bootloader decides: an image it wouldn't start is never written.
+                                        if (!UpdatePackage::runsOn(revisions, uint16_t(efuse_hal_chip_revision()),
+                                                                   efuse_hal_get_disable_wafer_version_major())) {
+                                                return refuse(job, "an app image isn't for this chip's revision");
                                         }
                                 }
                                 if (at == 0 && s.type == uint32_t(SectionType::Rom) &&
@@ -465,6 +479,12 @@ namespace {
 
         void runJob(void *arg) {
                 Job &job = *static_cast<Job *>(arg);
+                if (job.mode == Mode::CheckHead) {
+                        *job.report = Update::Report{};
+                        auto [good, err] = checkHead(job, Span<const uint8_t>(job.head, job.headBytes), job.fileBytes);
+                        job.result = err.isError() ? err : good ? Error(Error::Ok) : Error(Error::CorruptData);
+                        return;
+                }
                 auto [good, err] = checkPackage(job);
                 if (job.mode == Mode::ApplyRecovery && job.expectHead == nullptr && err.isOk() && good) {
                         // `update apply` in recovery: the intent first, so a reset resumes it.
@@ -618,6 +638,20 @@ Error Update::check(StringView path, Report &out, Progress progress, void *arg) 
         job->report = &out;
         job->progress = progress;
         job->arg = arg;
+        const Error err = run(*job);
+        deleteJob(job);
+        return err;
+}
+
+Error Update::checkHead(Span<const uint8_t> head, uint64_t fileBytes, Report &out) {
+        if (head.size() > UpdatePackage::MaxHeadBytes) head = head.first(UpdatePackage::MaxHeadBytes);
+        Job *job = newJob();
+        if (job == nullptr) return Error::NoMem;
+        job->mode = Mode::CheckHead;
+        std::memcpy(job->head, head.data(), head.size());
+        job->headBytes = head.size();
+        job->fileBytes = fileBytes;
+        job->report = &out;
         const Error err = run(*job);
         deleteJob(job);
         return err;

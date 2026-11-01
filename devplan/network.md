@@ -2582,3 +2582,130 @@ grandmaster, a second board, or a PPS input.
   phases marked in a file), and a watcher here sampling `ptp` and `clock` on the board over ssh
   every 4 s, switching board settings when the script waits for it (a `go` file). PTP settings on
   the board are set unsaved and reverted after.
+
+## lwIP's heap: its real size (2026-10-31)
+
+lwIP's `mem.c` lays its heap out as `MEM_SIZE_ALIGNED + 2 * SIZEOF_STRUCT_MEM` (its own `ram_heap`
+is declared so): the size, then a `struct mem` at each end, 12 bytes once `MEM_SIZE` passes 64000
+(`next` and `prev` become 32 bits). `NetStack::init()` and the host harness allocated `MEM_SIZE +
+2 * MEM_ALIGNMENT`, so the end marker went 4 bytes past the block: on the board (`MEM_SIZE`
+65,536) into whatever followed it in the internal DMA heap. AddressSanitizer found it when the
+HTTP client's tests (packages.md §23) first ran lwIP under it. `BMDS_LWIP_HEAP_BYTES`
+(`lwip/lwipport.h`) is the size now, for both. The host's `MEM_ALIGNMENT` is 8 (UBSan: lwIP's
+structures hold 64-bit pointers there); the board's stays 4.
+
+## 32. A bigger TCP window, in PSRAM (the user's ask, 2026-11-01)
+
+Fetching over the internet (packages.md §23) measured 0.87 MB/s from GitHub, where the PC on the
+same line takes 9.1 MB/s: `TCP_WND`'s 16 segments (23 KB, §28) over a ~25 ms round trip allow
+0.93 MB/s at most. The window was kept small because what it holds is internal RAM: lwIP keeps up
+to `NetInterface::MaxHeld` (6) ring buffers in place, and copies every frame past them into its
+heap (64 KB of internal DMA memory). §4's plan had TCP's windows in PSRAM; this does it.
+
+- **Copies into PSRAM** (`RxCopies`, `src/rxcopies.cpp`, portable): a pool of frame-sized slots
+  in PSRAM, allocated at start (`CONFIG_BMDS_NET_RX_COPIES_KB`, 512 KB: 330 slots), handed out
+  from a free list. A copied frame becomes a custom pbuf over its slot, as a ring buffer's is; its
+  free puts the slot back. No heap call on the path, no cache work (only the CPU touches the
+  slots). Under the core lock, like everything that frees a pbuf (lwIP's heap has no other lock).
+  The pool empty: lwIP's heap as before, then the frame dropped (TCP sends it again).
+- **Window scaling:** `LWIP_WND_SCALE` with `TCP_RCV_SCALE` 2, `TCP_WND` 176 segments (251 KB,
+  the most scale 2 allows is 256 KB): 10 MB/s over 25 ms, past the line's 9.1. A peer that doesn't
+  scale gets 64 KB. lwIP hands a socket at most 64 KB at a time (`pbuf_split_64k`).
+- **The socket's unread data** stops being one pbuf chain (its 16-bit `tot_len` was the limit:
+  `socket.cpp`'s `static_assert`): delivered chains are linked end to end and counted in `size_t`,
+  freed a pbuf at a time as they are read; `tcp_recved()`'s 16-bit count is given in pieces.
+- **Out of order:** `TCP_OOSEQ_MAX_PBUFS` 4 to 64 (93 KB): with a window of 176 segments, a loss
+  near its start had everything after it dropped past the 4th; SACK (on) tells the sender what
+  arrived. Each queued segment's `tcp_seg` is lwIP's heap (about 2 KB at 64).
+- **Budget:** 512 KB of PSRAM (of the 32.7 MB free at boot); no internal RAM added; bulk receive
+  stops filling lwIP's heap (it held up to 23 KB of copies). A reader that stops holds its window:
+  one stalled connection can hold 251 KB of the pool's 512, the rest share what is left (and the
+  heap behind it).
+- **Measure:** the GitHub fetch (0.87 MB/s before); the LAN's receive over this PC's Wi-Fi
+  (`nc -l` on the board, the PC connecting: 5.14-5.29 MB/s before, 811 of ~23,000 frames copied);
+  host tests: more than 64 KB unread in one socket, a peer without scaling, data intact.
+
+### As built (2026-11-01)
+
+- **As planned:** `RxCopies` (330 slots of 1.5 KB in 512 KB of PSRAM; `net` shows their use),
+  window scaling (`TCP_RCV_SCALE` 2, `TCP_WND` 176 segments), the socket's queue of linked chains
+  (`copyQueued()`, `freeQueued()`, `receivedBy()`), out-of-order 64 pbufs. Datagram sockets keep a
+  PSRAM copy as it is (`keepable()` cloned every custom pbuf into the heap, to give the ring its
+  buffer back). A copy sent back out (ICMP's echo answers in place) is copied by the driver, which
+  sends in place only what its DMA reaches (`dmaReaches()`).
+- **Tests:** the harness's frames all go through the pool; a 600 KB transfer with nothing read
+  until the window is full (at least 175 frames held, the sender still waiting), then read in
+  pieces of 1 byte to 129 KB with looks between, intact, and closed with 100 KB unread (every slot
+  back); the pool itself (empty, a frame too big, `Busy`). Clean under ASan/UBSan.
+- **On the board:**
+
+  | | Before | After |
+  |---|---|---|
+  | GitHub, 33.6 MB to the card | 38.5 s, 0.87 MB/s | 25.6 s, 1.31 MB/s |
+  | GitHub, 6.2 MB to `/tmp` / the card | | 1.37 / 1.26 MB/s |
+  | LAN in, this PC's Wi-Fi, 32 MB | 5.14-5.29 MB/s | 7.10-8.28 MB/s |
+
+  The pool's most was 182-184 slots (a full window), never empty; lwIP's heap's most stayed
+  2.8 KB (bulk receive held up to 17 KB of it before). On the LAN nearly every frame is now a copy
+  (116,183 of them), the sender running ahead into the window.
+- **What limits a download now is the reader's CPU, not the window:** `prof` over a 30 MB fetch
+  had the fetching task about 70% of its core: ESP-IDF's GHASH in software (`gcm_mult`, a quarter
+  of the busy samples: platforms/esp32p4.md §4b), FreeRTOS critical sections behind queues and
+  semaphores (a fifth, mostly the AES engine's driver), memcpy (5%), and the SD driver setting the
+  bus width, clock and pins again on every transfer (`sd_host_slot_set_bus_width`,
+  `configure_pin_iomux`, about 10%). Next, if wanted: a faster GHASH (8-bit tables) or ChaCha20-
+  Poly1305 offered first (off now: software 8.4 and 11.7 MB/s, §26), AES-GCM through
+  `bmds_crypto`'s engine path, and the SD driver's per-transfer setup.
+
+## 33. TLS's ciphers: a faster GHASH, ChaCha20-Poly1305 (the user's ask, 2026-11-01)
+
+§32 left a download limited by the fetching task's CPU, ESP-IDF's software GHASH the largest part.
+
+- **Why a wrap:** ESP-IDF's GHASH (`gcm_mult`, 4-bit tables, 64-bit arithmetic on a 32-bit core)
+  is static in `esp_aes_gcm.c`. Its whole-engine GCM (the engine does GHASH) takes only records,
+  and the extra data, in memory its DMA reaches; mbedTLS's buffers are PSRAM (§32's allocator), so
+  every record took the partial path: counter mode by `esp_aes_crypt_ctr()`, GHASH in software.
+- **`Ghash`** (`bmds/ghash.h`, bmds_core, host-tested): Shoup's 8-bit tables, H times each byte
+  (4 KB) and a 512-byte constant reduction table; a block is 16 shifts, reductions and lookups in
+  32-bit words. No carry-less multiply on this core (`-march` has no Zbc).
+- **`TlsGcm`** (`src/tlsgcm.cpp`): `--wrap` of `esp_aes_gcm_crypt_and_tag()` and
+  `esp_aes_gcm_auth_decrypt()`, the one-shots mbedTLS's TLS layer calls. Buffers the engine's DMA
+  reaches go to ESP-IDF as before; others: `esp_aes_gcm_starts()` (H from the engine, J0), GHASH
+  by `Ghash`, counter mode and the tag by `esp_aes_crypt_ctr()`, the tag checked in constant time,
+  a forgery's text zeroed. Two keys' tables cached (a session's two directions) in PSRAM under a
+  mutex, made again when a key changes (about 4 KB of writes).
+- **ChaCha20-Poly1305:** `CONFIG_MBEDTLS_CHACHA20_C`, `POLY1305_C`, `CHACHAPOLY_C`.
+- **`bench net.tls.aead`** (a 16 KB record in PSRAM, encrypted and tagged, MB/s):
+
+  | | MB/s |
+  |---|---|
+  | AES-128-GCM, ESP-IDF's | 4.31 |
+  | AES-128-GCM, `Ghash` | 6.15 |
+  | ChaCha20-Poly1305, mbedTLS's | 3.66 |
+  | GHASH alone, `Ghash` | 8.47 |
+  | ESP-IDF's whole-engine GCM, records in internal memory | 4.95 |
+
+  mbedTLS's ChaCha20-Poly1305 is slower than AES-GCM here (§26's 8.4 and 11.7 MB/s were another
+  implementation's), and the whole engine gains little over the partial path: not worth 33 KB of
+  internal memory a session.
+- **What is offered** (`httptls.cpp`): ECDHE with AES-128-GCM, AES-256-GCM, then ChaCha20-Poly1305
+  (mbedTLS's own order put ChaCha20 first; GitHub and its storage take the client's order).
+- **Downloads from GitHub** (MB/s):
+
+  | | §32 | ChaCha20 first | AES-GCM with `Ghash` |
+  |---|---|---|---|
+  | 6.2 MB to `/tmp` | 1.37 | 1.60 | 1.90 |
+  | 33.6 MB to the card | 1.31 | 1.58 | 1.48 (three runs, 1.47-1.49) |
+
+  To the card ChaCha20 does better: AES-GCM's counter mode is ESP-IDF's DMA path (descriptors
+  allocated, cache synchronised, an interrupt waited for on each call) beside the card's own.
+- **Profile** (6.2 MB to `/tmp`, AES-GCM): `Ghash` a quarter of the busy samples, the two
+  handshakes (GitHub, then its storage) 15-20% (the MPI engine and mbedTLS's bignums), copies 8%,
+  critical sections 9%.
+- **Flash:** about 6.5 KB (mbedTLS's ChaCha20 and Poly1305 3.6 KB, `Ghash` 1.4 KB with its table,
+  the wrap and the benchmark the rest).
+- **Next, if wanted:** AES-CTR through `bmds_crypto`'s own engine path (register mode 15.7 MB/s,
+  its DMA 25-33 MB/s, without ESP-IDF's per-call allocation), which would end the card's case
+  against AES-GCM; per-position tables for GHASH (64 KB a key: twice as fast at best, the caches
+  permitting) or the PIE unit's 128-bit registers.
+

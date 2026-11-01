@@ -23,7 +23,16 @@
 extern "C" {
 #endif
 
-/** @brief lwIP's heap: `MEM_SIZE` bytes (and alignment), set before `lwip_init()`. */
+/**
+ * @brief The bytes lwIP's heap takes, as mem.c lays it out (its own `ram_heap` is
+ *        `MEM_SIZE_ALIGNED + 2 * SIZEOF_STRUCT_MEM`): the size aligned, and a `struct mem` at
+ *        each end (`next` and `prev`, 32 bits once `MEM_SIZE` passes 64000, and `used`), aligned.
+ *        Allocating `MEM_SIZE + 2 * MEM_ALIGNMENT` put the end marker 4 bytes past the block
+ *        (found by AddressSanitizer in the host tests, 2026-10-31).
+ */
+#define BMDS_LWIP_HEAP_BYTES (LWIP_MEM_ALIGN_SIZE(MEM_SIZE) + 2 * LWIP_MEM_ALIGN_SIZE(2 * 4 + 1))
+
+/** @brief lwIP's heap: `BMDS_LWIP_HEAP_BYTES`, aligned to `MEM_ALIGNMENT`, set before `lwip_init()`. */
 extern unsigned char *bmds_lwip_heap;
 
 /** @brief Asserts that the calling task holds the core lock (`LWIP_ASSERT_CORE_LOCKED`). */

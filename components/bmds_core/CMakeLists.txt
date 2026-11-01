@@ -19,12 +19,20 @@ set(BMDS_CORE_SRCS
         src/desktopentry.cpp
         src/dragdrop.cpp
         src/fft.cpp
+        src/ghash.cpp
+        src/http.cpp
         src/keptrecord.cpp
         src/pagewindow.cpp
+        src/pkgfile.cpp
+        src/pkgindex.cpp
+        src/pkgmanifest.cpp
+        src/pkgsolver.cpp
+        src/pkgversion.cpp
         src/pngdecoder.cpp
         src/randompool.cpp
         src/romimage.cpp
         src/sha512.cpp
+        src/signedcontainer.cpp
         src/sha1.cpp
         src/shacrypt.cpp
         src/stat.cpp

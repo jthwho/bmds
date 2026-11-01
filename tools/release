@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+# @file      release
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Makes a release of BMDS (devplan/release.md §3, §5): every file a GitHub release carries, in
+# release/VERSION/, and with --publish the GitHub release itself.
+#
+#   tools/release [--dev] [--variant NAME]... [--skip-card] [--publish --repo OWNER/NAME]
+#
+# A release is made from a clean tree whose HEAD is tagged vX.Y.Z, X.Y.Z being bmds/version.h's,
+# with a "## X.Y.Z" section in RELEASE_NOTES.md. --dev makes one from any tree (to try it; its
+# version is the firmware's, "0.1.0+0269544e-dirty"), and never publishes.
+#
+# Run it with ESP-IDF's environment (. ~/esp/esp-idf/export.sh). It builds, in order:
+#   build-release/VARIANT-recovery, build-release/VARIANT   the firmware, from sdkconfig.defaults
+#                                                           and the variant's settings only
+#   build-release/dist                                      the card (tools/bmds-dist)
+# and writes to release/VERSION/:
+#   bmds-VERSION-VARIANT-flash.zip   the flash images, flash.json (tools/mkinstaller's) and a
+#                                    README.txt with the esptool command
+#   bmds-VERSION-VARIANT.bmup        the update package (signed with the dev key: §2)
+#   bmds-VERSION-card.zip            the card's files (its links left out: etc/dist/links.sh
+#                                    makes them on the board)
+#   bmds-VERSION-sources.zip         the GPL packages' sources and recipes
+#   notes.md, SHA256SUMS
+#
+# Python's standard library only.
+
+import argparse
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+import zipfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+BUILDS = os.path.join(ROOT, "build-release")
+RELEASES = os.path.join(ROOT, "release")
+NOTES = os.path.join(ROOT, "RELEASE_NOTES.md")
+
+# The chip variants (release.md §3a): the settings each adds to sdkconfig.defaults.
+VARIANTS = {
+    "p4r1": [],  # silicon before v3.0: IDF's default (ESP32P4_SELECTS_REV_LESS_V3)
+    "p4r3": ["CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n"],  # v3.0 on: not published yet (untested)
+}
+
+
+def fail(message):
+    sys.exit("release: " + message)
+
+
+def say(message):
+    print("release: " + message, flush=True)
+
+
+def run(command, cwd=None, capture=False):
+    result = subprocess.run(command, cwd=cwd, text=True,
+                            stdout=subprocess.PIPE if capture else None)
+    if result.returncode != 0:
+        fail("%s failed (exit %d)" % (" ".join(command), result.returncode))
+    return result.stdout if capture else None
+
+
+def git(*args):
+    return run(["git", *args], cwd=ROOT, capture=True).strip()
+
+
+def load_tool(name):
+    """A tool in tools/ (no .py) as a module."""
+    path = os.path.join(ROOT, "tools", name)
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def bmds_version():
+    with open(os.path.join(ROOT, "components", "bmds_core", "include", "bmds", "version.h")) as f:
+        text = f.read()
+    parts = [re.search(r"#define BMDS_VERSION_%s (\d+)" % p, text) for p in ("MAJOR", "MINOR", "PATCH")]
+    if not all(parts):
+        fail("version.h has no BMDS_VERSION_MAJOR/MINOR/PATCH")
+    return ".".join(m.group(1) for m in parts)
+
+
+def release_notes(version):
+    """RELEASE_NOTES.md's "## VERSION" section, or None."""
+    if not os.path.exists(NOTES):
+        return None
+    with open(NOTES) as f:
+        text = f.read()
+    match = re.search(r"^## %s\b[^\n]*\n(.*?)(?=^## |\Z)" % re.escape(version), text, re.M | re.S)
+    return match.group(1).strip() + "\n" if match else None
+
+
+def check_tree(version):
+    """A release's tree: clean, HEAD tagged vVERSION, its notes written."""
+    if git("status", "--porcelain", "--untracked-files=normal"):
+        fail("the tree has changes or untracked files (commit them, or use --dev)")
+    tags = git("tag", "--points-at", "HEAD").split()
+    if "v" + version not in tags:
+        fail("HEAD isn't tagged v%s (tags here: %s)" % (version, ", ".join(tags) or "none"))
+    if release_notes(version) is None:
+        fail("RELEASE_NOTES.md has no \"## %s\" section" % version)
+    return
+
+
+def build_wrapper():
+    found = shutil.which("build")
+    if not found:
+        fail("no `build` wrapper on PATH (it paces the build's jobs)")
+    return found
+
+
+def build_firmware(project, build_dir, variant, extra_defines):
+    """Configures BUILD_DIR from sdkconfig.defaults plus the variant's settings, then builds it."""
+    os.makedirs(build_dir, exist_ok=True)
+    variant_defaults = os.path.join(build_dir, "variant.defaults")
+    with open(variant_defaults, "w") as f:
+        f.write("# tools/release: the %s variant\n" % variant)
+        f.write("".join(line + "\n" for line in VARIANTS[variant]))
+    defaults = [os.path.join(ROOT, "sdkconfig.defaults")]
+    if project != ROOT:
+        defaults.append(os.path.join(project, "sdkconfig.defaults"))
+    defaults.append(variant_defaults)
+    # The build's own sdkconfig, made fresh from the defaults: the developer's isn't used.
+    sdkconfig = os.path.join(build_dir, "sdkconfig")
+    if os.path.exists(sdkconfig):
+        os.remove(sdkconfig)
+    run(["idf.py", "-C", project, "-B", build_dir, "-DIDF_TARGET=esp32p4",
+         "-DSDKCONFIG=" + sdkconfig, "-DSDKCONFIG_DEFAULTS=" + ";".join(defaults),
+         *extra_defines, "reconfigure"])
+    run([build_wrapper()], cwd=build_dir)
+    return
+
+
+def board_name(build_dir):
+    with open(os.path.join(build_dir, "sdkconfig")) as f:
+        match = re.search(r'^CONFIG_BMDS_BOARD_DIR="([^"]+)"', f.read(), re.M)
+    if not match:
+        fail("%s/sdkconfig names no board" % build_dir)
+    return match.group(1)
+
+
+def zip_tree(zip_path, root, prefix=""):
+    """ROOT's regular files and folders into ZIP_PATH under PREFIX; returns (files, links left out)."""
+    files = 0
+    links = 0
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        for top, dirs, names in os.walk(root):
+            dirs.sort()
+            rel_top = os.path.relpath(top, root)
+            for d in list(dirs):
+                if os.path.islink(os.path.join(top, d)):
+                    links += 1
+                    dirs.remove(d)
+            if not names and not dirs and rel_top != ".":
+                z.writestr(prefix + rel_top.replace(os.sep, "/") + "/", "")
+            for name in sorted(names):
+                path = os.path.join(top, name)
+                if os.path.islink(path):
+                    links += 1
+                    continue
+                rel = os.path.normpath(os.path.join(rel_top, name)).replace(os.sep, "/")
+                z.write(path, prefix + rel)
+                files += 1
+    return files, links
+
+
+def make_flash_zip(out_dir, name, build_dir, variant, version):
+    """The flash images with flash.json and the esptool command."""
+    mkinstaller = load_tool("mkinstaller")
+    stage = os.path.join(BUILDS, "stage", name)
+    shutil.rmtree(stage, ignore_errors=True)
+    descriptor = mkinstaller.make_firmware(build_dir, stage, variant)
+    pairs = " ".join("0x%x %s" % (im["offset"], im["file"]) for im in descriptor["images"])
+    with open(os.path.join(stage, "README.txt"), "w") as f:
+        f.write("BMDS %s for the Olimex ESP32-P4-PC (%s: chip revisions before v3.0)\n\n" % (version, variant))
+        f.write("The web installer flashes these from Chrome or Edge. Without it, use esptool\n")
+        f.write("(pip install esptool), the board on its USB port, from this folder:\n\n")
+        f.write("  esptool --chip esp32p4 write-flash --flash-mode %s --flash-freq %s --flash-size %s \\\n"
+                % (descriptor["flashMode"], descriptor["flashFreq"], descriptor["flashSize"]))
+        f.write("      %s\n\n" % pairs)
+        f.write("That keeps the board's settings and /flash. For a fresh install add --erase-all\n")
+        f.write("after write-flash: it erases the whole flash first.\n")
+    zip_tree(os.path.join(out_dir, name + ".zip"), stage, name + "/")
+    return descriptor
+
+
+def make_sources_zip(zip_path, dist_dir):
+    """Each GPL card package's upstream source (as bmds-dist fetched it) and its recipe."""
+    bmds_dist = load_tool("bmds-dist")
+    stage = os.path.join(BUILDS, "stage", "sources")
+    shutil.rmtree(stage, ignore_errors=True)
+    os.makedirs(stage)
+    listed = []
+    for name, recipe in sorted(bmds_dist.packages().items()):
+        if "GPL" not in recipe.get("license", ""):
+            continue
+        dest = os.path.join(stage, name)
+        shutil.copytree(recipe["dir"], os.path.join(dest, "recipe"))
+        if "source" in recipe:
+            source = os.path.join(bmds_dist.CACHE, os.path.basename(recipe["source"]))
+            if not os.path.exists(source):
+                fail("%s's source isn't in %s (built with bmds-dist?)" % (name, bmds_dist.CACHE))
+            shutil.copy(source, dest)
+        program = os.path.join(ROOT, "programs", name)
+        if os.path.isdir(program):
+            shutil.copytree(program, os.path.join(dest, "programs", name))
+        listed.append("%s %s (%s)" % (name, recipe["version"], recipe["license"]))
+    with open(os.path.join(stage, "README.txt"), "w") as f:
+        f.write("The corresponding source of the GPL programs on the BMDS card: for each, the\n")
+        f.write("upstream release as downloaded, the recipe that builds it (package.toml, build.sh,\n")
+        f.write("patches, configuration: tools/bmds-dist in the BMDS repository runs it), and\n")
+        f.write("BMDS's own code linked into it where there is any (programs/). They are linked\n")
+        f.write("with the BMDS SDK's libraries (musl, libbmds, libbmdsgame: sdk/ in the BMDS\n")
+        f.write("repository, MIT), whose source is the release's own source archive, which GitHub\n")
+        f.write("attaches to every release (\"Source code\"), at the same tag.\n\n")
+        f.write("".join(line + "\n" for line in listed))
+    zip_tree(zip_path, stage)
+    return listed
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Makes a release of BMDS into release/VERSION/.")
+    parser.add_argument("--dev", action="store_true", help="from any tree, to try it (never published)")
+    parser.add_argument("--variant", action="append", choices=sorted(VARIANTS),
+                        help="chip variants to build (default: p4r1)")
+    parser.add_argument("--skip-card", action="store_true", help="leave out the card and sources zips")
+    parser.add_argument("--publish", action="store_true", help="make the GitHub release (needs --repo)")
+    parser.add_argument("--repo", default=os.environ.get("BMDS_GITHUB_REPO"),
+                        help="the GitHub mirror, OWNER/NAME (default: $BMDS_GITHUB_REPO)")
+    opts = parser.parse_args()
+    variants = opts.variant or ["p4r1"]
+
+    if not shutil.which("idf.py"):
+        fail("idf.py isn't on PATH: run . ~/esp/esp-idf/export.sh first")
+    if opts.publish and (opts.dev or opts.skip_card):
+        fail("--publish makes a whole release: not with --dev or --skip-card")
+    if opts.publish and not opts.repo:
+        fail("--publish needs --repo OWNER/NAME (or $BMDS_GITHUB_REPO)")
+    if opts.publish and not shutil.which("gh"):
+        fail("--publish needs GitHub's gh")
+    version = bmds_version()
+    if not opts.dev:
+        check_tree(version)
+
+    # The firmware, for each variant: the recovery first (the main build carries it).
+    built = {}
+    for variant in variants:
+        recovery_dir = os.path.join(BUILDS, variant + "-recovery")
+        main_dir = os.path.join(BUILDS, variant)
+        say("building the %s recovery firmware in %s" % (variant, recovery_dir))
+        build_firmware(os.path.join(ROOT, "recovery"), recovery_dir, variant, [])
+        say("building the %s firmware in %s" % (variant, main_dir))
+        build_firmware(ROOT, main_dir, variant,
+                       ["-DBMDS_RECOVERY_BIN=" + os.path.join(recovery_dir, "bmds_recovery.bin")])
+        built[variant] = (main_dir, recovery_dir)
+
+    # The version as the firmware carries it ("0.1.0", or "0.1.0+0269544e-dirty" for --dev).
+    mkinstaller = load_tool("mkinstaller")
+    first_main = built[variants[0]][0]
+    _, firmware_version = mkinstaller.app_info(os.path.join(first_main, "bmds.bin"))
+    name_version = version if not opts.dev else firmware_version.replace("+", "-")
+    if not opts.dev and firmware_version.split("+")[0] != version:
+        fail("the firmware says %s, version.h %s" % (firmware_version, version))
+    out_dir = os.path.join(RELEASES, name_version)
+    shutil.rmtree(out_dir, ignore_errors=True)
+    os.makedirs(out_dir)
+
+    notes = release_notes(version) if not opts.dev else None
+    if notes is None:
+        notes = "A development build of BMDS (%s), not a release.\n" % firmware_version
+    notes_path = os.path.join(out_dir, "notes.md")
+    with open(notes_path, "w") as f:
+        f.write(notes)
+
+    for variant, (main_dir, recovery_dir) in built.items():
+        base = "bmds-%s-%s" % (name_version, variant)
+        say("making %s-flash.zip" % base)
+        make_flash_zip(out_dir, base + "-flash", main_dir, variant, firmware_version)
+        say("making %s.bmup" % base)
+        run([sys.executable, os.path.join(ROOT, "tools", "mkupdate"), "make", os.path.join(out_dir, base + ".bmup"),
+             "--board", board_name(main_dir),
+             "--firmware", os.path.join(main_dir, "bmds.bin"),
+             "--rom", os.path.join(main_dir, "rom", "rom.bin"),
+             "--recovery", os.path.join(recovery_dir, "bmds_recovery.bin"),
+             "--notes", notes_path,
+             "--partitions", os.path.join(ROOT, "partitions.csv"),
+             "--accept", os.path.join(ROOT, "keys", "dev.pub")])
+
+    if not opts.skip_card:
+        dist_dir = os.path.join(BUILDS, "dist")
+        say("building the card in %s" % dist_dir)
+        run([sys.executable, os.path.join(ROOT, "tools", "bmds-dist"), "--out", dist_dir, "build"])
+        card = os.path.join(out_dir, "bmds-%s-card.zip" % name_version)
+        files, links = zip_tree(card, os.path.join(dist_dir, "rootfs"))
+        say("%s: %d files (%d links left out: etc/dist/links.sh makes them)" % (os.path.basename(card), files, links))
+        sources = os.path.join(out_dir, "bmds-%s-sources.zip" % name_version)
+        listed = make_sources_zip(sources, dist_dir)
+        say("%s: %s" % (os.path.basename(sources), "; ".join(listed)))
+
+    names = sorted(n for n in os.listdir(out_dir) if n != "SHA256SUMS")
+    with open(os.path.join(out_dir, "SHA256SUMS"), "w") as f:
+        for n in names:
+            f.write("%s  %s\n" % (sha256(os.path.join(out_dir, n)), n))
+    for n in names + ["SHA256SUMS"]:
+        say("  %-44s %10d bytes" % (n, os.path.getsize(os.path.join(out_dir, n))))
+    say("release %s in %s" % (firmware_version, out_dir))
+
+    if opts.publish:
+        tag = "v" + version
+        assets = [os.path.join(out_dir, n) for n in names if n != "notes.md"] + [os.path.join(out_dir, "SHA256SUMS")]
+        run(["gh", "release", "create", tag, "--repo", opts.repo, "--verify-tag",
+             "--title", "BMDS " + version, "--notes-file", notes_path, *assets])
+        say("published %s on %s" % (tag, opts.repo))
+    return
+
+
+if __name__ == "__main__":
+    main()

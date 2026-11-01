@@ -448,7 +448,7 @@ Result<size_t> TmpVolume::writeAt(Node &node, uint64_t offset, ByteSpan data) {
                         if (capacity > PageBytes) capacity = PageBytes;
                         auto *bytes = static_cast<uint8_t *>(take(capacity));
                         if (bytes == nullptr) return makeError<size_t>(Error::NoSpace);
-                        std::memcpy(bytes, node.bytes, node.size);
+                        if (node.size > 0) std::memcpy(bytes, node.bytes, node.size); // none yet: null
                         give(node.bytes, node.capacity);
                         node.bytes = bytes;
                         node.capacity = capacity;

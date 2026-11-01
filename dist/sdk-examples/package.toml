@@ -3,6 +3,8 @@
 name = "sdk-examples"
 version = "3"
 description = "SDK examples: tone (a sine), player (a sound file), keytone (a real-time keyboard synth), midimon (MIDI events); surfdemo.app and appinfo.app"
+title = "SDK examples"
+category = "Development"
 license = "MIT"
 source_tree = "sdk/examples"
 license_files = ["../../LICENSE"]

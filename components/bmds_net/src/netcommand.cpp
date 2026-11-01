@@ -29,6 +29,7 @@
 
 #include "netinterface.h"
 #include "netmdns.h"
+#include "rxcopies.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -160,6 +161,7 @@ namespace {
                 IpState   lo;
                 bool      haveLo = false;
                 stats_mem heap;
+                RxCopies::Usage copies;
                 {
                         NetStack::Locker lock;
                         struct netif    *n;
@@ -170,6 +172,7 @@ namespace {
                                 }
                         }
                         heap = lwip_stats.mem;
+                        copies = RxCopies::usage();
                 }
                 if (haveLo) {
                         ctx.printf("lo:\n");
@@ -178,6 +181,9 @@ namespace {
                 ctx.printf("lwIP heap: %lu of %lu bytes used (most %lu), %u failed\n",
                            static_cast<unsigned long>(heap.used), static_cast<unsigned long>(heap.avail),
                            static_cast<unsigned long>(heap.max), static_cast<unsigned>(heap.err));
+                ctx.printf("Received copies (PSRAM): %zu of %zu slots used (most %zu), %" PRIu32
+                           " wanted with none free\n",
+                           copies.used, copies.slots, copies.most, copies.empty);
                 return;
         }
 

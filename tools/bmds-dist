@@ -7,19 +7,25 @@
 #
 # Builds the distribution (devplan/distribution.md): the programs in dist/,
 # from pinned upstream sources with the SDK, into build-dist/rootfs, the
-# card's tree (applications as apps/NAME.app folders: devplan/apps.md); and
-# installs that tree on a board over the serial cable.
+# card's tree (applications as apps/NAME.app folders: devplan/apps.md); makes
+# a package of each (.bmpk, devplan/packages.md); and installs them on a board
+# over the serial cable with pkg.
 #
 #   bmds-dist list                  the packages
 #   bmds-dist build [package...]    build (all by default) into build-dist/rootfs
-#   bmds-dist install [-p port]     send build-dist/rootfs to the board, make the links
+#   bmds-dist package [package...]  package what was built into build-dist/packages, with an index
+#   bmds-dist install [-p port] [package...]
+#                                   send the packages (and what they need) to the board and
+#                                   install them with pkg
 #
-# Python's standard library only (3.11+, for tomllib); install needs pyserial.
+# Python's standard library only (3.11+, for tomllib) to build; package needs
+# tools/mkpkg's (cryptography: IDF's Python), install pyserial too.
 
 import argparse
 import hashlib
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -164,8 +170,13 @@ def tree_files(root):
 
 
 def uses_sdk(recipe):
-    """False for a package of data, built with the host's tools only."""
-    return recipe.get("sdk", True)
+    """False for a package of data, built with the host's tools only, and for a meta package."""
+    return recipe.get("sdk", True) and not is_meta(recipe)
+
+
+def is_meta(recipe):
+    """A meta package: its depends alone, nothing built (devplan/packages.md §20)."""
+    return bool(recipe.get("meta", False))
 
 
 def build_package(recipe, cc):
@@ -207,6 +218,9 @@ def build_package(recipe, cc):
     os.makedirs(licenses, exist_ok=True)
     for license_file in recipe.get("license_files", []):
         shutil.copy(os.path.join(src, license_file), licenses)
+    if uses_sdk(recipe):
+        # Linked into every program the SDK builds (static musl).
+        shutil.copy(os.path.join(ROOT, "sdk", "libc", "musl", "COPYRIGHT"), os.path.join(licenses, "musl.COPYRIGHT"))
     # Into the rootfs, with the package's file list.
     files = tree_files(stage)
     for rel in files:
@@ -241,6 +255,152 @@ def write_links_script():
     return links
 
 
+# freedesktop.org's main categories: what the launcher groups by (devplan/packages.md §3).
+MAIN_CATEGORIES = ("AudioVideo", "Audio", "Video", "Development", "Education", "Game", "Graphics", "Network",
+                   "Office", "Science", "Settings", "System", "Utility")
+
+
+def package_version(recipe):
+    """The package's version: the upstream's, then the recipe's revision (devplan/packages.md §4)."""
+    return "%s-%d" % (recipe["version"], int(recipe.get("revision", 1)))
+
+
+def desktop_entries(stage):
+    """{key: value} of each apps/NAME.app/app.desktop in a staged package."""
+    entries = []
+    appsdir = os.path.join(stage, "apps")
+    if os.path.isdir(appsdir):
+        for app in sorted(os.listdir(appsdir)):
+            path = os.path.join(appsdir, app, "app.desktop")
+            if os.path.isfile(path):
+                entry = {"_dir": os.path.join(appsdir, app)}
+                for line in open(path, encoding="utf-8"):
+                    if "=" in line and not line.startswith(("#", "[")):
+                        key, value = line.rstrip("\n").split("=", 1)
+                        entry.setdefault(key, value)
+                entries.append(entry)
+    return entries
+
+
+def icon_notes(path):
+    """(side, PNG) of each icon note built into a program (devplan/gui.md §4j)."""
+    with open(path, "rb") as f:
+        d = f.read()
+    if d[:4] != b"\x7fELF" or d[4] != 1:
+        return []
+    shoff, = struct.unpack_from("<I", d, 0x20)
+    shentsize, shnum, shstrndx = struct.unpack_from("<HHH", d, 0x2e)
+    sections = [struct.unpack_from("<IIIIII", d, shoff + i * shentsize) for i in range(shnum)]
+    names = sections[shstrndx][4]
+    found = []
+    for name, _, _, _, offset, size in sections:
+        if d[names + name:d.index(b"\0", names + name)] != b".note.bmds.icon":
+            continue
+        at = offset
+        while at + 12 <= offset + size:
+            namesz, descsz, kind = struct.unpack_from("<III", d, at)
+            desc = at + 12 + ((namesz + 3) & ~3)
+            if d[at + 12:at + 12 + namesz].rstrip(b"\0") == b"BMDS" and kind == 2:
+                header, width, height, fmt, length = struct.unpack_from("<IHHII", d, desc)
+                if fmt == 1 and width == height:
+                    found.append((width, d[desc + header:desc + header + length]))
+            at = desc + ((descsz + 3) & ~3)
+    return found
+
+
+def package_metadata(recipe, stage):
+    """The store's fields (devplan/packages.md §18): the recipe's, else its one application's."""
+    apps = desktop_entries(stage)
+    app = apps[0] if len(apps) == 1 else None
+    meta = {"title": recipe.get("title") or (app or {}).get("Name") or recipe["name"],
+            "summary": recipe.get("description", ""), "license": recipe.get("license", ""),
+            "homepage": recipe.get("homepage", ""), "category": recipe.get("category", "")}
+    if not meta["category"]:
+        for entry in apps:
+            for category in entry.get("Categories", "").split(";"):
+                if category in MAIN_CATEGORIES:
+                    meta["category"] = category
+                    break
+            if meta["category"]:
+                break
+    icons = [os.path.join(ROOT, icon) for icon in recipe.get("icons", [])]
+    if not icons:
+        for entry in apps:
+            program = os.path.join(entry["_dir"], entry.get("Exec", "").split(" ")[0])
+            if os.path.isfile(program):
+                for side, png in icon_notes(program):
+                    if side in (16, 32):
+                        icon = os.path.join(OUT, "icons", "%s-%d.png" % (recipe["name"], side))
+                        os.makedirs(os.path.dirname(icon), exist_ok=True)
+                        with open(icon, "wb") as f:
+                            f.write(png)
+                        icons.append(icon)
+            if icons:
+                break
+    meta["icons"] = icons
+    return meta
+
+
+def command_package(opts):
+    known = packages()
+    wanted = opts.packages or [n for n in known
+                               if is_meta(known[n]) or os.path.isdir(os.path.join(OUT, "stage", n))]
+    out_dir = os.path.join(OUT, "packages")
+    os.makedirs(out_dir, exist_ok=True)
+    mkpkg = os.path.join(ROOT, "tools", "mkpkg")
+    for name in wanted:
+        if name not in known:
+            die("no package %s (see bmds-dist list)" % name)
+        recipe = known[name]
+        stage = os.path.join(OUT, "stage", name)
+        if is_meta(recipe):
+            shutil.rmtree(stage, ignore_errors=True)
+            os.makedirs(stage)  # no files: its depends are what it installs
+        elif not os.path.isdir(stage):
+            die("%s isn't built: bmds-dist build %s" % (name, name))
+        meta = package_metadata(recipe, stage)
+        version = package_version(recipe)
+        for old in os.listdir(out_dir):
+            if old.startswith(name + "_") and old.endswith(".bmpk"):
+                os.remove(os.path.join(out_dir, old))
+        cmd = [sys.executable, mkpkg, "make", stage, "--name", name, "--version", version,
+               "--arch", "esp32p4" if uses_sdk(recipe) else "all",
+               "-o", os.path.join(out_dir, "%s_%s.bmpk" % (name, version))]
+        for key in ("title", "summary", "category", "license", "homepage"):
+            if meta[key]:
+                cmd += ["--" + key, meta[key]]
+        if recipe.get("depends"):
+            cmd += ["--depends", ", ".join(recipe["depends"])]
+        if recipe.get("stack"):
+            cmd += ["--stack", str(recipe["stack"])]
+        if recipe.get("display"):
+            cmd += ["--display"]
+        for icon in meta["icons"]:
+            cmd += ["--icon", icon]
+        run(cmd)
+    run([sys.executable, mkpkg, "index", out_dir, "--label", "BMDS (bmds-dist)"])
+    return 0
+
+
+def install_order(names, known):
+    """names and what they need, each after its dependencies: what is sent (pkg plans itself)."""
+    order, seen = [], set()
+
+    def visit(name, chain):
+        if name in seen:
+            return
+        if name in chain:
+            die("%s: a dependency cycle (%s)" % (name, " -> ".join(chain + [name])))
+        for dep in known.get(name, {}).get("depends", []):
+            visit(dep.split("(")[0].strip(), chain + [name])
+        seen.add(name)
+        order.append(name)
+
+    for name in names:
+        visit(name, [])
+    return order
+
+
 def command_list(_opts):
     for name, recipe in packages().items():
         print("%-12s %-10s %s (%s)" % (name, recipe["version"], recipe.get("description", ""), recipe.get("license", "?")))
@@ -255,6 +415,9 @@ def command_build(opts):
             die("no package %s (see bmds-dist list)" % name)
     cc = build_sdk() if any(uses_sdk(known[name]) for name in wanted) else None
     for name in wanted:
+        if is_meta(known[name]):
+            print("=== %s: a meta package, nothing to build" % name, flush=True)
+            continue
         build_package(known[name], cc)
     links = write_links_script()
     print("rootfs: %s (%d links in etc/dist/links.sh)" % (ROOTFS, len(links)))
@@ -265,28 +428,40 @@ def command_install(opts):
     sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
     import bmdsboard  # noqa: E402
 
-    if not os.path.isdir(ROOTFS):
-        die("nothing built: run bmds-dist build first")
-    root = opts.root.rstrip("/")
-    by_dir = {}
-    for rel in tree_files(ROOTFS):
-        path = os.path.join(ROOTFS, rel)
-        if not os.path.islink(path):
-            by_dir.setdefault(os.path.dirname(rel), []).append(path)
+    out_dir = os.path.join(OUT, "packages")
+    if not os.path.isdir(out_dir):
+        die("nothing packaged: run bmds-dist build, then bmds-dist package")
+    known = packages()
+    files = {}
+    for entry in sorted(os.listdir(out_dir)):
+        if entry.endswith(".bmpk"):
+            files[entry.split("_", 1)[0]] = os.path.join(out_dir, entry)
+    wanted = opts.packages or sorted(files)
+    for name in wanted:
+        if name not in files:
+            die("%s isn't packaged: bmds-dist package %s" % (name, name))
+    order = install_order(wanted, known)
+    missing = [name for name in order if name not in files]
+    if missing:
+        die("needed, and not packaged: %s" % " ".join(missing))
+    where = opts.dir.rstrip("/")
     try:
         board = bmdsboard.Board(opts.port)
         board.sync()
-        for rel_dir in sorted(by_dir):
-            where = root + ("/" + rel_dir if rel_dir else "")
-            print("%s: %d files" % (where, len(by_dir[rel_dir])), flush=True)
-            board.send_files(by_dir[rel_dir], where)
-        output, status = board.run("DIST_ROOT=%s sh %s/etc/dist/links.sh" % (bmdsboard.quote(root), root), 120)
+        print("%s: %d packages" % (where, len(order)), flush=True)
+        # The index too: pkg update takes it as it is when it lists exactly the folder's packages.
+        index = os.path.join(out_dir, "index.bmpi")
+        board.send_files([files[name] for name in order] + ([index] if os.path.isfile(index) else []), where)
+        # Only what was asked for is named: pkg finds the rest in the folder, as automatic.
+        # --overwrite: a card filled before packages has their files, owned by none.
+        command = "pkg install -y --overwrite " + " ".join(
+            bmdsboard.quote(where + "/" + os.path.basename(files[name])) for name in wanted)
+        output, status = board.run(command, 1800)
         sys.stdout.write(output.decode(errors="replace"))
         if status != 0:
-            die("making the links failed (%d)" % status)
+            die("pkg install failed (%d)" % status)
     except bmdsboard.BoardError as e:
         die(str(e))
-    print("installed in %s" % root)
     return 0
 
 
@@ -299,16 +474,20 @@ def main():
     sub.add_parser("list", help="the packages")
     b = sub.add_parser("build", help="build packages (all by default) into build-dist/rootfs")
     b.add_argument("packages", nargs="*")
-    i = sub.add_parser("install", help="send build-dist/rootfs to the board and make the links")
+    k = sub.add_parser("package", help="package what was built (all by default) into build-dist/packages")
+    k.add_argument("packages", nargs="*")
+    i = sub.add_parser("install", help="send packages (all by default) to the board and install them with pkg")
+    i.add_argument("packages", nargs="*")
     i.add_argument("-p", "--port", help="serial port (default: $ESPPORT, /dev/esp-*, /dev/ttyACM0)")
-    i.add_argument("--root", default="/sd0/p0", help="where the tree goes (default: /sd0/p0)")
+    i.add_argument("--dir", default="/sd0/p0/packages", help="where the packages go (default: /sd0/p0/packages)")
     opts = parser.parse_args()
     global OUT, ROOTFS, NESTED
     if opts.out:
         OUT = os.path.abspath(opts.out)
         ROOTFS = os.path.join(OUT, "rootfs")
     NESTED = opts.nested
-    return {"list": command_list, "build": command_build, "install": command_install}[opts.command](opts)
+    return {"list": command_list, "build": command_build, "package": command_package,
+            "install": command_install}[opts.command](opts)
 
 
 if __name__ == "__main__":

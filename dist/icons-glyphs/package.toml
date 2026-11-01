@@ -4,6 +4,8 @@
 name = "icons-glyphs"
 version = "0.8.12"
 description = "Glyphs core icons (coloured) at 16x16 and 32x32: an icon theme (IconTheme=glyphs)"
+title = "Glyphs icons"
+category = "Settings"
 license = "MIT"
 source_tree = "thirdparty/glyphs"
 license_files = ["LICENSE"]

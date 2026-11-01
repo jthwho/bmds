@@ -3,6 +3,8 @@
 name = "benchprog"
 version = "1"
 description = "Benchmarks of the system as programs see it, run by the bench command"
+title = "System benchmarks"
+category = "System"
 license = "MIT"
 source_tree = "programs/benchprog"
 license_files = ["../../LICENSE"]

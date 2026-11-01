@@ -18,6 +18,11 @@ namespace {
 #include "updatekeys.inc"
         };
 
+        constexpr const char *Comments[] = {BMDS_UPDATE_KEY_COMMENTS};
+        static_assert(sizeof(Comments) / sizeof(Comments[0]) == sizeof(Keys) / sizeof(Keys[0]));
+
+        constexpr UpdatePackage::Key DevKey = BMDS_UPDATE_DEV_KEY;
+
 } // namespace
 
 Span<const UpdatePackage::Key> UpdateKeys::accepted() {
@@ -25,7 +30,15 @@ Span<const UpdatePackage::Key> UpdateKeys::accepted() {
 }
 
 bool UpdateKeys::isDevKey(size_t index) {
-        return index + 1 > BMDS_UPDATE_RELEASE_KEYS; // ">= 0" is a warning without release keys
+        return index + 1 > BMDS_UPDATE_TRUSTED_KEYS; // ">= 0" is a warning without trusted keys
+}
+
+const char *UpdateKeys::comment(size_t index) {
+        return index < sizeof(Comments) / sizeof(Comments[0]) ? Comments[index] : "";
+}
+
+const UpdatePackage::Key &UpdateKeys::devKey() {
+        return DevKey;
 }
 
 bool UpdateKeys::isDevMode() {

@@ -80,7 +80,7 @@ if(COMMAND idf_component_register)
                                                          "-Wl,--wrap=panic_print_hex"
                                                          "-Wl,--wrap=esp_panic_handler"
                                                          "-Wl,--wrap=esp_restart_noos")
-        bmds_update_keys(${COMPONENT_LIB} updatekeys.inc "${CONFIG_BMDS_UPDATE_KEYS_RELEASE}")
+        bmds_update_keys(${COMPONENT_LIB} updatekeys.inc "${CONFIG_BMDS_UPDATE_KEYS_TRUSTED}")
 else()
         find_package(Threads REQUIRED)
         # No clockinit.cpp: on the host nothing survives a "reset".

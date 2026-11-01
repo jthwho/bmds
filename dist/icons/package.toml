@@ -3,6 +3,8 @@
 name = "icons"
 version = "1.0.2"
 description = "Flat Color Icons (icons8) at 16x16 and 32x32: the desktop's icon theme"
+title = "Flat Color Icons"
+category = "Settings"
 license = "MIT"
 source_tree = "thirdparty/flat-color-icons"
 license_files = ["LICENSE.md"]

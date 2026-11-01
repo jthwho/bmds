@@ -32,11 +32,12 @@
 
 #define MEM_LIBC_MALLOC 0
 #define MEMP_MEM_MALLOC 1
-#define MEM_ALIGNMENT 4
 #ifdef CONFIG_BMDS_NET_HEAP_KB
+#define MEM_ALIGNMENT 4
 #define MEM_SIZE (CONFIG_BMDS_NET_HEAP_KB * 1024)
 #else
-#define MEM_SIZE (96 * 1024) // the host tests
+#define MEM_ALIGNMENT 8 // the host tests: 64-bit pointers in lwIP's structures (UBSan checks)
+#define MEM_SIZE (96 * 1024)
 #endif
 #define LWIP_RAM_HEAP_POINTER bmds_lwip_heap
 // With MEMP_MEM_MALLOC these bound nothing (the heap does): lwIP checks them against each other.
@@ -130,15 +131,21 @@
 // --- TCP ------------------------------------------------------------------------------------
 
 #define TCP_MSS 1460
-// 16 segments each way: 8 limited a connection to 11.7 KB a round trip, 2.3-2.9 MB/s over this
-// PC's Wi-Fi (devplan/network.md §28). Received data past the ring's share is copied into the heap.
-#define TCP_WND (16 * TCP_MSS)
+// The receive window, scaled: 176 segments (251 KB) is 10 MB/s over a 25 ms round trip (16, 23 KB,
+// allowed 0.93); what it holds past the ring's share is copied into PSRAM (rxcopies.h,
+// devplan/network.md §32). A peer that doesn't scale gets 64 KB.
+#define LWIP_WND_SCALE 1
+#define TCP_RCV_SCALE 2
+#define TCP_WND (176 * TCP_MSS)
+// 16 segments sent: 8 limited a connection to 11.7 KB a round trip, 2.3-2.9 MB/s over this PC's
+// Wi-Fi (§28). Sent data is lwIP's heap: the Ethernet DMA sends it in place (§29).
 #define TCP_SND_BUF (16 * TCP_MSS)
 #define TCP_SND_QUEUELEN ((4 * TCP_SND_BUF + TCP_MSS - 1) / TCP_MSS)
 #define TCP_QUEUE_OOSEQ 1
-#define TCP_OOSEQ_MAX_PBUFS 4
+// After a loss, what follows it is kept (93 KB; each segment's tcp_seg is the heap's), and SACK
+// tells the sender: 4 dropped most of a big window's.
+#define TCP_OOSEQ_MAX_PBUFS 64
 #define LWIP_TCP_SACK_OUT 1
-#define LWIP_WND_SCALE 0
 #define TCP_LISTEN_BACKLOG 1
 #define LWIP_TCP_KEEPALIVE 1
 #define SO_REUSE 1

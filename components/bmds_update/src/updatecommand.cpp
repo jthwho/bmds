@@ -11,9 +11,14 @@
  */
 
 #include <cstring>
+#include <new>
 #include <bmds/command.h>
 #include <bmds/console.h>
 #include <bmds/datetime.h>
+#include <bmds/fetch.h>
+#include <bmds/memory.h>
+#include <bmds/pkgmanifest.h>
+#include <bmds/sysconf.h>
 #include <bmds/shell.h>
 #include <bmds/system.h>
 #include <bmds/thread.h>
@@ -23,6 +28,11 @@
 BMDS_NAMESPACE_BEGIN
 
 namespace {
+
+        // Where this board's packages are published (devplan/update.md §17): one URL that names the newest.
+        BMDS_SYSCONF(updateUrl, "update/url", Config::Type::String, "",
+                     "Where this board's update packages are published: a URL naming the newest (update fetch)", 0,
+                     1023, nullptr, nullptr)
 
         // How long the console gets to show the last lines before a restart.
         constexpr unsigned RestartFlushMs = 500;
@@ -49,7 +59,10 @@ namespace {
         void printReport(CommandContext &ctx, StringView path, const Update::Report &r, Error err) {
                 const UpdatePackage::Package &p = r.package;
                 ctx.printf("Package:  %.*s\n", int(path.size()), path.data());
-                if (p.sectionCount == 0 && r.problem == nullptr) return; // it couldn't be read at all
+                if (p.sectionCount == 0) { // not a package's head: nothing in it to show
+                        if (r.problem != nullptr) ctx.printf("Check:    bad: %s\n", r.problem);
+                        return;
+                }
                 ctx.printf("Board:    %s\n", p.board);
                 ctx.printf("Version:  %u.%u.%u (%s), installed %s: %s\n", p.version.major, p.version.minor,
                            p.version.patch, p.versionText, r.mainVersion[0] != '\0' ? r.mainVersion : "none",
@@ -59,7 +72,7 @@ namespace {
                 const DateTime t = DateTime::fromSeconds(p.madeAt);
                 ctx.printf("Made:     %04ld-%02u-%02u %02u:%02u:%02u UTC\n", static_cast<long>(t.year), t.month, t.day,
                            t.hour, t.minute, t.second);
-                if (err.isOk() || r.devKey) ctx.printf("Signed:   %s\n", r.devKey ? "the dev key" : "a release key");
+                if (err.isOk() || r.devKey) ctx.printf("Signed:   %s\n", r.devKey ? "the dev key" : "a trusted key");
                 for (size_t i = 0; i < p.sectionCount; ++i) {
                         const UpdatePackage::Section &s = p.sections[i];
                         const char                   *partition = partitionOf(s.type);
@@ -185,9 +198,176 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // A package's head, fetched: the first bytes, and the whole file's size.
+        struct HeadFetch {
+                        uint8_t  head[UpdatePackage::MaxHeadBytes];
+                        size_t   bytes = 0;
+                        uint64_t total = UINT64_MAX;
+        };
+
+        // A package fetched into a file (`NAME.part`, resumed by its size).
+        struct FileFetch {
+                        CommandContext *ctx = nullptr;
+                        String          path;
+                        FileHandle::Ptr file;
+                        uint64_t        written = 0;
+                        uint64_t        total = UINT64_MAX;
+                        unsigned        shown = 0; ///< Tenths said.
+        };
+
+        Error openPart(FileFetch &f, bool resume) {
+                f.file = FileHandle::Ptr();
+                Vfs::Context context;
+                auto [file, err] =
+                        Vfs::open(f.path.view(), Vfs::Write | Vfs::Create | (resume ? 0 : Vfs::Truncate), context);
+                if (err.isError()) return err;
+                f.file = std::move(file);
+                f.written = 0;
+                if (resume) {
+                        auto [end, serr] = f.file->stream().seek(0, Stream::SeekFrom::End);
+                        if (serr.isError()) return serr;
+                        f.written = uint64_t(end);
+                }
+                return Error::Ok;
+        }
+
+        // `update fetch [--check] [URL]`: the package at URL (or update/url) into update/dir, then
+        // checked as `update check`; with --check, its head alone, nothing written.
+        int fetch(CommandContext &ctx, Span<char *const> args) {
+                bool        headOnly = false;
+                const char *given = nullptr;
+                for (char *const a : args) {
+                        if (std::strcmp(a, "--check") == 0)
+                                headOnly = true;
+                        else if (given == nullptr && a[0] != '-')
+                                given = a;
+                        else
+                                return ctx.usage();
+                }
+                String url;
+                if (given != nullptr)
+                        (void)url.append(given);
+                else
+                        (void)SysConf::get(StringView("update/url"), url);
+                if (url.isEmpty()) {
+                        ctx.eprintf("update: no URL: give one, or set update/url\n");
+                        return Shell::ExitFailure;
+                }
+                if (&systemFetch == nullptr) {
+                        ctx.eprintf("update: this firmware can't fetch (recovery has no network): put the package on "
+                                    "the card\n");
+                        return Shell::ExitFailure;
+                }
+                String finalUrl, why;
+                if (headOnly) {
+                        auto *h = static_cast<HeadFetch *>(Memory::alloc(MemSpace::Psram, sizeof(HeadFetch)));
+                        if (h == nullptr) return Shell::ExitFailure;
+                        new (h) HeadFetch;
+                        FetchSink sink;
+                        sink.begin = [](void *arg, uint64_t, uint64_t total) -> Error {
+                                static_cast<HeadFetch *>(arg)->total = total;
+                                return Error::Ok;
+                        };
+                        sink.body = [](void *arg, ByteSpan bytes) -> Error {
+                                HeadFetch   &f = *static_cast<HeadFetch *>(arg);
+                                const size_t n = bytes.size() < sizeof(f.head) - f.bytes ? bytes.size()
+                                                                                         : sizeof(f.head) - f.bytes;
+                                std::memcpy(f.head + f.bytes, bytes.data(), n);
+                                f.bytes += n;
+                                return f.bytes == sizeof(f.head) ? Error(Error::Full) : Error(Error::Ok); // enough
+                        };
+                        sink.arg = h;
+                        Error err = systemFetch(url.view(), 0, sink, &finalUrl, why);
+                        if (err == Error::Full) err = Error::Ok;
+                        int status = Shell::ExitFailure;
+                        if (err.isError()) {
+                                ctx.eprintf("update: %s\n", why.isEmpty() ? err.desc() : why.cStr());
+                        } else if (h->total == UINT64_MAX) {
+                                ctx.eprintf("update: %s: the server didn't say the package's size\n", finalUrl.cStr());
+                        } else {
+                                auto *r = static_cast<Update::Report *>(
+                                        Memory::alloc(MemSpace::Psram, sizeof(Update::Report)));
+                                if (r != nullptr) {
+                                        new (r) Update::Report;
+                                        err = Update::checkHead(Span<const uint8_t>(h->head, h->bytes), h->total, *r);
+                                        if (err.isOk() || err == Error::CorruptData) {
+                                                printReport(ctx, url.view(), *r, err); // not the redirect's
+                                                status = err.isOk() ? Shell::ExitSuccess : Shell::ExitFailure;
+                                        } else {
+                                                ctx.eprintf("update: %s\n", err.desc());
+                                        }
+                                        Memory::free(r);
+                                }
+                        }
+                        Memory::free(h);
+                        return status;
+                }
+
+                // Its name: the URL's last part (a release host's "latest" link keeps the file's name).
+                StringView path = url.view();
+                path = path.left(path.indexOf('?'));
+                StringView name = path.mid(path.lastIndexOf('/') + 1);
+                if (name.isEmpty() || !PkgManifest::isValidPath(name)) name = "update.bmup";
+                String dir;
+                (void)SysConf::get(StringView("update/dir"), dir);
+                Vfs::Context context;
+                (void)Vfs::mkdir(dir.view(), context);
+                FileFetch f;
+                f.ctx = &ctx;
+                String target;
+                Error  err = target.appendf("%s/%.*s", dir.cStr(), int(name.size()), name.data());
+                if (err.isOk()) err = f.path.appendf("%s.part", target.cStr());
+                if (err.isOk()) err = openPart(f, true);
+                if (err.isError()) {
+                        ctx.eprintf("update: %s: %s\n", f.path.cStr(), err.desc());
+                        return Shell::ExitFailure;
+                }
+                FetchSink sink;
+                sink.begin = [](void *arg, uint64_t start, uint64_t total) -> Error {
+                        FileFetch &to = *static_cast<FileFetch *>(arg);
+                        to.total = total;
+                        if (start == to.written) return Error::Ok;
+                        return start == 0 ? openPart(to, false) : Error(Error::CorruptData);
+                };
+                sink.body = [](void *arg, ByteSpan bytes) -> Error {
+                        FileFetch &to = *static_cast<FileFetch *>(arg);
+                        while (!bytes.isEmpty()) {
+                                auto [n, werr] = to.file->write(bytes, WaitForever);
+                                if (werr.isError()) return werr;
+                                if (n == 0) return Error::IoError;
+                                bytes = bytes.mid(n);
+                                to.written += n;
+                        }
+                        if (to.total != UINT64_MAX && to.total != 0) {
+                                const unsigned tenths = unsigned(to.written * 10 / to.total);
+                                if (tenths > to.shown && tenths < 10)
+                                        to.ctx->eprintf("update: fetched %u%%\n", tenths * 10);
+                                if (tenths > to.shown) to.shown = tenths;
+                        }
+                        return Error::Ok;
+                };
+                sink.arg = &f;
+                if (f.written > 0)
+                        ctx.eprintf("update: resuming from %llu bytes\n", static_cast<unsigned long long>(f.written));
+                err = systemFetch(url.view(), f.written, sink, &finalUrl, why);
+                f.file = FileHandle::Ptr();
+                if (err.isError()) { // the .part stays: the next fetch resumes it
+                        ctx.eprintf("update: %s\n", why.isEmpty() ? err.desc() : why.cStr());
+                        return err == Error::Interrupted ? Shell::ExitInterrupted : Shell::ExitFailure;
+                }
+                err = Vfs::rename(f.path.view(), target.view(), Vfs::RenameMode::Replace, context);
+                if (err.isError()) {
+                        ctx.eprintf("update: %s: %s\n", target.cStr(), err.desc());
+                        return Shell::ExitFailure;
+                }
+                return check(ctx, target.cStr());
+        }
+
         int runUpdate(CommandContext &ctx) {
                 const Span<char *const> args = ctx.args();
                 if (args.size() == 2 && std::strcmp(args[1], "status") == 0) return status(ctx);
+                if (args.size() >= 2 && std::strcmp(args[1], "fetch") == 0)
+                        return fetch(ctx, Span<char *const>(args.data() + 2, args.size() - 2));
                 if (args.size() == 3 && std::strcmp(args[1], "check") == 0) return check(ctx, args[2]);
                 if (args.size() == 3 && std::strcmp(args[1], "apply") == 0) return apply(ctx, args[2], false);
                 if (args.size() == 4 && std::strcmp(args[1], "apply") == 0 && std::strcmp(args[2], "--force") == 0)
@@ -197,9 +377,10 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(update, runUpdate, "check FILE | apply [--force] FILE | status",
+BMDS_SHELL_COMMAND(update, runUpdate, "check FILE | apply [--force] FILE | status | fetch [--check] [URL]",
                    "Check an update package (.bmup), apply it (restarting into recovery to install it; "
                    "--force: also one not newer than what is installed), or show what is pending and the last "
-                   "update's result")
+                   "update's result; fetch one (from URL, else the setting update/url) into update/dir and check it "
+                   "(--check: its head only, nothing written)")
 
 BMDS_NAMESPACE_END

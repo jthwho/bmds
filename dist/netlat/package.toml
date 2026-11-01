@@ -3,6 +3,8 @@
 name = "netlat"
 version = "1"
 description = "Real-time network latency: the sender's wake, departure, round trip and delivery"
+title = "netlat"
+category = "Network"
 license = "MIT"
 source_tree = "programs/netlat"
 license_files = ["../../LICENSE"]

@@ -28,6 +28,7 @@
 #include "netnames.h"
 #include "pbufmarks.h"
 #include "ntpclient.h"
+#include "rxcopies.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -246,9 +247,13 @@ void NetInterface::input(const EthernetDevice::RxFrame &frame) {
         }
         struct pbuf *p = nullptr;
         if (_held.load(std::memory_order_relaxed) >= MaxHeld) {
-                // lwIP is holding buffers (TCP's queues): copy, so the ring keeps its own.
-                p = pbuf_alloc(PBUF_RAW, frame.length, PBUF_RAM);
-                if (p != nullptr) (void)pbuf_take(p, frame.data, frame.length);
+                // lwIP is holding buffers (TCP's queues): copy, so the ring keeps its own. Into
+                // PSRAM (§32), else lwIP's heap.
+                p = RxCopies::copy(frame.data, frame.length);
+                if (p == nullptr) {
+                        p = pbuf_alloc(PBUF_RAW, frame.length, PBUF_RAM);
+                        if (p != nullptr) (void)pbuf_take(p, frame.data, frame.length);
+                }
                 if (p != nullptr) PbufMarks::setArrival(p, frame.stamped ? frame.stamp.toNs() : 0, Clock::now().ns);
                 _device.release(frame);
                 if (p == nullptr) {

@@ -42,8 +42,8 @@ set(BMDS_UPDATE_NOTES "" CACHE FILEPATH "Release notes for the update package (o
 set(bmds_update_args --board ${CONFIG_BMDS_BOARD_DIR} --firmware ${CMAKE_BINARY_DIR}/bmds.bin
                      --rom ${CMAKE_BINARY_DIR}/rom/rom.bin
                      --partitions ${CMAKE_SOURCE_DIR}/partitions.csv)
-if(EXISTS ${CMAKE_SOURCE_DIR}/keys/release.pub)
-        list(APPEND bmds_update_args --accept ${CMAKE_SOURCE_DIR}/keys/release.pub)
+if(EXISTS ${CMAKE_SOURCE_DIR}/keys/trusted.pub)
+        list(APPEND bmds_update_args --accept ${CMAKE_SOURCE_DIR}/keys/trusted.pub)
 endif()
 if(EXISTS ${BMDS_RECOVERY_BIN})
         list(APPEND bmds_update_args --recovery ${BMDS_RECOVERY_BIN})

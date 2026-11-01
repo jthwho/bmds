@@ -7,7 +7,8 @@ releases with the SDK (design: `devplan/distribution.md`).
 . ~/esp/esp-idf/export.sh           # the compiler (and pyserial, for install)
 tools/bmds-dist list
 tools/bmds-dist build [package...]  # into build-dist/rootfs
-tools/bmds-dist install             # over the serial cable, into /sd0/p0
+tools/bmds-dist package [package...] # into build-dist/packages (.bmpk), with an index
+tools/bmds-dist install [package...] # over the serial cable to /sd0/p0/packages, then pkg install
 ```
 
 `--out DIR` builds into DIR instead of `build-dist`; `--nested` is for running inside another
@@ -21,13 +22,22 @@ Make `dist/<name>/` with:
 - **`package.toml`:** `name` (the directory's), `version`, `description`,
   `license` (SPDX), `source` (the release tarball's URL, or a zip's), `sha256`,
   `license_files` (paths in the source to install under `share/licenses/<name>`),
-  optionally `stack` (bytes the program's stack must have; default the
+  optionally `title` (the name the store shows; default its one application's `Name`, else
+  the package's), `category` (freedesktop.org's main category; default its application's),
+  `homepage`, `revision` (the package's own revision of this upstream version, default 1: the
+  package is `VERSION-REVISION`), `depends` (packages it needs, `["dropbear"]` or
+  `["busybox (>= 1.37.0-1)"]`), `icons` (16 and 32 pixel PNGs, paths from the repository's root;
+  default the icons built into its one application's program), `stack` (bytes the program's stack must have; default the
   kernel's), `display` (true: its programs draw to the screen continuously, so
   the kernel starts them away from the display's core: `BMDS_PROGRAM_DISPLAY`) and `source_dir` (the tarball's top directory, if it isn't
   `<name>-<version>`). A package of data kept in this repository has
   `source_tree` (its directory, from the repository's root) instead of
   `source` and `sha256`, may have `version_file` (a file there holding the
   version) instead of `version`, and `sdk = false` if it needs no compiler.
+- **A meta package** (a set, as `bmds-standard`): `package.toml` alone, with `meta = true`,
+  `version`, `description`, `title`, `category`, `license` and `depends` (the set). Nothing is
+  built; it is packaged from an empty tree, and installing it installs its set, each member
+  automatic (`pkg autoremove` takes them when nothing asked for needs them).
 - **`build.sh`:** bash, run with `-e` in an empty build directory. It builds
   and installs into `$DESTDIR` (`bin/` for programs, links as real symbolic
   links). It gets `SRC` (the unpacked, patched source), `BUILD` (its working

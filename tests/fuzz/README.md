@@ -26,6 +26,16 @@ the host tests: they run for as long as one lets them.
 - **`fontface_fuzz`:** TrueType faces (`devplan/fonts.md`): open, the names, the character map,
   kerning, glyphs boxed and rendered sharp and smooth at three sizes, with stb_truetype's asserts
   on; no fault, no read outside the file, no box larger than allowed, no leak.
+- **`pkg_fuzz`:** packages and indexes (`devplan/packages.md`): any bytes read as a package (the
+  head, the icons, the manifest, every file's data blocks decoded), an index (the head, the
+  stanzas, the icons), as icons, manifest, dependency and stanza text, and as versions compared (equal to themselves,
+  antisymmetric, transitive); every view inside the input, every name, path and version valid;
+  an index's stanzas walked as installed packages and candidates (`PkgSolver`): every plan
+  installs each package once, after what it needs, with what was asked for not automatic; every
+  stanza text written as an unsigned index reads back the same.
+- **`http_fuzz`:** HTTP responses (`devplan/packages.md` §23), fed whole and in pieces: the same
+  outcome however they arrive, progress on every call, views inside what was fed, no body longer
+  than its length; lines as URLs, parsed, resolved against the first, built into a request.
 - **`soundfont_fuzz`:** SoundFonts (§22): load, play notes on every preset, the drums and across
   the keyboard with controllers and bends, render; every sample finite, no leak.
 
@@ -49,6 +59,11 @@ tests/fuzz/make-midi-seeds.py /mnt/data/tmp/midi        # a MIDI file: notes, ch
 tests/fuzz/make-ttf-seeds.py /mnt/data/tmp/ttf          # small fonts cut from IBM Plex (fontTools)
 TMPDIR=/mnt/data/tmp ./fontface_fuzz -fork=3 -ignore_crashes=1 -max_len=16384 -max_total_time=3600 -print_funcs=0 \
         -artifact_prefix=/mnt/data/tmp/ /mnt/data/tmp/tcorpus /mnt/data/tmp/ttf
+```
+
+```sh
+mkdir -p pkg-seeds && cp ../tests/host/pkg/* pkg-seeds/       # and manifest, stanza and version texts
+./pkg_fuzz -fork=3 -ignore_crashes=1 -max_len=131072 -max_total_time=900 -artifact_prefix=./pkg- pkg-corpus pkg-seeds
 ```
 
 ```sh

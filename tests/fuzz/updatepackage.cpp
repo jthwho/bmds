@@ -31,7 +31,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
                 if (s.offset < p.headBytes || uint64_t(s.offset) + s.size > size) std::abort();
         }
         const UpdatePackage::Key key;
+        size_t                   index = 0;
         (void)UpdatePackage::verify(p, bmds::Span<const uint8_t>(data, p.headBytes),
-                                    bmds::Span<const UpdatePackage::Key>(&key, 1));
+                                    bmds::Span<const UpdatePackage::Key>(&key, 1), index);
         return 0;
 }

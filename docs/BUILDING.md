@@ -2,7 +2,9 @@
 
 ## Prerequisites
 
-- **ESP-IDF v6.1** (currently developed against a v6.1-dev checkout at `~/esp/esp-idf`).
+- **ESP-IDF v6.1** (currently developed against a v6.1-dev checkout at `~/esp/esp-idf`). Releases
+  are built with commit `ff97953b32a32e44f507593320b50d728eea3f06` (`v6.1-dev-1-gff97953b32a`), unmodified:
+  `git -C ~/esp/esp-idf checkout ff97953b32a3 && ~/esp/esp-idf/install.sh esp32p4`.
 - A host C++20 compiler and CMake ≥ 3.22 for host-side unit tests.
 - An Olimex ESP32-P4-PC connected over its USB-C port.
 
@@ -111,7 +113,7 @@ Programs for BMDS are built with the SDK in `sdk/` (headers, startup code, linke
 - `BMDS_TIMEZONE` is the kernel time zone at boot, a POSIX `TZ` string (under **BMDS kernel**).
 - `BMDS_SD_MAX_KHZ` caps the SD bus clock; `BMDS_SD_BOUNCE_BYTES` sizes the SD bounce buffer
   (under **BMDS storage**).
-- `BMDS_UPDATE_KEYS_DEV` / `BMDS_UPDATE_KEYS_RELEASE` choose which signing keys update packages
+- `BMDS_UPDATE_KEYS_DEV` / `BMDS_UPDATE_KEYS_TRUSTED` choose which signing keys update packages
   are accepted with (keys/README.md); `BMDS_RECOVERY` is set by `recovery/sdkconfig.defaults`.
 
 ## Release Builds
@@ -133,3 +135,21 @@ idf.py size-components
 ```
 
 The baseline is recorded in `devplan/foundation.md`.
+
+## Releases
+
+`tools/release` makes every file a release carries, in `release/VERSION/`
+(`devplan/release.md` §5): for each chip variant a flash zip (the images, `flash.json`, the
+esptool command) and an update package, then the card's zip, the GPL sources and `SHA256SUMS`. It
+builds in `build-release/`, from `sdkconfig.defaults` only, so a developer's own `sdkconfig` never
+reaches a release.
+
+```bash
+. ~/esp/esp-idf/export.sh
+tools/release --dev                     # any tree, to try it: release/0.1.0-0269544e-dirty/
+tools/release                           # a clean tree at tag vX.Y.Z, with RELEASE_NOTES.md's section
+tools/release --publish --repo OWNER/NAME   # and the GitHub release on the mirror (gh)
+```
+
+Packages are signed with the dev key, so anyone can make their own (`keys/README.md`).
+`tools/mkinstaller local` makes the web installer for trying a build (`installer/README.md`).

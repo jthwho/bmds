@@ -1,0 +1,480 @@
+#!/usr/bin/env python3
+# @file      mkpkg
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Makes and reads packages (.bmpk) and package indexes (.bmpi), devplan/packages.md; the formats
+# are components/bmds_core/include/bmds/pkgfile.h's, pkgmanifest.h's and pkgindex.h's.
+#
+#   mkpkg make ROOT --name NAME --version VERSION [--arch esp32p4|all] [--depends LIST]
+#              [--title TEXT] [--summary TEXT] [--category CAT] [--license SPDX] [--homepage URL]
+#              [--description TEXT] [--icon PNG]... [--stack BYTES] [--display] [--abi N]
+#              [--key KEY] [-o OUT]
+#       A package of the files, directories and links below ROOT (its paths relative to it),
+#       signed with KEY (default keys/dev.key), to OUT (default NAME_VERSION.bmpk). With no
+#       files, a meta package: --depends alone. --icon: square PNGs, 16 and 32 pixels as the
+#       theme's (at most 64, 16 KB each).
+#   mkpkg info FILE [--pub PUB]... [--files]
+#       Shows a package or an index and checks everything: the hashes, the signature (against
+#       PUB, or keys/dev.pub and keys/trusted.pub), and a package's every file decoded against
+#       its size and hash. Exits 1 if anything doesn't check.
+#   mkpkg index DIR [--key KEY] [--base-url URL] [--label TEXT] [-o OUT]
+#       An index of every package in DIR, each checked first, to OUT (default DIR/index.bmpi).
+#       File is the package's name, after URL when given. The packages' icons go in it too.
+#   mkpkg extract FILE DIR
+#       A package's files, directories and links into DIR (which must not exist), checked.
+
+import argparse
+import hashlib
+import os
+import re
+import stat
+import struct
+import sys
+import time
+import zlib
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bmdscontainer as bc  # noqa: E402
+
+PACKAGE_MAGIC = b'BMPK'
+INDEX_MAGIC = b'BMPI'
+FORMAT = 1
+PACKAGE_HEADER_BYTES = 128
+INDEX_HEADER_BYTES = 72
+PACKAGE_BODY = '<32s32s16sIIQq'
+INDEX_BODY = '<qII32s'
+MANIFEST, DATA, DESCRIPTION, ICONS = 1, 2, 3, 4
+STANZAS, INDEX_ICONS = 1, 2
+MAX_ICON_SIDE = 64
+MAX_ICON_BYTES = 16384
+BLOCK_BYTES = 65536
+BLOCK_STORED = 0x80000000
+
+NAME = re.compile(r'^[a-z0-9][a-z0-9+.-]{0,31}$')
+ARCH = re.compile(r'^[a-z0-9]{1,16}$')
+CATEGORY = re.compile(r'^[A-Za-z0-9-]{1,32}$')
+URL = re.compile(r'^[!-~]{1,1024}$')
+VERSION = re.compile(r'^(?:[0-9]{1,8}:)?[0-9][A-Za-z0-9.+~-]*$')
+FAT_FORBIDDEN = set('"*:<>?\\|')
+
+
+def fail(message):
+    bc.fail('mkpkg', message)
+
+
+def check_version(version):
+    upstream = version.split(':', 1)[-1]
+    revision = upstream.rsplit('-', 1)[1] if '-' in upstream else ''
+    if (len(version) > 32 or not VERSION.match(version) or ('-' in upstream and not revision)
+            or not re.match(r'^[A-Za-z0-9.+~]*$', revision)):
+        fail('version "%s" is not a Debian version (devplan/packages.md §4)' % version)
+
+
+def check_path(path):
+    """A manifest path: what bmds_core's PkgManifest::isValidPath() accepts."""
+    names = path.split('/')
+    data = path.encode('utf-8')
+    if (not path or len(data) > 512 or any(n in ('', '.', '..') or len(n.encode('utf-8')) > 255 for n in names)
+            or any(ord(c) < 0x20 or 0x7f <= ord(c) < 0xa0 or c in FAT_FORBIDDEN for c in path)):
+        fail('"%s" is not a path a package can hold (FAT can\'t, or it leaves the root)' % path)
+
+
+def check_depends(depends):
+    """A dependency list as PkgDepends reads it: 'name' or 'name (>= version)', comma-separated."""
+    if not depends.strip():
+        return
+    for item in depends.split(','):
+        m = re.match(r'^ *([^ (]+) *(?:\( *>= *([^ )]+) *\))? *$', item)
+        if not m or not NAME.match(m.group(1)):
+            fail('depends "%s": each is NAME or NAME (>= VERSION)' % depends)
+        if m.group(2):
+            check_version(m.group(2))
+
+
+def png_side(data, what):
+    """A square PNG's side, checked as the board checks it (pkgfile.h)."""
+    if data[:8] != b'\x89PNG\r\n\x1a\n' or data[12:16] != b'IHDR' or len(data) > MAX_ICON_BYTES:
+        fail('%s: not a PNG of at most %d bytes' % (what, MAX_ICON_BYTES))
+    width, height = struct.unpack('>II', data[16:24])
+    if width != height or not 1 <= width <= MAX_ICON_SIDE:
+        fail('%s: %dx%d; icons are square, at most %d pixels' % (what, width, height, MAX_ICON_SIDE))
+    return width
+
+
+def icon_entry(name, png):
+    """An icons section's entry (pkgfile.h): the name (b'' in a package), the size, the PNG."""
+    side = png_side(png, name or 'an icon')
+    return struct.pack('<B', len(name)) + name + struct.pack('<HHI', side, side, len(png)) + png
+
+
+def icon_entries(section):
+    """(name, side, png) of each entry of an icons section."""
+    out = []
+    at = 0
+    while at < len(section):
+        n = section[at]
+        name = section[at + 1:at + 1 + n]
+        side, _, size = struct.unpack_from('<HHI', section, at + 1 + n)
+        png = section[at + 9 + n:at + 9 + n + size]
+        if len(png) != size:
+            raise bc.ContainerError('an icon cut short')
+        out.append((name.decode('ascii'), side, png))
+        at += 9 + n + size
+    return out
+
+
+def abi_version():
+    sys_h = os.path.join(bc.ROOT, 'sdk', 'include', 'bmds', 'sys.h')
+    for line in open(sys_h):
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == '#define' and parts[1] == 'BMDS_ABI_VERSION':
+            return int(parts[2].rstrip('uU'), 0)
+    fail('no BMDS_ABI_VERSION in ' + sys_h)
+
+
+def walk(root):
+    """(kind, path, full path) below root, directories before their contents, sorted."""
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        rel_dir = os.path.relpath(dirpath, root)
+        names = sorted(dirnames + filenames)
+        for name in names:
+            full = os.path.join(dirpath, name)
+            rel = name if rel_dir == '.' else rel_dir + '/' + name
+            if os.path.islink(full):
+                out.append(('l', rel, full))
+            elif os.path.isdir(full):
+                out.append(('d', rel, full))
+            elif os.path.isfile(full):
+                out.append(('f', rel, full))
+            else:
+                fail('%s is neither a file, a directory nor a link' % full)
+        # Links to directories aren't walked into.
+        dirnames[:] = [d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))]
+    return out
+
+
+def encode_blocks(data):
+    """A file's bytes as the data section's blocks."""
+    out = bytearray()
+    for at in range(0, len(data), BLOCK_BYTES):
+        block = data[at:at + BLOCK_BYTES]
+        c = zlib.compressobj(9, zlib.DEFLATED, -15, 9)
+        packed = c.compress(block) + c.flush()
+        if len(packed) < len(block):
+            out += struct.pack('<I', len(packed)) + packed
+        else:
+            out += struct.pack('<I', len(block) | BLOCK_STORED) + block
+    return bytes(out)
+
+
+def decode_blocks(data, at, size):
+    """A file of size from the data section at offset at: (bytes, the offset after)."""
+    out = bytearray()
+    while len(out) < size:
+        want = min(BLOCK_BYTES, size - len(out))
+        if at + 4 > len(data):
+            raise bc.ContainerError('the data ends inside a file')
+        word, = struct.unpack_from('<I', data, at)
+        n = word & ~BLOCK_STORED
+        block = data[at + 4:at + 4 + n]
+        if len(block) != n:
+            raise bc.ContainerError('the data ends inside a block')
+        if word & BLOCK_STORED:
+            if n != want:
+                raise bc.ContainerError('a stored block of the wrong size')
+        else:
+            d = zlib.decompressobj(-15)
+            block = d.decompress(block, want + 1)
+            if len(block) != want or not d.eof or d.unused_data:
+                raise bc.ContainerError('a block that doesn\'t inflate to %d bytes' % want)
+        out += block
+        at += 4 + n
+    return bytes(out), at
+
+
+def cmd_make(args):
+    if not NAME.match(args.name):
+        fail('name "%s": lowercase letters, digits and + - ., starting with a letter or digit' % args.name)
+    check_version(args.version)
+    if not ARCH.match(args.arch):
+        fail('architecture "%s": lowercase letters and digits' % args.arch)
+    check_depends(args.depends or '')
+    key = bc.load_key(args.key or os.path.join(bc.KEYS, 'dev.key'))
+    abi = abi_version() if args.abi is None else args.abi
+
+    fields = []
+    if args.depends:
+        fields.append(('depends', args.depends))
+    for field, value in (('title', args.title), ('summary', args.summary), ('license', args.license)):
+        if value is not None:
+            if not value.strip() or '\t' in value or '\n' in value:
+                fail('%s "%s": one line of text' % (field, value))
+            fields.append((field, value.strip()))
+    if args.category:
+        if not CATEGORY.match(args.category):
+            fail('category "%s": a freedesktop.org main category (Game, Utility...)' % args.category)
+        fields.append(('category', args.category))
+    if args.homepage:
+        if not URL.match(args.homepage):
+            fail('homepage "%s": a URL' % args.homepage)
+        fields.append(('homepage', args.homepage))
+    if args.stack:
+        fields.append(('stack', str(args.stack)))
+    if args.display:
+        fields.append(('display', '1'))
+    lines = ['%s\t%s' % f for f in fields]
+    data = bytearray()
+    installed = 0
+    entries = walk(args.root) if args.root else []
+    for kind, rel, full in entries:
+        check_path(rel)
+        if kind == 'd':
+            lines.append('d\t%s' % rel)
+        elif kind == 'l':
+            target = os.readlink(full)
+            if not target or '\t' in target or '\n' in target:
+                fail('%s: a link target a manifest can\'t hold' % full)
+            lines.append('l\t%s\t%s' % (rel, target))
+        else:
+            with open(full, 'rb') as f:
+                content = f.read()
+            mode = stat.S_IMODE(os.stat(full).st_mode)
+            lines.append('f\t%s\t%o\t%d\t%s' % (rel, mode, len(content), hashlib.blake2s(content).hexdigest()))
+            data += encode_blocks(content)
+            installed += len(content)
+    manifest = ''.join(line + '\n' for line in lines).encode('utf-8')
+
+    sections = [(MANIFEST, manifest), (DATA, bytes(data))]
+    if args.description:
+        sections.append((DESCRIPTION, args.description.encode('utf-8')))
+    if args.icon:
+        icons = b''
+        for path in args.icon:
+            with open(path, 'rb') as f:
+                icons += icon_entry(b'', f.read())
+        sections.append((ICONS, icons))
+    body = struct.pack(PACKAGE_BODY, bc.text_field(args.name, 32, 'the name'),
+                       bc.text_field(args.version, 32, 'the version'), bc.text_field(args.arch, 16, 'the architecture'),
+                       abi, 0, installed, int(time.time()))
+    out = args.output or '%s_%s.bmpk' % (args.name, args.version.split(':')[-1])
+    with open(out, 'wb') as f:
+        f.write(bc.build(PACKAGE_MAGIC, FORMAT, body, sections, key))
+    files = sum(1 for e in entries if e[0] == 'f')
+    print('%s: %s %s (%s), %d files, %d bytes installed, %d bytes' % (out, args.name, args.version, args.arch,
+                                                                      files, installed, os.path.getsize(out)))
+
+
+def read_package(data):
+    """(container, its header fields as a dict) of a package's bytes."""
+    c = bc.Container(data, PACKAGE_MAGIC, FORMAT, PACKAGE_HEADER_BYTES, 'a package')
+    name, version, arch, abi, zero, installed, made = struct.unpack(PACKAGE_BODY, c.body)
+    fields = {'name': name.rstrip(b'\0').decode('ascii'), 'version': version.rstrip(b'\0').decode('ascii'),
+              'arch': arch.rstrip(b'\0').decode('ascii'), 'abi': abi, 'installed': installed, 'made': made}
+    if zero != 0:
+        raise bc.ContainerError('a reserved field isn\'t 0')
+    return c, fields
+
+
+def manifest_entries(manifest):
+    """The manifest's lines as (kind, columns)."""
+    out = []
+    for line in manifest.decode('utf-8').split('\n'):
+        if line:
+            cols = line.split('\t')
+            out.append((cols[0], cols[1:]))
+    return out
+
+
+def walk_data(c):
+    """(path, bytes) of each file, decoded and checked against the manifest; raises ContainerError."""
+    data = c.section(DATA) or b''
+    at = 0
+    for kind, cols in manifest_entries(c.section(MANIFEST) or b''):
+        if kind != 'f':
+            continue
+        path, mode, size, digest = cols
+        content, at = decode_blocks(data, at, int(size))
+        if hashlib.blake2s(content).hexdigest() != digest:
+            raise bc.ContainerError('%s doesn\'t match its hash' % path)
+        yield path, int(mode, 8), content
+    if at != len(data):
+        raise bc.ContainerError('%d bytes of data after the last file' % (len(data) - at))
+
+
+def cmd_info(args):
+    with open(args.file, 'rb') as f:
+        data = f.read()
+    pubs = bc.load_pubs(args.pub or bc.default_pubs())
+    good = True
+    try:
+        if data[:4] == INDEX_MAGIC:
+            c = bc.Container(data, INDEX_MAGIC, FORMAT, INDEX_HEADER_BYTES, 'an index')
+            made, count, zero, label = struct.unpack(INDEX_BODY, c.body)
+            print('index:    %s, %d packages' % (label.rstrip(b'\0').decode('ascii') or '(no label)', count))
+            print('made:     %s' % time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(made)))
+            text = (c.section(STANZAS) or b'').decode('utf-8')
+            for stanza in text.split('\n\n'):
+                f = dict(line.split(': ', 1) for line in stanza.split('\n') if line)
+                if f:
+                    print('  %-24s %-16s %10s  %s' % (f.get('Package'), f.get('Version'), f.get('Size'), f.get('File')))
+            icons = icon_entries(c.section(INDEX_ICONS) or b'')
+            if icons:
+                print('icons:    %s' % ', '.join('%s %d' % (n, side) for n, side, _ in icons))
+        else:
+            c, f = read_package(data)
+            print('package:  %s %s (%s)' % (f['name'], f['version'], f['arch']))
+            print('made:     %s' % time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(f['made'])))
+            print('abi:      %d; %d bytes installed' % (f['abi'], f['installed']))
+            entries = manifest_entries(c.section(MANIFEST) or b'')
+            for kind, cols in entries:
+                if len(kind) > 1:
+                    print('%-9s %s' % (kind + ':', cols[0]))
+            icons = icon_entries(c.section(ICONS) or b'')
+            if icons:
+                print('icons:    %s pixels' % ', '.join(str(side) for _, side, _ in icons))
+            desc = c.section(DESCRIPTION)
+            if desc:
+                print('about:    %s' % desc.decode('utf-8').strip().replace('\n', '\n          '))
+            counts = {k: sum(1 for e in entries if e[0] == k) for k in 'fdl'}
+            print('entries:  %d files, %d directories, %d links' % (counts['f'], counts['d'], counts['l']))
+            total = 0
+            for path, mode, content in walk_data(c):
+                total += len(content)
+                if args.files:
+                    print('  %o %10d %s' % (mode, len(content), path))
+            if args.files:
+                for kind, cols in entries:
+                    if kind == 'l':
+                        print('  link       %s -> %s' % (cols[0], cols[1]))
+            if total != f['installed']:
+                print('the files add up to %d bytes, not the %d the header says' % (total, f['installed']))
+                good = False
+            print('data:     every file decodes and matches its hash')
+        for kind, offset, size, ok in c.sections:
+            if not ok:
+                print('section %d (%d bytes at %d): HASH BAD' % (kind, size, offset))
+                good = False
+        signer = c.signer(pubs)
+        print('signed:   %s' % ('by ' + signer if signer else 'BY NONE OF THE KEYS (key id %s)' % c.key_id.hex()))
+        good = good and signer is not None
+    except (bc.ContainerError, ValueError, KeyError, zlib.error) as e:
+        fail('%s: %s' % (args.file, e))
+    sys.exit(0 if good else 1)
+
+
+def cmd_index(args):
+    key = bc.load_key(args.key or os.path.join(bc.KEYS, 'dev.key'))
+    pubs = bc.load_pubs(bc.default_pubs()) + [(bc.public_bytes(key), 'the index\'s key')]
+    stanzas = []
+    icons = b''
+    for name in sorted(os.listdir(args.dir)):
+        if not name.endswith('.bmpk'):
+            continue
+        path = os.path.join(args.dir, name)
+        with open(path, 'rb') as f:
+            data = f.read()
+        try:
+            c, f = read_package(data)
+            for _ in walk_data(c):
+                pass
+        except (bc.ContainerError, ValueError, zlib.error) as e:
+            fail('%s: %s' % (path, e))
+        if not c.hashes_good() or c.signer(pubs) is None:
+            fail('%s: its hashes or signature don\'t check' % path)
+        fields = dict((k, cols[0]) for k, cols in manifest_entries(c.section(MANIFEST) or b'') if len(k) > 1)
+        desc = (c.section(DESCRIPTION) or b'').decode('utf-8').strip().split('\n')[0]
+        lines = ['Package: %s' % f['name'], 'Version: %s' % f['version'], 'Architecture: %s' % f['arch'],
+                 'ABI: %d' % f['abi']]
+        for field in ('depends', 'title', 'summary', 'category', 'license', 'homepage'):
+            if fields.get(field):
+                lines.append('%s: %s' % (field.capitalize(), fields[field]))
+        lines += ['Size: %d' % len(data), 'Installed-Size: %d' % f['installed'],
+                  'BLAKE2s: %s' % hashlib.blake2s(data).hexdigest(),
+                  'File: %s' % ((args.base_url.rstrip('/') + '/' if args.base_url else '') + name)]
+        if desc:
+            lines.append('Description: %s' % desc)
+        stanzas.append('\n'.join(lines) + '\n')
+        for _, _, png in icon_entries(c.section(ICONS) or b''):
+            icons += icon_entry(f['name'].encode('ascii'), png)
+    text = '\n'.join(stanzas).encode('utf-8')
+    body = struct.pack(INDEX_BODY, int(time.time()), len(stanzas), 0, bc.text_field(args.label or '', 32, 'the label'))
+    out = args.output or os.path.join(args.dir, 'index.bmpi')
+    with open(out, 'wb') as f:
+        f.write(bc.build(INDEX_MAGIC, FORMAT, body, [(STANZAS, text)] + ([(INDEX_ICONS, icons)] if icons else []), key))
+    print('%s: %d packages' % (out, len(stanzas)))
+
+
+def cmd_extract(args):
+    with open(args.file, 'rb') as f:
+        data = f.read()
+    if os.path.exists(args.dir):
+        fail('%s exists' % args.dir)
+    try:
+        c, _ = read_package(data)
+        if not c.hashes_good():
+            fail('%s: its hashes don\'t check' % args.file)
+        os.makedirs(args.dir)
+        for kind, cols in manifest_entries(c.section(MANIFEST) or b''):
+            if kind in 'fdl':
+                check_path(cols[0])
+            if kind == 'd':
+                os.makedirs(os.path.join(args.dir, cols[0]), exist_ok=True)
+            elif kind == 'l':
+                os.symlink(cols[1], os.path.join(args.dir, cols[0]))
+        for path, mode, content in walk_data(c):
+            full = os.path.join(args.dir, path)
+            with open(full, 'wb') as f:
+                f.write(content)
+            os.chmod(full, mode)
+    except (bc.ContainerError, ValueError, zlib.error) as e:
+        fail('%s: %s' % (args.file, e))
+
+
+def main():
+    p = argparse.ArgumentParser(description='Makes and reads BMDS packages (.bmpk) and indexes (.bmpi).')
+    sub = p.add_subparsers(dest='cmd', required=True)
+    m = sub.add_parser('make')
+    m.add_argument('root', nargs='?', help='the files to package (none: a meta package)')
+    m.add_argument('--name', required=True)
+    m.add_argument('--version', required=True)
+    m.add_argument('--arch', default='esp32p4')
+    m.add_argument('--depends')
+    m.add_argument('--title')
+    m.add_argument('--summary')
+    m.add_argument('--category')
+    m.add_argument('--license')
+    m.add_argument('--homepage')
+    m.add_argument('--icon', action='append', help='a square PNG (16 and 32 pixels, as the theme)')
+    m.add_argument('--description')
+    m.add_argument('--stack', type=int)
+    m.add_argument('--display', action='store_true')
+    m.add_argument('--abi', type=int, help="the least BMDS_ABI_VERSION (default: the SDK's)")
+    m.add_argument('--key', help='the signing key (default: keys/dev.key)')
+    m.add_argument('-o', '--output')
+    i = sub.add_parser('info')
+    i.add_argument('file')
+    i.add_argument('--pub', action='append')
+    i.add_argument('--files', action='store_true')
+    x = sub.add_parser('index')
+    x.add_argument('dir')
+    x.add_argument('--key', help='the signing key (default: keys/dev.key)')
+    x.add_argument('--base-url')
+    x.add_argument('--label')
+    x.add_argument('-o', '--output')
+    e = sub.add_parser('extract')
+    e.add_argument('file')
+    e.add_argument('dir')
+    args = p.parse_args()
+    try:
+        {'make': cmd_make, 'info': cmd_info, 'index': cmd_index, 'extract': cmd_extract}[args.cmd](args)
+    except bc.ContainerError as e:
+        fail(str(e))
+
+
+if __name__ == '__main__':
+    main()

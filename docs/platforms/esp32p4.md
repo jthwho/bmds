@@ -414,6 +414,12 @@ until silicon v3; then test again.
   64-byte SHA-256 call cost 12.6 µs; leaving the clock on after the first use made it 9 µs
   (`HP_SYS_CLKRST.peri_clk_ctrl25` is checked each call, since ESP-IDF's users switch it off).
   Through the system call it is about 13 µs, so callers give it whole packets.
+- **ESP-IDF's AES-GCM does GHASH in software** (`esp_gcm_ghash`'s `gcm_mult`, 4-bit tables and
+  64-bit arithmetic; the chip has no GHASH instruction or carry-less multiply) **unless every
+  buffer is DMA-reachable:** then the engine does all of it, but only 4.95 MB/s a 16 KB record
+  against the partial path's 4.31. Shoup's 8-bit tables in 32-bit words (`bmds/ghash.h`) do GHASH
+  at 8.5 MB/s and the record at 6.15 (devplan/network.md §33). mbedTLS's ChaCha20-Poly1305 is
+  slower still here: 3.66 MB/s. Measured with `bench net.tls.aead`.
 - **The ECC engine's P-256 point multiplication: 4.5 ms** (libtomcrypt's software: 105 ms);
   **the MPI engine's 2048-bit modular exponentiation: 179 ms** (65537: 16 ms). Not used:
   Monocypher's X25519 takes 6.7 ms in software, and clients prefer 25519.
@@ -532,6 +538,16 @@ until silicon v3; then test again.
   lines on open, and pyserial then applies `dtr` before `rts`, so `dtr = False; rts = False` passes
   through DTR low with RTS high, the state USB-Serial/JTAG resets the chip on. Leave both alone.
   Capturing a panic still means having the port open before it happens.
+- **A reset with DTR still high lands in the ROM loader** (2026-10-30): DTR high is the boot pin
+  held low. `esptool --before no-reset --after hard-reset` on a port opened with the lines raised
+  pulses RTS alone, so the chip restarts into download mode: a silent console, no shell. A reset
+  meant to start the firmware clears both lines first, then pulses RTS with DTR low.
+- **The RESET button drops the USB serial device; an RTS reset doesn't** (2026-10-30): RESET (the
+  EN pin) restarts the whole chip, USB-Serial/JTAG included, so the host sees a disconnect and a
+  new device. If a program still holds the old `ttyACM0`, the board comes back as `ttyACM1`
+  (`/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_MAC-if00` follows it). It is also
+  a power-on reset: the RTC memory's kept records (`devplan/keptstate.md`) start again. A reset
+  through RTS keeps the device and the port.
 
 ## 4d. The full-speed USB PHYs (`devplan/audio.md` §23)
 
