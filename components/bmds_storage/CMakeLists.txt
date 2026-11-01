@@ -20,14 +20,23 @@ idf_component_register(SRCS src/benchfs.cpp
                             src/romdisk.cpp
                             src/sdcard.cpp
                             src/sdcommand.cpp
+                            src/sdhostpatch.cpp
                             src/storage.cpp
                             src/tmpfs.cpp
                        INCLUDE_DIRS include
                        REQUIRES bmds_core bmds_kernel bmds_fs
                        PRIV_REQUIRES app_update bmds_bench bmds_board bmds_shell bmds_sysconf esp_driver_gpio esp_driver_sdmmc esp_hw_support esp_system
-                                     esp_mm esp_partition sdmmc
+                                     esp_mm esp_partition esp_pm sdmmc
                        WHOLE_ARCHIVE)
 bmds_target_options(${COMPONENT_LIB})
+# ESP-IDF's SD host made cheaper per command (src/sdhostpatch.h, devplan/storage.md §17).
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=sdmmc_wait_for_idle"
+                                                 "-Wl,--wrap=sd_host_slot_set_card_clk"
+                                                 "-Wl,--wrap=sd_host_slot_get_real_freq"
+                                                 "-Wl,--wrap=sd_host_slot_set_bus_width"
+                                                 "-Wl,--wrap=sd_host_slot_set_bus_sampling_mode"
+                                                 "-Wl,--wrap=sd_host_set_delay_phase"
+                                                 "-Wl,--wrap=sd_host_set_delay_line")
 
 set(BMDS_FLASH_DIR ${CMAKE_CURRENT_LIST_DIR}/../../flash)
 set(BMDS_FLASH_SRC ${CMAKE_CURRENT_BINARY_DIR}/flashdefaults.cpp)

@@ -8,6 +8,7 @@
 # C++ thread library.
 
 set(BMDS_KERNEL_PORTABLE_SRCS
+        src/blockwriter.cpp
         src/builtinprograms.cpp
         src/clock.cpp
         src/fdtable.cpp

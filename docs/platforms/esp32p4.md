@@ -646,6 +646,23 @@ until silicon v3; then test again.
 - **A single-sector card read is the card's time, not the host's:** ~445 µs a sector, of which
   the CMD17 is ~430 µs and the CMD13 ESP-IDF sends after it ~24 µs; the bus moves 512 bytes in
   ~26 µs at 40 MHz. Dropping the CMD13 gained under 1%. Only fewer reads help (`devplan/storage.md` §3).
+- **ESP-IDF's SD writes spin the CPU while the card programs** (v6.1, `devplan/storage.md` §17):
+  `sdmmc_wait_for_idle()` sends CMD13 back to back for the 0.4-1.6 ms a 16 KB write keeps the card
+  busy, yielding only after 100 ms, and every command re-applies the bus width (with D3's pin: the
+  IOMUX, pull, input and drive strength, each in a critical section), the sampling mode, the delay
+  phase (asking the clock tree) and line, and reads the clock dividers back. A 16 KB `dd` to the
+  card kept `dd` at 25% of a core. Found with `prof` during a download.
+  - **A GPIO interrupt works on a pad the SDMMC owns:** the pad's GPIO input still reads D0, so
+    `gpio_set_intr_type()`, `gpio_isr_handler_add()` and `gpio_intr_enable()` (never
+    `gpio_config()`, which takes the pad back) give an edge the moment the card releases the line.
+    Waiting on it made writes 10% faster than the spin, at 10% of a core.
+  - **The controller's busy-clear interrupt isn't usable alongside ESP-IDF:** it shares bit 13
+    with the start-bit error, which the transfer state machine treats as an error.
+  - **Sub-tick sleeps between looks lost:** the wake timer's sleeps came back about 75 µs late on
+    average, so polling at 50 µs was 2.5% slower than the spin.
+  - **Unaligned pieces cost a quarter more:** 16,000-byte writes of a file take 26% longer than
+    16 KB ones (a single-sector write for the partial sectors each time); gather them
+    (`BlockWriter`).
 - **`esp_random()` costs ~56 µs a word, and more:** it waits 14 × the CPU's MHz APB cycles
   since the last word (the P4's tested sampling rate), and asks the clock tree for the CPU and APB
   frequencies on every call, which reads the PLL's settings over the analog I2C bus in critical

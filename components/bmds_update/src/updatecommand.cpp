@@ -12,6 +12,7 @@
 
 #include <cstring>
 #include <new>
+#include <bmds/blockwriter.h>
 #include <bmds/command.h>
 #include <bmds/console.h>
 #include <bmds/datetime.h>
@@ -205,11 +206,13 @@ namespace {
                         uint64_t total = UINT64_MAX;
         };
 
-        // A package fetched into a file (`NAME.part`, resumed by its size).
+        // A package fetched into a file (`NAME.part`, resumed by its size), gathered into whole
+        // blocks (`BlockWriter`: the body comes in pieces of any size).
         struct FileFetch {
                         CommandContext *ctx = nullptr;
                         String          path;
                         FileHandle::Ptr file;
+                        BlockWriter     gather;
                         uint64_t        written = 0;
                         uint64_t        total = UINT64_MAX;
                         unsigned        shown = 0; ///< Tenths said.
@@ -228,6 +231,7 @@ namespace {
                         if (serr.isError()) return serr;
                         f.written = uint64_t(end);
                 }
+                f.gather.reset(f.written);
                 return Error::Ok;
         }
 
@@ -330,14 +334,10 @@ namespace {
                         return start == 0 ? openPart(to, false) : Error(Error::CorruptData);
                 };
                 sink.body = [](void *arg, ByteSpan bytes) -> Error {
-                        FileFetch &to = *static_cast<FileFetch *>(arg);
-                        while (!bytes.isEmpty()) {
-                                auto [n, werr] = to.file->write(bytes, WaitForever);
-                                if (werr.isError()) return werr;
-                                if (n == 0) return Error::IoError;
-                                bytes = bytes.mid(n);
-                                to.written += n;
-                        }
+                        FileFetch  &to = *static_cast<FileFetch *>(arg);
+                        const Error werr = to.gather.write(to.file->stream(), bytes);
+                        if (werr.isError()) return werr;
+                        to.written += bytes.size();
                         if (to.total != UINT64_MAX && to.total != 0) {
                                 const unsigned tenths = unsigned(to.written * 10 / to.total);
                                 if (tenths > to.shown && tenths < 10)
@@ -350,6 +350,11 @@ namespace {
                 if (f.written > 0)
                         ctx.eprintf("update: resuming from %llu bytes\n", static_cast<unsigned long long>(f.written));
                 err = systemFetch(url.view(), f.written, sink, &finalUrl, why);
+                const Error ferr = f.gather.flush(f.file->stream());
+                if (err.isOk() && ferr.isError()) {
+                        err = ferr;
+                        why.clear();
+                }
                 f.file = FileHandle::Ptr();
                 if (err.isError()) { // the .part stays: the next fetch resumes it
                         ctx.eprintf("update: %s\n", why.isEmpty() ? err.desc() : why.cStr());

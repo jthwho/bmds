@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cstring>
 #include <bmds/blake2s.h>
+#include <bmds/blockwriter.h>
 #include <bmds/http.h>
 #include <bmds/packages.h>
 #include <bmds/pkgfile.h>
@@ -352,10 +353,12 @@ namespace Packages::Detail {
                 return err;
         }
 
-        // A fetch into a file: written from `written` on, at most `limit` bytes in all.
+        // A fetch into a file: written from `written` on, at most `limit` bytes in all, gathered into
+        // whole blocks (`BlockWriter`: the body comes in pieces of any size).
         struct FileFetch {
                         String          path;
                         FileHandle::Ptr file;
+                        BlockWriter     gather;
                         uint64_t        written = 0;
                         uint64_t        limit = UINT64_MAX;
                         const Listener *listener = nullptr;
@@ -374,7 +377,18 @@ namespace Packages::Detail {
                         if (serr.isError()) return serr;
                         f.written = uint64_t(end);
                 }
+                f.gather.reset(f.written);
                 return Error::Ok;
+        }
+
+        // Writes what the fetch gathered and closes its file. @return @p err, else the write's error.
+        Error closeFetch(FileFetch &f, Error err) {
+                if (f.file) {
+                        const Error ferr = f.gather.flush(f.file->stream());
+                        if (err.isOk()) err = ferr;
+                }
+                f.file = FileHandle::Ptr();
+                return err;
         }
 
         FetchSink sinkOf(FileFetch &f) {
@@ -388,13 +402,9 @@ namespace Packages::Detail {
                 sink.body = [](void *arg, ByteSpan bytes) -> Error {
                         FileFetch &to = *static_cast<FileFetch *>(arg);
                         if (to.written + bytes.size() > to.limit) return Error::OutOfRange;
-                        while (!bytes.isEmpty()) {
-                                auto [n, err] = to.file->write(bytes, WaitForever);
-                                if (err.isError()) return err;
-                                if (n == 0) return Error::IoError;
-                                bytes = bytes.mid(n);
-                                to.written += n;
-                        }
+                        const Error err = to.gather.write(to.file->stream(), bytes);
+                        if (err.isError()) return err;
+                        to.written += bytes.size();
                         if (to.listener != nullptr)
                                 progress(*to.listener, to.name, Packages::Step::Fetching, to.written, to.limit);
                         return Error::Ok;
@@ -422,8 +432,7 @@ namespace Packages::Detail {
                 err = openFetch(f, false);
                 if (err.isError()) return fail(result.why, err, "%s: %s", f.path.cStr(), err.desc());
                 String why;
-                err = config.fetch(url.view(), 0, sinkOf(f), nullptr, why);
-                f.file = FileHandle::Ptr();
+                err = closeFetch(f, config.fetch(url.view(), 0, sinkOf(f), nullptr, why));
                 List<uint8_t> list(MemSpace::Psram);
                 if (err.isOk()) err = readBytes(f.path.view(), MaxListBytes, list);
                 if (err.isError()) {
@@ -1023,8 +1032,7 @@ Error Packages::fetchPlanned(Planned &planned, const Config &config, const Liste
                 if (err.isError()) return fail(why, err, "%s: %s", f.path.cStr(), err.desc());
                 progress(listener, info.name, Step::Fetching, f.written, f.limit);
                 String fetchWhy;
-                err = config.fetch(planned.path.view(), f.written, sinkOf(f), nullptr, fetchWhy);
-                f.file = FileHandle::Ptr();
+                err = closeFetch(f, config.fetch(planned.path.view(), f.written, sinkOf(f), nullptr, fetchWhy));
                 if (err.isError()) // the .part stays: the next try resumes it
                         return fail(why, err, "%.*s: %s", int(info.name.size()), info.name.data(),
                                     fetchWhy.isEmpty() ? err.desc() : fetchWhy.cStr());

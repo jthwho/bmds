@@ -1146,3 +1146,76 @@ so it now does (`Reset: panic`, `task watchdog`, `USB`, ...).
 **Benchmarks moved (2026-10-17):** `fsbench` became the `fs.smallfiles` benchmark, its spinner the
 bench's `probe=stall` (`devplan/bench.md` §11), and `sd bench` became `storage.sd.read` (§10). The
 figures above were taken with the old commands.
+
+## 17. Card writes without the busy spin (design, 2026-11-01; the user asked for the SD driver fix)
+
+**Found:** a profile of a download to the card (`network.md` §33) put about 10% of the busy
+samples in ESP-IDF's per-command bus setup. On the board a `dd` of 32 MB in 16 KB writes runs at
+5.2 MB/s and keeps `dd` at 25% of a core, though the data is zeros. The profile of it:
+
+- **The busy spin.** After every write, `sdmmc_write_sectors_dma()` sends CMD13 and then
+  `sdmmc_wait_for_idle()` (`components/sdmmc/sdmmc_common.c`) sends CMD13 back to back until the
+  card has finished programming, yielding only after 100 ms. The card holds D0 low meanwhile, and
+  the controller shows that line in `STATUS.data_busy`, so asking it costs a register read.
+- **ESP-IDF's per-command setup.** `sd_host_slot_sdmmc_do_transaction()` sets the bus width
+  (and in 4-bit mode configures D3's pin again: the IOMUX, pull, input and drive strength, each
+  in a critical section), the sampling mode, the delay phase (asking the clock tree for the source
+  frequency) and the delay line, and reads the dividers back to compare the clock, on every
+  command, though none of it changes after the card is set up.
+
+**As built (2026-11-01)**, in `src/sdhostpatch.cpp` (`--wrap`, as `network.md` §33 does for GCM;
+every function wrapped is called from another file of ESP-IDF, so the linker redirects those
+calls; the slot's fields are v6.1's `sd_host_private.h`):
+
+- **`sdmmc_wait_for_idle()`:** while the card isn't ready for data, wait for it to release D0,
+  then send one CMD13. The wait is a **GPIO interrupt on D0's pad** (rising edge), enabled only
+  for the wait: the pad's GPIO input reads the line while the SDMMC owns the pin, so no
+  `gpio_config()` (which would take the pad back). The controller's busy bit
+  (`STATUS.data_busy`) says whether to wait at all, and the wait looks again every 2 ms in case an
+  edge is lost. ESP-IDF's 5 s limit stays. A card pulled out releases D0 (the pull-up), so the
+  CMD13 fails as before.
+  - *Not the controller's busy-clear interrupt:* it shares bit 13 with the start-bit error, which
+    ESP-IDF's transfer state machine treats as an error, and fires only after a write or an R1b
+    command, not for a wait begun after them.
+  - *Not sleeping between looks:* sleeps on the wake timer of 50 us growing to 200 us, or most of
+    the last wait then 50 us, freed the CPU but came out 2.5% slower than ESP-IDF's spin (each
+    wake about 75 us late). Busy times measured by spinning on the register: of 2,048 writes of
+    16 KB, 692 took 0.4-0.8 ms, 1,281 0.8-1.6 ms, 69 longer (to 6.4 ms).
+- **The setup:** the bus width, sampling mode, delay phase and delay line are applied only when
+  the slot's settings differ from those last applied (with the slot's address and, for the phase
+  and line, the frequency). `SdCard` forgets them when it starts or stops the host, whose reset
+  clears the registers. The clock read back is remembered for the slot's frequency and source,
+  forgotten when ESP-IDF sets the clock.
+- **Gathered downloads (`BlockWriter`, `bmds_kernel`):** a network body comes in pieces of any
+  size at any offset (a TLS record's plaintext, about 16 KB). Written as they come, each piece
+  cost the card a single-sector write for its partial sectors and a copy through the bounce
+  buffer: `dd bs=16000` takes 9.6 s for 32 MB against 7.6 s for `bs=16384` (+26%). `pkg`'s and
+  `update fetch`'s file sinks now gather into 64 KB of `PsramDma` and write whole blocks at file
+  offsets that are multiples of 64 KB (a resumed `.part` first fills up to one), and write the rest
+  when the fetch ends, failed or not (the `.part` keeps what arrived).
+- **Pre-erase (ACMD23) before each multi-block write:** no difference on this card (16 KB writes
+  6.68 and 6.67 s with it, 6.60 s without; 64 KB 7.47 s either way), so it isn't sent.
+
+**Results** (the 32 GB SDHC card; its write speed drifts by 10-15% from run to run, so the
+comparison alternated the old and new waits on one firmware):
+
+| What | Before | After |
+|---|---|---|
+| `dd` 32 MB in 16 KB writes (three runs each, alternated) | 7.45 s (7.32, 7.21, 7.82) | **6.67 s** (6.48, 6.73, 6.79) |
+| `dd`'s CPU meanwhile (`top`) | 25.5% | **10.1%** |
+| `dd`'s samples in a profile of the run | 1,689 (ESP-IDF's setup and CMD13s most of them) | **686** (its own `memset` of zeros and the cache's write-back before DMA) |
+| `update fetch` of 33.6 MB from GitHub onto the card | 1.48 MB/s | **1.82 MB/s** (18.2 and 18.6 s; a download into RAM is 1.9) |
+| Reads (`storage.sd.read`), 64 KB / 512 B | 16.0 / 1.49 MB/s | 16.1 / 1.54 MB/s |
+
+A resumed download (cut to 20,000,001 bytes) and a whole one have the file's SHA-256, a copy of
+9.6 MB of random data compares equal, and the host tests cover `BlockWriter` (pieces, a resumed
+offset, a stream taking part of each write, a failed write). Not tried on the board: pulling the
+card mid-write with the new wait (it needs hands on the card).
+
+Writes of 64 KB at a time are slower on this card than 16 KB (7.4 against 6.6 s for 32 MB, the
+CPU idle in both): the card's own behaviour with larger multi-block writes.
+
+**Still open:**
+
+- **UHS-I** (SDR50 at 1.8 V from LDO 4) stays an open question (§12): reads are near the 40 MHz
+  bus's limit, writes are the card's.

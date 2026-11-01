@@ -22,6 +22,8 @@
 #include <bmds/staticobject.h>
 #include <bmds/task.h>
 
+#include "sdhostpatch.h"
+
 BMDS_DEBUG(SdCard)
 
 BMDS_NAMESPACE_BEGIN
@@ -77,7 +79,8 @@ namespace {
 
         esp_err_t startHost() {
                 const BoardSdCard &sd = board().sdCard;
-                esp_err_t          err = sdmmc_host_init();
+                SdHostPatch::forget();
+                esp_err_t err = sdmmc_host_init();
                 if (err != ESP_OK) return err;
                 sdmmc_slot_config_t config = {};
                 config.clk = static_cast<gpio_num_t>(sd.clk);
@@ -104,6 +107,7 @@ namespace {
                 if (!hostRunning) return;
                 // Removing the last slot deletes the controller too.
                 (void)sdmmc_host_deinit_slot(board().sdCard.slot);
+                SdHostPatch::forget();
                 hostRunning = false;
                 return;
         }
@@ -168,6 +172,8 @@ Error SdCard::init() {
                 bmdsErr("SdCard: GPIO setup failed: %s", err.desc());
                 return err;
         }
+        err = SdHostPatch::init(sd.d0 == NoGpio ? -1 : static_cast<int>(sd.d0));
+        if (err.isError()) bmdsWarn("SdCard: D0's interrupt failed (%s): waits for writes poll", err.desc());
 
         bmdsDebug("SdCard(%p): slot %u, %u-bit, card %s", &c, sd.slot, sd.busWidth,
                   c.isInserted() ? "inserted" : "not inserted");

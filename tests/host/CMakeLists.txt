@@ -88,6 +88,7 @@ add_executable(bmds_host_tests
         lwipwire.cpp
         socket.cpp
         loader.cpp
+        blockwriter.cpp
         memorystream.cpp
         oss.cpp
         ${BMDS_ROOT}/sdk/crt/oss.c
