@@ -26,6 +26,9 @@ Not goals:
 
 - **Where it lives:** `git.howardlogic.com` stays the main repository, and GitHub is its public
   mirror. GitHub holds the Releases (the files) and Pages (the installer).
+  *Changed 2026-11-01 (the user):* not a mirror. The repository is `jthwho/bmds`; `tools/release
+  --publish` pushes each release's commit and tag there and makes the release with `gh`
+  (`packages.md` §25).
 - **Signing:** releases are built with `CONFIG_BMDS_UPDATE_KEYS_DEV` (the default) and signed
   with `keys/dev.key`. The signature then proves only that a package is whole and was made by
   `mkupdate`, not who made it; that suits a system people are meant to change. The README and
@@ -36,6 +39,9 @@ Not goals:
   the P4 in esptool-js), with the presentation app (`preso.md`) alongside.
 
 ## 3. What a release holds
+
+*Changed 2026-11-01:* the card zip is replaced by the packages, their index for Pages and a
+packages zip for a card; see `packages.md` §25 for the list as it is now.
 
 On the GitHub release `vX.Y.Z`, for each chip variant (§3a; `p4r1` only for now):
 
@@ -114,8 +120,9 @@ One script, run on a clean tree at a tag (refuses otherwise):
 3. makes each variant's flash zip from its `flasher_args.json`, and its `.bmup` (`mkupdate make`
    with the dev key and `--partitions partitions.csv`);
 4. writes `SHA256SUMS` and the notes (from `RELEASE_NOTES.md`'s section for the version);
-5. with `--publish`, makes the GitHub release on the mirror with `gh release create` and uploads
-   everything. Without it, leaves it all in `release/X.Y.Z/` to try first.
+5. with `--publish`, pushes the commit and the tag to GitHub and makes the release there with `gh
+   release create`, uploading everything (`packages.md` §25). Without it, leaves it all in
+   `release/X.Y.Z/` to try first.
 
 The firmware's version comes from `bmds/version.h` and the commit (`cmake/version.cmake`), as now.
 IDF is pinned (v6.1-dev, `ff97953b32a`, unmodified): `docs/BUILDING.md` names the commit, so
@@ -178,6 +185,35 @@ can't set). A card unzipped on a PC needs that done at first boot: §8.
   started, the clock's time), takes `screenshot`, and fetches the PNGs into `docs/images/`. When
   the UI changes, it runs again. The slides deck uses the same images.
 - **A photo of the board** on a desk with a monitor, for the hardware section.
+
+### 7a. As built (2026-11-01)
+
+- **`tools/screenshots`:** six scenes (`desktop`, `editor`, `games`, `doom`, `settings`, `music`),
+  each a list of steps (start a program and wait for its window by title, place it, type into it,
+  wait), driven over the serial console (`bmdsboard.py`), the PNG fetched with `scp` from
+  `root@bmds0.local` into `docs/images/`. It closes only the windows it opened and ends only the
+  programs it started (checked: the board left with the panel alone). It uses nothing the user
+  has: `/rom/share` rather than the home folder, a game started rather than Blocks' high scores,
+  Settings' Appearance page rather than General (which shows the board's serial number).
+- **The README:** a hero shot and a paragraph; the features as a table of shots with a paragraph
+  each, then the rest as a list; the hardware; getting started (the installer, the card, the
+  first-run window, the packages zip offline); building; the status, honestly (one board and
+  revision, US keyboards, 720p, `mkfs` for formatting, no memory protection, no radio); where it's
+  going; the architecture in brief; the docs. The PNGs are in Git LFS (`*.png`), which GitHub
+  shows in a README.
+- **Found on the way:**
+  - **Screenshots of a full-screen program tore** (Doom: a seam across the picture): the copy
+    takes about 50 ms, Doom presents every 30, and after a swap the buffer being copied is the one
+    drawn next. `Surface::holdSwaps()` now keeps a present pending while the screenshot copies (the
+    scanout's interrupt checks `swapDueFromIsr()`); it waits one frame first for a swap already
+    begun. Doom's shot came out whole after.
+  - **`screenshot` ran out of memory** with five programs open (28.5 of 31.9 MB of PSRAM used): it
+    needs the frame's copy in one block. The scenes run two or three programs.
+  - **BusyBox had no `uname` or `which`** (both off in `dist/busybox/config`): on, revision 2.
+    `uname -a` says `BMDS bmds0 0.1.0 ABI 1 riscv32 BMDS`: the SDK's `uname()` (`sdk/crt/linux.c`)
+    now gives BMDS's version as the release (from `bmds_system_info`) and "ABI 1" as the version.
+- **Still to do (§7):** a photo of the board on a desk with a monitor, for the hardware section:
+  the user's to take.
 
 ## 8. First boot without a card
 
@@ -248,5 +284,5 @@ is there and its links aren't (§6a), the system runs it once, before the deskto
    the mirror exists. `docs/BUILDING.md` names the IDF commit.
 5. [ ] The installer in full (§4), and the Pages workflow.
 6. [ ] Packages instead of the card zip, and the first run: `packages.md` (its steps).
-7. [ ] The README and `tools/screenshots` (§7).
+7. [x] The README and `tools/screenshots` (§7). Done 2026-11-01 but the board's photo (§7a).
 8. [ ] The first release.

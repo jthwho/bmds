@@ -292,7 +292,7 @@ struct ScanoutIsr {
                                 s._notifyPending = s._notifyPending || !notify;
                                 s._swaps.fetch_add(1, std::memory_order_relaxed);
                         }
-                        if (s._swapPhase == 0 && at == blocks - 1 && surface.isSwapPending()) {
+                        if (s._swapPhase == 0 && at == blocks - 1 && surface.swapDueFromIsr()) {
                                 // The frame's last block under way: the next frame from the new buffer.
                                 pointAt(s, surface.askedFromIsr(), 0, blocks - 1);
                                 s._swapPhase = 1;

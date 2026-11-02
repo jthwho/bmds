@@ -134,6 +134,7 @@ add_executable(bmds_host_tests
         leapseconds.cpp
         updatepackage.cpp
         pkg.cpp
+        pkgrecord.cpp
         packages.cpp
         http.cpp
         httpclient.cpp

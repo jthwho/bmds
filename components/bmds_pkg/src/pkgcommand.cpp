@@ -39,6 +39,7 @@ namespace {
                         bool        upgradable = false; ///< list --upgradable
                         uint16_t    size = 32;
                         const char *output = nullptr;
+                        const char *source = nullptr; ///< --source: one source more, this run only
         };
 
         // Where output goes, and how.
@@ -581,7 +582,8 @@ namespace {
                                                                                            : "nothing to do");
                         return Shell::ExitSuccess;
                 }
-                if (asking || o.dryRun) {
+                // The plan first: asked about, a dry run, or (with --json) always, as remove does.
+                if (asking || o.dryRun || out.json) {
                         for (const Packages::Planned &p : plan) planInstall(out, p, config);
                 }
                 if (asking && !ask(out.ctx, "Go ahead?")) return Shell::ExitFailure;
@@ -957,7 +959,7 @@ namespace {
 
 } // namespace
 
-int PkgCommand::run(CommandContext &ctx, const Packages::Config &config) {
+int PkgCommand::run(CommandContext &ctx, const Packages::Config &baseConfig) {
         const Span<char *const> args = ctx.args();
         Options                 o;
         List<char *>            operands(MemSpace::Psram);
@@ -981,12 +983,27 @@ int PkgCommand::run(CommandContext &ctx, const Packages::Config &config) {
                         o.size = uint16_t(std::atoi(args[++i]));
                 else if (a == StringView("-o") && i + 1 < args.size())
                         o.output = args[++i];
+                else if (a == StringView("--source") && i + 1 < args.size())
+                        o.source = args[++i];
                 else if (a.startsWith('-') && a.size() > 1)
                         return ctx.usage();
                 else
                         (void)operands.append(args[i]);
         }
         if (operands.isEmpty()) return ctx.usage();
+        // --source: the configured sources and one more, for this command.
+        Packages::Config config = baseConfig;
+        String           sources(MemSpace::Psram);
+        if (o.source != nullptr) {
+                Error err = sources.assign(baseConfig.sources);
+                if (err.isOk() && !sources.isEmpty()) err = sources.append(';');
+                if (err.isOk()) err = sources.append(o.source);
+                if (err.isError()) {
+                        ctx.eprintf("pkg: out of memory\n");
+                        return Shell::ExitFailure;
+                }
+                config.sources = sources.view();
+        }
         Out                     out{ctx, o.json};
         const StringView        cmd(operands[0]);
         const Span<char *const> rest(operands.data() + 1, operands.size() - 1);

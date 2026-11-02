@@ -333,6 +333,22 @@ class Surface {
                 /** @brief Returns the buffer being shown. */
                 const uint8_t *shown() const { return _buffers[_front.load(std::memory_order_acquire)]; }
 
+                /**
+                 * @brief Holds the swaps while @p held (counted: each hold released once): a present
+                 *        stays pending, so `shown()` stays the same buffer for a reader that takes
+                 *        longer than a frame (a screenshot). A swap already begun ends at the next
+                 *        frame's start: wait for one (`waitFrame()`) after holding.
+                 * @nonblocking Its drawer blocks in its next present meanwhile.
+                 */
+                void holdSwaps(bool held) {
+                        if (held) {
+                                _swapHolds.fetch_add(1, std::memory_order_acq_rel);
+                        } else {
+                                _swapHolds.fetch_sub(1, std::memory_order_acq_rel);
+                        }
+                        return;
+                }
+
         private:
                 friend class Scanout;
                 friend struct ScanoutIsr;
@@ -341,6 +357,11 @@ class Surface {
                 // While the flash is written (the cache off), @p notify false: the waiters, whose
                 // semaphores may be on stacks in PSRAM, are woken by notifyFromIsr() afterwards.
                 const uint8_t *askedFromIsr() const { return _buffers[_front.load(std::memory_order_relaxed) ^ 1]; }
+                // A present waits to be swapped in, and no hold keeps it waiting.
+                bool swapDueFromIsr() const {
+                        return _asked.load(std::memory_order_acquire) &&
+                               _swapHolds.load(std::memory_order_acquire) == 0;
+                }
                 void           swappedFromIsr(bool notify);
                 void           frameFromIsr(bool notify) {
                         _frames.fetch_add(1, std::memory_order_release);
@@ -382,6 +403,7 @@ class Surface {
                 Buffering             _buffering = Buffering::Single;
                 std::atomic<uint8_t>  _front{0};
                 std::atomic<bool>     _asked{false}; // a swap pending
+                std::atomic<uint32_t> _swapHolds{0}; // holdSwaps(): swaps wait while non-zero
                 std::atomic<bool>     _scanning{false};
                 std::atomic<uint32_t> _frames{0};
                 std::atomic<uint32_t> _shown{0};          // presents shown

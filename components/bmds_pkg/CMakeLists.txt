@@ -10,6 +10,7 @@ set(BMDS_PKG_PURE_SRCS
         src/keys.cpp
         src/packages.cpp
         src/pkgcommand.cpp
+        src/pkgrecord.cpp
         src/repositories.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)

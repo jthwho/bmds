@@ -736,6 +736,40 @@ TEST_CASE("Packages: sources, their lists, and installing by name") {
         CHECK_FALSE(contains(f.run("pkg list"), "available"));
 }
 
+TEST_CASE("Packages: --source, one source more for one command") {
+        Fixture f;
+        Repo    r;
+        sources = "file:/t/none"; // configured, and missing
+        CHECK(contains(f.run("pkg update", Shell::ExitFailure), "/t/none: "));
+        CHECK_FALSE(contains(f.run("pkg list"), "available"));
+        CHECK(contains(f.run("pkg --source file:/t/repo update", Shell::ExitFailure), "file:/t/repo: 5 packages"));
+        CHECK(lineOf(f.run("pkg --source file:/t/repo list"), "set") == "set 1 available The set");
+        CHECK(contains(f.run("pkg --source file:/t/repo install -y set"), "set 1: installed\n"));
+        // Not after: the configured sources alone.
+        CHECK_FALSE(contains(f.run("pkg list"), "available"));
+        CHECK(lineOf(f.run("pkg list --installed"), "set") == "set 1 installed The set");
+        CHECK(f.run("pkg --source", Shell::ExitUsage).rfind("usage: pkg", 0) == 0);
+}
+
+TEST_CASE("Packages: a dry run leaves the data's hash to the install") {
+        Fixture     f;
+        Repo        r;
+        std::string bytes = get(r.lib2);
+        bytes.back() = char(bytes.back() ^ 0x55); // in the data, the last section
+        put(r.lib2, bytes);
+        f.run("pkg update");
+        // Planned and checked but for the data, which only installing reads.
+        CHECK(contains(f.run("pkg install --dry-run lib"), "lib 2: would install"));
+        CHECK(contains(f.run("pkg install -y lib", Shell::ExitFailure), "damaged (a hash doesn't match)"));
+        CHECK(f.run("pkg list --installed").empty());
+        // --json with -y says its plan first too.
+        put(r.lib2, build({"lib", "2", "", {"share"}, {{"share/lib", "lib 2"}}, {}}));
+        const std::string json = f.run("pkg --json install -y app");
+        CHECK(json.find("{\"type\":\"plan\",\"action\":\"install\",\"name\":\"lib\"") <
+              json.find("{\"type\":\"done\""));
+        CHECK(contains(json, "{\"type\":\"plan\",\"action\":\"install\",\"name\":\"app\""));
+}
+
 TEST_CASE("Packages: sources checked, a list's icons, and a folder's packages left out") {
         bmds::String why;
         CHECK(Packages::checkSources("file:/sd0/p0/packages", why).isOk());

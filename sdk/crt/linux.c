@@ -1427,6 +1427,10 @@ static long do_uname(struct utsname *u) {
         memset(u, 0, sizeof(*u));
         strcpy(u->sysname, "BMDS");
         strcpy(u->nodename, "bmds");
+        /* uname -r: BMDS's version once the system says it; uname -v: the ABI the program was built for. */
+        u->release[0] = (char)('0' + BMDS_ABI_VERSION);
+        strcpy(u->version, "ABI ");
+        u->version[4] = (char)('0' + BMDS_ABI_VERSION);
         if (bmds_sys_has(BMDS_SYS_SYSTEM_INFO)) {
                 /* The host name (gethostname(), uname -n, BusyBox's hostname). */
                 bmds_system_info_t si;
@@ -1436,9 +1440,12 @@ static long do_uname(struct utsname *u) {
                         strncpy(u->nodename, si.hostname, sizeof(u->nodename) - 1);
                         u->nodename[sizeof(u->nodename) - 1] = '\0';
                 }
+                if (si.version[0] != '\0') {
+                        const size_t n = strnlen(si.version, sizeof(si.version)); /* release is the longer */
+                        memset(u->release, 0, sizeof(u->release));
+                        memcpy(u->release, si.version, n);
+                }
         }
-        u->release[0] = (char)('0' + BMDS_ABI_VERSION);
-        strcpy(u->version, "ABI");
         strcpy(u->machine, "riscv32");
         return 0;
 }

@@ -138,6 +138,7 @@ namespace Packages::Detail {
         enum class LoadMode : uint8_t {
                 Peek,    ///< The head, the signature, the manifest: for planning.
                 Listing, ///< Also the description and the icons: for an index.
+                Check,   ///< Full but the data's hash: for a dry run (installing checks every file's).
                 Full,    ///< Every section, the data's hash and the paths too: for installing.
         };
 

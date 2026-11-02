@@ -26,6 +26,7 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr unsigned int CaptureTimeoutMs = 200;
+        constexpr unsigned int HoldSettleMs = 50;     // a frame's start, after holding the swaps
         constexpr size_t       SyncChunk = 64 * 1024; // a cache operation runs with interrupts off
         constexpr unsigned     MaxUnique = 99;        // `_2` to `_99`
 
@@ -69,11 +70,18 @@ namespace {
                         const size_t   stride = shown->stride();
                         const uint32_t rows = shown->height();
                         if (rows <= lines && stride * lines <= copy->bytes) {
+                                // The copy takes longer than a frame: the program's presents wait
+                                // meanwhile (a swap begun already ends at the next frame's start),
+                                // or its next frame lands in the buffer being copied.
+                                auto *held = const_cast<Surface *>(shown);
+                                held->holdSwaps(true);
+                                (void)held->waitFrame(held->frames(), HoldSettleMs);
                                 const uint8_t *from = shown->shown();
                                 syncIn(from, stride * rows);
                                 for (uint32_t k = 0; k < lines; ++k)
                                         std::memcpy(copy->to + size_t(k) * stride,
                                                     from + size_t(uint64_t(k) * rows / lines) * stride, stride);
+                                held->holdSwaps(false);
                                 copy->width = shown->width();
                                 copy->height = uint16_t(lines);
                                 copy->stride = stride;

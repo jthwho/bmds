@@ -354,7 +354,7 @@ namespace Packages::Detail {
 
 
         Error load(StringView path, const Config &config, Loaded &out, String &why, LoadMode mode) {
-                const bool peek = mode != LoadMode::Full;
+                const bool peek = mode != LoadMode::Full && mode != LoadMode::Check;
                 auto [file, err] = Vfs::open(path, Vfs::Read, vfs());
                 if (err.isError()) return fail(why, err, "%.*s: %s", int(path.size()), path.data(), err.desc());
                 out.file = std::move(file);
@@ -413,7 +413,7 @@ namespace Packages::Detail {
                                 return fail(why, Error::CorruptData, "%s: damaged (a hash doesn't match)", p.name);
                         }
                 }
-                if (!peek) {
+                if (mode == LoadMode::Full) {
                         Buffer buf(ChunkBytes);
                         if (buf.data() == nullptr) return fail(why, Error::NoMem, "%s: out of memory", p.name);
                         bool matches = false;
@@ -688,7 +688,8 @@ namespace Packages::Detail {
         Error installLocked(StringView path, const Config &config, const Packages::InstallOptions &options,
                             const Listener &listener, Info *result, String &why) {
                 Loaded pkg;
-                Error  err = load(path, config, pkg, why, LoadMode::Full);
+                // A dry run reads the data (68 MB for the standard set) only when it installs.
+                Error err = load(path, config, pkg, why, options.dryRun ? LoadMode::Check : LoadMode::Full);
                 if (err.isError()) return err;
                 const StringView name = pkg.info.name;
                 progress(listener, name, Step::Checking, 0, 1);

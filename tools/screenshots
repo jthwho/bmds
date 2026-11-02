@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+# @file      screenshots
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# The README's screenshots, taken on the board (devplan/release.md §7). Each scene starts its
+# programs on the board's desktop, puts their windows where the scene says (`win`), types into
+# them, takes `screenshot`, and fetches the PNG over SSH into docs/images/SCENE.png. Afterwards it
+# closes the windows it opened and ends the programs it started, and nothing else. When the UI
+# changes, run it again.
+#
+#   tools/screenshots [SCENE...] [--out DIR] [--host HOST] [--port PORT] [--ssh-option OPT]...
+#   tools/screenshots --list
+#
+# The board: its serial console (tools/bmdsboard.py: --port, else $ESPPORT, /dev/esp-*,
+# /dev/ttyACM0) with the desktop running, and its SSH server reachable as root@HOST (default
+# bmds0.local) with a key: --ssh-option passes scp an option (-o's argument), such as
+# UserKnownHostsFile=FILE. Run with ESP-IDF's Python (pyserial).
+#
+# A scene needs only what the standard set installs; it changes no settings. Screens are
+# 1280x720; a screenshot needs about 3.7 MB of PSRAM in one block, so a scene runs few programs.
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+import bmdsboard  # noqa: E402
+
+SHOT = "/tmp/bmds-screenshot.png"
+
+# Steps: ("start", COMMAND, TITLE): run COMMAND in the background and wait for a new window whose
+# title contains TITLE (named TITLE in the steps after); ("place", TITLE, X, Y, W, H): its frame
+# there (W and H None: as it is); ("key", TITLE, TEXT): raise it and type TEXT; ("raise", TITLE);
+# ("restore", TITLE): out of maximized; ("wait", SECONDS).
+SCENES = [
+    ("desktop", "The desktop: a terminal, Files and the System Monitor", [
+        ("start", "sysmon", "System Monitor"),
+        ("place", "System Monitor", 712, 366, 552, 340),
+        ("start", "files /rom/share", "/rom/share"),
+        ("place", "/rom/share", 712, 46, 552, 312),
+        ("start", "terminal", "Terminal"),
+        ("place", "Terminal", 16, 46, 688, 448),
+        ("key", "Terminal", "clear; uname -a; sd; df; ls /rom/share/angel/examples\\n"),
+        ("wait", 3),
+    ]),
+    ("editor", "Edit, an IDE for AngelScript, with the program it runs", [
+        ("start", "edit /rom/share/angel/examples/bounce.as", "bounce.as"),
+        ("wait", 2),
+        ("start", "angel /rom/share/angel/examples/bounce.as", "Bounce"),
+        ("place", "Bounce", 600, 200, None, None),
+        ("wait", 2),
+    ]),
+    ("games", "Games: Blocks and Lucky Duck", [
+        ("start", "luckyduck", "Lucky Duck"),  # maximized: it doesn't scale down
+        ("start", "blocks", "Blocks"),
+        ("place", "Blocks", 600, 230, None, None),
+        ("key", "Blocks", "\\n"),  # a game under way (not the high scores)
+        ("wait", 5),
+    ]),
+    ("doom", "Doom, full screen, with its music on the synth", [
+        ("start", "doom", "Doom"),
+        ("wait", 20),  # past the title: the demo playing
+    ]),
+    ("settings", "Settings", [
+        ("start", "settings appearance", "Settings"),
+        ("place", "Settings", 200, 60, 880, 600),
+        ("wait", 2),
+    ]),
+    ("music", "The media player, playing MIDI on the synth", [
+        ("start", "mplayer /sd0/p0/apps/blocks.app/music.mid", "Media Player"),
+        ("place", "Media Player", 256, 120, 768, 484),
+        ("wait", 4),
+    ]),
+]
+
+
+def fail(message):
+    sys.exit("screenshots: " + message)
+
+
+def say(message):
+    print("screenshots: " + message, flush=True)
+
+
+class Desktop:
+    def __init__(self, board):
+        self.board = board
+
+    def run(self, line, seconds=30):
+        out, status = self.board.run(line, seconds)
+        text = out.decode(errors="replace") if isinstance(out, bytes) else str(out)
+        return text, status
+
+    def windows(self):
+        """{id: title} from `win list`."""
+        text, status = self.run("win list")
+        if status != 0:
+            fail("win list failed (is the desktop running?): " + text.strip())
+        found = {}
+        for line in text.splitlines():
+            m = re.match(r"\s*(\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+(.*)$", line)
+            if m:
+                found[int(m.group(1))] = m.group(2)
+        return found
+
+
+def take(desktop, name, steps, out_dir, host, ssh_options):
+    before = desktop.windows()
+    opened = {}  # title in the steps -> window id
+    pids = []
+    try:
+        for step in steps:
+            kind = step[0]
+            if kind == "start":
+                _, command, title = step
+                text, _ = desktop.run(command + " & sleep 0")
+                m = re.search(r"\[\d+\]\s+(\d+)", text)
+                if m:
+                    pids.append(int(m.group(1)))
+                deadline = time.time() + 15
+                while True:
+                    new = {i: t for i, t in desktop.windows().items() if i not in before and i not in opened.values()}
+                    match = [i for i, t in new.items() if title in t]
+                    if match:
+                        opened[title] = match[0]
+                        break
+                    if time.time() > deadline:
+                        fail("%s: no window titled %r after %r" % (name, title, command))
+                    time.sleep(0.5)
+            elif kind == "place":
+                _, title, x, y, w, h = step
+                if w is not None:
+                    desktop.run("win resize %d %d %d" % (opened[title], w, h))
+                desktop.run("win move %d %d %d" % (opened[title], x, y))
+            elif kind == "key":
+                _, title, text = step
+                desktop.run("win raise %d" % opened[title])
+                desktop.run("win key '%s'" % text)
+            elif kind == "raise":
+                desktop.run("win raise %d" % opened[step[1]])
+            elif kind == "restore":
+                desktop.run("win restore %d" % opened[step[1]])
+            elif kind == "wait":
+                time.sleep(step[1])
+            else:
+                fail("%s: unknown step %r" % (name, kind))
+        text, status = desktop.run("screenshot %s" % SHOT)
+        if status != 0:
+            fail("%s: %s" % (name, text.strip()))
+        path = os.path.join(out_dir, name + ".png")
+        options = []
+        for o in ["BatchMode=yes", "ConnectTimeout=10", *ssh_options]:
+            options += ["-o", o]
+        result = subprocess.run(["scp", "-q", *options, "root@%s:%s" % (host, SHOT), path])
+        if result.returncode != 0:
+            fail("%s: scp from root@%s failed" % (name, host))
+        say("%s: %s" % (name, os.path.relpath(path, ROOT)))
+    finally:
+        desktop.run("rm -f %s" % SHOT)
+        for window in reversed(list(opened.values())):
+            desktop.run("win close %d" % window)
+        time.sleep(2)
+        # What it started and is still running (full-screen programs have no window to close).
+        if pids:
+            jobs, _ = desktop.run("jobs -l")
+            for pid in pids:
+                if re.search(r"\b%d\b" % pid, jobs):
+                    desktop.run("kill %d" % pid)
+    return
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Takes the README's screenshots on the board.")
+    parser.add_argument("scenes", nargs="*", help="scenes to take (default: all)")
+    parser.add_argument("--list", action="store_true", help="list the scenes")
+    parser.add_argument("--out", default=os.path.join(ROOT, "docs", "images"), help="where the PNGs go")
+    parser.add_argument("--host", default="bmds0.local", help="the board's SSH host (default: bmds0.local)")
+    parser.add_argument("--port", help="the serial port (default: bmdsboard's)")
+    parser.add_argument("--ssh-option", action="append", default=[], help="an scp -o option (repeatable)")
+    opts = parser.parse_args()
+    if opts.list:
+        for name, description, _ in SCENES:
+            print("%-10s %s" % (name, description))
+        return
+    known = {name: steps for name, _, steps in SCENES}
+    wanted = opts.scenes or [name for name, _, _ in SCENES]
+    for name in wanted:
+        if name not in known:
+            fail("no scene %s (see --list)" % name)
+    os.makedirs(opts.out, exist_ok=True)
+    board = bmdsboard.Board(opts.port)
+    try:
+        board.sync()
+        desktop = Desktop(board)
+        for name in wanted:
+            take(desktop, name, known[name], opts.out, opts.host, opts.ssh_option)
+    finally:
+        board.close()
+    return
+
+
+if __name__ == "__main__":
+    main()

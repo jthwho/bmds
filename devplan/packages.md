@@ -188,6 +188,7 @@ A repository is a static folder: `index.bmpi` and the packages. Any web server o
 | `pkg index DIR` | write `DIR/index.bmpi` (unsigned) for a folder of packages (added with step 6) |
 | `pkg icon NAME [--size N] -o FILE` | a package's icon, installed or from the lists (added with step 4) |
 | `pkg key add\|list\|remove` | §6 |
+| `pkg --source SOURCE ...` | one source more than `pkg/sources`, for this command (added with step 10) |
 
 Progress goes to the terminal as a line per package; errors through `Error` with the package
 named. Exit status 0, or 1 with nothing changed past the failing package.
@@ -288,7 +289,7 @@ page.
 8. [x] HTTPS fetching (§12), the network sources, `update fetch`. Done 2026-11-01 (§23), tested on
    the board against real servers; the first install from a network repository comes with step 9's.
 9. [ ] Publishing: `tools/release`'s packages, the packages zip, the index on GitHub Pages.
-10. [ ] The first run window (§13).
+10. [x] The first run window (§13). Done 2026-11-01 (§24), tested on the board.
 11. [ ] The store (§18).
 
 ## 16. Decided (the user's, 2026-10-30)
@@ -762,3 +763,187 @@ As §12 and update.md §17 planned, with what the code since has decided:
   - The clock after plugging the cable in: DHCP's address 29.6 s after link-up (lwIP's discovers
     at 0, 2, 6, 14 and 30 s, the fifth answered: a switch port's spanning tree holds frames 30 s),
     NTP's step 32 ms after the address. After a reset, address 0.27 s and NTP 0.30 s from boot.
+
+## 24. Step 10: the first run (plan, 2026-11-01; built as planned)
+
+§13's window, for a card that is usable (step 2 does the unusable one).
+
+**The program:** `/bin/welcome [--first-run]`, a built-in GUI program in a new component,
+`bmds_software`, where the store (§18, step 11) will live too. It drives `pkg` as the store will:
+`/bin/sh -c 'pkg ... --json'` started through the program's launcher, its JSON Lines read on a
+worker thread and handed to the window on the loop (`PkgJob`, shared with the store). Toolkit
+only; no OS code knows it.
+
+**Starting it:** the default `/cfg/autoexec.sh` runs `welcome --first-run &` after the desktop,
+when a card is mounted (either branch: the card's own `autoexec.sh` or the built-in desktop).
+With `--first-run` it leaves quietly (status 0, no window) when:
+- the setting **`pkg/welcome`** (new, bool, default on) is off;
+- `pkg list --installed --json` lists anything (a card with packages isn't new);
+- the window system isn't running.
+Without `--first-run` it always opens (for trying it, and later from the store).
+
+**The window:**
+- **Start page:** "Welcome to BMDS"; "Nothing is installed on the card yet." The standard set's
+  summary (its package's), how many packages and how much room it takes (from
+  `pkg install --dry-run --json bmds-standard`), and where they come from. Buttons:
+  **Install the standard set**, **Choose packages...**, **Not now**. A box **Show this when
+  BMDS starts** (ticked); unticking it sets and saves `pkg/welcome`.
+- **While it looks:** `pkg update --json`, then the dry run. A source that failed (a `source`
+  record with an `error`: no network, a server down) is said in a line. If the standard set
+  isn't found and **`PKG_ROOT/packages`** (the packages zip unzipped onto the card) exists and
+  isn't a configured source already, everything is done again with **`--source
+  file:PKG_ROOT/packages`** (a new `pkg` option: one source more, for this run only), and the
+  window says it uses the card's folder. Found nowhere: it says so, names the sources and the
+  folder, and only **Not now** works.
+- **Choose packages...:** every package not installed (`pkg list --json`, with the same
+  `--source`), a box each with its title and size and its summary below, sets first; the
+  standard set's members ticked. **Install** (with the count and size ticked) and **Back**.
+- **Installing:** `pkg install -y --json ...`: a bar over the packages planned (each `done`
+  record one step on, `progress` records in between), "Installing NAME (N of M)...". At the
+  end: "Installed. The new programs are in the launcher." and **Close**; or the `error`
+  record's text, with **Close** and the start page's buttons back. The window can't be closed
+  while `pkg` runs (as the Updater while installing).
+
+**`pkg --source SPEC`** (shell interface: added): adds SPEC to `pkg/sources` for this command;
+its list is cached like any source's (`pkg clean` empties it). For the window and for scripts.
+
+**Tests:**
+- **Host:** `PkgJob`'s line parsing into records (every record type `pkg` writes, unknown fields
+  and types skipped, a line cut at the end); `pkg --source` in the packages tests (a folder not in
+  `pkg/sources` found through it, not after).
+- **Board**, never on the user's own database: `pkg/root`, `pkg/db` and `pkg/cache` set (not
+  saved) to `/sd0/p0/claude/firstrun/...`; `welcome --first-run` opens; the standard set from
+  `/sd0/p0/packages` (as `pkg/sources`, then through the fallback with `pkg/sources` pointed at
+  a missing folder); Choose packages with two picked; `--first-run` leaving quietly once
+  something is installed and with `pkg/welcome` off; screenshots of each page. The settings set
+  back afterwards, the scratch folders removed.
+
+**As built (2026-11-01):**
+
+- **`bmds_software`:** `/bin/welcome` (`welcomeapp.cpp`) and `PkgJob` (`pkgjob.h`): `/bin/sh -c
+  'pkg --json ...'` started with `waited`, its stdout a pipe read on a worker thread, each line
+  handed to the loop and waited for (the window reads records as `pkg` writes them), the exit
+  status from `waitChild()`. The records are read by **`PkgRecord`** (`bmds_pkg`, portable,
+  host-tested): every type and field `pkg` writes, unknown ones passed over.
+- **The window's work:** `pkg update`, `pkg list` (what is offered, the set's summary and
+  members), `pkg install --dry-run bmds-standard` (the plan's count and size); then `pkg install
+  -y`. A first run asks `pkg list --installed` first and shows nothing if anything is installed.
+- **Fixed in `pkg` on the way:**
+  - **A dry run read every package's data** to hash it: 13.5 s for the standard set's 68 MB before
+    the window could say anything. It now loads them `Check` (every check but the data's hash,
+    which installing does anyway): 0.69 s. A host test: a package with damaged data passes the
+    dry run and the install refuses it.
+  - **`install -y --json` wrote no `plan` records** (only a question or a dry run did), though §9
+    says `--json` writes the plan first with `-y`, as `remove` and `autoremove` already did. The
+    window's bar had nothing to count. Host-tested.
+- **Fixed in the toolkit:** a **default button's text** started a column late (its outline's pixel,
+  rounded up to the next column) while its size hint counted from the edge, so a long label lost
+  its last character ("Install the standard se"). The text now starts from the button's edge.
+- **Paragraphs:** `BoxLayout` doesn't ask height for width, so the window's paragraphs are a
+  `TextBlock` whose hint is its height at the width it was given (the column laid out twice).
+- **`pkg/welcome`** (bool, on): the box **Show this when BMDS starts** sets and saves it.
+- **The default `/cfg/autoexec.sh`** runs `welcome --first-run &` after the desktop. The defaults
+  installer doesn't replace an existing `autoexec.sh`, so a board set up before this keeps its
+  own until the user takes the new one (removing `/cfg/autoexec.sh` and its line in
+  `/cfg/.defaults` brings it in at the next boot).
+- **On the board**, on scratch `pkg/root`, `pkg/db` and `pkg/cache` under `/sd0/p0/claude` (set,
+  not saved; reverted afterwards, the folders removed; the user's 16 packages untouched):
+  - `welcome --first-run` on an empty database: the start page within 4 s ("12 packages, taking
+    68.0 MB"); **Install the standard set**: all 12 installed in about two minutes, the bar by
+    package, "Installed: 12 packages, 68.0 MB.";
+  - `--first-run` again: gone in 0.05 s (something installed); with `pkg/welcome` off, at once;
+  - forced (`welcome`) on that card: "It is installed already", that button off; **Choose
+    packages...** lists only what isn't installed; two ticked (712 KB), installed;
+  - `pkg/sources` pointed at a missing folder, the packages in `PKG_ROOT/packages`: "From the
+    card's folder ...: the sources didn't answer", the standard set offered from it;
+  - the folder taken away too: "The standard set wasn't found in the sources (pkg/sources: ...) or
+    in ...", only **Not now** works.
+- **Not tried:** a real network source failing (none is configured until step 9); the window at a
+  real boot with a new card (it runs from the new `autoexec.sh`, which this board doesn't have).
+
+## 25. Step 9: publishing (plan, 2026-11-01)
+
+**Where (the user's, 2026-11-01):** the repository **`jthwho/bmds`** on GitHub, created by the user.
+It isn't a mirror: `git.howardlogic.com` stays the only home of the work, and `tools/release
+--publish` pushes the release's commit and tag to GitHub and makes the release with `gh`. One
+repository serves the code, the Releases (the files) and Pages (the installer and the package
+list, deployed from Actions, so no `gh-pages` branch).
+
+- Pages: `https://jthwho.github.io/bmds/`: the installer (`installer/`), `firmware/latest.json`
+  and the latest release's flash images, `packages/index.bmpi`.
+- Releases: `https://github.com/jthwho/bmds/releases/download/vX.Y.Z/...`: everything else.
+
+**What a release holds now** (`release.md` §3, the card zip replaced by packages):
+
+| Asset | What |
+|---|---|
+| `NAME_VERSION.bmpk` | every package `bmds-dist package` makes |
+| `index.bmpi` | the package list, signed (the dev key), each `File` an absolute URL to this release's asset; the Pages workflow puts it at `packages/index.bmpi` |
+| `bmds-X.Y.Z-packages.zip` | `packages/`: the packages and their index with relative names, to unzip onto a card for a board without a network (`file:/sd0/p0/packages`, the first-run window's fallback) |
+| `bmds-X.Y.Z-p4r1-flash.zip`, `bmds-X.Y.Z-p4r1.bmup` | as before |
+| `bmds-p4r1.bmup` | the same update package under a name without the version, for `releases/latest/download/` |
+| `bmds-X.Y.Z-sources.zip`, `SHA256SUMS`, the notes | as before |
+
+**Defaults:**
+- `pkg/sources`: `https://jthwho.github.io/bmds/packages;file:/sd0/p0/packages` (the network, and
+  the packages zip unzipped onto the card).
+- `update/url`: `https://github.com/jthwho/bmds/releases/latest/download/bmds-VARIANT.bmup`, the
+  variant the firmware is built for (`p4r1`, or `p4r3` without `ESP32P4_SELECTS_REV_LESS_V3`).
+
+**`tools/release`:**
+- `--repo` defaults to `jthwho/bmds` (`$BMDS_GITHUB_REPO` overrides), and `--remote` to `github`
+  (a git remote the user adds once: the script says how if it is missing).
+- Builds the packages (`bmds-dist build`, `package`) instead of the card zip; the second index
+  with `mkpkg index --base-url`.
+- `--publish`: checks `gh auth status`, pushes `HEAD` to the remote's `main` and the tag (never
+  forced), then `gh release create vX.Y.Z --verify-tag` with every asset.
+- **`tools/release site --from DIR --out SITE`:** the Pages site from a release's files (the flash
+  zips unpacked into `firmware/VERSION/VARIANT/`, `latest.json`, `index.bmpi` into `packages/`) and
+  `installer/`. The workflow runs it; so can anyone, to look at a site before publishing.
+
+**`.github/workflows/pages.yml`:** on a published release (and by hand): checks out the tag,
+downloads the release's flash zips and `index.bmpi` (`gh release download`), runs `tools/release
+site`, and deploys with GitHub's Pages actions (`configure-pages`, `upload-pages-artifact`,
+`deploy-pages`). The repository's Pages source must be "GitHub Actions" (the user, once).
+
+**Checked here:** a `--dev` release (all assets made, the indexes checked by `mkpkg info`), and its
+site (`tools/release site`) laid out as the installer expects. **First on GitHub:** the push, the
+release and the workflow can only be tried there; the first real release (`release.md` step 8)
+or a trial the user agrees to.
+
+**As built (2026-11-01), all but the GitHub side:**
+- `tools/release` as planned; `.github/workflows/pages.yml` as planned.
+- **A `--dev` run** made every asset: 19 packages (from `bmds-standard`'s 560 bytes to
+  `freedoom`'s 21.8 MB), `index.bmpi` (11 KB, each `File` at
+  `https://github.com/jthwho/bmds/releases/download/v0.1.0/...`, checked by `mkpkg info`),
+  the packages zip (33.9 MB: `packages/` and its relative index), the flash zip, the `.bmup` under
+  both names, the sources zip. `tools/release site` laid its site out: `installer/`'s pages,
+  `firmware/VERSION/p4r1/` (the images, `flash.json`), `firmware/latest.json`,
+  `packages/index.bmpi`.
+- **On the board:** `pkg/sources` and `update/url` show the new defaults (nothing saved on this
+  board overrides them); `pkg update` says the project's index answers 404 (nothing published
+  yet) and reads the card's folder as before.
+- **Not tried until the GitHub side exists:** `--publish` (the push and `gh release create`), the
+  workflow, and a board reading the published index and downloading a package from a release.
+  `gh` isn't installed on this PC yet.
+
+**GitHub set up (2026-11-01, the user's go-ahead):**
+- `gh repo create jthwho/bmds --public` (homepage `https://jthwho.github.io/bmds/`), the remote
+  `github` (`git@github.com:jthwho/bmds.git`, SSH as `gh` is set up), and `main`'s whole history
+  pushed (255 commits; the 2,475 Git LFS objects, 9 MB, uploaded with it). Actions are on.
+- Pages: `POST repos/jthwho/bmds/pages build_type=workflow`.
+- **The `github-pages` environment lets only `main` deploy** by default, and a release's workflow
+  runs on its tag (`refs/tags/vX.Y.Z`), so its deploy would be refused. A tag rule `v*` was added
+  (`POST .../environments/github-pages/deployment-branch-policies name=v* type=tag`).
+- The workflow file isn't on GitHub until the commit holding it is pushed (the first release's
+  `--publish` does that). Nothing in `installer/` is in LFS (`actions/checkout` doesn't fetch LFS
+  files by default; the site would get pointers if it ever were).
+- **Network installs from a GitHub release, tried (2026-11-01, the user's go-ahead):** a temporary
+  pre-release `pkg-test` on `jthwho/bmds` held four packages (coremark, dropbear, ssh-copy-id,
+  tzdata: 660 KB) and an index naming them by their download URLs (`mkpkg index --base-url`). On
+  the board, on a scratch `pkg/root`/`db`/`cache` with `pkg/sources` set (not saved) to the
+  release's download folder: `pkg update` 1.5 s ("4 packages"); `pkg install -y ssh-copy-id`
+  fetched it and its dependency dropbear through GitHub's redirect and installed both in 4.6 s;
+  tzdata and coremark in 3.7 s; `pkg verify`: every file matches. Then the settings reverted, the
+  scratch folder removed, and the pre-release deleted with its tag (`gh release delete
+  --cleanup-tag`). Still to try with the first release: the index from Pages.

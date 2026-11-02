@@ -29,7 +29,8 @@ namespace PkgCommand {
 
         /** @brief The usage line and the help text. */
         inline constexpr const char *Usage =
-                "[--json] update | list [--installed|--upgradable] [PATTERN] | search WORD... | info NAME|FILE "
+                "[--json] [--source SOURCE] update | list [--installed|--upgradable] [PATTERN] | search WORD... | info "
+                "NAME|FILE "
                 "[--files] | install [-y] [--dry-run] [--overwrite] NAME|FILE... | upgrade [-y] [--dry-run] | "
                 "remove [-y] [--dry-run] NAME... | autoremove [-y] [--dry-run] | mark auto|manual NAME... | "
                 "verify [NAME...] | icon NAME [--size N] -o FILE | index DIR | clean | key list|add FILE|remove ID";
@@ -38,7 +39,7 @@ namespace PkgCommand {
                 "files, with what they need; upgrade them; remove them, and dependencies nothing needs any more; "
                 "list and search what is installed and available; show a package; check installed files against "
                 "their hashes; index a folder of packages; manage the keys packages may be signed with; --json: one "
-                "JSON object a line, for programs";
+                "JSON object a line, for programs; --source: one source more than pkg/sources, for this command";
 
         /** @brief Runs `pkg` with @p ctx's arguments. @return The exit status. */
         int run(CommandContext &ctx, const Packages::Config &config);

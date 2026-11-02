@@ -19,5 +19,9 @@ else
         panel &
 fi
 
+# A new card (nothing installed in pkg/root): the welcome window offers the standard set.
+# It leaves at once otherwise, or with pkg/welcome off.
+welcome --first-run &
+
 # Your own startup, in your home (the card's, or /flash/home).
 [ -f /home/autoexec.sh ] && . /home/autoexec.sh

@@ -12,6 +12,7 @@
 
 #include <cstring>
 #include <new>
+#include <sdkconfig.h>
 #include <bmds/blockwriter.h>
 #include <bmds/command.h>
 #include <bmds/console.h>
@@ -30,8 +31,15 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        // Where this board's packages are published (devplan/update.md §17): one URL that names the newest.
-        BMDS_SYSCONF(updateUrl, "update/url", Config::Type::String, "",
+        // Where this board's packages are published (devplan/update.md §17): one URL that names the newest,
+        // the project's latest release's for this chip variant (devplan/packages.md §25).
+#if CONFIG_ESP32P4_SELECTS_REV_LESS_V3
+#define BMDS_UPDATE_VARIANT "p4r1"
+#else
+#define BMDS_UPDATE_VARIANT "p4r3"
+#endif
+        BMDS_SYSCONF(updateUrl, "update/url", Config::Type::String,
+                     "https://github.com/jthwho/bmds/releases/latest/download/bmds-" BMDS_UPDATE_VARIANT ".bmup",
                      "Where this board's update packages are published: a URL naming the newest (update fetch)", 0,
                      1023, nullptr, nullptr)
 

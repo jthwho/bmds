@@ -520,7 +520,9 @@ void Button::paint(Painter &painter) {
                                          {uint16_t(f.right() - 1), uint16_t(f.y + 1), 1, uint16_t(f.height - 2)}};
                 (void)painter.fill(Span<const Rect>(ring), p.color(Role::Highlight));
         }
-        uint16_t       x = columnUp(r.x + GuiStyle::ButtonPad);
+        // From the button's own edge, as sizeHint() counts: a default button's outline takes a pixel,
+        // which rounded up to the next column clipped its text's end.
+        uint16_t       x = columnUp(geometry().x + GuiStyle::ButtonPad);
         const uint16_t ix = columnUp(r.x + GuiStyle::ButtonPad / 2); // the icon's column
         // Room for the icon where it goes (not where text would: a tool button on an odd column).
         if (_icon != nullptr && _icon->isValid() && _icon->width <= GuiStyle::IconSize &&

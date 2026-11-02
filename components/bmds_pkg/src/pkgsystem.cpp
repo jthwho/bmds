@@ -36,12 +36,19 @@ namespace {
                 return Packages::checkSources(value, why);
         }
 
-        BMDS_SYSCONF(pkgSources, "pkg/sources", Config::Type::String, "file:/sd0/p0/packages",
-                     "Where packages come from, ';'-separated: file:/FOLDER (a folder of .bmpk files)", 0, 1023,
-                     nullptr, checkSources)
+        // The project's package list on its Pages site, and the packages zip unzipped onto the card
+        // (devplan/packages.md §25).
+        BMDS_SYSCONF(pkgSources, "pkg/sources", Config::Type::String,
+                     "https://jthwho.github.io/bmds/packages;file:/sd0/p0/packages",
+                     "Where packages come from, ';'-separated: an http(s) URL of a folder with index.bmpi, or "
+                     "file:/FOLDER (a folder of .bmpk files)",
+                     0, 1023, nullptr, checkSources)
 
         BMDS_SYSCONF(pkgKeys, "pkg/keys", Config::Type::Path, "/cfg/pkg/keys",
                      "Keys added to pkg's keyring (pkg key add), a file each", 0, 255, nullptr, nullptr)
+        BMDS_SYSCONF(pkgWelcome, "pkg/welcome", Config::Type::Bool, "on",
+                     "Show the welcome window at startup while nothing is installed (welcome --first-run)", 0, 0,
+                     nullptr, nullptr)
         BMDS_SYSCONF(pkgDev, "pkg/dev", Config::Type::Enum, "allow",
                      "Packages signed by the dev key (anyone could have): allow, ask before installing, or refuse", 0,
                      0, "allow|ask|refuse", nullptr)

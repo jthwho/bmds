@@ -1,0 +1,56 @@
+# The Pages site (devplan/packages.md §25, release.md §4): the web installer, the latest release's
+# flash images (firmware/latest.json) and the package list (packages/index.bmpi), laid out by
+# tools/release site from the release's files. Run when a release is published, or by hand (the
+# latest release). The repository's Pages source must be "GitHub Actions".
+
+name: Pages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: The release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          if [ -z "$tag" ]; then
+            tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+      - name: Its files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-files
+          gh release download "${{ steps.release.outputs.tag }}" --repo "$GITHUB_REPOSITORY" \
+            --dir release-files --pattern 'bmds-*-flash.zip' --pattern 'index.bmpi'
+      - name: The site
+        run: python3 tools/release site --from release-files --out site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
