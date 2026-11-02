@@ -302,3 +302,6 @@ is there and its links aren't (§6a), the system runs it once, before the deskto
    workflow deployed the site in under a minute. Checked: every site file and the page's links
    answer, the published page loads `latest.json` and its firmware in headless Chrome, and the
    board's `pkg update` reads the 19 packages from Pages over HTTPS (its default source).
+   0.1.1 (2026-11-02) fixes what the first test of a blank card found: every boot crashed in
+   both firmwares (the main task's stack, `docs/platforms/esp32p4.md` §5); with the fix the card
+   booted and the first-run window installed the standard set from Pages.

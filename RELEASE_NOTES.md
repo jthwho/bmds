@@ -5,6 +5,19 @@ Each release has a section headed `## X.Y.Z` (the version in
 the update package, where the Updater shows it, and on the GitHub release; it refuses to make a
 release without one.
 
+## 0.1.1
+
+A fix release. Update from 0.1.0 with the Updater (or `update fetch`), or flash it from the web
+installer at https://jthwho.github.io/bmds/.
+
+- **A blank SD card no longer stops the board from starting.** With a new or freshly formatted card,
+  the first boot crashed while it set the card up, and every boot after it did the same, in the
+  recovery firmware too. Boards whose card was already set up weren't affected. A board stuck
+  that way: flash 0.1.1 from the web installer (Reinstall keeps its settings).
+- BusyBox (revision 3) and Dropbear (revision 2) are rebuilt without compiler warnings; they work
+  as before.
+- The SDK's C library headers no longer warn in programs built with `-Wundef -Wsystem-headers`.
+
 ## 0.1.0
 
 The first release of BMDS, for the Olimex ESP32-P4-PC with chip revisions before v3.0.
