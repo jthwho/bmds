@@ -31,6 +31,7 @@ idf_component_register(SRCS src/benchfs.cpp
 bmds_target_options(${COMPONENT_LIB})
 # ESP-IDF's SD host made cheaper per command (src/sdhostpatch.h, devplan/storage.md §17).
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=sdmmc_wait_for_idle"
+                                                 "-Wl,--wrap=sd_host_create_sdmmc_controller"
                                                  "-Wl,--wrap=sd_host_slot_set_card_clk"
                                                  "-Wl,--wrap=sd_host_slot_get_real_freq"
                                                  "-Wl,--wrap=sd_host_slot_set_bus_width"

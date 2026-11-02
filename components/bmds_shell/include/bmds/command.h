@@ -138,7 +138,14 @@ class CommandContext {
                  */
                 Error write(int fd, ByteSpan data);
 
-                /** @brief Writes @p text to stdout. Errors show up in `isInterrupted()`. */
+                /**
+                 * @brief Returns stdout's first write error other than a broken pipe or an
+                 *        interruption (`Ok` if none): a built-in that returns success after one
+                 *        fails with `NAME: write error: ...` instead, as the GNU tools do.
+                 */
+                Error writeError() const { return _writeError; }
+
+                /** @brief Writes @p text to stdout. Errors show up in `isInterrupted()` and `writeError()`. */
                 void print(StringView text);
 
                 /** @brief Writes formatted text to stdout (longer than `PrintBufferBytes`: from the heap). */
@@ -222,6 +229,7 @@ class CommandContext {
                 FdTable          &_fds;
                 Executor         *_executor;
                 bool              _outputBroken = false;
+                Error             _writeError;
 };
 
 BMDS_NAMESPACE_END

@@ -442,13 +442,14 @@ Step 2b measured: the image grew by 10.9 KB (331.7 → 342.7 KB); the linker sti
 
 ## 12. Open questions
 
-- UHS-I (1.8 V, SDR50/SDR104): worth it for a DOS-like machine? Measure high speed first.
+- ~~UHS-I (1.8 V, SDR50/SDR104).~~ Done (§18): SDR50 by default.
 - ~~Read-ahead above FatFs.~~ Done for metadata (§3, 2026-10-08): runs of 8 sectors on a miss.
 - ~~Write-back for metadata.~~ Done (§3, 2026-10-08, the user's choice): held up to a second, written
   in an order a cut can't turn into a cross-link.
 - ~~**A sector cache for directories and the FAT.**~~ Done in Phase 3 (§3): 64 sectors, write-through. `ls -l` of BusyBox's `bin` 2.36 → 0.30 s, BusyBox's own `ls -l` 4.22 → 0.75 s.
-- Commands ignore write errors, so `echo x > f` on a full or pulled card succeeds silently. GNU tools report `write error: No space left on device` and fail; `CommandContext::print()`/`write()` should remember the first error and the built-ins return 1.
-- The removal of a card is noticed only after the write in flight times out (about 4 s): shorter IDF timeouts, or the card-detect interrupt failing transfers early, would shorten it.
+- ~~Commands ignore write errors.~~ Done (§18): `NAME: write error: ...` and status 1.
+- ~~The removal of a card is noticed only after the write in flight times out.~~ Done (§18): the
+  debounced removal fails the command in flight.
 - ~~A `/ram` RAM disk on `RamBlockDevice` for scratch files and tests on the board.~~ Done in Phase 3 step 6: `ram0` at `/ram0/p0`, sparse (`programs.md` §6); replaced by `/tmp`, a tmpfs (§15).
 
 ## 13. `/boot`: a persistent partition on the flash (design, 2026-10-05; built)
@@ -1215,7 +1216,84 @@ card mid-write with the new wait (it needs hands on the card).
 Writes of 64 KB at a time are slower on this card than 16 KB (7.4 against 6.6 s for 32 MB, the
 CPU idle in both): the card's own behaviour with larger multi-block writes.
 
-**Still open:**
+**Then:** §12's three remaining SD items, in §18.
 
-- **UHS-I** (SDR50 at 1.8 V from LDO 4) stays an open question (§12): reads are near the 40 MHz
-  bus's limit, writes are the card's.
+## 18. Write errors, a pulled card, UHS-I (2026-11-01; the user asked for "the other SD items")
+
+**Write errors reach the command** (`bmds_shell`):
+
+- `CommandContext` keeps stdout's first write error other than a broken pipe or an interruption
+  (`writeError()`). A built-in that returns success after one fails instead, with
+  `NAME: write error: TEXT` on stderr (`echo: write error: No space left on device`), as the GNU
+  tools do. A command that reports its own failure is left alone.
+- **Redirections are flushed before their files close.** FatFs keeps a file's last partial sector
+  in its buffer until `f_sync()`/`f_close()`, so `echo x > f` on a pulled card or a failing device
+  wrote nothing until the handle went, and the error went with it. When a command or compound
+  command with redirections ends, each file they opened for writing that nobody else holds (a
+  background job's handle is left) is flushed first; a failure prints `write error: TEXT` and
+  fails the command. The close itself then has nothing to write.
+- Host tests (`Files: output that doesn't arrive fails the command`): a full disk fails `echo` at
+  its write (and `||` sees it); a device whose writes fail fails `echo hi > f` and
+  `{ ...; } > f` at the flush.
+
+**A pulled card fails the command in flight at once** (`SdCard::cancelTransfer()`):
+
+- Before, a write in flight when the card left waited out ESP-IDF's 1 s timeouts, several of them
+  (about 4 s), and only then could the storage task, which needs the storage lock to eject, see the
+  removal.
+- Now, once the switch has said "out" for the debounce's 50 ms, the storage task first puts an event
+  in ESP-IDF's transfer queue that ends every state of a transfer with an error (a command with no
+  response: `RTO | CMD_DONE`; data timed out: `DTO | DATA_OVER`), and wakes a wait for D0. The
+  commands ESP-IDF sends after a failed write (CMD13, ACMD22) get no response and fail at the
+  controller's response timeout, quickly. A request split through the bounce buffer stops between
+  pieces. Not from the interrupt: contact bounce must never fail a good write.
+- **On the board** (the user pulling the card during a loop of 16 MB `dd` writes, in UHS-I): the
+  eject came **1 ms** after the removal was seen (the 50 ms debounce after the pull), against
+  **8.05 s** with the cancel switched off. Both times the card was put back about 5 s later and
+  mounted again in UHS-I (a fresh switch and tuning, no brownout), and the removal was seen with
+  the card detect's pull-up at 1.8 V.
+
+**UHS-I** (`CONFIG_BMDS_SD_UHS`: none, SDR50 (default), SDR104):
+
+- **Electrically safe on this board:** the SD pads, the 4.7k pull-ups on CMD and D0-D3 and the card
+  detect's pull-up are all on LDO 4 (`docs/HARDWARE.md`), which ESP-IDF switches to 1.8 V with
+  CMD11. The slot gets `SDMMC_SLOT_FLAG_UHS1`, the host UHS-I's clock; ESP-IDF tunes the sampling
+  phase (the setup cache of §17 keys on it, so tuning's settings are applied).
+- **The modes are tried fastest first**, SDR104 then SDR50 then high speed, each after a power
+  cycle, and **an attempt counts only at its own clock**: ESP-IDF answers a mode the card refuses
+  with the default speed (20 MHz), not an error. A card without UHS-I ends at 40 MHz as before.
+- **A card left at 1.8 V by a reset can't be reset:** with the card's supply off, its lines'
+  pull-ups on LDO 4 keep it alive (still at 1.8 V after 1 s with the lines driven low; with LDO 4
+  off too, GPIO45's pad, in LDO 4's domain, can't hold the power switch off). After about a second
+  fully off it does reset, but switching it back on then **browns the board out** (the
+  discharged card's inrush): a 1 s power-off put the board in a reset loop, which only a reflash
+  with the old 20 ms ended. So the 20 ms cycle stays, and such a card doesn't offer the switch
+  (OCR `0xc0ff8000`, no S18A) yet takes SDR50, which a card offers only at 1.8 V: the attach then
+  brings the pads to 1.8 V to match and tunes, as the switch would have (`adoptUhs()`). Seen on
+  every reboot and reflash since: `Bus: 4-bit, 100.0 MHz, UHS-I (1.8 V)`.
+  - Before the attempts counted only at their clock, such a card ran in high-speed mode at
+    100 MHz with the pads at 3.3 V, and after SDR104 was refused, at 40 MHz with the pads at 3.3 V.
+    Both worked; neither is a state to keep.
+- **Detaching** sets LDO 4 back to 3.3 V (the card detect's pull-up).
+- `sd` says `Bus: 4-bit, 100.0 MHz, UHS-I (1.8 V)`.
+- **The ESP-IDF controller's DMA descriptors** go from 4 to 16 (`--wrap` of
+  `sd_host_create_sdmmc_controller`): a 64 KB transfer is described whole instead of refilled
+  from the interrupt 4 KB at a time. No measurable change on this card; kept as it costs 192 bytes.
+
+**Results** (the same 32 GB card; it does SDR50, not SDR104):
+
+| What | High speed, 40 MHz | SDR50, 100 MHz |
+|---|---|---|
+| Reads of 512 B / 16 KB / 64 KB / 256 KB (`storage.sd.read`) | 1.49 / 11.9 / 15.9 / 17.3 MB/s | **1.84 / 13.4 / 16.9 / 18.0 MB/s** |
+| 64 KB reads into internal RAM instead of PSRAM | 16.8 MB/s | |
+| `dd` 32 MB in 16 KB writes | 6.6 s | **6.3 s** |
+| `dd` 32 MB read back in 64 KB | 2.4 s | **2.2 s** |
+| 33.6 MB download onto the card | 1.82 MB/s | **1.88 MB/s** |
+| Card ready after boot (mounted) | 0.12 s | 0.21 s |
+
+- **The card, not the bus, is the limit now:** from 64 KB to 256 KB a read costs 0.056 ms a KB more,
+  so it streams at about 18 MB/s at either clock, and reading into internal RAM is no faster
+  than into PSRAM. What UHS-I bought here is the commands' time (small reads +24%); a card that
+  streams faster would gain much more.
+- Copies of random data compare equal, the download has its SHA-256, the mode survives reboots
+  and reflashes.

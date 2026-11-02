@@ -45,8 +45,9 @@ namespace {
                            static_cast<unsigned long long>(tenthsGb / 10),
                            static_cast<unsigned long long>(tenthsGb % 10),
                            static_cast<unsigned long long>(info.sectorCount), static_cast<unsigned>(info.sectorSize));
-                ctx.printf("Bus:      %u-bit, %u.%u MHz\n", info.busWidth, static_cast<unsigned>(info.clockKhz / 1000),
-                           static_cast<unsigned>(info.clockKhz % 1000 / 100));
+                ctx.printf("Bus:      %u-bit, %u.%u MHz%s\n", info.busWidth,
+                           static_cast<unsigned>(info.clockKhz / 1000),
+                           static_cast<unsigned>(info.clockKhz % 1000 / 100), info.uhs ? ", UHS-I (1.8 V)" : "");
                 ctx.printf("Maker:    0x%02x, OEM 0x%04x, revision %u.%u, serial 0x%08x, made %04u-%02u\n",
                            info.manufacturerId, info.oemId, info.revision >> 4, info.revision & 0xf,
                            static_cast<unsigned>(info.serial), info.year, info.month);

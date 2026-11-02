@@ -61,7 +61,13 @@ int Executor::runBuiltin(const Command &cmd, List<String> &args) {
         }
         for (String &a : args) (void)argv.append(a.data());
         CommandContext ctx(_shell, cmd, argv.span(), *_fds, this);
-        return cmd.run(ctx);
+        const int      status = cmd.run(ctx);
+        // Output that didn't arrive (a full or pulled card) fails the command, as in the GNU tools.
+        if (status == Shell::ExitSuccess && ctx.writeError().isError()) {
+                ctx.eprintf("%s: write error: %s\n", cmd.name, CommandContext::errorText(ctx.writeError()));
+                return Shell::ExitFailure;
+        }
+        return status;
 }
 
 Error Executor::findInPath(StringView name, String &out) {

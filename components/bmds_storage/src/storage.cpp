@@ -79,6 +79,9 @@ namespace {
         }
 
         void cardRemoved(SdCard &card) {
+                // A write in flight fails now rather than after ESP-IDF's timeouts: the eject
+                // waits for it (the storage lock).
+                card.cancelTransfer();
                 // Unmount first: open files go stale (NoMedia) rather than failing with I/O errors.
                 Vfs::eject(card);
                 card.detach();

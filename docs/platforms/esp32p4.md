@@ -660,6 +660,14 @@ until silicon v3; then test again.
     with the start-bit error, which the transfer state machine treats as an error.
   - **Sub-tick sleeps between looks lost:** the wake timer's sleeps came back about 75 µs late on
     average, so polling at 50 µs was 2.5% slower than the spin.
+  - **UHS-I on this board** (`devplan/storage.md` §18): a card left at 1.8 V by a reset can't be
+    reset by GPIO45's power switch in any safe time. The pull-ups on LDO 4 keep it alive through
+    its pins for well over 100 ms (and turning LDO 4 off doesn't help: GPIO45's pad seems to be in
+    its domain, so the switch can't be held off). After about 1 s off it does reset, but its inrush
+    when switched back on **browns the board out**, in a loop until reflashed. Such a card doesn't
+    offer S18A in its OCR but takes SDR50 (offered only at 1.8 V): match it by setting LDO 4 to
+    1.8 V and tuning. And ESP-IDF answers a UHS mode the card refuses with the default speed
+    (20 MHz) and `ESP_OK`, not an error: check `card->max_freq_khz`.
   - **Unaligned pieces cost a quarter more:** 16,000-byte writes of a file take 26% longer than
     16 KB ones (a single-sector write for the partial sectors each time); gather them
     (`BlockWriter`).

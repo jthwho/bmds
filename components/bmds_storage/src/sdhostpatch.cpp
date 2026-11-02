@@ -39,6 +39,10 @@ esp_err_t __wrap_sd_host_slot_set_bus_sampling_mode(sd_host_sdmmc_slot_t *slot);
 esp_err_t __wrap_sd_host_set_delay_phase(sd_host_sdmmc_slot_t *slot);
 esp_err_t __wrap_sd_host_set_delay_line(sd_host_sdmmc_slot_t *slot);
 esp_err_t __wrap_sdmmc_wait_for_idle(sdmmc_card_t *card, uint32_t status);
+esp_err_t __real_sd_host_create_sdmmc_controller(const sd_host_sdmmc_cfg_t *config, sd_host_ctlr_handle_t *ret_handle);
+esp_err_t __wrap_sd_host_create_sdmmc_controller(const sd_host_sdmmc_cfg_t *config, sd_host_ctlr_handle_t *ret_handle);
+// ESP-IDF's legacy SDMMC host (sdmmc_internal.h, not installed): a slot's handle.
+sd_host_slot_handle_t sdmmc_get_slot_handle(int slot_id);
 }
 
 BMDS_NAMESPACE_BEGIN
@@ -72,6 +76,9 @@ namespace {
                 a = err == ESP_OK ? Applied{slot, value, state, freqHz} : Applied{};
                 return err;
         }
+
+        // DMA descriptors (4 KB each) for the controller: ESP-IDF's default is 4.
+        constexpr uint32_t DmaDescriptors = 16;
 
         // The longest a card may stay busy (ESP-IDF's limit). A write keeps this card busy 0.4 to
         // 1.6 ms (storage.md §17).
@@ -129,12 +136,28 @@ Error SdHostPatch::init(int d0Gpio) {
         // (the card detect's): already there is fine.
         esp_err_t err = gpio_install_isr_service(0);
         if (err == ESP_ERR_INVALID_STATE) err = ESP_OK;
+        if (err == ESP_OK) err = gpio_isr_handler_add(pin, d0Isr, nullptr);
         if (err == ESP_OK) err = gpio_set_intr_type(pin, GPIO_INTR_POSEDGE);
         if (err == ESP_OK) err = gpio_intr_disable(pin);
-        if (err == ESP_OK) err = gpio_isr_handler_add(pin, d0Isr, nullptr);
         if (err != ESP_OK) return Error::fromEspErr(err);
         d0 = pin;
         return Error();
+}
+
+void SdHostPatch::cancel(int slotId) {
+        sd_host_slot_handle_t handle = sdmmc_get_slot_handle(slotId);
+        if (handle == nullptr) return;
+        const auto *slot = __containerof(handle, sd_host_sdmmc_slot_t, drv);
+        // Every state of a transfer ends on these: a command with no response (its error, then
+        // done), and data timed out (its error, then over).
+        const sd_host_sdmmc_event_t event = {
+                .sdmmc_status =
+                        SDMMC_INTMASK_RTO | SDMMC_INTMASK_CMD_DONE | SDMMC_INTMASK_DTO | SDMMC_INTMASK_DATA_OVER,
+                .dma_status = 0,
+        };
+        (void)xQueueSend(slot->ctlr->event_queue, &event, 0);
+        if (released.isCreated()) released->release();
+        return;
 }
 
 void SdHostPatch::forget() {
@@ -201,4 +224,11 @@ esp_err_t __wrap_sdmmc_wait_for_idle(sdmmc_card_t *card, uint32_t status) {
                 (void)WakeTimer::sleepUntil(Clock::monotonicNs() + RetryNs, nullptr);
         }
         return ESP_OK;
+}
+
+esp_err_t __wrap_sd_host_create_sdmmc_controller(const sd_host_sdmmc_cfg_t *config, sd_host_ctlr_handle_t *ret_handle) {
+        // A 64 KB transfer described whole (16 of 4 KB), not refilled from the interrupt 4 KB at a time.
+        sd_host_sdmmc_cfg_t cfg = config != nullptr ? *config : sd_host_sdmmc_cfg_t{};
+        if (cfg.dma_desc_num < DmaDescriptors) cfg.dma_desc_num = DmaDescriptors;
+        return __real_sd_host_create_sdmmc_controller(&cfg, ret_handle);
 }

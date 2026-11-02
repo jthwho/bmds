@@ -13,6 +13,7 @@
 #include <driver/sdmmc_host.h>
 #include <esp_memory_utils.h>
 #include <sd_protocol_defs.h>
+#include <sd_pwr_ctrl.h>
 #include <sd_pwr_ctrl_by_on_chip_ldo.h>
 #include <sdmmc_cmd.h>
 #include <bmds/board.h>
@@ -23,6 +24,10 @@
 #include <bmds/task.h>
 
 #include "sdhostpatch.h"
+
+extern "C" {
+#include <esp_private/sdmmc_common.h>
+}
 
 BMDS_DEBUG(SdCard)
 
@@ -53,18 +58,57 @@ namespace {
                 return;
         }
 
+        // A power cycle: it resets a card left in a failed attempt or any state but 1.8 V
+        // signalling. A card left at 1.8 V (by a reset) stays there: its pull-ups on CMD and
+        // D0-D3 are on the IO supply, and only about a second without power resets it, after which
+        // its inrush at power-on browns the board out (devplan/storage.md §18).
+        void powerCycle() {
+                setPower(false);
+                Task::sleep(PowerOffMs);
+                setPower(true);
+                Task::sleep(PowerOnMs);
+                return;
+        }
+
+        // A UHS-I card still at 1.8 V from before a reset doesn't offer the voltage switch, yet takes
+        // SDR50 (offered only at 1.8 V): the pads follow it to 1.8 V, then the timing is tuned, as
+        // the switch would have done.
+        esp_err_t adoptUhs() {
+                if (ioSupply == nullptr) return ESP_ERR_NOT_SUPPORTED;
+                esp_err_t err = sd_pwr_ctrl_set_io_voltage(ioSupply, 1800);
+                if (err != ESP_OK) return err;
+                card->host.io_voltage = 1.8f;
+                (void)sdmmc_init_sd_driver_strength(card);
+                (void)sdmmc_init_sd_current_limit(card);
+                err = sdmmc_init_sd_timing_tuning(card);
+                if (err == ESP_OK) card->is_uhs1 = 1;
+                return err;
+        }
+
         Error espError(esp_err_t err) {
                 // Past the end of the card (a smaller card swapped in).
                 if (err == ESP_ERR_INVALID_SIZE) return Error::OutOfRange;
                 return Error::fromEspErr(err);
         }
 
-        sdmmc_host_t hostConfig() {
+        // The modes tried, fastest first (devplan/storage.md §18): UHS-I's clocks as configured,
+        // then high speed (0: CONFIG_BMDS_SD_MAX_KHZ at 3.3 V).
+        constexpr int Modes[] = {
+#if CONFIG_BMDS_SD_UHS_SDR104
+                SDMMC_FREQ_SDR104,
+#endif
+#if CONFIG_BMDS_SD_UHS_SDR104 || CONFIG_BMDS_SD_UHS_SDR50
+                SDMMC_FREQ_SDR50,
+#endif
+                0,
+        };
+
+        sdmmc_host_t hostConfig(int uhsKhz) {
                 const BoardSdCard &sd = board().sdCard;
                 sdmmc_host_t       host = SDMMC_HOST_DEFAULT();
                 host.slot = sd.slot;
-                host.max_freq_khz = CONFIG_BMDS_SD_MAX_KHZ;
-                // DDR is for MMC and UHS-I, which this slot doesn't do (yet).
+                host.max_freq_khz = uhsKhz != 0 ? uhsKhz : CONFIG_BMDS_SD_MAX_KHZ;
+                // DDR (DDR50) isn't used: SDR50 is faster on the same pads.
                 host.flags &= ~SDMMC_HOST_FLAG_DDR;
                 host.io_voltage = static_cast<float>(sd.ioLdoMv) / 1000.0f;
                 host.pwr_ctrl_handle = ioSupply;
@@ -77,7 +121,7 @@ namespace {
         // for good, so only a fresh slot can identify the next card.
         bool hostRunning = false;
 
-        esp_err_t startHost() {
+        esp_err_t startHost(bool uhs) {
                 const BoardSdCard &sd = board().sdCard;
                 SdHostPatch::forget();
                 esp_err_t err = sdmmc_host_init();
@@ -94,6 +138,7 @@ namespace {
                 config.cd = SDMMC_SLOT_NO_CD;
                 config.wp = SDMMC_SLOT_NO_WP;
                 config.width = sd.busWidth;
+                if (uhs) config.flags |= SDMMC_SLOT_FLAG_UHS1;
                 err = sdmmc_host_init_slot(sd.slot, &config);
                 if (err != ESP_OK) {
                         (void)sdmmc_host_deinit();
@@ -204,31 +249,43 @@ Error SdCard::attach() {
         _attached.store(false, std::memory_order_release);
         if (!isInserted()) return Error::NoMedia;
 
-        // A power cycle resets a card left in any state (after a reboot, or a
-        // failed attempt).
-        setPower(false);
-        Task::sleep(PowerOffMs);
-        setPower(true);
-        Task::sleep(PowerOnMs);
-
-        stopHost();
-        esp_err_t err = startHost();
-        if (err != ESP_OK) {
-                setPower(false);
-                bmdsErr("SdCard: SDMMC host setup failed: %s", Error::fromEspErr(err).desc());
-                return Error::fromEspErr(err);
-        }
-        const sdmmc_host_t host = hostConfig();
-        err = sdmmc_card_init(&host, card);
-        if (err != ESP_OK) {
+        // The fastest mode the card takes. UHS-I needs an IO supply that switches. An attempt counts
+        // only at its own clock: ESP-IDF settles for the default speed when a mode is refused.
+        esp_err_t err = ESP_OK;
+        for (const int khz : Modes) {
+                if (khz != 0 && board().sdCard.ioLdo == NoLdo) continue;
+                stopHost();
+                powerCycle();
+                err = startHost(khz != 0);
+                if (err != ESP_OK) {
+                        setPower(false);
+                        bmdsErr("SdCard: SDMMC host setup failed: %s", Error::fromEspErr(err).desc());
+                        return Error::fromEspErr(err);
+                }
+                const sdmmc_host_t host = hostConfig(khz);
+                err = sdmmc_card_init(&host, card);
+                if (err == ESP_OK && khz != 0) {
+                        if (card->max_freq_khz < khz) {
+                                err = ESP_ERR_NOT_SUPPORTED; // not this mode (or no UHS-I at all)
+                        } else if (!card->is_uhs1) {
+                                err = adoptUhs(); // the mode without the switch: left at 1.8 V
+                        }
+                }
+                if (err == ESP_OK) break;
                 stopHost();
                 setPower(false);
                 // Pulled out while it was being set up.
                 if (!isInserted()) return Error::NoMedia;
-                return Error::fromEspErr(err);
+                bmdsDebug("SdCard: %d kHz: %s", khz != 0 ? khz : CONFIG_BMDS_SD_MAX_KHZ, Error::fromEspErr(err).desc());
         }
+        if (err != ESP_OK) return Error::fromEspErr(err);
         _attached.store(true, std::memory_order_release);
         return Error();
+}
+
+void SdCard::cancelTransfer() {
+        if (isAttached()) SdHostPatch::cancel(board().sdCard.slot);
+        return;
 }
 
 void SdCard::detach() {
@@ -236,6 +293,8 @@ void SdCard::detach() {
         _attached.store(false, std::memory_order_release);
         stopHost();
         setPower(false);
+        // Back to 3.3 V from UHS-I's 1.8 V: the card detect's pull-up is on this supply.
+        if (ioSupply != nullptr) (void)sd_pwr_ctrl_set_io_voltage(ioSupply, board().sdCard.ioLdoMv);
         return;
 }
 
@@ -267,6 +326,7 @@ SdCard::Info SdCard::info() const {
         info.sectorSize = static_cast<uint32_t>(card->csd.sector_size);
         info.clockKhz = static_cast<uint32_t>(card->real_freq_khz);
         info.busWidth = static_cast<uint8_t>(1u << card->log_bus_width);
+        info.uhs = card->is_uhs1 != 0;
         return info;
 }
 
@@ -347,6 +407,7 @@ Error SdCard::transfer(uint64_t sector, uint8_t *buf, size_t bytes, bool write) 
         } else {
                 const size_t chunkSectors = CONFIG_BMDS_SD_BOUNCE_BYTES / sectorBytes;
                 for (size_t done = 0; done < count && espErr == ESP_OK;) {
+                        if (done > 0 && !isInserted()) break; // pulled out part-way: NoMedia below
                         const size_t n = count - done < chunkSectors ? count - done : chunkSectors;
                         uint8_t     *at = buf + done * sectorBytes;
                         if (write) {

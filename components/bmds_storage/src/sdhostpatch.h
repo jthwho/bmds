@@ -35,6 +35,13 @@ namespace SdHostPatch {
          */
         Error init(int d0Gpio);
 
+        /**
+         * @brief Ends the command in flight on slot @p slotId with an error, as if the card had
+         *        answered nothing (an event put in ESP-IDF's queue), and wakes a wait for D0.
+         * @nonblocking
+         */
+        void cancel(int slotId);
+
         /** @brief Forgets the settings last applied: the host was started or stopped (its reset clears them). */
         void forget();
 

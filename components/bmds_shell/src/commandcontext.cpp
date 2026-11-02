@@ -77,7 +77,13 @@ Error CommandContext::write(int fd, ByteSpan data) {
         FileHandle *out = _fds.handle(fd);
         if (out == nullptr) return Error::BadDescriptor;
         Error err = out->write(data, WaitForever).error();
-        if (err == Error::BrokenPipe && fd == FdTable::Stdout) _outputBroken = true;
+        if (fd == FdTable::Stdout && err.isError()) {
+                if (err == Error::BrokenPipe) {
+                        _outputBroken = true;
+                } else if (err != Error::Interrupted && _writeError.isOk()) {
+                        _writeError = err;
+                }
+        }
         return err;
 }
 

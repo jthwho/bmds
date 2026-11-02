@@ -18,6 +18,7 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr size_t   LargeRequestBytes = 64 * 1024;
+        constexpr size_t   HugeRequestBytes = 256 * 1024;
         constexpr uint64_t MaxMb = 1024;
 
         constexpr BenchParam ReadParams[] = {
@@ -50,7 +51,7 @@ namespace {
                 if (!card.isAttached()) return card.isInserted() ? Error::DeviceError : Error::NoMedia;
                 // One DMA-capable, aligned buffer; 4 bytes in, the same memory is unaligned and goes
                 // through the driver's bounce buffer.
-                auto *buf = static_cast<uint8_t *>(Memory::alloc(MemSpace::PsramDma, LargeRequestBytes + 64));
+                auto *buf = static_cast<uint8_t *>(Memory::alloc(MemSpace::PsramDma, HugeRequestBytes + 64));
                 if (buf == nullptr) return Error::NoMem;
                 const uint64_t total = mb * 1024 * 1024;
                 struct Pass {
@@ -65,6 +66,9 @@ namespace {
                         {"bounced_65536", 4, LargeRequestBytes, total},
                         {"direct_512", 0, 512, total / 16},
                         {"bounced_512", 4, 512, total / 16},
+                        // How a request's cost grows with its size (devplan/storage.md §18).
+                        {"direct_16384", 0, 16 * 1024, total / 4},
+                        {"direct_262144", 0, HugeRequestBytes, total},
                 };
                 Error err;
                 for (const Pass &p : passes) {

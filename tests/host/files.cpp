@@ -331,6 +331,70 @@ TEST_CASE("Files: redirection, globbing and scripts report errors as bash does")
         CHECK(f.out("sh d/go.sh; pwd") == "/disk0/p0/d\n/disk0/p0\n");
 }
 
+namespace {
+
+        // A RAM disk whose writes fail once `failing` is set (a card pulled out).
+        class FailingDevice final : public bmds::BlockDevice {
+                public:
+                        FailingDevice() : _disk(512) {
+                                REQUIRE(_disk.allocate(8 * 2048, bmds::MemSpace::Psram).isOk());
+                        }
+
+                        uint32_t sectorSize() const override { return _disk.sectorSize(); }
+                        uint64_t sectorCount() const override { return _disk.sectorCount(); }
+                        Error    sync() override { return failing ? Error(Error::IoError) : _disk.sync(); }
+
+                        bool failing = false;
+
+                protected:
+                        Error readSectors(uint64_t sector, bmds::WritableByteSpan buf) override {
+                                return _disk.read(sector, buf);
+                        }
+                        Error writeSectors(uint64_t sector, bmds::ByteSpan data) override {
+                                return failing ? Error(Error::IoError) : _disk.write(sector, data);
+                        }
+
+                private:
+                        bmds::RamBlockDevice _disk;
+        };
+
+} // namespace
+
+TEST_CASE("Files: output that doesn't arrive fails the command") {
+        Fixture f;
+        // A full disk: the write itself fails.
+        {
+                auto [h, err] = Vfs::open("/disk1/p0/fill", Vfs::Write | Vfs::Create, Vfs::Context{"/", nullptr});
+                REQUIRE(err.isOk());
+                std::string chunk(64 * 1024, 'x');
+                Error       werr;
+                while (werr.isOk())
+                        werr = h->write(bmds::StringView(chunk.data(), chunk.size()), bmds::WaitForever).error();
+                CHECK(werr == Error::NoSpace);
+        }
+        CHECK(f.out("echo hello > /disk1/p0/x", Shell::ExitFailure) == "echo: write error: No space left on device\n");
+        CHECK(f.out("echo hello > /disk1/p0/x || echo failed") ==
+              "echo: write error: No space left on device\nfailed\n");
+        CHECK(f.out("rm /disk1/p0/fill; echo hello > /disk1/p0/x; cat /disk1/p0/x") == "hello\n");
+
+        // Writes failing at the device: a short line stays in the file's buffer until it is
+        // closed, so it fails when the redirection ends.
+        FailingDevice dev;
+        char          name[bmds::BlockDevices::MaxName + 1];
+        REQUIRE(bmds::BlockDevices::addNumbered(dev, "disk", name).isOk());
+        REQUIRE(Vfs::format(dev, bmds::FsFormat::Auto).isOk());
+        REQUIRE(Vfs::automount(dev).value() == 1);
+        const std::string dir = std::string("/") + name + "/p0";
+        CHECK(f.out(("echo ok > " + dir + "/a; cat " + dir + "/a").c_str()) == "ok\n");
+        dev.failing = true;
+        CHECK(f.out(("echo hi > " + dir + "/b").c_str(), Shell::ExitFailure) == "write error: Input/output error\n");
+        CHECK(f.out(("{ echo one; echo two; } > " + dir + "/c").c_str(), Shell::ExitFailure) ==
+              "write error: Input/output error\n");
+        dev.failing = false;
+        Vfs::eject(dev);
+        bmds::BlockDevices::remove(dev);
+}
+
 TEST_CASE("Files: Tab completes paths") {
         Fixture f;
         CHECK(f.out("cd /disk0/p0; mkdir docs; touch 'my file.txt' notes.txt .hidden") == "");

@@ -465,6 +465,7 @@ class Executor {
                 Error          readHead(StringView path, char (&head)[HeadBytes], size_t &size, bool &whole);
                 bool           loopIteration(bool &stop);
                 Error          applyRedirects(const Redirection *r, FdTable &fds);
+                int            closeRedirects(const FdTable &fds, const FdTable &outer, int status);
                 Error          expandTarget(const Word *word, String &out);
                 Error          openTarget(const Redirection *r, StringView path, FileHandle::Ptr &out);
                 Error          expandPaths(StringView pattern, List<String> &out, size_t &count);

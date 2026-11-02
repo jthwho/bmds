@@ -26,6 +26,24 @@ menu "BMDS storage"
             4-bit bus) for cards that support it; others stay at the default
             speed, 20000. Lower it to rule out signal problems.
 
+    choice BMDS_SD_UHS
+        prompt "SD card UHS-I mode"
+        default BMDS_SD_UHS_SDR50
+        help
+            UHS-I signals at 1.8 V (the board's SD pads and pull-ups are on LDO 4,
+            which switches) at up to 100 MHz (SDR50) or 200 MHz (SDR104), for cards
+            that offer it; SDR104 falls back to SDR50, and cards without UHS-I stay
+            at BMDS_SD_MAX_KHZ (devplan/storage.md §18). Needs the board's IO LDO.
+            SDR104 hasn't been tried on this board (no card that has it).
+
+        config BMDS_SD_UHS_NONE
+            bool "None (3.3 V, high speed at most)"
+        config BMDS_SD_UHS_SDR50
+            bool "SDR50 (100 MHz, about 50 MB/s on the bus)"
+        config BMDS_SD_UHS_SDR104
+            bool "SDR104 (200 MHz, about 100 MB/s on the bus)"
+    endchoice
+
     config BMDS_SD_BOUNCE_BYTES
         int "SD bounce buffer size (bytes, PSRAM)"
         default 65536

@@ -67,6 +67,7 @@ class SdCard final : public BlockDevice {
                                 uint32_t sectorSize = 0;     ///< Sector size in bytes.
                                 uint32_t clockKhz = 0;       ///< Bus clock in use.
                                 uint8_t  busWidth = 0;       ///< Data lines in use (1 or 4).
+                                bool     uhs = false;        ///< UHS-I: signalling at 1.8 V.
                 };
 
                 /**
@@ -112,6 +113,15 @@ class SdCard final : public BlockDevice {
                  * @blocking
                  */
                 Error attach();
+
+                /**
+                 * @brief Makes the command in flight fail now: the card has been pulled out (its
+                 *        switch has said so for the debounce's time). Without it a transfer
+                 *        waits out ESP-IDF's timeouts first. Later requests fail with `NoMedia`
+                 *        while the switch says the card is out.
+                 * @nonblocking Doesn't take the card's lock (a transfer holds it).
+                 */
+                void cancelTransfer();
 
                 /**
                  * @brief Forgets the card, stops the SDMMC host and cuts the

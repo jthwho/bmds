@@ -731,7 +731,8 @@ int Executor::runCompound(const Node *n) {
         _fds = &fds;
         const int status = runCompoundBody(n);
         _fds = saved;
-        return status;
+        const int closed = closeRedirects(fds, *saved, status);
+        return closed != status ? finish(closed, true) : status;
 }
 
 int Executor::runCompoundBody(const Node *n) {
@@ -1085,6 +1086,30 @@ Error Executor::openTarget(const Redirection *r, StringView path, FileHandle::Pt
         return Error::Ok;
 }
 
+// The files a command's redirections opened are closed when @p fds goes: what they hold is written
+// first (FatFs writes a file's last sector only then), so an error there fails the command
+// instead of vanishing with the handle. A file still open elsewhere (a background job's) is left.
+int Executor::closeRedirects(const FdTable &fds, const FdTable &outer, int status) {
+        for (int fd = 0; fd < FdTable::MaxFds; ++fd) {
+                FileHandle *h = fds.handle(fd);
+                if (h == nullptr || h == outer.handle(fd) || !h->canWrite()) continue;
+                uint32_t held = 0;
+                bool     seen = false;
+                for (int other = 0; other < FdTable::MaxFds; ++other) {
+                        if (fds.handle(other) != h) continue;
+                        ++held;
+                        seen = seen || other < fd;
+                }
+                if (seen || h->refCount() != held) continue;
+                const Error err = h->stream().flush(WaitForever);
+                if (err.isError()) {
+                        report("write error: %s", CommandContext::errorText(err));
+                        if (status == 0) status = 1;
+                }
+        }
+        return status;
+}
+
 Error Executor::applyRedirects(const Redirection *r, FdTable &fds) {
         for (; r != nullptr; r = r->next) {
                 using Kind = Redirection::Kind;
@@ -1181,6 +1206,7 @@ int Executor::runSimple(const SimpleNode *n) {
                 if (n->redirects != nullptr) {
                         FdTable fds = *_fds;
                         if (applyRedirects(n->redirects, fds).isError()) return finish(1, true);
+                        if (closeRedirects(fds, *_fds, 0) != 0) return finish(1, true);
                 }
                 return finish(_substRan ? _substStatus : 0, true);
         }
@@ -1244,7 +1270,7 @@ int Executor::runCommand(List<String> &args, const Redirection *redirects) {
         _fds = &fds;
         const int status = invoke(args, true);
         _fds = saved;
-        return status;
+        return closeRedirects(fds, *saved, status);
 }
 
 int Executor::callFunction(const ShellFunction &fn, List<String> &args) {
