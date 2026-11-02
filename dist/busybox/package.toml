@@ -1,8 +1,8 @@
 # BusyBox: one program, a link per applet (devplan/distribution.md §6).
 name = "busybox"
 version = "1.37.0"
-# 2: uname and which (2026-11-01).
-revision = 2
+# 2: uname and which (2026-11-01). 3: builds without warnings (patches 0004, 0005; 2026-11-02).
+revision = 3
 description = "Unix tools in one binary: coreutils, sed, awk, vi, less, diff, find, tar, compressors, hush"
 title = "BusyBox"
 category = "System"

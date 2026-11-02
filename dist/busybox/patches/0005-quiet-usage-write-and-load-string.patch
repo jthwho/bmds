@@ -1,0 +1,31 @@
+usage, lineedit: two warnings with GCC 15 and BMDS's configuration
+
+applets/usage.c (a build-time helper) ignored write()'s result (-Wunused-result): a failed
+write now fails it, and with it the build. libbb/lineedit.c's load_string() is unused without
+history and reverse search (-Wunused-function): marked unused (BMDS).
+
+--- a/applets/usage.c
++++ b/applets/usage.c
+@@ -49,7 +49,9 @@
+ 		num_messages, sizeof(usage_array[0]),
+ 		compare_func);
+ 	for (i = 0; i < num_messages; i++)
+-		write(STDOUT_FILENO, usage_array[i].usage, strlen(usage_array[i].usage) + 1);
++		/* BMDS: a failed write fails the build, not a truncated help text */
++		if (write(STDOUT_FILENO, usage_array[i].usage, strlen(usage_array[i].usage) + 1) < 0)
++			return 1;
+ 
+ 	return 0;
+ }
+--- a/libbb/lineedit.c
++++ b/libbb/lineedit.c
+@@ -393,7 +393,8 @@
+ 	return wc;
+ }
+ #else /* !UNICODE */
+-static size_t load_string(const char *src)
++/* BMDS: unused when neither history nor reverse search is configured */
++static UNUSED_PARAM size_t load_string(const char *src)
+ {
+ 	safe_strncpy(command_ps, src, S.maxsize);
+ 	return strlen(command_ps);

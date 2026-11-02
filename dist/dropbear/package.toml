@@ -1,6 +1,8 @@
 # Dropbear: the SSH server, client and scp, as one program with links (devplan/network.md §24).
 name = "dropbear"
 version = "2025.88"
+# 2: builds without warnings (patch 0005; 2026-11-02).
+revision = 2
 description = "SSH: the server (dropbear, started by the kernel when net/ssh/server is on), the client (ssh, dbclient), scp, dropbearkey"
 title = "Dropbear SSH"
 category = "Network"

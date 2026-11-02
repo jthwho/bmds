@@ -57,6 +57,11 @@ function(_bmds_alltypes out)
         file(REMOVE "${out}.tmp")
 endfunction()
 
+# Copied at configure time, so a change to any of them configures again (else a build tree keeps
+# the headers it was made with).
+file(GLOB_RECURSE _bmds_headers CONFIGURE_DEPENDS "${_bmds_musl}/include/*" "${_bmds_musl}/arch/generic/bits/*.h"
+     "${_bmds_musl}/arch/riscv32/bits/*")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_bmds_headers})
 file(COPY "${_bmds_musl}/include/" DESTINATION "${BMDS_LIBC_INCLUDE}" PATTERN "*.in" EXCLUDE)
 file(GLOB _bmds_bits "${_bmds_musl}/arch/generic/bits/*.h")
 file(COPY ${_bmds_bits} DESTINATION "${BMDS_LIBC_INCLUDE}/bits")

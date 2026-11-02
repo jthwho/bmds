@@ -1,0 +1,17 @@
+hush: exp_word starts as NULL, not as itself
+
+expand_one_var() initialized exp_word to itself to quiet "may be used uninitialized", and GCC 15
+warns that it is used uninitialized instead (-Wuninitialized). It is set wherever it is read:
+every exp_op other than 0 and 'L' comes from the branch that sets it (BMDS).
+
+--- a/shell/hush.c
++++ b/shell/hush.c
+@@ -6639,7 +6639,7 @@
+ 	char exp_op;
+ 	char exp_save = exp_save; /* for compiler */
+ 	char *exp_saveptr; /* points to expansion operator */
+-	char *exp_word = exp_word; /* for compiler */
++	char *exp_word = NULL; /* BMDS: set wherever it's read (exp_op not 0 or 'L'); GCC 15 flags x = x */
+ 	char arg0;
+ 
+ 	val = NULL;

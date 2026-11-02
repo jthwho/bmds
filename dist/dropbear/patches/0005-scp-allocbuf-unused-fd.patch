@@ -1,0 +1,16 @@
+scp: allocbuf()'s fd is unused without HAVE_STRUCT_STAT_ST_BLKSIZE
+
+Dropbear's configure never defines HAVE_STRUCT_STAT_ST_BLKSIZE (scp.c comes from OpenSSH, whose
+configure does), so allocbuf() never reads fd and -W warns (-Wunused-parameter). Marked unused;
+the buffer sizes are unchanged (BMDS).
+
+--- a/src/scp.c
++++ b/src/scp.c
+@@ -1235,6 +1235,7 @@
+ 	if (size == 0)
+ 		size = blksize;
+ #else /* HAVE_STRUCT_STAT_ST_BLKSIZE */
++	(void)fd; /* BMDS: only the block size's check reads it */
+ 	size = blksize;
+ #endif /* HAVE_STRUCT_STAT_ST_BLKSIZE */
+ 	if (bp->cnt >= size)
