@@ -33,6 +33,11 @@ musl, <https://musl.libc.org/>, the C library BMDS programs link statically
     cores (`__bmds_nprocessors()` in `crt/linux.c`, from `bmds_system_info`),
     not the calling thread's affinity: a program's first thread is pinned to
     one core (devplan/processes.md §3.12a), so `nproc` read 1.
+  - `include/` (33 headers): `#if` tests of `__cplusplus`, `__STDC_VERSION__`
+    and `_REDIR_TIME64` check `defined()` first, so programs built with
+    `-Wundef -Wsystem-headers` (libtommath in Dropbear) don't warn. The meaning
+    is unchanged: the preprocessed headers, macros included, are identical in
+    C89 to C2x and C++98 to C++20.
 - **Not built:** `src/process/vfork.c` (generic: `fork`),
   `src/thread/clone.c` (`ENOSYS`) and `src/thread/__unmapself.c`; the SDK's
   `crt/vfork.S` has `vfork` and `__clone` (`CLONE_VM|CLONE_VFORK` for

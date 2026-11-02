@@ -7,7 +7,7 @@ extern "C" {
 
 #include <features.h>
 
-#if __cplusplus >= 201103L
+#if defined(__cplusplus) && __cplusplus >= 201103L
 #define NULL nullptr
 #elif defined(__cplusplus)
 #define NULL 0L
@@ -132,7 +132,7 @@ int stime(const time_t *);
 time_t timegm(struct tm *);
 #endif
 
-#if _REDIR_TIME64
+#if defined(_REDIR_TIME64) && _REDIR_TIME64
 __REDIR(time, __time64);
 __REDIR(difftime, __difftime64);
 __REDIR(mktime, __mktime64);

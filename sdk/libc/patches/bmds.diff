@@ -373,3 +373,434 @@
  		int i, cnt;
  		__syscall(SYS_sched_getaffinity, 0, sizeof set, set);
  		for (i=cnt=0; i<sizeof set; i++)
+--- a/include/aio.h
++++ b/include/aio.h
+@@ -62,7 +62,7 @@
+ #define off64_t off_t
+ #endif
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(aio_suspend, __aio_suspend_time64);
+ #endif
+ 
+--- a/include/assert.h
++++ b/include/assert.h
+@@ -8,7 +8,7 @@
+ #define assert(x) ((void)((x) || (__assert_fail(#x, __FILE__, __LINE__, __func__),0)))
+ #endif
+ 
+-#if __STDC_VERSION__ >= 201112L && !defined(__cplusplus)
++#if (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L) && !defined(__cplusplus)
+ #define static_assert _Static_assert
+ #endif
+ 
+--- a/include/complex.h
++++ b/include/complex.h
+@@ -114,7 +114,7 @@
+ #define cimagl(x) __CIMAG(x, long double)
+ #endif
+ 
+-#if __STDC_VERSION__ >= 201112L
++#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+ #if defined(_Imaginary_I)
+ #define __CMPLX(x, y, t) ((t)(x) + _Imaginary_I*(t)(y))
+ #elif defined(__clang__)
+--- a/include/dlfcn.h
++++ b/include/dlfcn.h
+@@ -35,7 +35,7 @@
+ int dlinfo(void *, int, void *);
+ #endif
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(dlsym, __dlsym_time64);
+ #endif
+ 
+--- a/include/features.h
++++ b/include/features.h
+@@ -16,19 +16,19 @@
+ #define _XOPEN_SOURCE 700
+ #endif
+ 
+-#if __STDC_VERSION__ >= 199901L
++#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+ #define __restrict restrict
+ #elif !defined(__GNUC__)
+ #define __restrict
+ #endif
+ 
+-#if __STDC_VERSION__ >= 199901L || defined(__cplusplus)
++#if (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L) || defined(__cplusplus)
+ #define __inline inline
+ #elif !defined(__GNUC__)
+ #define __inline
+ #endif
+ 
+-#if __STDC_VERSION__ >= 201112L
++#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+ #elif defined(__GNUC__)
+ #define _Noreturn __attribute__((__noreturn__))
+ #else
+--- a/include/locale.h
++++ b/include/locale.h
+@@ -7,7 +7,7 @@
+ 
+ #include <features.h>
+ 
+-#if __cplusplus >= 201103L
++#if defined(__cplusplus) && __cplusplus >= 201103L
+ #define NULL nullptr
+ #elif defined(__cplusplus)
+ #define NULL 0L
+--- a/include/mqueue.h
++++ b/include/mqueue.h
+@@ -30,7 +30,7 @@
+ int mq_timedsend(mqd_t, const char *, size_t, unsigned, const struct timespec *);
+ int mq_unlink(const char *);
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(mq_timedreceive, __mq_timedreceive_time64);
+ __REDIR(mq_timedsend, __mq_timedsend_time64);
+ #endif
+--- a/include/poll.h
++++ b/include/poll.h
+@@ -44,7 +44,7 @@
+ int ppoll(struct pollfd *, nfds_t, const struct timespec *, const sigset_t *);
+ #endif
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ #if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)
+ __REDIR(ppoll, __ppoll_time64);
+ #endif
+--- a/include/pthread.h
++++ b/include/pthread.h
+@@ -228,7 +228,7 @@
+ int pthread_timedjoin_np(pthread_t, void **, const struct timespec *);
+ #endif
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(pthread_mutex_timedlock, __pthread_mutex_timedlock_time64);
+ __REDIR(pthread_cond_timedwait, __pthread_cond_timedwait_time64);
+ __REDIR(pthread_rwlock_timedrdlock, __pthread_rwlock_timedrdlock_time64);
+--- a/include/sched.h
++++ b/include/sched.h
+@@ -19,7 +19,7 @@
+ struct sched_param {
+ 	int sched_priority;
+ 	int __reserved1;
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ 	long __reserved2[4];
+ #else
+ 	struct {
+@@ -138,7 +138,7 @@
+ 
+ #endif
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(sched_rr_get_interval, __sched_rr_get_interval_time64);
+ #endif
+ 
+--- a/include/semaphore.h
++++ b/include/semaphore.h
+@@ -29,7 +29,7 @@
+ int    sem_unlink(const char *);
+ int    sem_wait(sem_t *);
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(sem_timedwait, __sem_timedwait_time64);
+ #endif
+ 
+--- a/include/signal.h
++++ b/include/signal.h
+@@ -289,7 +289,7 @@
+ void (*signal(int, void (*)(int)))(int);
+ int raise(int);
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ #if defined(_POSIX_SOURCE) || defined(_POSIX_C_SOURCE) \
+  || defined(_XOPEN_SOURCE) || defined(_GNU_SOURCE) \
+  || defined(_BSD_SOURCE)
+--- a/include/stdalign.h
++++ b/include/stdalign.h
+@@ -4,7 +4,7 @@
+ #ifndef __cplusplus
+ 
+ /* this whole header only works in C11 or with compiler extensions */
+-#if __STDC_VERSION__ < 201112L && defined( __GNUC__)
++#if (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L) && defined( __GNUC__)
+ #define _Alignas(t) __attribute__((__aligned__(t)))
+ #define _Alignof(t) __alignof__(t)
+ #endif
+--- a/include/stddef.h
++++ b/include/stddef.h
+@@ -1,7 +1,7 @@
+ #ifndef _STDDEF_H
+ #define _STDDEF_H
+ 
+-#if __cplusplus >= 201103L
++#if defined(__cplusplus) && __cplusplus >= 201103L
+ #define NULL nullptr
+ #elif defined(__cplusplus)
+ #define NULL 0L
+@@ -12,7 +12,7 @@
+ #define __NEED_ptrdiff_t
+ #define __NEED_size_t
+ #define __NEED_wchar_t
+-#if __STDC_VERSION__ >= 201112L || __cplusplus >= 201103L
++#if (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L) || (defined(__cplusplus) && __cplusplus >= 201103L)
+ #define __NEED_max_align_t
+ #endif
+ 
+--- a/include/stdio.h
++++ b/include/stdio.h
+@@ -11,7 +11,7 @@
+ #define __NEED___isoc_va_list
+ #define __NEED_size_t
+ 
+-#if __STDC_VERSION__ < 201112L
++#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L
+ #define __NEED_struct__IO_FILE
+ #endif
+ 
+@@ -25,7 +25,7 @@
+ 
+ #include <bits/alltypes.h>
+ 
+-#if __cplusplus >= 201103L
++#if defined(__cplusplus) && __cplusplus >= 201103L
+ #define NULL nullptr
+ #elif defined(__cplusplus)
+ #define NULL 0L
+@@ -99,7 +99,7 @@
+ int putchar(int);
+ 
+ char *fgets(char *__restrict, int, FILE *__restrict);
+-#if __STDC_VERSION__ < 201112L
++#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L
+ char *gets(char *);
+ #endif
+ 
+--- a/include/stdlib.h
++++ b/include/stdlib.h
+@@ -7,7 +7,7 @@
+ 
+ #include <features.h>
+ 
+-#if __cplusplus >= 201103L
++#if defined(__cplusplus) && __cplusplus >= 201103L
+ #define NULL nullptr
+ #elif defined(__cplusplus)
+ #define NULL 0L
+--- a/include/string.h
++++ b/include/string.h
+@@ -7,7 +7,7 @@
+ 
+ #include <features.h>
+ 
+-#if __cplusplus >= 201103L
++#if defined(__cplusplus) && __cplusplus >= 201103L
+ #define NULL nullptr
+ #elif defined(__cplusplus)
+ #define NULL 0L
+--- a/include/sys/resource.h
++++ b/include/sys/resource.h
+@@ -105,7 +105,7 @@
+ #define rlim64_t rlim_t
+ #endif
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(getrusage, __getrusage_time64);
+ #endif
+ 
+--- a/include/sys/select.h
++++ b/include/sys/select.h
+@@ -35,7 +35,7 @@
+ #define NFDBITS (8*(int)sizeof(long))
+ #endif
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(select, __select_time64);
+ __REDIR(pselect, __pselect_time64);
+ #endif
+--- a/include/sys/sem.h
++++ b/include/sys/sem.h
+@@ -60,7 +60,7 @@
+ int semtimedop(int, struct sembuf *, size_t, const struct timespec *);
+ #endif
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ #ifdef _GNU_SOURCE
+ __REDIR(semtimedop, __semtimedop_time64);
+ #endif
+--- a/include/sys/socket.h
++++ b/include/sys/socket.h
+@@ -403,7 +403,7 @@
+ 
+ int sockatmark (int);
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ #ifdef _GNU_SOURCE
+ __REDIR(recvmmsg, __recvmmsg_time64);
+ #endif
+--- a/include/sys/stat.h
++++ b/include/sys/stat.h
+@@ -165,7 +165,7 @@
+ #define off64_t off_t
+ #endif
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(stat, __stat_time64);
+ __REDIR(fstat, __fstat_time64);
+ __REDIR(lstat, __lstat_time64);
+--- a/include/sys/time.h
++++ b/include/sys/time.h
+@@ -56,7 +56,7 @@
+ 	(void)0 )
+ #endif
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(gettimeofday, __gettimeofday_time64);
+ __REDIR(getitimer, __getitimer_time64);
+ __REDIR(setitimer, __setitimer_time64);
+--- a/include/sys/timeb.h
++++ b/include/sys/timeb.h
+@@ -18,7 +18,7 @@
+ 
+ int ftime(struct timeb *);
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(ftime, __ftime64);
+ #endif
+ 
+--- a/include/sys/timerfd.h
++++ b/include/sys/timerfd.h
+@@ -20,7 +20,7 @@
+ int timerfd_settime(int, int, const struct itimerspec *, struct itimerspec *);
+ int timerfd_gettime(int, struct itimerspec *);
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(timerfd_settime, __timerfd_settime64);
+ __REDIR(timerfd_gettime, __timerfd_gettime64);
+ #endif
+--- a/include/sys/timex.h
++++ b/include/sys/timex.h
+@@ -91,7 +91,7 @@
+ int adjtimex(struct timex *);
+ int clock_adjtime(clockid_t, struct timex *);
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(adjtimex, __adjtimex_time64);
+ __REDIR(clock_adjtime, __clock_adjtime64);
+ #endif
+--- a/include/sys/wait.h
++++ b/include/sys/wait.h
+@@ -54,7 +54,7 @@
+ #define WIFSIGNALED(s) (((s)&0xffff)-1U < 0xffu)
+ #define WIFCONTINUED(s) ((s) == 0xffff)
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ #if defined(_GNU_SOURCE) || defined(_BSD_SOURCE)
+ __REDIR(wait3, __wait3_time64);
+ __REDIR(wait4, __wait4_time64);
+--- a/include/threads.h
++++ b/include/threads.h
+@@ -80,7 +80,7 @@
+ int tss_set(tss_t, void *);
+ void *tss_get(tss_t);
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(thrd_sleep, __thrd_sleep_time64);
+ __REDIR(mtx_timedlock, __mtx_timedlock_time64);
+ __REDIR(cnd_timedwait, __cnd_timedwait_time64);
+--- a/include/time.h
++++ b/include/time.h
+@@ -7,7 +7,7 @@
+ 
+ #include <features.h>
+ 
+-#if __cplusplus >= 201103L
++#if defined(__cplusplus) && __cplusplus >= 201103L
+ #define NULL nullptr
+ #elif defined(__cplusplus)
+ #define NULL 0L
+@@ -132,7 +132,7 @@
+ time_t timegm(struct tm *);
+ #endif
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(time, __time64);
+ __REDIR(difftime, __difftime64);
+ __REDIR(mktime, __mktime64);
+--- a/include/uchar.h
++++ b/include/uchar.h
+@@ -5,7 +5,7 @@
+ extern "C" {
+ #endif
+ 
+-#if __cplusplus < 201103L
++#if !defined(__cplusplus) || __cplusplus < 201103L
+ typedef unsigned short char16_t;
+ typedef unsigned char32_t;
+ #endif
+--- a/include/unistd.h
++++ b/include/unistd.h
+@@ -17,7 +17,7 @@
+ #define SEEK_DATA 3
+ #define SEEK_HOLE 4
+ 
+-#if __cplusplus >= 201103L
++#if defined(__cplusplus) && __cplusplus >= 201103L
+ #define NULL nullptr
+ #elif defined(__cplusplus)
+ #define NULL 0L
+--- a/include/utime.h
++++ b/include/utime.h
+@@ -18,7 +18,7 @@
+ 
+ int utime (const char *, const struct utimbuf *);
+ 
+-#if _REDIR_TIME64
++#if defined(_REDIR_TIME64) && _REDIR_TIME64
+ __REDIR(utime, __utime64);
+ #endif
+ 
+--- a/include/wchar.h
++++ b/include/wchar.h
+@@ -14,7 +14,7 @@
+ #define __NEED_wint_t
+ #define __NEED_mbstate_t
+ 
+-#if __STDC_VERSION__ < 201112L
++#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L
+ #define __NEED_struct__IO_FILE
+ #endif
+ 
+@@ -38,7 +38,7 @@
+ #define WCHAR_MIN (-1-0x7fffffff+L'\0')
+ #endif
+ 
+-#if __cplusplus >= 201103L
++#if defined(__cplusplus) && __cplusplus >= 201103L
+ #define NULL nullptr
+ #elif defined(__cplusplus)
+ #define NULL 0L

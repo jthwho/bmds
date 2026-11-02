@@ -297,4 +297,8 @@ is there and its links aren't (§6a), the system runs it once, before the deskto
 6. [x] Packages instead of the card zip, and the first run: `packages.md` steps 3-10. Its step 2
    (formatting a card from the desktop) comes after the first release: `mkfs` does it meanwhile.
 7. [x] The README and `tools/screenshots` (§7). Done 2026-11-01 but the board's photo (§7a).
-8. [ ] The first release.
+8. [x] The first release. Done 2026-11-02: v0.1.0 (2ab5f654) built by `tools/release --publish`
+   (19 packages, 26 assets), pushed with its tag and released on `jthwho/bmds`; the Pages
+   workflow deployed the site in under a minute. Checked: every site file and the page's links
+   answer, the published page loads `latest.json` and its firmware in headless Chrome, and the
+   board's `pkg update` reads the 19 packages from Pages over HTTPS (its default source).

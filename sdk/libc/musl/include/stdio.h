@@ -11,7 +11,7 @@ extern "C" {
 #define __NEED___isoc_va_list
 #define __NEED_size_t
 
-#if __STDC_VERSION__ < 201112L
+#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L
 #define __NEED_struct__IO_FILE
 #endif
 
@@ -25,7 +25,7 @@ extern "C" {
 
 #include <bits/alltypes.h>
 
-#if __cplusplus >= 201103L
+#if defined(__cplusplus) && __cplusplus >= 201103L
 #define NULL nullptr
 #elif defined(__cplusplus)
 #define NULL 0L
@@ -99,7 +99,7 @@ int putc(int, FILE *);
 int putchar(int);
 
 char *fgets(char *__restrict, int, FILE *__restrict);
-#if __STDC_VERSION__ < 201112L
+#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L
 char *gets(char *);
 #endif
 

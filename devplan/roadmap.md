@@ -451,7 +451,7 @@ Plan: [`input.md`](input.md).
 
 ## Release
 
-- [ ] Release (`release.md`, planned 2026-10-30 with the user): GitHub as the public mirror, a web
+- [x] Release (`release.md`, planned 2026-10-30 with the user; v0.1.0 published 2026-11-02): GitHub as the public mirror, a web
   installer on Pages (esptool-js, both chip variants), the card as a zip, releases signed with the
   dev key (no official key), `tools/release`, the licence and history audit, the README with
   scripted screenshots.
