@@ -58,6 +58,11 @@ CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER=y
 # interrupt the task's blocking calls wake on (Interrupt::current()), 3 how many
 # contended Mutexes have raised the task's priority (mutex.cpp).
 CONFIG_FREERTOS_THREAD_LOCAL_STORAGE_POINTERS=4
+# The main task runs every boot stage, then returns, and IDF frees its stack: the size costs
+# internal RAM only while booting. IDF's 3584 overflowed on a blank card, a crash at every boot
+# (Cfg's copy of /flash/cfg creating files through FatFs and the SD driver): that boot used 3952
+# bytes at most, a normal one 3360 (measured 2026-11-02).
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
 
 # --- SD card ----------------------------------------------------------------
 # Memory cards only: SDIO (IO cards) support is code BMDS has no use for.

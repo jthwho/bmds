@@ -702,6 +702,14 @@ until silicon v3; then test again.
   header was read from the cache as zeros ("invalid magic byte"), though the flash held `e9`.
   Upstream master invalidates `FLASH_READ_VADDR` (2026-10-13). Normal boots read one image and
   don't see it (`devplan/update.md` §11).
+- **The main task's stack is 3584 bytes unless set**, and BMDS boots on it (every stage, then
+  `app_main()` returns and IDF frees it). A blank card's first boot overflowed it, at every boot,
+  in both firmwares: Cfg's copy of `/flash/cfg` creates files, and FatFs's new directory entry
+  reads through the SD driver into IDF's transaction code, 3952 bytes deep at most. A normal boot
+  used 3360. Found 2026-11-02 testing the first run on a formatted card (a stack protection fault
+  in task "main"); 6144 since (`sdkconfig.defaults`), which costs internal RAM only while booting.
+  The boot report logs the high-water mark ("Main task stack high water"): check it after adding
+  boot work.
 
 ## 6. The ROM
 
