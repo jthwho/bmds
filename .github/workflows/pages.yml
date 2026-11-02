@@ -47,7 +47,7 @@ jobs:
           gh release download "${{ steps.release.outputs.tag }}" --repo "$GITHUB_REPOSITORY" \
             --dir release-files --pattern 'bmds-*-flash.zip' --pattern 'index.bmpi'
       - name: The site
-        run: python3 tools/release site --from release-files --out site
+        run: python3 tools/release site --from release-files --out site --repo "$GITHUB_REPOSITORY"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

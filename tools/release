@@ -311,6 +311,9 @@ def site_main(argv):
     parser.add_argument("--from", dest="source", required=True,
                         help="the release's files (its flash zips and index.bmpi)")
     parser.add_argument("--out", required=True, help="the site's folder (made afresh)")
+    parser.add_argument("--repo", default=os.environ.get("BMDS_GITHUB_REPO", DEFAULT_REPO),
+                        help="the GitHub repository the release is on, for the page's links (default: %s)"
+                        % DEFAULT_REPO)
     opts = parser.parse_args(argv)
     flash_zips = sorted(n for n in os.listdir(opts.source) if re.fullmatch(r"bmds-.+-flash\.zip", n))
     if not flash_zips:
@@ -335,6 +338,12 @@ def site_main(argv):
         latest["version"] = version
         latest["variants"][variant] = "firmware/%s/%s/flash.json" % (version, variant)
         say("site: firmware %s %s" % (version, variant))
+    # The release's page and its packages zip, for the installer's links: the tag is the version
+    # without the firmware's commit (0.1.0+72cba49a is v0.1.0's).
+    release = latest["version"].split("+")[0]
+    latest["release"] = "https://github.com/%s/releases/tag/v%s" % (opts.repo, release)
+    latest["packages"] = "https://github.com/%s/releases/download/v%s/bmds-%s-packages.zip" % (
+        opts.repo, release, release)
     with open(os.path.join(opts.out, "firmware", "latest.json"), "w") as f:
         json.dump(latest, f, indent=1)
         f.write("\n")

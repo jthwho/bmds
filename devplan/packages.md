@@ -288,7 +288,8 @@ page.
    board.
 8. [x] HTTPS fetching (§12), the network sources, `update fetch`. Done 2026-11-01 (§23), tested on
    the board against real servers; the first install from a network repository comes with step 9's.
-9. [ ] Publishing: `tools/release`'s packages, the packages zip, the index on GitHub Pages.
+9. [x] Publishing: `tools/release`'s packages, the packages zip, the index on GitHub Pages.
+   Done 2026-11-01 (§25); the network install tested from a temporary pre-release.
 10. [x] The first run window (§13). Done 2026-11-01 (§24), tested on the board.
 11. [ ] The store (§18).
 

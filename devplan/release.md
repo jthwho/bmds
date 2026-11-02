@@ -282,7 +282,19 @@ is there and its links aren't (§6a), the system runs it once, before the deskto
    GitHub's archive of the tag). Releases refuse a dirty or untagged tree and a version without a
    `RELEASE_NOTES.md` section; `--publish` (`gh release create --verify-tag`) is untested until
    the mirror exists. `docs/BUILDING.md` names the IDF commit.
-5. [ ] The installer in full (§4), and the Pages workflow.
-6. [ ] Packages instead of the card zip, and the first run: `packages.md` (its steps).
+5. [x] The installer in full (§4), and the Pages workflow. Done 2026-11-01: on the site the page
+   reads `firmware/latest.json` (`tools/release site`, with the release's page and its packages
+   zip for the links), fetches every variant's `flash.json`, and the chip's revision picks one.
+   After the install it offers the setup (step 5 of the flow): the name, the time zone (the
+   browser's, filled in) and a password, typed into the console as `hostname NAME`, `sysconf set
+   clock/zone Z && sysconf save clock/zone` and `passwd` (its two prompts answered), each followed
+   by an echo of its status split by quotes so the echoed line doesn't match (as
+   `tools/bmdsboard.py` does); it waits for the shell by Ctrl+C and an echo, up to a minute while
+   the board starts. The keyboard layout is left out: only US exists. The card step now says
+   packages (the first-run window, or the packages zip). Checked: the console's answers to the
+   markers and `passwd`'s prompts on the board (passwd cancelled), the one-file page in headless
+   Chrome; the site page itself only once Pages serves it (no local server).
+6. [x] Packages instead of the card zip, and the first run: `packages.md` steps 3-10. Its step 2
+   (formatting a card from the desktop) comes after the first release: `mkfs` does it meanwhile.
 7. [x] The README and `tools/screenshots` (§7). Done 2026-11-01 but the board's photo (§7a).
 8. [ ] The first release.

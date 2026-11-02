@@ -8,9 +8,11 @@
 // browser over Web Serial with esptool-js, then shows the board's console.
 //
 // The firmware comes from a descriptor, flash.json (written by tools/mkinstaller): the images and
-// their offsets, the flash's size, and the chip revisions the build runs on. On a web server it is
-// fetched (firmware/latest.json names it); opened as a file, the page can't fetch, so the user
-// picks the firmware's folder.
+// their offsets, the flash's size, and the chip revisions the build runs on. On a web server the
+// descriptors are fetched (firmware/latest.json names one for each chip variant, written by
+// tools/release site), and the board's chip revision picks one; opened as a file, the page can't
+// fetch, so the user picks the firmware's folder. After the install the page can type the first
+// settings into the board's console (the setup).
 
 import { ESPLoader, Transport } from "./vendor/esptool-js/esptool.js";
 import { md5 } from "./md5.js";
@@ -21,7 +23,9 @@ const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const state = {
-        firmware: null, // { descriptor, read(image) -> Promise<Uint8Array> }
+        latest: null, // firmware/latest.json, when the page is on the site
+        firmwares: [], // each { descriptor, read(image) -> Promise<Uint8Array> }
+        firmware: null, // the one for the board's chip
         port: null,
         transport: null,
         loader: null,
@@ -30,6 +34,8 @@ const state = {
         consoleTransport: null,
         wantConsole: false, // reopen it when the board's port comes back
         bootText: "", // the console's latest text, for the restart's check
+        watchText: "", // the console's latest text without ANSI, for the setup's commands
+        watchTotal: 0, // how much text watchText has been given, trimmed or not
 };
 
 // ---- Output ----
@@ -76,28 +82,61 @@ function checkDescriptor(d) {
         return d;
 }
 
+function revisionRange(r) {
+        const maxSet = r.max !== 0 && r.max !== 0xffff;
+        return maxSet ? `${revisionText(r.min)} to ${revisionText(r.max)}` : `${revisionText(r.min)} and later`;
+}
+
 function showFirmware() {
-        const d = state.firmware.descriptor;
-        const bytes = d.images.reduce((n, im) => n + im.size, 0);
-        $("firmware-info").textContent =
-                `${d.name} ${d.version} (${d.variant}): ${d.images.length} images, ` +
-                `${(bytes / 1048576).toFixed(1)} MB, for chip revisions ${revisionText(d.chipRevision.min)}` +
-                ` to ${revisionText(d.chipRevision.max)}`;
+        const lines = state.firmwares.map((f) => {
+                const d = f.descriptor;
+                const bytes = d.images.reduce((n, im) => n + im.size, 0);
+                return `${d.name} ${d.version} (${d.variant}): ${d.images.length} images, ` +
+                       `${(bytes / 1048576).toFixed(1)} MB, for chip revisions ${revisionRange(d.chipRevision)}`;
+        });
+        $("firmware-info").textContent = lines.join("\n");
         $("connect").disabled = false;
 }
 
+// A link after the text in each element of @p cls: to @p href, named @p text.
+function addLink(cls, href, text) {
+        for (const el of document.querySelectorAll(cls)) {
+                el.textContent = " (";
+                const a = document.createElement("a");
+                a.href = href;
+                a.textContent = text;
+                el.append(a, ")");
+        }
+}
+
+async function fetchLatest() {
+        const response = await fetch("firmware/latest.json");
+        if (!response.ok) throw new Error(`firmware/latest.json: ${response.status}`);
+        const latest = await response.json();
+        if (latest.format !== 1) throw new Error("firmware/latest.json: a format this page doesn't read");
+        state.latest = latest;
+        if (latest.release) addLink(".release-link", latest.release, "the release's page");
+        if (latest.packages) addLink(".packages-link", latest.packages, latest.packages.split("/").pop());
+        return latest;
+}
+
 async function fetchFirmware() {
-        const latest = await (await fetch("firmware/latest.json")).json();
-        const base = new URL(latest.variants.p4r1, location.href);
-        const descriptor = checkDescriptor(await (await fetch(base)).json());
-        state.firmware = {
-                descriptor,
-                async read(image) {
-                        const response = await fetch(new URL(image.file, base));
-                        if (!response.ok) throw new Error(`${image.file}: ${response.status}`);
-                        return new Uint8Array(await response.arrayBuffer());
-                },
-        };
+        const latest = state.latest ?? (await fetchLatest());
+        for (const path of Object.values(latest.variants)) {
+                const base = new URL(path, location.href);
+                const response = await fetch(base);
+                if (!response.ok) throw new Error(`${path}: ${response.status}`);
+                const descriptor = checkDescriptor(await response.json());
+                state.firmwares.push({
+                        descriptor,
+                        async read(image) {
+                                const r = await fetch(new URL(image.file, base));
+                                if (!r.ok) throw new Error(`${image.file}: ${r.status}`);
+                                return new Uint8Array(await r.arrayBuffer());
+                        },
+                });
+        }
+        if (state.firmwares.length === 0) throw new Error("firmware/latest.json names no firmware");
         showFirmware();
 }
 
@@ -110,12 +149,12 @@ async function pickFolder(files) {
         for (const im of descriptor.images) {
                 if (!byName.has(im.file)) throw new Error(`The folder is missing ${im.file}.`);
         }
-        state.firmware = {
+        state.firmwares = [{
                 descriptor,
                 async read(image) {
                         return new Uint8Array(await byName.get(image.file).arrayBuffer());
                 },
-        };
+        }];
         showFirmware();
 }
 
@@ -158,16 +197,20 @@ async function connect() {
                 state.chip = { description, revision, flashSize, mac };
                 $("board-info").textContent =
                         `${description}, ${flashSize ?? "unknown"} flash` + (mac ? `, MAC ${mac}` : "");
-                const d = state.firmware.descriptor;
                 const problems = [];
-                if (!runsOn(d.chipRevision, revision)) {
+                state.firmware = state.firmwares.find((f) => runsOn(f.descriptor.chipRevision, revision)) ?? null;
+                if (!state.firmware) {
+                        const built = state.firmwares.map((f) => revisionRange(f.descriptor.chipRevision)).join(", ");
                         problems.push(
                                 `This board's chip is revision ${revisionText(revision)}; this BMDS is built for ` +
-                                        `${revisionText(d.chipRevision.min)} to ${revisionText(d.chipRevision.max)}. ` +
-                                        "Builds for revision 3 and later aren't published yet.");
-                }
-                if (flashSize !== d.flashSize) {
-                        problems.push(`This board has ${flashSize ?? "an unknown size of"} flash; BMDS needs ${d.flashSize}.`);
+                                        `${built}. Builds for revision 3 and later aren't published yet.`);
+                } else {
+                        const d = state.firmware.descriptor;
+                        log(`The ${d.variant} build runs on this chip.`);
+                        if (flashSize !== d.flashSize) {
+                                problems.push(`This board has ${flashSize ?? "an unknown size of"} flash; BMDS needs ` +
+                                              `${d.flashSize}.`);
+                        }
                 }
                 if (problems.length) {
                         for (const p of problems) log(p, "error");
@@ -311,6 +354,7 @@ async function restartIntoFirmware() {
                 await sleep(2500);
                 if (!/waiting for download/i.test(state.bootText)) {
                         log("The board is starting BMDS.", "good");
+                        showSetup();
                         return;
                 }
                 log("The board came back in its download mode.", "error");
@@ -336,8 +380,11 @@ const AnsiPattern = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[=>]/g;
 
 function consoleWrite(text) {
         state.bootText = (state.bootText + text).slice(-4096);
+        const plain = text.replace(AnsiPattern, "").replace(/\r\n?/g, "\n");
+        state.watchText = (state.watchText + plain).slice(-65536);
+        state.watchTotal += plain.length;
         const out = $("console-output");
-        out.textContent += text.replace(AnsiPattern, "").replace(/\r\n?/g, "\n");
+        out.textContent += plain;
         if (out.textContent.length > 200000) out.textContent = out.textContent.slice(-150000);
         out.scrollTop = out.scrollHeight;
 }
@@ -393,11 +440,147 @@ async function closeConsole() {
         return;
 }
 
+// ---- The setup ----
+
+// Commands typed into the board's shell, each followed by an echo of its exit status that, as
+// typed, doesn't match what it prints (the quotes split it), as tools/bmdsboard.py does.
+const StatusPattern = /<<bmds-setup-status:(\d+)>>/;
+const ReadyMarker = "<<bmds-setup-ready>>";
+
+function showSetup() {
+        if (!$("setup-zone").value) {
+                try {
+                        $("setup-zone").value = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "";
+                } catch {
+                        // no zone known: left empty
+                }
+        }
+        $("setup").hidden = false;
+        return;
+}
+
+// Waits until @p pattern is in the console's text since @p since (a mark()). @return The match, or
+// null on a timeout.
+async function waitForText(pattern, since, ms) {
+        const until = performance.now() + ms;
+        for (;;) {
+                const text = state.watchText.slice(Math.max(0, state.watchText.length - (state.watchTotal - since)));
+                const m = typeof pattern === "string" ? (text.includes(pattern) ? [pattern] : null) : text.match(pattern);
+                if (m) return m;
+                if (performance.now() > until || !state.consoleOpen) return null;
+                await sleep(100);
+        }
+}
+
+// A mark in the console's text, for waitForText(): what comes after it.
+function mark() {
+        return state.watchTotal;
+}
+
+// Gets the shell's attention: Ctrl+C for any line being typed, then an echo, until it answers
+// (the board may still be starting).
+async function waitForShell(ms) {
+        const until = performance.now() + ms;
+        while (performance.now() < until && state.consoleOpen) {
+                const since = mark();
+                await consoleSend("\x03");
+                await sleep(200);
+                await consoleSend('echo "<<bmds-setup""-ready>>"\r');
+                if (await waitForText(ReadyMarker, since, 3000)) return true;
+        }
+        return false;
+}
+
+// Types @p line into the shell; then each of @p answers after its prompt appears. @p shown is
+// what the page says it typed. @return The exit status, or null on a timeout.
+async function runOnBoard(line, shown, answers = []) {
+        log(`Typing: ${shown}`);
+        const since = mark();
+        await consoleSend(`${line}; echo "<<bmds-setup""-status:"$?">>"\r`);
+        for (const [prompt, answer] of answers) {
+                if (!(await waitForText(prompt, since, 10000))) return null;
+                await consoleSend(answer);
+        }
+        const m = await waitForText(StatusPattern, since, 20000);
+        return m ? Number(m[1]) : null;
+}
+
+// For single quotes in the shell: none inside.
+function shellWord(value) {
+        return `'${value}'`;
+}
+
+async function applySetup() {
+        const hostname = $("setup-hostname").value.trim();
+        const zone = $("setup-zone").value.trim();
+        const password = $("setup-password").value;
+        const result = $("setup-result");
+        result.className = "info";
+        if (hostname && !/^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(hostname)) {
+                result.textContent = "The name: letters, digits and - only, at most 63, not starting or ending with -.";
+                return;
+        }
+        if (zone && !/^[A-Za-z0-9_+\-\/:,.<>]+$/.test(zone)) {
+                result.textContent = "The time zone: a zone name like Europe/Berlin, or POSIX rules.";
+                return;
+        }
+        if (password !== $("setup-password2").value) {
+                result.textContent = "The passwords don't match.";
+                return;
+        }
+        if (password && !/^[\x20-\x7e]{1,256}$/.test(password)) {
+                result.textContent = "The password: printable ASCII only, at most 256 characters.";
+                return;
+        }
+        if (!hostname && !zone && !password) {
+                result.textContent = "Nothing to set.";
+                return;
+        }
+        $("setup-apply").disabled = true;
+        try {
+                await openConsole();
+                result.textContent = "Waiting for the board's shell...";
+                if (!(await waitForShell(60000))) throw new Error("the board's shell didn't answer");
+                const failed = [];
+                if (hostname) {
+                        const status = await runOnBoard(`hostname ${shellWord(hostname)}`, `hostname ${hostname}`);
+                        if (status !== 0) failed.push("the name");
+                }
+                if (zone) {
+                        const command = `sysconf set clock/zone ${shellWord(zone)} && sysconf save clock/zone`;
+                        const status = await runOnBoard(command, command);
+                        if (status !== 0) failed.push("the time zone");
+                }
+                if (password) {
+                        // passwd asks twice and doesn't echo; the page doesn't show it either.
+                        const status = await runOnBoard("passwd", "passwd (the password twice, not shown)", [
+                                ["New password:", `${password}\r`],
+                                ["Retype new password:", `${password}\r`],
+                        ]);
+                        if (status !== 0) failed.push("the password");
+                }
+                if (failed.length) throw new Error(`the board refused ${failed.join(", ")} (see the console)`);
+                $("setup-password").value = "";
+                $("setup-password2").value = "";
+                result.className = "good";
+                result.textContent = "Done." + (hostname ? ` The board is ${hostname}.local on the network.` : "");
+                log("The setup is done.", "good");
+        } catch (e) {
+                result.className = "error";
+                result.textContent = `The setup failed: ${e.message ?? e}`;
+                log(`The setup failed: ${e.message ?? e}`, "error");
+        } finally {
+                $("setup-apply").disabled = false;
+        }
+        return;
+}
+
 // ---- Start ----
 
 function start() {
         if (!("serial" in navigator)) {
                 setStep("unsupported");
+                if (location.protocol !== "file:") fetchLatest().catch(() => {});
                 return;
         }
         setStep("firmware");
@@ -413,6 +596,7 @@ function start() {
                 e.target.value = "";
         });
         $("console-ctrlc").addEventListener("click", () => consoleSend("\x03"));
+        $("setup-apply").addEventListener("click", applySetup);
         // The board went away (its RESET button, a cable) and came back: follow it.
         navigator.serial.addEventListener("disconnect", (e) => {
                 if (e.target !== state.port) return;
