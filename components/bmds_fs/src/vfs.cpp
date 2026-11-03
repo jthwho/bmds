@@ -945,6 +945,128 @@ namespace {
                        (e != nullptr && mounts[index].device != nullptr && e->parent == mounts[index].device);
         }
 
+        // A whole block device's bytes as a file (/dev/sd0: dd, a disk image): read at any offset, and
+        // written while nothing on it is mounted (Busy otherwise: a filesystem's own cache would
+        // disagree). Sectors part-covered go through one sector of its own. Each call holds the
+        // storage lock for at most MaxBytes, so mounts and files wait no longer than that.
+        class BlockStream final : public Stream {
+                public:
+                        static constexpr size_t MaxBytes = 64 * 1024;
+
+                        BlockStream(BlockDevice &device, uint8_t *sector) : _device(device), _sector(sector) {}
+
+                        Result<size_t> read(WritableByteSpan buf, unsigned int) override {
+                                return transfer(buf.data(), buf.size(), false);
+                        }
+
+                        Result<size_t> write(ByteSpan data, unsigned int) override {
+                                return transfer(const_cast<uint8_t *>(data.data()), data.size(), true);
+                        }
+
+                        using Stream::write;
+
+                        Result<uint64_t> seek(int64_t offset, SeekFrom from) override {
+                                Mutex::Locker lock(Fs::lock(), WaitForever);
+                                int64_t       base = 0;
+                                if (from == SeekFrom::Current) base = static_cast<int64_t>(_position);
+                                if (from == SeekFrom::End) base = static_cast<int64_t>(size());
+                                if (offset < -base) return makeError<uint64_t>(Error::Invalid);
+                                _position = static_cast<uint64_t>(base + offset);
+                                return makeResult(_position);
+                        }
+
+                        Error flush(unsigned int) override {
+                                Mutex::Locker lock(Fs::lock(), WaitForever);
+                                return _device.sync();
+                        }
+
+                        void handleClosed(uint8_t mode) override {
+                                if ((mode & FileHandle::Write) != 0) {
+                                        Mutex::Locker lock(Fs::lock(), WaitForever);
+                                        (void)_device.sync();
+                                }
+                                uint8_t *sector = _sector;
+                                this->~BlockStream();
+                                Memory::free(sector);
+                                Memory::free(this);
+                                return;
+                        }
+
+                private:
+                        uint64_t size() const { return _device.sectorCount() * _device.sectorSize(); }
+
+                        Result<size_t> transfer(uint8_t *data, size_t bytes, bool writing) {
+                                Mutex::Locker lock(Fs::lock(), WaitForever); // a handle's tasks share the position
+                                if (writing)
+                                        for (size_t i = 0; i < mountCount; ++i)
+                                                if (overlaps(i, _device)) return makeError<size_t>(Error::Busy);
+                                if (bytes == 0) return makeResult(size_t(0));
+                                if (_position >= size())
+                                        return makeError<size_t>(writing ? Error::Full : Error::EndOfFile);
+                                const uint64_t left = size() - _position;
+                                size_t         n = bytes < MaxBytes ? bytes : MaxBytes;
+                                if (n > left) n = static_cast<size_t>(left);
+                                const uint32_t ss = _device.sectorSize();
+                                size_t         done = 0;
+                                while (done < n) {
+                                        const uint64_t sector = (_position + done) / ss;
+                                        const size_t   at = static_cast<size_t>((_position + done) % ss);
+                                        Error          err;
+                                        size_t         step;
+                                        if (at == 0 && n - done >= ss) {
+                                                // Whole sectors, straight from or to the caller's bytes.
+                                                step = (n - done) / ss * ss;
+                                                err = writing ? _device.write(sector, ByteSpan(data + done, step))
+                                                              : _device.read(sector,
+                                                                             WritableByteSpan(data + done, step));
+                                        } else {
+                                                step = ss - at < n - done ? ss - at : n - done;
+                                                err = _device.read(sector, WritableByteSpan(_sector, ss));
+                                                if (err.isOk() && writing) {
+                                                        std::memcpy(_sector + at, data + done, step);
+                                                        err = _device.write(sector, ByteSpan(_sector, ss));
+                                                } else if (err.isOk()) {
+                                                        std::memcpy(data + done, _sector + at, step);
+                                                }
+                                        }
+                                        if (err.isError()) {
+                                                if (done == 0) return makeError<size_t>(err);
+                                                break;
+                                        }
+                                        done += step;
+                                }
+                                _position += done;
+                                return makeResult(done);
+                        }
+
+                        BlockDevice &_device;
+                        uint8_t     *_sector;
+                        uint64_t     _position = 0;
+        };
+
+        // A handle on @p device's bytes (a whole device's: a partition's device goes when its card
+        // does, and the handle could outlive it). Lock held.
+        Result<FileHandle::Ptr> openBlockLocked(BlockDevice &device, uint8_t mode) {
+                const BlockDevices::Entry *e = Fs::findEntryLocked(device);
+                if (e == nullptr || e->parent != nullptr || device.sectorSize() == 0)
+                        return makeError<FileHandle::Ptr>(Error::NotSupported);
+                auto *sector = static_cast<uint8_t *>(Memory::alloc(MemSpace::PsramDma, device.sectorSize()));
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(BlockStream));
+                if (sector == nullptr || mem == nullptr) {
+                        Memory::free(sector);
+                        Memory::free(mem);
+                        return makeError<FileHandle::Ptr>(Error::NoMem);
+                }
+                auto                   *stream = ::new (mem) BlockStream(device, sector);
+                Result<FileHandle::Ptr> handle = FileHandle::open(*stream, mode);
+                if (handle.error().isError()) {
+                        stream->~BlockStream();
+                        Memory::free(sector);
+                        Memory::free(mem);
+                }
+                return handle;
+        }
+
 } // namespace
 
 // --- Directory -------------------------------------------------------------
@@ -1777,7 +1899,7 @@ Result<FileHandle::Ptr> Vfs::open(StringView path, uint8_t flags, const Context 
                         case Kind::DevConsole:
                                 if (context.terminal == nullptr) return makeError<FileHandle::Ptr>(Error::NotExist);
                                 return FileHandle::open(*context.terminal, mode);
-                        case Kind::DevBlock: return makeError<FileHandle::Ptr>(Error::NotSupported); // Raw access: later.
+                        case Kind::DevBlock: return openBlockLocked(*node.device, mode);
                         default: break;
                 }
                 if (node.rest.isEmpty()) return makeError<FileHandle::Ptr>(Error::IsDir);

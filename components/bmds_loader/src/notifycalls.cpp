@@ -43,7 +43,8 @@ namespace {
                               BMDS_NOTIFY_TARGET_LAUNCH == uint32_t(Notification::Target::Launch) &&
                               BMDS_NOTIFY_TARGET_SERVICE == uint32_t(Notification::Target::Service),
                       "the ABI's targets");
-        static_assert(BMDS_NOTIFY_SILENT == Notification::Silent && BMDS_NOTIFY_TRANSIENT == Notification::Transient,
+        static_assert(BMDS_NOTIFY_SILENT == Notification::Silent && BMDS_NOTIFY_TRANSIENT == Notification::Transient &&
+                              BMDS_NOTIFY_QUESTION == Notification::Question,
                       "the ABI's flags");
         static_assert(BMDS_NOTIFY_NO_TIMEOUT == Notification::NoTimeout &&
                               BMDS_NOTIFY_MAX_ACTIONS == Notification::MaxActions,
@@ -90,8 +91,9 @@ int32_t bmds_k_notify_send(int32_t fd, const bmds_notification_t *n) {
                 if (listener == nullptr) return -BMDS_ENOTTY;
         }
         if (in.urgency > BMDS_NOTIFY_CRITICAL || in.target > BMDS_NOTIFY_TARGET_SERVICE ||
-            (in.flags & ~(BMDS_NOTIFY_SILENT | BMDS_NOTIFY_TRANSIENT)) != 0 ||
-            in.action_count > BMDS_NOTIFY_MAX_ACTIONS || in.timeout_ms < BMDS_NOTIFY_NO_TIMEOUT)
+            (in.flags & ~(BMDS_NOTIFY_SILENT | BMDS_NOTIFY_TRANSIENT | BMDS_NOTIFY_QUESTION)) != 0 ||
+            in.action_count > BMDS_NOTIFY_MAX_ACTIONS || in.timeout_ms < BMDS_NOTIFY_NO_TIMEOUT ||
+            (in.action_targets >> BMDS_NOTIFY_MAX_ACTIONS) != 0)
                 return -BMDS_EINVAL;
         Notification k;
         k.replaces = in.replaces;
@@ -99,6 +101,7 @@ int32_t bmds_k_notify_send(int32_t fd, const bmds_notification_t *n) {
         k.flags = uint8_t(in.flags);
         k.target = Notification::Target(in.target);
         k.actionCount = uint8_t(in.action_count);
+        k.actionTargets = uint8_t(in.action_targets);
         k.timeoutMs = in.timeout_ms;
         copyText(k.app, in.app);
         copyText(k.icon, in.icon);

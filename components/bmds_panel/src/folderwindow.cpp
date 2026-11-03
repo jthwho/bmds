@@ -13,6 +13,7 @@
 #include <cstring>
 #include <new>
 #include <bmds/apps.h>
+#include <bmds/blockdevices.h>
 #include <bmds/fileops.h>
 #include <bmds/guiapplication.h>
 #include <bmds/memory.h>
@@ -730,6 +731,50 @@ bool FolderWindow::applicationSelected() const {
         return Apps::isFolderName(_items.folder().name(size_t(r)));
 }
 
+namespace {
+
+        // The card path @p p is on (/sd0, /sd0/p0/...: a whole block device that isn't the flash, the
+        // ROM or memory) into @p name; false if none.
+        bool cardOfPath(StringView p, char (&name)[BlockDevices::MaxName + 1]) {
+                if (!p.startsWith('/')) return false;
+                StringView first = p.mid(1);
+                first = first.left(first.indexOf('/'));
+                if (first.isEmpty() || first.size() > BlockDevices::MaxName) return false;
+                BlockDevices::Entry entries[BlockDevices::MaxDevices];
+                const size_t        n = BlockDevices::list(Span<BlockDevices::Entry>(entries));
+                for (size_t i = 0; i < n; ++i) {
+                        BlockDevice *d = entries[i].device;
+                        if (StringView(entries[i].name) != first || entries[i].parent != nullptr ||
+                            d->flash() != nullptr || d->isMemory() || !d->mapped().isEmpty())
+                                continue;
+                        std::memcpy(name, entries[i].name, sizeof(name));
+                        return true;
+                }
+                return false;
+        }
+
+} // namespace
+
+bool FolderWindow::cardSelected() const {
+        if (!folderSelected() || selectedCount() != 1) return false;
+        String p(MemSpace::Psram);
+        itemPath(size_t(view().selection().nextSelected(0)), p);
+        char name[BlockDevices::MaxName + 1];
+        if (!cardOfPath(p.view(), name)) return false;
+        // The card's own folder or a partition's mount (/sd0/p0), not a folder in it.
+        const StringView rest = p.view().mid(1 + StringView(name).size());
+        return rest.isEmpty() || rest.mid(1).indexOf('/') == StringView::NPos;
+}
+
+bool FolderWindow::formatTarget(char (&name)[BlockDevices::MaxName + 1]) const {
+        if (cardSelected()) {
+                String p(MemSpace::Psram);
+                itemPath(size_t(view().selection().nextSelected(0)), p);
+                return cardOfPath(p.view(), name);
+        }
+        return cardOfPath(path(), name);
+}
+
 bool FolderWindow::canPaste() {
         return _host.folderActions().canPaste();
 }
@@ -963,6 +1008,17 @@ void FolderWindow::choose(int choice) {
                                 startRename(size_t(v.current()), _items.folder().name(size_t(v.current())));
                         break;
                 case ChooseClose: closeWindow(); break;
+                case ChooseFormat: {
+                        // Format, a program of its own, for this card (or choosing one: a blank card has no folder).
+                        char name[BlockDevices::MaxName + 1];
+                        char device[BlockDevices::MaxName + 6] = {};
+                        if (formatTarget(name)) std::snprintf(device, sizeof(device), "/dev/%s", name);
+                        if (!actions.openWith("format.desktop", StringView(device)))
+                                (void)MessageBox::show(application(), MessageBox::Kind::Error, "Files",
+                                                       "Format isn't there: no format.desktop", MessageBox::Buttons::Ok,
+                                                       nullptr, nullptr);
+                        break;
+                }
                 case ChooseDeleteForGood:
                         selectedPaths(paths);
                         if (!paths.isEmpty()) actions.removeForGood(paths.view());
@@ -1286,6 +1342,8 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
                 (void)menu.addItem("P&roperties", W::ChooseProperties, 0, "Alt+Enter",
                                    icon(IconId::DocumentProperties));
                 (void)menu.addSeparator();
+                (void)menu.addItem("&Format Card...", W::ChooseFormat, 0, StringView(), icon(IconId::MediaFlash));
+                (void)menu.addSeparator();
                 (void)menu.addItem("&Close", W::ChooseClose, 0, "Ctrl+W", icon(IconId::WindowClose));
         } else if (&menu == &_edit) {
                 (void)menu.addItem("Cu&t", W::ChooseCut, needOne, "Ctrl+X", icon(IconId::EditCut));
@@ -1329,6 +1387,10 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
                 (void)menu.addItem("Rena&me", W::ChooseRename, selected == 1 ? 0 : Off, StringView(),
                                    icon(IconId::EditRename));
                 (void)menu.addSeparator();
+                if (w.cardSelected()) {
+                        (void)menu.addItem("&Format...", W::ChooseFormat, 0, StringView(), icon(IconId::MediaFlash));
+                        (void)menu.addSeparator();
+                }
                 (void)menu.addItem("P&roperties", W::ChooseProperties, 0, StringView(),
                                    icon(IconId::DocumentProperties));
         } else if (&menu == &_background) {

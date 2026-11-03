@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Format
+Comment=Formats an SD card for BMDS (erasing everything on it)
+Exec=format %f
+Icon=media-flash
+Terminal=false
+Categories=System;

@@ -1046,6 +1046,7 @@ typedef struct bmds_image_encode_t {
 /** @brief `bmds_notification_t::flags`. */
 #define BMDS_NOTIFY_SILENT 0x1u    /**< No sound. */
 #define BMDS_NOTIFY_TRANSIENT 0x2u /**< Not kept in the centre once its balloon is gone. */
+#define BMDS_NOTIFY_QUESTION 0x4u  /**< Gone once answered: a click on it, a button or its close box. */
 
 /** @brief `bmds_notification_t::target`: what a click does (the system does it). */
 #define BMDS_NOTIFY_TARGET_NONE 0u
@@ -1085,6 +1086,7 @@ typedef struct bmds_notification_t {
                 char     target_text[192]; /**< The target's path, Desktop Entry or service. */
                 char     message[64];      /**< `BMDS_NOTIFY_TARGET_SERVICE`'s message. */
                 char     actions[3][24];   /**< The buttons' labels. */
+                uint32_t action_targets;   /**< Bit i: button i + 1 runs the target, as a click on it. */
 } bmds_notification_t;
 
 /** @brief An event of a notification, read from its events fd (`notify_open`). */

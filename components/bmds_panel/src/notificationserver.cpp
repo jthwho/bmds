@@ -713,7 +713,9 @@ void NotificationServer::activate(uint32_t id, uint32_t action, bool fromBalloon
                 Notifications::endBalloon(id, NotificationLog::Ended::Activated, action);
         else
                 Notifications::activate(id, action);
-        if (action == 0) runTarget(n); // a button is the program's alone
+        // A button is the program's alone unless it says it runs the target (a question's Yes).
+        if (action == 0 || (action <= Notification::MaxActions && (n.actionTargets & (1u << (action - 1))) != 0))
+                runTarget(n);
         return;
 }
 

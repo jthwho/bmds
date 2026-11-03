@@ -710,6 +710,14 @@ until silicon v3; then test again.
   in task "main"); 6144 since (`sdkconfig.defaults`), which costs internal RAM only while booting.
   The boot report logs the high-water mark ("Main task stack high water"): check it after adding
   boot work.
+- **A restart can fault in the ROM's cache write-back** (seen once, 2026-11-02, cause unknown):
+  `reboot` from the shell ended in a store access fault in `Cache_WriteBack_All_Gid` on core 1
+  (MEPC `0x4fc10a60`, MTVAL `0x3ff100a0`: the cache's own registers), which `esp_restart_noos`
+  calls before turning the L2 off; logged as a panic, it counted toward the three crashes in a
+  row that start recovery. About eight restarts around it were clean. Decode such addresses
+  with IDF's ROM ELF (`~/.espressif/tools/esp-rom-elfs/*/esp32p4_rev0_rom.elf`): the firmware's
+  own ELF knows nothing at `0x4fc...`, and the stack dump below it held an earlier boot's frames
+  (PSRAM keeps its contents over a software reset).
 
 ## 6. The ROM
 

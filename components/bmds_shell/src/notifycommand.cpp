@@ -85,6 +85,10 @@ namespace {
                                 ++i;
                                 break;
                         }
+                        if (o == "-q") {
+                                n.flags |= Notification::Question;
+                                continue;
+                        }
                         if (i + 1 >= args.size()) return ctx.usage();
                         const char *v = args[++i];
                         if (o == "-u") {
@@ -115,6 +119,11 @@ namespace {
                         } else if (o == "-l") {
                                 n.target = Notification::Target::Launch;
                                 copy(n.targetText, v);
+                        } else if (o == "-b" || o == "-B") {
+                                // A button: -B's runs the target (a script can't be told of a click).
+                                if (n.actionCount == Notification::MaxActions) return ctx.usage();
+                                if (o == "-B") n.actionTargets |= uint8_t(1u << n.actionCount);
+                                copy(n.actions[n.actionCount++], v);
                         } else {
                                 return ctx.usage();
                         }
@@ -157,8 +166,8 @@ namespace {
 } // namespace
 
 BMDS_SHELL_COMMAND(notify, runNotify,
-                   "[-u low|normal|critical] [-t MS] [-i ICON] [-a APP] [-r ID] [-o PATH | -s PATH | -l ENTRY] TITLE "
-                   "[BODY] | list | close ID | clear",
+                   "[-u low|normal|critical] [-t MS] [-i ICON] [-a APP] [-r ID] [-o PATH | -s PATH | -l ENTRY] "
+                   "[-b LABEL | -B LABEL]... [-q] TITLE [BODY] | list | close ID | clear",
                    "Post a notification (its id printed), or list, close or clear those kept")
 
 BMDS_NAMESPACE_END

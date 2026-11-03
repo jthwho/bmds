@@ -85,6 +85,7 @@ Result<uint32_t> NotificationLog::post(const Notification &n, int32_t owner, uin
         cut(s->n.targetText);
         cut(s->n.message);
         if (s->n.actionCount > Notification::MaxActions) s->n.actionCount = Notification::MaxActions;
+        s->n.actionTargets &= uint8_t((1u << Notification::MaxActions) - 1);
         for (auto &label : s->n.actions) cut(label);
         if (uint8_t(s->n.urgency) > uint8_t(Notification::Urgency::Critical))
                 s->n.urgency = Notification::Urgency::Normal;
@@ -109,8 +110,24 @@ Error NotificationLog::endBalloon(uint32_t id, Ended how) {
         s->n.balloon = false;
         if (how == Ended::Activated || how == Ended::Dismissed) s->n.read = true; // the user saw it
         if ((s->n.flags & Notification::Transient) != 0) s->used = false;
+        if ((s->n.flags & Notification::Question) != 0 && how != Ended::Expired) s->used = false;
         ++_change;
         if (s->used) s->n.changed = _change;
+        return Error::Ok;
+}
+
+Error NotificationLog::activate(uint32_t id) {
+        Slot *s = find(id);
+        if (s == nullptr) return Error::NotExist;
+        if ((s->n.flags & Notification::Question) != 0) {
+                s->used = false;
+                ++_change;
+                return Error::Ok;
+        }
+        if (!s->n.read) {
+                s->n.read = true;
+                touch(*s);
+        }
         return Error::Ok;
 }
 

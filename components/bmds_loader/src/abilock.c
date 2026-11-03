@@ -254,6 +254,7 @@ _Static_assert(BMDS_JPEG_YUV420 == 0 && BMDS_JPEG_YUV422 == 1 && BMDS_JPEG_YUV44
                "ABI: image encoding");
 _Static_assert(BMDS_NOTIFY_LOW == 0 && BMDS_NOTIFY_NORMAL == 1 && BMDS_NOTIFY_CRITICAL == 2, "ABI: notify urgency");
 _Static_assert(BMDS_NOTIFY_SILENT == 0x1 && BMDS_NOTIFY_TRANSIENT == 0x2, "ABI: notify flags");
+_Static_assert(BMDS_NOTIFY_QUESTION == 0x4, "ABI: notify flags (appended 2026-11-02)");
 _Static_assert(BMDS_NOTIFY_TARGET_NONE == 0 && BMDS_NOTIFY_TARGET_OPEN == 1 && BMDS_NOTIFY_TARGET_SHOW == 2 &&
                        BMDS_NOTIFY_TARGET_LAUNCH == 3 && BMDS_NOTIFY_TARGET_SERVICE == 4,
                "ABI: notify targets");
@@ -680,7 +681,8 @@ _Static_assert(offsetof(bmds_notification_t, body) == 188, "ABI: notification.bo
 _Static_assert(offsetof(bmds_notification_t, target_text) == 444, "ABI: notification.target_text");
 _Static_assert(offsetof(bmds_notification_t, message) == 636, "ABI: notification.message");
 _Static_assert(offsetof(bmds_notification_t, actions) == 700, "ABI: notification.actions");
-_Static_assert(sizeof(bmds_notification_t) == 772, "ABI: bmds_notification_t size");
+_Static_assert(offsetof(bmds_notification_t, action_targets) == 772, "ABI: notification.action_targets");
+_Static_assert(sizeof(bmds_notification_t) == 776, "ABI: bmds_notification_t size"); /* 772 before 2026-11-02 */
 _Static_assert(offsetof(bmds_notify_event_t, id) == 4 && offsetof(bmds_notify_event_t, event) == 8 &&
                        offsetof(bmds_notify_event_t, action) == 12,
                "ABI: notify_event fields");

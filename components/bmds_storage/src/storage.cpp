@@ -7,9 +7,11 @@
  */
 
 #include <atomic>
+#include <cstdio>
 #include <bmds/blockdevices.h>
 #include <bmds/cfg.h>
 #include <bmds/log.h>
+#include <bmds/notifications.h>
 #include <bmds/sdcard.h>
 #include <bmds/semaphore.h>
 #include <bmds/staticobject.h>
@@ -35,6 +37,7 @@ namespace {
                         Task      task;
                         Semaphore firstCheck;                           // Released once the first check is done.
                         char      name[BlockDevices::MaxName + 1] = {}; // The slot's device name ("sd0").
+                        std::atomic<uint32_t> question{0}; // "Format it?" while nothing on the card mounts
         };
 
         constinit StaticObject<Service> service;
@@ -48,6 +51,54 @@ namespace {
                         case SdCard::Type::Mmc: return "MMC";
                         default: return "other";
                 }
+        }
+
+        void closeQuestion() {
+                const uint32_t id = service->question.exchange(0, std::memory_order_acq_rel);
+                if (id != 0) (void)Notifications::close(id, 0);
+                return;
+        }
+
+        // A card nothing mounted from (devplan/format.md §3): asked about, Yes opening Format.
+        void askToFormat(SdCard &card, uint64_t bytes) {
+                size_t partitions = 0;
+                {
+                        BlockDevices::Entry entries[BlockDevices::MaxDevices];
+                        const size_t        n = BlockDevices::list(Span<BlockDevices::Entry>(entries));
+                        for (size_t i = 0; i < n; ++i) partitions += entries[i].parent == &card ? 1 : 0;
+                }
+                const unsigned tenths = unsigned(bytes / 100000000u); // GB, a decimal place
+                Notification   n;
+                n.flags = Notification::Question;
+                n.timeoutMs = Notification::NoTimeout;
+                n.target = Notification::Target::Launch;
+                std::snprintf(n.targetText, sizeof(n.targetText), "format.desktop");
+                std::snprintf(n.app, sizeof(n.app), "Storage");
+                std::snprintf(n.icon, sizeof(n.icon), "media-flash");
+                if (partitions == 0) {
+                        std::snprintf(n.title, sizeof(n.title), "Blank SD card detected");
+                        std::snprintf(n.body, sizeof(n.body),
+                                      "The %u.%u GB card in %s is blank. Would you like to format it?", tenths / 10,
+                                      tenths % 10, service->name);
+                } else {
+                        std::snprintf(n.title, sizeof(n.title), "SD card can't be read");
+                        std::snprintf(n.body, sizeof(n.body),
+                                      "The %u.%u GB card in %s has no FAT or exFAT filesystem. Would you like to "
+                                      "format it? That erases everything on it.",
+                                      tenths / 10, tenths % 10, service->name);
+                }
+                n.actionCount = 2;
+                n.actionTargets = 1u << 0; // Yes: Format
+                std::snprintf(n.actions[0], sizeof(n.actions[0]), "Yes");
+                std::snprintf(n.actions[1], sizeof(n.actions[1]), "No");
+                auto [id, err] = Notifications::post(n, 0, nullptr);
+                if (err.isError()) {
+                        bmdsWarn("Storage: can't ask about the card: %s", err.desc());
+                        return;
+                }
+                closeQuestion(); // an earlier card's
+                service->question.store(id, std::memory_order_release);
+                return;
         }
 
         void cardInserted(SdCard &card) {
@@ -67,6 +118,8 @@ namespace {
                 } else if (mounted.value() == 0) {
                         bmdsWarn("Storage: /dev/%s holds no FAT or exFAT filesystem (mkfs formats it)", service->name);
                 }
+                if (mounted.error().isError() || mounted.value() == 0)
+                        askToFormat(card, info.sectorCount * info.sectorSize);
                 Vfs::MountInfo mounts[Vfs::MaxMounts];
                 const size_t   n = Vfs::listMounts(Span<Vfs::MountInfo>(mounts));
                 for (size_t i = 0; i < n; ++i) {
@@ -85,6 +138,7 @@ namespace {
                 // Unmount first: open files go stale (NoMedia) rather than failing with I/O errors.
                 Vfs::eject(card);
                 card.detach();
+                closeQuestion();
                 bmdsInfo("Storage: SD card removed");
                 return;
         }
@@ -148,6 +202,11 @@ Error Storage::init() {
                 Vfs::endSettling();
         }
         return err;
+}
+
+void Storage::cardFormatted(BlockDevice &device) {
+        if (running.load(std::memory_order_acquire) && &device == &SdCard::instance()) closeQuestion();
+        return;
 }
 
 Error Storage::waitForFirstMount(unsigned int timeoutMs) {

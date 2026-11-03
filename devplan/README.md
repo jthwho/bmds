@@ -27,6 +27,7 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`filebrowser.md`](filebrowser.md) — the file browser: the toolkit's furniture and item views, `bmds_files`, folder windows in the panel, `files`.
 - [`audio.md`](audio.md) — Phase 7: audio devices (ES8311 on I²S), the mixing engine, OSS `/dev/dsp` and native audio fds, real-time clients, decoders, MIDI and the synth.
 - [`speech.md`](speech.md) — text to speech: SVOX Pico with its voices read in place from `/rom`, `say`, a speech fd for programs.
+- [`format.md`](format.md) — formatting cards from the desktop: the blank card's question (notifications that ask), Format, Files' Format Card.
 - [`mediaplayer.md`](mediaplayer.md) — the media player: audio and MIDI files in a GUI window, a playlist; video later (planned).
 - [`synthmodule.md`](synthmodule.md) — the board as a dedicated sound module: no display, 16 parts loaded from any fonts' presets, two cores, effects, USB audio (planned).
 - [`psramwindow.md`](psramwindow.md) — large PSRAM allocations through the MMU: scattered 64 KB pages mapped as one range, so fragmentation can't fail them (planned).

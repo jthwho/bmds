@@ -1,7 +1,7 @@
 idf_component_register(SRCS "main.cpp"
                        PRIV_REQUIRES bmds_audio bmds_bench bmds_clipboard bmds_fonts bmds_net bmds_midi bmds_synth bmds_speech bmds_console bmds_drivers bmds_input bmds_kernel bmds_shell bmds_storage bmds_fs bmds_loader bmds_ui
                                      bmds_stats bmds_sysconf bmds_terminal bmds_panel bmds_widgets bmds_mplayer bmds_patchbay bmds_sysmon bmds_settings
-                                     bmds_images bmds_imageview bmds_edit bmds_update bmds_updater bmds_files bmds_controls bmds_guiservice bmds_pkg bmds_software) # built-in programs (/bin), linked whole
+                                     bmds_images bmds_imageview bmds_edit bmds_update bmds_updater bmds_files bmds_controls bmds_guiservice bmds_pkg bmds_software bmds_format) # built-in programs (/bin), linked whole
 
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/bmds.cmake)
 bmds_target_options(${COMPONENT_LIB})

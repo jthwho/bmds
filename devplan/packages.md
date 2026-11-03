@@ -213,7 +213,8 @@ table with one partition (MBR, or GPT from 128 GB), formats it and mounts it at 
 card, 2026-10-04). Automatic format is FAT32 to 32 GB, exFAT above. BMDS reads MBR and GPT.
 
 **Missing, and part of this plan:**
-- **A card the board can't use says so on the screen**, not only in the log (today: "holds no FAT
+- **A card the board can't use says so on the screen** (designed and built in `format.md`: a
+  question in a notification, Format a window of its own, Files opening it), not only in the log (today: "holds no FAT
   or exFAT filesystem (mkfs formats it)"). A window: the card's size, what was found (no
   partition table; partitions it can't read, such as a Raspberry Pi card's ext4; a full card that
   isn't BMDS's is fine and left alone), and **Format the card...**, which asks once more, naming
@@ -273,6 +274,8 @@ page.
 
 1. [x] The key rename (§2).
 2. [ ] The card: the unusable-card window and **Format the card...**; the scratch-card tests (§10).
+   Built 2026-11-02 (`format.md`): the question, Format, Files' items, seen on the board with a
+   blanked card. Left: the other scratch cards (a Raspberry Pi's, a superfloppy, exFAT, GPT).
 3. [x] The format: `bmds_core`'s parsers and version comparison with host tests and fuzzing;
    `tools/mkpkg`; the key id in `.bmup` too. Done 2026-10-30 (§17).
 4. [x] `pkg` from files (done 2026-10-30, §19, tested on the board):

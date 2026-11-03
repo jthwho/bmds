@@ -1019,6 +1019,15 @@ littlefs is now simply formatted; see the as-built notes)*
   - Removing and inserting the card, or a reboot, reads everything again.
 - **Extended partitions** (logical, inside an MBR extended partition) aren't read by BMDS yet (§4). `fdisk` can make them, so reading them comes in the same step.
 
+**First part built (2026-11-02, for blanking a card with `dd` in `format.md`'s tests):** a whole
+device's node opens as a stream (`BlockStream` in `vfs.cpp`): any byte offset, part-sectors read,
+changed and written back through one sector of its own, seekable to its end, at most 64 KB a call
+under the storage lock. Stricter than the above until `fdisk` needs more: a write is refused
+(`Busy`) while anything on the device is mounted, a partition's node still says `NotSupported` (its
+device goes when the card does, and a handle could outlive it), and nothing is re-read on close
+(a card's removal or a restart reads the new table). Host-tested; on the board `dd if=/dev/zero
+of=/dev/sd0 bs=65536 count=64` after `umount /sd0/p0` left a card blank.
+
 **ABI impact:** append-only. Block device nodes, refused today (`NotSupported`), open as streams. No new slot.
 
 **Testing:**

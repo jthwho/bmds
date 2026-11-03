@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <bmds/blockdevice.h>
 #include <bmds/config.h>
 #include <bmds/error.h>
 
@@ -21,7 +22,8 @@ BMDS_NAMESPACE_BEGIN
  * in and mounts its FAT partitions (`Vfs::automount()`: `/sd0/p0`...), or
  * unmounts everything on one that came out and detaches it (open files go
  * stale: `NoMedia`). There is no polling. The first check happens in the task as well, so boot doesn't
- * wait for card initialization.
+ * wait for card initialization. A card that nothing mounts from is asked about in a notification:
+ * format it? (`devplan/format.md` §3).
  *
  * @par Thread Safety
  * `init()` once at boot; the rest is thread-safe.
@@ -43,6 +45,13 @@ namespace Storage {
          * @blocking
          */
         Error waitForFirstMount(unsigned int timeoutMs);
+
+        /**
+         * @brief Says @p device was formatted (and mounted): the question the
+         *        service asked when nothing on it mounted ("Blank SD card
+         *        detected", devplan/format.md §3) is closed, if it was about it.
+         */
+        void cardFormatted(BlockDevice &device);
 
 } // namespace Storage
 

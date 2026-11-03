@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <bmds/blockdevices.h>
 #include <bmds/config.h>
 #include <bmds/detailsview.h>
 #include <bmds/fileicons.h>
@@ -119,6 +120,7 @@ class FolderWindow final : public GuiWindow {
                         ChooseSortOrigin,
                         ChooseSortDeleted,
                         ChooseProperties, // the selection's, else the folder's (devplan/filebrowser.md §4k)
+                        ChooseFormat,     // the card selected or shown, else Format chooses (format.md §5)
                 };
 
                 FolderWindow(GuiApplication &app, const Config &config, FolderWindowHost &host);
@@ -179,6 +181,15 @@ class FolderWindow final : public GuiWindow {
 
                 /** @brief Returns true if one item is selected and it is an application's folder (`NAME.app`). */
                 bool applicationSelected() const;
+
+                /**
+                 * @brief Returns the card Format would format (`sd0`: the one card folder
+                 *        selected, else the card the folder is on), or false if none.
+                 */
+                bool formatTarget(char (&name)[BlockDevices::MaxName + 1]) const;
+
+                /** @brief Returns true if one item is selected and it is a card's folder (`/sd0`, `/sd0/p0`). */
+                bool cardSelected() const;
 
                 /** @brief Returns true if the clipboard has files to paste. */
                 bool canPaste();

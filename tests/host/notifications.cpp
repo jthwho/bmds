@@ -159,6 +159,34 @@ TEST_CASE("NotificationLog: texts cut at a character's end, actions at three") {
         CHECK(got.urgency == Notification::Urgency::Normal);
 }
 
+TEST_CASE("NotificationLog: a question goes once answered, and buttons that run the target") {
+        NotificationLog log;
+        Notification    q = make("q", 0, Notification::Question);
+        q.actionCount = 2;
+        q.actionTargets = 0xff; // only the three buttons' bits are kept
+        const uint32_t a = log.post(q, 0, 0, 1).value();
+        const uint32_t b = log.post(make("b", 0, Notification::Question), 0, 0, 2).value();
+        const uint32_t c = log.post(make("c", 0, Notification::Question), 0, 0, 3).value();
+        const uint32_t p = log.post(make("plain"), 0, 0, 4).value();
+        Notification   got;
+        REQUIRE(log.get(a, got).isOk());
+        CHECK(got.actionTargets == 0x7);
+        // Unanswered, a question stays when its balloon's time passes (answered in the centre).
+        CHECK(log.endBalloon(a, NotificationLog::Ended::Expired).isOk());
+        CHECK(log.get(a, got).isOk());
+        // Answered: in the centre, by a button, or dismissed with its close box.
+        CHECK(log.activate(a).isOk());
+        CHECK(log.get(a, got) == Error::NotExist);
+        CHECK(log.endBalloon(b, NotificationLog::Ended::Activated).isOk());
+        CHECK(log.endBalloon(c, NotificationLog::Ended::Dismissed).isOk());
+        CHECK(idsOf(log) == std::vector<uint32_t>{p});
+        // Any other is kept, read.
+        CHECK(log.activate(p).isOk());
+        REQUIRE(log.get(p, got).isOk());
+        CHECK(got.read);
+        CHECK(log.activate(a) == Error::NotExist);
+}
+
 // ---- The kernel's registry: the server told, listeners told, an events fd.
 
 #include <bmds/notifications.h>

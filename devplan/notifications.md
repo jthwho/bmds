@@ -69,8 +69,8 @@ screenshot), Do Not Disturb schedules, per-application rules.
 | urgency | low (a balloon, no sound), normal (a sound), critical (a sound, a red edge, stays until dismissed) |
 | timeout | ms; 0 the setting's default (`notify/timeout`, 6 s), `NoTimeout` until dismissed |
 | target | none; open a path (by its type's application, a folder in a window); show a path (its folder opened with it selected); start a Desktop Entry by id; send a message to a service |
-| actions | up to three buttons (an id each, a 24-byte label), told to the program's events |
-| flags | silent (no sound), transient (not kept in the centre) |
+| actions | up to three buttons (an id each, a 24-byte label), told to the program's events; a button may run the target too (`action_targets`, `format.md` §2) |
+| flags | silent (no sound), transient (not kept in the centre), question (gone once answered: `format.md` §2) |
 | kept by the system | the sender's pid, when it was posted (real time), its state (shown, in the centre, closed), read |
 
 ### 3.2 The kernel's registry (`Notifications`, bmds_kernel)
@@ -100,7 +100,8 @@ screenshot), Do Not Disturb schedules, per-application rules.
 - **`linux.c`:** nothing to emulate (Linux's are D-Bus's); a program uses the calls.
 - **Shell:** `notify [-u low|normal|critical] [-t MS] [-i ICON] [-a APP] [-o PATH | -s PATH] TITLE
   [BODY]` posts one (as `notify-send`), printing its id; `notify list` the centre's, `notify close
-  ID`, `notify clear`.
+  ID`, `notify clear`. Appended 2026-11-02 (`format.md` §2): `-b LABEL` and `-B LABEL` (a button;
+  `-B`'s runs the target), `-q` (a question).
 
 ### 3.4 The panel: balloons and the centre
 
@@ -242,6 +243,10 @@ screenshot), Do Not Disturb schedules, per-application rules.
   waits under the pointer anywhere in it (`GuiWindow::pointerEntered()`); text and icons in the
   centre's rows start on 4-pixel columns (the painter draws nothing elsewhere: the first rows
   came out empty).
+
+- **2026-11-02, questions** (`format.md` §2, the blank card's "format it?"): a button may run the
+  notification's target (`action_targets`, appended to `bmds_notification_t`: 772 to 776 bytes),
+  and a question (`BMDS_NOTIFY_QUESTION`) is gone once answered, from the centre too.
 
 ## 9. Decisions (the user, 2026-10-10)
 

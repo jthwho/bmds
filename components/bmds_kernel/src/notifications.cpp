@@ -269,7 +269,7 @@ namespace Notifications {
                 Mutex::Locker locker(r.lock, WaitForever);
                 Notification  n;
                 if (r.log.get(id, n).isError()) return;
-                r.log.markRead(id);
+                (void)r.log.activate(id);
                 r.tell(n.listener, id, Event::Activated, action);
                 r.changed();
                 return;

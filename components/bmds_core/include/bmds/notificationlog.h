@@ -43,6 +43,7 @@ struct Notification {
                 enum Flag : uint8_t {
                         Silent = 1u << 0,    ///< No sound.
                         Transient = 1u << 1, ///< Not kept once its balloon is gone.
+                        Question = 1u << 2,  ///< Gone once answered: a click, a button or its close box.
                 };
 
                 static constexpr int32_t DefaultTimeout = 0; ///< `timeoutMs`: the setting's.
@@ -62,6 +63,7 @@ struct Notification {
                 uint8_t  flags = 0;
                 Target   target = Target::None;
                 uint8_t  actionCount = 0;
+                uint8_t  actionTargets = 0; ///< Bit i: button i + 1 runs the target, as a click on the body.
                 int32_t  timeoutMs = DefaultTimeout;
                 char     app[AppBytes] = {};     ///< The application's name (the centre groups by it).
                 char     icon[IconBytes] = {};   ///< A theme icon's name (empty: the application's).
@@ -120,8 +122,14 @@ class NotificationLog {
                  */
                 Result<uint32_t> post(const Notification &n, int32_t owner, uint32_t listener, int64_t nowNs);
 
-                /** @brief Notification @p id's balloon ended @p how: kept (unless transient), not due. */
+                /**
+                 * @brief Notification @p id's balloon ended @p how: kept (unless transient, or a
+                 *        question answered or dismissed), not due.
+                 */
                 Error endBalloon(uint32_t id, Ended how);
+
+                /** @brief Notification @p id clicked in the centre: read, and gone if a question. */
+                Error activate(uint32_t id);
 
                 /** @brief Forgets @p id, if @p owner sent it (-1: anyone). @return `Ok`, `NotExist`, `PermissionDenied`. */
                 Error close(uint32_t id, int32_t owner);

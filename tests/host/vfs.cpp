@@ -272,7 +272,21 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
         CHECK(Vfs::stat("/ram0", Root).value().isDirectory());
         CHECK(Vfs::stat("/dev/ram0", Root).value().type == FileType::Device);
         CHECK(Vfs::stat("/dev/ram0", Root).value().size == 64u * 1024 * 1024);
-        CHECK(Vfs::open("/dev/ram0", Vfs::Read, Root).error() == Error::NotSupported);
+        {
+                // Raw access (dd): the whole device's bytes, read while mounted, written only when not.
+                auto [h, err] = Vfs::open("/dev/ram0", Vfs::Read | Vfs::Write, Root);
+                REQUIRE(err.isOk());
+                uint8_t mbr[512] = {};
+                REQUIRE(h->read(WritableByteSpan(mbr, sizeof(mbr)), WaitForever).value() == sizeof(mbr));
+                CHECK(mbr[510] == 0x55);
+                CHECK(mbr[511] == 0xaa);
+                CHECK(h->write(ByteSpan(mbr, 4), WaitForever).error() == Error::Busy);
+                CHECK(h->stream().seek(-1, Stream::SeekFrom::End).value() == 64u * 1024 * 1024 - 1);
+                uint8_t last[4];
+                CHECK(h->read(WritableByteSpan(last, sizeof(last)), WaitForever).value() == 1);
+                CHECK(h->read(WritableByteSpan(last, sizeof(last)), WaitForever).error() == Error::EndOfFile);
+        }
+        CHECK(Vfs::open("/dev/ram0p0", Vfs::Read, Root).error() == Error::NotSupported); // a partition's: not yet
         {
                 auto [info, err] = Vfs::statfs("/ram0/p0", Root);
                 REQUIRE(err.isOk());
@@ -302,6 +316,18 @@ TEST_CASE("Vfs: devices, partitions and mounts") {
                 CHECK(Vfs::format(ram, FsFormat::ExFat) == Error::Busy);
                 CHECK(Vfs::format(*p0, FsFormat::ExFat) == Error::Busy);
                 CHECK(Vfs::unmount("/data/main").isOk());
+                {
+                        // Unmounted, written raw: part of two sectors (in the gap before the partition).
+                        auto [h, err] = Vfs::open("/dev/ram0", Vfs::Read | Vfs::Write, Root);
+                        REQUIRE(err.isOk());
+                        const uint8_t text[] = "across a sector's end";
+                        REQUIRE(h->stream().seek(1000, Stream::SeekFrom::Start).isOk());
+                        CHECK(h->write(ByteSpan(text, sizeof(text)), WaitForever).value() == sizeof(text));
+                        uint8_t back[sizeof(text)] = {};
+                        REQUIRE(h->stream().seek(1000, Stream::SeekFrom::Start).isOk());
+                        CHECK(h->read(WritableByteSpan(back, sizeof(back)), WaitForever).value() == sizeof(back));
+                        CHECK(std::memcmp(back, text, sizeof(text)) == 0);
+                }
                 // A device without a filesystem.
                 bmds::RamBlockDevice blank(512);
                 REQUIRE(blank.allocate(256, bmds::MemSpace::Psram).isOk());
