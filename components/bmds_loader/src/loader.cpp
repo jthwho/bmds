@@ -2447,8 +2447,12 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
                 return makeError<int32_t>(Error::NoMem);
         }
         run->data = request.data;
-        // Its group and session, and the terminal's foreground (devplan/processes.md §3.6.1).
+        // Its group and session, and the terminal's foreground (devplan/processes.md §3.6.1). A
+        // new session takes a terminal no session has; one another session controls (the serial
+        // console a desktop's programs were started from) stays that session's, and the new
+        // session has no terminal: the console's Ctrl-C isn't its, nor its end the shell's hangup.
         Result<int32_t> added = makeError<int32_t>(Error::Busy);
+        bool            noTerminal = false;
         {
                 Mutex::Locker              groups(*groupLock, WaitForever);
                 ProgramLauncher::JobGroup *job = request.session ? nullptr : request.group;
@@ -2461,7 +2465,9 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
                 if (added.isOk()) {
                         const int32_t pid = added.value();
                         if (job != nullptr && job->id == 0) job->id = pid;
-                        if (console != nullptr && request.session) {
+                        if (console != nullptr && request.session && console->session() != 0) {
+                                noTerminal = true;
+                        } else if (console != nullptr && request.session) {
                                 console->setSession(pid);
                                 console->setForeground(pid);
                                 console->setUnansweredGroup(0);
@@ -2480,6 +2486,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
                 releaseImage(image);
                 return makeError<int32_t>(added.error() == Error::Full ? Error::Busy : added.error());
         }
+        if (noTerminal) process->setConsole(nullptr);
         const int32_t pid = added.value();
         run->pid = run->main.currentPid = run->main.tid = pid;
         // The program may change the terminal's modes: the shell gets its own back.

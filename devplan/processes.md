@@ -152,7 +152,11 @@ As POSIX has them, for one user:
 - **Launching:** a request may make a new session on its console (`session`: the shells the
   system starts, pid 1 and each terminal's) or name a `JobGroup`: the first program of a pipeline
   starts the group, the others join it, and with `foreground` the console gets it. Without either,
-  the program is in its caller's group.
+  the program is in its caller's group. A new session takes its console only when no session has
+  it (a new terminal's shell), as `setsid()` and an open of a terminal do; one another session
+  controls stays that session's, and the new session has none (2026-11-03): a program the panel or
+  Settings starts used to take the serial console from pid 1's shell, so the console's Ctrl-C
+  ended it and its end left the shell without a terminal.
 - **Giving the terminal back:** when the last process of the foreground group ends, the console's
   foreground goes to its parent's group (the shell that started it), or to the session's. When a
   session leader ends, its console has no session or foreground any more, and the foreground group

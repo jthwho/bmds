@@ -66,9 +66,11 @@ class ProgramLauncher {
                                  */
                                 JobGroup *group = nullptr;
                                 /**
-                                 * @brief A new session with `console` as its controlling
-                                 *        terminal, the program leading it and in the foreground
-                                 *        (a shell the system starts on a terminal).
+                                 * @brief A new session, the program leading it: with `console`
+                                 *        as its controlling terminal, in the foreground, when no
+                                 *        session has it (a shell the system starts on a new
+                                 *        terminal); else with none (a program started from the
+                                 *        desktop: the console's signals stay its session's).
                                  */
                                 bool session = false;
                                 /**
