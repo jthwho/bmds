@@ -19,6 +19,7 @@
  *   progtest lines        read lines (fgets) until end of input
  *   progtest raw          read keys raw until 'q'
  *   progtest mem          memory info
+ *   progtest syntax       the code colouring calls (syntax_find, syntax_scan)
  *   progtest random       16 random bytes
  *   progtest cwd DIR      getcwd, chdir DIR, getcwd
  *   progtest spawn SELF DIR  processes: vfork, exec, posix_spawn, wait, pipes, in DIR
@@ -2997,6 +2998,66 @@ static int font_test(void) {
         return 0;
 }
 
+static int syntax_test(void) {
+        if (!bmds_sys_has(BMDS_SYS_SYNTAX_SCAN)) {
+                printf("syntax: not in this kernel\n");
+                return 0;
+        }
+        // Found by id, name, extension, file name, interpreter and alias; the same language each way.
+        const int32_t as = bmds_syntax_find("angelscript", 11);
+        CHECK(as >= 0);
+        CHECK(bmds_syntax_find("AngelScript", 11) == as && bmds_syntax_find("as", 2) == as &&
+              bmds_syntax_find("angel", 5) == as);
+        const int32_t sh = bmds_syntax_find("shell", 5);
+        CHECK(sh >= 0 && sh != as && bmds_syntax_find("bash", 4) == sh && bmds_syntax_find("sh", 2) == sh);
+        CHECK(bmds_syntax_find("c++", 3) == bmds_syntax_find("cpp", 3) && bmds_syntax_find("cpp", 3) >= 0);
+        CHECK(bmds_syntax_find("Makefile", 8) == bmds_syntax_find("make", 4) && bmds_syntax_find("make", 4) >= 0);
+        CHECK(bmds_syntax_find("cobol", 5) == -BMDS_ENOENT && bmds_syntax_find("", 0) == -BMDS_ENOENT);
+        CHECK(bmds_syntax_find(NULL, 3) == -BMDS_EFAULT);
+
+        // A line: its spans in order; a comment left open carries into the next line's state.
+        const char        *line = "int x = 42; /* open";
+        bmds_syntax_span_t spans[16];
+        bmds_syntax_scan_t scan = {sizeof(scan), as, line, (uint32_t)strlen(line), 0, spans, 16, 0};
+        CHECK(bmds_syntax_scan(&scan) == 0);
+        CHECK(scan.count >= 3 && scan.state != 0);
+        CHECK(spans[0].start == 0 && spans[0].end == 3 && spans[0].style == BMDS_SYNTAX_TYPE);
+        int number = 0, comment = 0;
+        for (uint32_t i = 0; i < scan.count; ++i) {
+                CHECK(spans[i].end > spans[i].start && spans[i].end <= scan.length);
+                if (i > 0) CHECK(spans[i].start >= spans[i - 1].end);
+                number += spans[i].style == BMDS_SYNTAX_NUMBER && spans[i].start == 8;
+                comment += spans[i].style == BMDS_SYNTAX_COMMENT;
+        }
+        CHECK(number == 1 && comment == 1);
+        const char *next = "still a comment */ x";
+        scan.line = next;
+        scan.length = (uint32_t)strlen(next);
+        CHECK(bmds_syntax_scan(&scan) == 0);
+        CHECK(scan.state == 0 && scan.count >= 1 && spans[0].start == 0 && spans[0].style == BMDS_SYNTAX_COMMENT);
+        // Room for fewer: the first ones; none: none.
+        scan.line = line;
+        scan.length = (uint32_t)strlen(line);
+        scan.state = 0;
+        scan.max_spans = 1;
+        CHECK(bmds_syntax_scan(&scan) == 0 && scan.count == 1);
+        scan.max_spans = 0;
+        scan.spans = NULL;
+        CHECK(bmds_syntax_scan(&scan) == 0 && scan.count == 0);
+        // What it refuses.
+        scan.language = 999;
+        CHECK(bmds_syntax_scan(&scan) == -BMDS_EINVAL);
+        scan.language = as;
+        scan.state = 0x10000;
+        CHECK(bmds_syntax_scan(&scan) == -BMDS_EINVAL);
+        scan.state = 0;
+        scan.size = 4;
+        CHECK(bmds_syntax_scan(&scan) == -BMDS_EINVAL);
+        CHECK(bmds_syntax_scan(NULL) == -BMDS_EFAULT);
+        printf("syntax: ok\n");
+        return 0;
+}
+
 static int image_test(const char *file) {
         CHECK(bmds_sys_has(BMDS_SYS_IMAGE_ENCODE));
         enum {
@@ -4452,6 +4513,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "expand") == 0) return expand_test();
         if (strcmp(what, "image") == 0) return image_test(argc > 2 ? arg : NULL);
         if (strcmp(what, "fonts") == 0) return font_test();
+        if (strcmp(what, "syntax") == 0) return syntax_test();
         if (strcmp(what, "notify") == 0) return notify_test(argc > 2 && strcmp(arg, "served") == 0);
         if (strcmp(what, "net") == 0) return net_test();
         if (strcmp(what, "netwatch") == 0) return net_watch_test(argc > 2 ? atoi(arg) : 1);

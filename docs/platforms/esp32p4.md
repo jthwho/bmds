@@ -209,6 +209,13 @@ until silicon v3; then test again.
   JPEG's full-range colours. Only RX channel 0 converts colour. BMDS loads full-range coefficients
   by wrapping `dma2d_configure_color_space_conversion` at link time (`-Wl,--wrap`); `Decode::
   limitedRange` keeps ESP-IDF's for video.
+- **Ask the JPEG decoder for a format it makes itself** (BGR24, RGB24, RGB565; gray for a gray
+  JPEG), laid out as `image_info` says (`align`, `stride`, `bytes`): it then decodes straight
+  into the program's buffer. Any other format (BGRA32) is decoded into a buffer of the codec's
+  own and converted, so the picture's memory is needed twice. A 1920×1080 JPEG asked for as BGRA32
+  failed with `-BMDS_ENOMEM` while the desktop ran: PSRAM had 6 MB free and its largest block was
+  4 to 6 MB, well under the 8 MB plus the codec's 6 MB. Preso asks for BGR24, and RGB565 if that
+  doesn't fit (found 2026-11-03, `devplan/preso.md` §14).
 - **The JPEG encoder stops at its output buffer's end and reports success**: a stream that fills
   the buffer may be cut. Give it room, and treat a stream near the end as cut.
 - **The PPA** (to explore further): its scale factors are 16ths (no exact sizes); its full-range
@@ -263,6 +270,12 @@ until silicon v3; then test again.
   `Painter::pixels()` refused it with `Invalid`, so a canvas in a window's 6-pixel margin showed
   nothing while one at an aligned x worked (it cost a debugging round, 2026-10-25). Its edges'
   few columns are now patched (`Surface::patch()`: read, changed and written back by two jobs).
+- **A surface present without damage costs about 12 ms at 1280×720**: damage 0 means "all of it",
+  and the whole picture goes to the display. A program animating a part of the screen should pass
+  its damage (up to 64 rectangles). And a `BMDS_SURFACE_BLIT` piece the height of the screen costs
+  its rows' cache operations, so a frame that writes only what changed since its buffer last held
+  one (the frame two before, with two buffers) is cheaper still. Found with Preso's transitions,
+  20 frames a second to 48 (2026-11-03, `devplan/preso.md` §14).
 - **What PSRAM takes, with the 720p scan reading 166 MB/s:** the 2D-DMA writes ~150 MB/s
   (RGB565 widened to RGB888: 50 Mpixel/s, a 1280×720 frame in 18.3 ms, over a 60 Hz frame's
   16.7 ms). The CPU reads it at only ~70-80 MB/s through the cache (doubling 640×360 RGB565

@@ -16,7 +16,10 @@
 
 BMDS_NAMESPACE_BEGIN
 
-/** @brief What a piece of text is, for its colour (`devplan/editor.md` §5). */
+/**
+ * @brief What a piece of text is, for its colour (`devplan/editor.md` §5). The SDK's
+ *        `BMDS_SYNTAX_...` are these numbers (`syntax_scan`): append only.
+ */
 enum class SyntaxStyle : uint8_t {
         Normal,
         Keyword,  ///< `if`, `class`; a heading's marks; an INI section.

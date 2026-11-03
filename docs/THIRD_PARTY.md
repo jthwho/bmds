@@ -54,7 +54,8 @@ anything, add it here, and give its licence a way onto the board.
 | CoreMark | Apache-2.0 | |
 | tzdata | public domain | |
 | Icon themes | MIT | |
-| BMDS's own programs (Lucky Duck, Blocks, angel, sshfs, ...) | MIT | |
+| md4c 0.5.2 (`thirdparty/md4c`) | MIT | in Preso |
+| BMDS's own programs (Lucky Duck, Blocks, angel, Preso, sshfs, ...) | MIT | |
 
 ## The web installer (`installer/`)
 

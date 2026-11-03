@@ -40,6 +40,7 @@ if(COMMAND idf_component_register)
                                     src/fscalls.cpp
                                     src/guicalls.cpp
                                     src/surfacecalls.cpp
+                                    src/syntaxcalls.cpp
                                     src/syscalls.cpp
                                     src/systable.c
                                INCLUDE_DIRS include ${BMDS_SDK_INCLUDE}

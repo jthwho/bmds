@@ -891,3 +891,23 @@ _Static_assert(offsetof(bmds_text_draw_t, font) == 4 && offsetof(bmds_text_draw_
                        offsetof(bmds_text_draw_t, length) == 72 && sizeof(bmds_text_draw_t) == 76,
                "ABI: bmds_text_draw_t");
 #endif
+
+/* Colouring code (devplan/preso.md §9; slots 133-134, 2026-11-03). */
+_Static_assert(BMDS_SYS_SYNTAX_FIND == 133 && BMDS_SYS_SYNTAX_SCAN == 134, "ABI: slots SYNTAX_*");
+_Static_assert(BMDS_SYNTAX_NORMAL == 0 && BMDS_SYNTAX_KEYWORD == 1 && BMDS_SYNTAX_TYPE == 2 &&
+                       BMDS_SYNTAX_CONSTANT == 3 && BMDS_SYNTAX_NUMBER == 4 && BMDS_SYNTAX_STRING == 5 &&
+                       BMDS_SYNTAX_CHARACTER == 6 && BMDS_SYNTAX_COMMENT == 7 && BMDS_SYNTAX_PREPROCESSOR == 8 &&
+                       BMDS_SYNTAX_OPERATOR == 9 && BMDS_SYNTAX_FUNCTION == 10 && BMDS_SYNTAX_HEADING == 11 &&
+                       BMDS_SYNTAX_EMPHASIS == 12 && BMDS_SYNTAX_ADDED == 13 && BMDS_SYNTAX_REMOVED == 14 &&
+                       BMDS_SYNTAX_ERROR == 15,
+               "ABI: syntax styles");
+_Static_assert(offsetof(bmds_syntax_span_t, end) == 4 && offsetof(bmds_syntax_span_t, style) == 8 &&
+                       sizeof(bmds_syntax_span_t) == 12,
+               "ABI: bmds_syntax_span_t");
+#if UINTPTR_MAX == 0xffffffffu // (pointers inside)
+_Static_assert(offsetof(bmds_syntax_scan_t, language) == 4 && offsetof(bmds_syntax_scan_t, line) == 8 &&
+                       offsetof(bmds_syntax_scan_t, length) == 12 && offsetof(bmds_syntax_scan_t, state) == 16 &&
+                       offsetof(bmds_syntax_scan_t, spans) == 20 && offsetof(bmds_syntax_scan_t, max_spans) == 24 &&
+                       offsetof(bmds_syntax_scan_t, count) == 28 && sizeof(bmds_syntax_scan_t) == 32,
+               "ABI: bmds_syntax_scan_t");
+#endif

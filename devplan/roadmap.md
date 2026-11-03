@@ -461,7 +461,19 @@ Plan: [`input.md`](input.md).
   the board formatting the card, the first run.
 - [ ] Preso (`preso.md`, planned 2026-10-30 with the user): decks in Marp's Markdown, themes in
   INI files with retro ones built in, transitions, notes over SSH, the clicker and pad through
-  Controls, live demos from a slide; an SDK program on the card.
+  Controls, live demos from a slide; an SDK program on the card. Revised 2026-11-03: AngelScript
+  animations and interactive pieces (script regions and `angel run` blocks, Manim's model,
+  sandboxed, beats replayed for Previous) through `libangel`; a portable core with a platform
+  layer, for a PC port on SDL3 later. Done: step 1 (2026-11-03: md4c vendored, the portable
+  core's deck parser and model, `preso check`, `dist/preso`); step 2 (2026-11-03: layout and
+  drawing in `paper`, fragments, presenting on BMDS with its own loop, reloading on save; the
+  SDK's code colouring, `syntax_find` and `syntax_scan`, slots 133-134); step 3 (2026-11-03:
+  pictures: backgrounds, splits, tiles, sizes, filters, palette dithering, a scaled-picture cache
+  in 4 MB); step 4 (2026-11-03: the INI theme format with classes and Extends, six built-in
+  themes (paper, vga, amber, green, classic, bbs), heading bands, frames and dividers, a glow and
+  scanlines, `Scale=nearest` by whole multiples, `preso theme`); step 5 (2026-11-03: wipe,
+  dissolve, pixelate, crt and type transitions as pieces the 2D-DMA copies, the overview, black
+  and white screens, going to a slide by its number).
 
 ## Phase 8 — Self-Hosting
 

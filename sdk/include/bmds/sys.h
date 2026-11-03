@@ -208,6 +208,8 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_TEXT_DRAW 130u    /**< `int32_t text_draw(const bmds_text_draw_t *draw)`: the width. */
 #define BMDS_SYS_FONT_LIST 131u    /**< `int32_t font_list(uint32_t index, bmds_font_face_t *face)`. */
 #define BMDS_SYS_FONT_CLOSE 132u   /**< `int32_t font_close(int32_t font)`. */
+#define BMDS_SYS_SYNTAX_FIND 133u  /**< `int32_t syntax_find(const char *name, uint32_t length)`: a language. */
+#define BMDS_SYS_SYNTAX_SCAN 134u  /**< `int32_t syntax_scan(bmds_syntax_scan_t *scan)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1748,6 +1750,7 @@ typedef struct bmds_surface_blit_t {
  * first active at start; one set if left out) and an `[Action NAME]` group per action (`Id=`,
  * `Label=`, `Group=`, `Kind=button|axis`, `Sets=`, `Keys=` (required: `Z;Ctrl`, an axis's pairs
  * `Left Right;A D`), `Pad=` (`Pad.South;Pad.LeftX-`, an axis's `Pad.LeftX` or pairs), `Repeat=`).
+ * An action has at most 4 key bindings and 4 pad bindings: more is `-BMDS_EINVAL`, the line logged.
  * The user's changed bindings (`$HOME/.config/bmds/controls/ID.conf`, the same format) are laid
  * over it.
  */
@@ -2023,6 +2026,53 @@ typedef struct bmds_font_face_t {
                 char     path[128];      /**< Its file; "" for a built-in font. */
 } bmds_font_face_t;
 
+/* --- Colouring code (devplan/preso.md §9; slots 133-134, appended 2026-11-03) --- */
+
+/*
+ * The languages the system's editor colours (AngelScript, C, C++, the shell, INI, JSON, Makefiles,
+ * Markdown, diffs), for any program that shows code. A language is found by a name and is a
+ * number for this system only: find it again each run, never store it. A line is coloured as
+ * spans of styles; a line's end state goes into the next line's scan, so a comment or string
+ * that spans lines is coloured on each of them.
+ */
+
+/** @brief What a span of code is (`bmds_syntax_span_t::style`; appended only, as the editor's). */
+#define BMDS_SYNTAX_NORMAL 0u
+#define BMDS_SYNTAX_KEYWORD 1u  /**< `if`, `class`; a heading's marks; an INI section. */
+#define BMDS_SYNTAX_TYPE 2u     /**< `int`, `string`; a JSON key; an INI key. */
+#define BMDS_SYNTAX_CONSTANT 3u /**< `true`, `null`; a shell variable. */
+#define BMDS_SYNTAX_NUMBER 4u
+#define BMDS_SYNTAX_STRING 5u
+#define BMDS_SYNTAX_CHARACTER 6u /**< `'a'`. */
+#define BMDS_SYNTAX_COMMENT 7u
+#define BMDS_SYNTAX_PREPROCESSOR 8u /**< `#include`; a diff's `@@` lines. */
+#define BMDS_SYNTAX_OPERATOR 9u     /**< `+`, `==`, brackets. */
+#define BMDS_SYNTAX_FUNCTION 10u    /**< A name followed by `(`. */
+#define BMDS_SYNTAX_HEADING 11u     /**< Markdown's `#` lines. */
+#define BMDS_SYNTAX_EMPHASIS 12u    /**< Markdown's `*text*`. */
+#define BMDS_SYNTAX_ADDED 13u       /**< A diff's `+` lines. */
+#define BMDS_SYNTAX_REMOVED 14u     /**< A diff's `-` lines. */
+#define BMDS_SYNTAX_ERROR 15u       /**< A string or comment left open where that can't be. */
+
+/** @brief A run of a line's bytes in one style: `start` to `end` (past it). */
+typedef struct bmds_syntax_span_t {
+                uint32_t start;
+                uint32_t end;
+                uint32_t style; /**< `BMDS_SYNTAX_...`. */
+} bmds_syntax_span_t;
+
+/** @brief A line to colour (`syntax_scan`). */
+typedef struct bmds_syntax_scan_t {
+                uint32_t            size;     /**< `sizeof(bmds_syntax_scan_t)`. */
+                int32_t             language; /**< `syntax_find`'s. */
+                const char         *line;     /**< UTF-8, without its line end. */
+                uint32_t            length;   /**< Its bytes. */
+                uint32_t            state; /**< In: the line before's end state (0 for the first); out: this line's. */
+                bmds_syntax_span_t *spans; /**< Filled in order, not overlapping (bytes in none are NORMAL). */
+                uint32_t            max_spans; /**< Room in `spans`. */
+                uint32_t            count;     /**< Out: spans filled (at most `max_spans`: the rest are NORMAL). */
+} bmds_syntax_scan_t;
+
 /* --- Calls ----------------------------------------------------------- */
 
 typedef void (*bmds_sys_exit_fn)(int32_t status);
@@ -2151,6 +2201,8 @@ typedef int32_t (*bmds_sys_text_measure_fn)(int32_t font, const char *text, uint
 typedef int32_t (*bmds_sys_text_draw_fn)(const bmds_text_draw_t *draw);
 typedef int32_t (*bmds_sys_font_list_fn)(uint32_t index, bmds_font_face_t *face);
 typedef int32_t (*bmds_sys_font_close_fn)(int32_t font);
+typedef int32_t (*bmds_sys_syntax_find_fn)(const char *name, uint32_t length);
+typedef int32_t (*bmds_sys_syntax_scan_fn)(bmds_syntax_scan_t *scan);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -3530,6 +3582,30 @@ static inline int32_t bmds_font_open_name(const char *name) {
  */
 static inline int32_t bmds_font_close(int32_t font) {
         return ((bmds_sys_font_close_fn)bmds_sys->slot[BMDS_SYS_FONT_CLOSE])(font);
+}
+
+/**
+ * @brief Finds the language @p name (@p length bytes) names, for `syntax_scan`: a language's id
+ *        (`angelscript`, `cpp`, `shell`), its name in any case (`AngelScript`), a file name
+ *        extension (`as`, `py`, `h`), a file name (`Makefile`, `talk.md`), or one of the names
+ *        code blocks use (`angel`, `bash`, `sh`, `c++`). (Slots 133-134, appended 2026-11-03:
+ *        check `bmds_sys_has(BMDS_SYS_SYNTAX_FIND)`.)
+ * @return The language (0 up; this system's numbering: never stored), or `-BMDS_ENOENT` (none:
+ *         plain text), `-BMDS_EFAULT`, `-BMDS_ENOSYS` (a system without it).
+ */
+static inline int32_t bmds_syntax_find(const char *name, uint32_t length) {
+        if (!bmds_sys_has(BMDS_SYS_SYNTAX_FIND)) return -BMDS_ENOSYS;
+        return ((bmds_sys_syntax_find_fn)bmds_sys->slot[BMDS_SYS_SYNTAX_FIND])(name, length);
+}
+
+/**
+ * @brief Colours a line (`bmds_syntax_scan_t`): its spans, and its end state into `state`.
+ * @return 0, or `-BMDS_EINVAL` (the language, `size`), `-BMDS_EFAULT`, `-BMDS_ENOSYS`.
+ * @hotpath A line of code in microseconds: the editor colours each line it draws so.
+ */
+static inline int32_t bmds_syntax_scan(bmds_syntax_scan_t *scan) {
+        if (!bmds_sys_has(BMDS_SYS_SYNTAX_SCAN)) return -BMDS_ENOSYS;
+        return ((bmds_sys_syntax_scan_fn)bmds_sys->slot[BMDS_SYS_SYNTAX_SCAN])(scan);
 }
 
 /**

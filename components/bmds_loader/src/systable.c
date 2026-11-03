@@ -149,10 +149,12 @@ int32_t bmds_k_text_measure(int32_t fd, const char *text, uint32_t length, uint3
 int32_t bmds_k_text_draw(const bmds_text_draw_t *draw);
 int32_t bmds_k_font_list(uint32_t index, bmds_font_face_t *face);
 int32_t bmds_k_font_close(int32_t font);
+int32_t bmds_k_syntax_find(const char *name, uint32_t length);
+int32_t bmds_k_syntax_scan(bmds_syntax_scan_t *scan);
 int32_t bmds_k_audio_speak(const bmds_speak_config_t *config);
 int32_t bmds_k_audio_speak_info(int32_t fd, bmds_speak_info_t *info);
 
-#define SLOTS 133
+#define SLOTS 135
 
 /* bmds_sys_t with its slots spelled out (same layout; checked below). */
 static const struct {
@@ -300,10 +302,12 @@ static const struct {
                 [BMDS_SYS_TEXT_DRAW] = (bmds_sys_fn_t)bmds_k_text_draw,
                 [BMDS_SYS_FONT_LIST] = (bmds_sys_fn_t)bmds_k_font_list,
                 [BMDS_SYS_FONT_CLOSE] = (bmds_sys_fn_t)bmds_k_font_close,
+                [BMDS_SYS_SYNTAX_FIND] = (bmds_sys_fn_t)bmds_k_syntax_find,
+                [BMDS_SYS_SYNTAX_SCAN] = (bmds_sys_fn_t)bmds_k_syntax_scan,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_FONT_CLOSE + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_SYNTAX_SCAN + 1, "every slot is in the table");
 _Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

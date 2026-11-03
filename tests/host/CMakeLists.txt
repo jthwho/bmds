@@ -343,6 +343,26 @@ if(Python3_Interpreter_FOUND)
                  $<TARGET_FILE:angel> ${BMDS_ROOT})
 endif()
 
+# Preso (programs/preso, devplan/preso.md): its core built with nothing of BMDS on its include
+# path (the rule that keeps it portable, §2), md4c, the command, and the core's tests.
+add_library(preso_md4c STATIC ${BMDS_ROOT}/thirdparty/md4c/md4c.c)
+target_include_directories(preso_md4c PUBLIC ${BMDS_ROOT}/thirdparty/md4c)
+# md4c as released: its warnings aren't ours to fix.
+target_compile_options(preso_md4c PRIVATE -w)
+file(GLOB PRESO_CORE_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT}/programs/preso/core/*.cpp)
+add_library(preso_core STATIC ${PRESO_CORE_SOURCES} ${BMDS_ROOT}/programs/preso/headless/headless.cpp)
+target_link_libraries(preso_core PUBLIC preso_md4c)
+bmds_target_options(preso_core)
+add_executable(preso ${BMDS_ROOT}/programs/preso/main.cpp)
+target_link_libraries(preso PRIVATE preso_core)
+bmds_target_options(preso)
+add_executable(preso_tests preso/main.cpp preso/deck.cpp preso/layout.cpp preso/images.cpp preso/themes.cpp preso/present.cpp)
+target_include_directories(preso_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest ${BMDS_ROOT}/programs/preso)
+target_compile_definitions(preso_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
+target_link_libraries(preso_tests PRIVATE preso_core)
+bmds_target_options(preso_tests)
+add_test(NAME preso_core COMMAND preso_tests)
+
 # The corpus's expectations, checked against real bash (when there is one).
 find_program(BASH_PROGRAM bash)
 find_package(Python3 COMPONENTS Interpreter)
