@@ -1,6 +1,10 @@
-# preso: the core, the BMDS platform and md4c (thirdparty/md4c), run by bmds-dist (dist/README.md).
+# preso: the core, its scripts, the BMDS platform, md4c (thirdparty/md4c), AngelScript
+# (thirdparty/angelscript) and libangel (programs/angel), run by bmds-dist (dist/README.md).
 
+AS="$ROOT/thirdparty/angelscript"
 cp "$PKGDIR/Makefile" Makefile
-$BMDS_MAKE MD4C="$ROOT/thirdparty/md4c" SRC="$SRC" CC="$CC" CXX="$CXX" VERSION="$VERSION" preso
-mkdir -p "$DESTDIR/bin"
+$BMDS_MAKE MD4C="$ROOT/thirdparty/md4c" AS="$AS" ANGEL="$ROOT/programs/angel" SRC="$SRC" CC="$CC" CXX="$CXX" \
+        VERSION="$VERSION" preso
+mkdir -p "$DESTDIR/bin" "$DESTDIR/share/licenses/preso"
 cp preso "$DESTDIR/bin/preso"
+cp "$AS/LICENSE" "$DESTDIR/share/licenses/preso/angelscript.LICENSE"

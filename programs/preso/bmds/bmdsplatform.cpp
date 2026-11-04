@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <bmds/game.h>
 #include <bmds/sys.h>
 
 namespace preso {
@@ -21,7 +22,7 @@ namespace preso {
                 // most; Enter is left a key (Next, or the end of a slide's number: step 5).
                 constexpr char Controls[] =
                         "[Controls]\n"
-                        "Sets=deck;overview\n"
+                        "Sets=deck;overview;script\n"
                         "[Action next]\n"
                         "Id=1\nLabel=Next\nGroup=Moving\nSets=deck\nKeys=Right;Down;Space;PageDown\n"
                         "Pad=Pad.South;Pad.Right;Pad.R1\nRepeat=true\n"
@@ -54,18 +55,37 @@ namespace preso {
                         "[Action choose]\n"
                         "Id=13\nLabel=Go to it\nGroup=Overview\nSets=overview\nKeys=Enter;Space\nPad=Pad.South\n"
                         "[Action close]\n"
-                        "Id=14\nLabel=Back\nGroup=Overview\nSets=overview\nKeys=Tab;Escape\nPad=Pad.East;Pad.Start\n";
+                        "Id=14\nLabel=Back\nGroup=Overview\nSets=overview\nKeys=Tab;Escape\nPad=Pad.East;Pad.Start\n"
+                        // A script region's (§7.10): entered, every other key is the script's, and a
+                        // clicker's keys still step.
+                        "[Action into]\n"
+                        "Id=15\nLabel=Into the slide's piece\nGroup=Scripts\nSets=deck\nKeys=I\nPad=Pad.West\n"
+                        "[Action leave]\n"
+                        "Id=16\nLabel=Out of the piece\nGroup=Scripts\nSets=script\nKeys=Escape\nPad=Pad.East\n"
+                        "[Action stepnext]\n"
+                        "Id=17\nLabel=Next, from a piece\nGroup=Scripts\nSets=script\nKeys=PageDown\nPad=Pad.R1\n"
+                        "[Action stepback]\n"
+                        "Id=18\nLabel=Previous, from a piece\nGroup=Scripts\nSets=script\nKeys=PageUp\nPad=Pad.L1\n";
 
                 static_assert(uint32_t(Action::Next) == 1 && uint32_t(Action::Previous) == 2 &&
                                       uint32_t(Action::First) == 3 && uint32_t(Action::Last) == 4 &&
                                       uint32_t(Action::Quit) == 5 && uint32_t(Action::Black) == 6 &&
                                       uint32_t(Action::White) == 7 && uint32_t(Action::Overview) == 8 &&
-                                      uint32_t(Action::Left) == 9 && uint32_t(Action::Close) == 14,
+                                      uint32_t(Action::Left) == 9 && uint32_t(Action::Close) == 14 &&
+                                      uint32_t(Action::Into) == 15 && uint32_t(Action::Leave) == 16,
                               "Controls' Ids are the actions");
 
                 // Without Controls (an older system): the same keys, by their HID usages.
                 Action actionForKey(uint32_t usage, InputMode mode) {
                         usage &= 0xFFFF;
+                        if (mode == InputMode::Script) {
+                                switch (usage) {
+                                        case 0x29: return Action::Leave;
+                                        case 0x4E: return Action::Next;
+                                        case 0x4B: return Action::Previous;
+                                        default: return Action::None;
+                                }
+                        }
                         if (mode == InputMode::Overview) {
                                 switch (usage) {
                                         case 0x50: return Action::Left;
@@ -95,6 +115,7 @@ namespace preso {
                                 case 0x37: return Action::Black;
                                 case 0x1A: return Action::White;
                                 case 0x2B: return Action::Overview;
+                                case 0x0C: return Action::Into; // I
                                 default: return Action::None;
                         }
                 }
@@ -102,7 +123,15 @@ namespace preso {
         } // namespace
 
         BmdsPlatform::~BmdsPlatform() {
-                if (_watch >= 0) bmds_close(_watch);
+                if (_audio != nullptr) {
+                        bmds_game_audio_close(static_cast<bmds_game_audio_t *>(_audio));
+                        for (Sound &s : _sounds) {
+                                if (s.loaded == nullptr) continue;
+                                bmds_game_sound_free(static_cast<bmds_game_sound_t *>(s.loaded));
+                                free(s.loaded);
+                        }
+                }
+                for (uint32_t i = 0; i < _watchCount; i++) bmds_close(_watches[i]);
                 if (_surface >= 0) bmds_close(_surface);
         }
 
@@ -405,6 +434,73 @@ namespace preso {
                         int32_t shown = bmds_surface_present(_surface, &p);
                         if (shown >= 0) _shownFrame = uint32_t(shown);
                 }
+                // The other buffers hold older slides now.
+                for (uint32_t i = 0; i < _bufferCount; i++) {
+                        _stale[i] = i == uint32_t(index) ? Rect{} : Rect{0, 0, _width, _height};
+                }
+                return;
+        }
+
+        void BmdsPlatform::staleAll() {
+                for (uint32_t i = 0; i < _bufferCount; i++) _stale[i] = Rect{0, 0, _width, _height};
+                return;
+        }
+
+        void BmdsPlatform::presentAreas(const Canvas &canvas, const Rect *areas, uint32_t count) {
+                // A script region's frame: only what changed copied (a piece each), into a buffer that
+                // also lacks what changed while another was shown, and the display told only that.
+                if (_surface < 0) return;
+                int32_t index = bmds_surface_acquire(_surface, -1);
+                if (index < 0 || uint32_t(index) >= _bufferCount) return;
+                Rect                 screen{0, 0, _width, _height};
+                bmds_surface_piece_t pieces[BMDS_SURFACE_BLIT_MAX];
+                bmds_rect_t          damage[BMDS_SURFACE_BLIT_MAX];
+                uint32_t             n = 0;
+                Rect                 all; // every area, which the other buffers now lack
+                auto                 add = [&](const Rect &area) {
+                        Rect r = area.intersected(screen);
+                        if (r.isEmpty()) return;
+                        if (n == BMDS_SURFACE_BLIT_MAX) {
+                                // No room: the last piece grows to hold it.
+                                Rect last{pieces[n - 1].x, pieces[n - 1].y, int32_t(pieces[n - 1].width),
+                                          int32_t(pieces[n - 1].height)};
+                                r = uniteRects(last, r);
+                                n--;
+                        }
+                        pieces[n] = bmds_surface_piece_t{r.x, r.y, uint32_t(r.width), uint32_t(r.height), r.x, r.y};
+                        damage[n] = bmds_rect_t{r.x, r.y, uint32_t(r.width), uint32_t(r.height)};
+                        n++;
+                };
+                add(_stale[index]);
+                for (uint32_t i = 0; i < count; i++) {
+                        add(areas[i]);
+                        all = uniteRects(all, areas[i]);
+                }
+                for (uint32_t i = 0; i < _bufferCount; i++) {
+                        _stale[i] = i == uint32_t(index) ? Rect{} : uniteRects(_stale[i], all);
+                }
+                if (n > 0) {
+                        bmds_surface_image_t image = {
+                                sizeof image,   0, canvas.pixels(), uint32_t(canvas.width()), uint32_t(canvas.height()),
+                                canvas.stride()};
+                        bmds_surface_blit_t blit = {sizeof blit, uint32_t(index), BMDS_BLIT_IMAGE, 0, n, pieces};
+                        bool copied = bmds_surface_control(_surface, BMDS_SURFACE_IMAGE, &image, sizeof image) == 0 &&
+                                      bmds_surface_control(_surface, BMDS_SURFACE_BLIT, &blit, sizeof blit) == 0;
+                        if (!copied) {
+                                uint8_t *to = static_cast<uint8_t *>(_buffers[index]);
+                                for (uint32_t k = 0; k < n; k++) {
+                                        const bmds_surface_piece_t &p = pieces[k];
+                                        for (int32_t y = p.y; y < p.y + int32_t(p.height); y++) {
+                                                memcpy(to + size_t(y) * _strides[index] + size_t(p.x) * 2,
+                                                       canvas.pixels() + size_t(y) * canvas.stride() + size_t(p.x) * 2,
+                                                       size_t(p.width) * 2);
+                                        }
+                                }
+                        }
+                }
+                bmds_surface_present_t p = {sizeof p, uint32_t(index), n > 0 ? damage : nullptr, n};
+                int32_t                shown = bmds_surface_present(_surface, &p);
+                if (shown >= 0) _shownFrame = uint32_t(shown);
                 return;
         }
 
@@ -425,6 +521,7 @@ namespace preso {
         }
 
         bool BmdsPlatform::presentPieces(const Piece *pieces, uint32_t count) {
+                staleAll(); // a transition's frames: the slide presented again after
                 if (!_dmaPieces) return Platform::presentPieces(pieces, count);
                 int32_t index = bmds_surface_acquire(_surface, -1);
                 if (index < 0 || uint32_t(index) >= _bufferCount) return false;
@@ -520,15 +617,85 @@ namespace preso {
                         if (shown >= 0) _shownFrame = uint32_t(shown);
                 }
                 _frame = -1;
+                staleAll();
                 return;
         }
 
         void BmdsPlatform::setInputMode(InputMode mode) {
                 _mode = mode;
                 if (_controls) {
-                        const char *set = mode == InputMode::Overview ? "overview" : "deck";
+                        const char *set = mode == InputMode::Overview ? "overview"
+                                          : mode == InputMode::Script ? "script"
+                                                                      : "deck";
                         (void)bmds_controls(BMDS_CONTROLS_SET, const_cast<char *>(set), uint32_t(strlen(set)));
                 }
+                return;
+        }
+
+        void BmdsPlatform::setPointerVisible(bool visible) {
+                if (_surface < 0) return;
+                uint32_t pointer = visible ? BMDS_POINTER_NORMAL : BMDS_POINTER_HIDDEN;
+                (void)bmds_surface_control(_surface, BMDS_SURFACE_POINTER, &pointer, sizeof pointer);
+                return;
+        }
+
+        // ---- Sounds: libbmdsgame's mixer (the device opened with the first sound)
+
+        void BmdsPlatform::freeQuietSounds() {
+                for (Sound &s : _sounds) {
+                        if (!s.closed || s.loaded == nullptr) continue;
+                        if (s.voice >= 0 &&
+                            bmds_game_voice_is_playing(static_cast<bmds_game_audio_t *>(_audio), s.voice))
+                                continue;
+                        auto *sound = static_cast<bmds_game_sound_t *>(s.loaded);
+                        bmds_game_sound_free(sound);
+                        free(sound);
+                        s = Sound();
+                }
+                return;
+        }
+
+        int32_t BmdsPlatform::openSound(const char *path) {
+                if (_audio == nullptr && !_audioFailed) {
+                        bmds_game_audio_t *audio = nullptr;
+                        if (bmds_game_audio_open(nullptr, &audio) == 0) {
+                                _audio = audio;
+                        } else {
+                                _audioFailed = true;
+                        }
+                }
+                if (_audio == nullptr) return -1;
+                freeQuietSounds();
+                for (uint32_t i = 0; i < MaxSounds; i++) {
+                        if (_sounds[i].loaded != nullptr) continue;
+                        auto *sound = static_cast<bmds_game_sound_t *>(calloc(1, sizeof(bmds_game_sound_t)));
+                        if (sound == nullptr) return -1;
+                        if (bmds_game_sound_load(static_cast<bmds_game_audio_t *>(_audio), path, sound) != 0) {
+                                free(sound);
+                                return -1;
+                        }
+                        _sounds[i].loaded = sound;
+                        _sounds[i].voice = -1;
+                        _sounds[i].closed = false;
+                        return int32_t(i);
+                }
+                return -1;
+        }
+
+        void BmdsPlatform::playSound(int32_t sound, float volume) {
+                if (_audio == nullptr || sound < 0 || uint32_t(sound) >= MaxSounds) return;
+                Sound &s = _sounds[sound];
+                if (s.loaded == nullptr || s.closed) return;
+                int32_t voice = bmds_game_play(static_cast<bmds_game_audio_t *>(_audio),
+                                               static_cast<bmds_game_sound_t *>(s.loaded), volume, 0, 0);
+                if (voice >= 0) s.voice = voice;
+                return;
+        }
+
+        void BmdsPlatform::closeSound(int32_t sound) {
+                if (_audio == nullptr || sound < 0 || uint32_t(sound) >= MaxSounds) return;
+                _sounds[sound].closed = true;
+                freeQuietSounds();
                 return;
         }
 
@@ -546,8 +713,12 @@ namespace preso {
         }
 
         Error BmdsPlatform::watch(const char *path) {
-                _watch = bmds_fs_watch(path, BMDS_O_CLOEXEC);
-                return _watch >= 0 ? Error::Ok : Error::NotSupported;
+                // Each folder its own watch (the deck's, its scripts' and pictures' folders).
+                if (_watchCount == MaxWatches) return Error::NoMemory;
+                int32_t fd = bmds_fs_watch(path, BMDS_O_CLOEXEC);
+                if (fd < 0) return Error::NotSupported;
+                _watches[_watchCount++] = fd;
+                return Error::Ok;
         }
 
         void BmdsPlatform::dispatch(App &app) {
@@ -559,10 +730,31 @@ namespace preso {
                         Event                       out;
                         if (e.type == BMDS_EVENT_ACTION) {
                                 if (e.flags != BMDS_ACTION_PRESS && e.flags != BMDS_ACTION_REPEAT) continue;
-                                if (e.data[0] < uint32_t(Action::Next) || e.data[0] > uint32_t(Action::Close)) continue;
+                                // A script region's stepping keys are Next and Previous.
+                                uint32_t id = e.data[0] == 17   ? uint32_t(Action::Next)
+                                              : e.data[0] == 18 ? uint32_t(Action::Previous)
+                                                                : e.data[0];
+                                if (id < uint32_t(Action::Next) || id > uint32_t(Action::Leave)) continue;
                                 out.type = Event::Type::Action;
-                                out.action = Action(e.data[0]);
+                                out.action = Action(id);
                                 out.repeat = e.flags == BMDS_ACTION_REPEAT;
+                        } else if (e.type == BMDS_EVENT_POINTER) {
+                                int32_t x = int32_t(e.data[0]), y = int32_t(e.data[1]);
+                                if (x == BMDS_POINTER_GONE) continue;
+                                out.type = Event::Type::Pointer;
+                                out.x = _pointerX = x;
+                                out.y = _pointerY = y;
+                                out.buttons = e.data[2];
+                        } else if (e.type == BMDS_EVENT_WHEEL) {
+                                out.type = Event::Type::Wheel;
+                                out.wheel = int32_t(e.data[0]);
+                                out.x = _pointerX;
+                                out.y = _pointerY;
+                        } else if (e.type == BMDS_EVENT_KEY && (e.flags & BMDS_KEY_UP) != 0) {
+                                // Let go: only an entered script region wants to know.
+                                if (_mode != InputMode::Script) continue;
+                                out.type = Event::Type::KeyUp;
+                                out.key = e.data[0];
                         } else if (e.type == BMDS_EVENT_KEY) {
                                 if ((e.flags & (BMDS_KEY_DOWN | BMDS_KEY_REPEAT)) == 0) continue;
                                 Action a = _controls ? Action::None : actionForKey(e.data[0], _mode);
@@ -593,20 +785,23 @@ namespace preso {
                 bool              changed = false;
                 _quit = false;
                 while (!_quit) {
-                        bmds_pollfd_t fds[2] = {{sizeof(bmds_pollfd_t), _surface, BMDS_POLL_IN, 0},
-                                                {sizeof(bmds_pollfd_t), _watch, BMDS_POLL_IN, 0}};
+                        bmds_pollfd_t fds[1 + MaxWatches];
+                        fds[0] = bmds_pollfd_t{sizeof(bmds_pollfd_t), _surface, BMDS_POLL_IN, 0};
+                        for (uint32_t i = 0; i < _watchCount; i++)
+                                fds[1 + i] = bmds_pollfd_t{sizeof(bmds_pollfd_t), _watches[i], BMDS_POLL_IN, 0};
                         // Animating, nothing is waited for here: the frame waits for its buffer.
                         int32_t timeout = _animating ? 0 : changed ? Settle : -1;
-                        int32_t r = bmds_io_poll(fds, 2, timeout, nullptr);
+                        int32_t r = bmds_io_poll(fds, 1 + _watchCount, timeout, nullptr);
                         if (r < 0 && r != -BMDS_EINTR) return Error::Io;
                         if (r == 0 && changed && !_animating) {
                                 changed = false;
                                 app.filesChanged();
                                 continue;
                         }
-                        if ((fds[1].revents & BMDS_POLL_IN) != 0) {
+                        for (uint32_t i = 0; i < _watchCount; i++) {
+                                if ((fds[1 + i].revents & BMDS_POLL_IN) == 0) continue;
                                 uint32_t what = 0;
-                                (void)bmds_read(_watch, &what, sizeof what);
+                                (void)bmds_read(_watches[i], &what, sizeof what);
                                 changed = true;
                         }
                         if ((fds[0].revents & BMDS_POLL_IN) != 0) dispatch(app);

@@ -11,6 +11,7 @@
  */
 
 #include "layout.h"
+#include <string.h>
 #include "effects.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,6 +72,9 @@ namespace preso {
                         int32_t      bottom = 0; ///< The content box's.
                         int32_t      gap = 0;    ///< Between blocks.
                         uint16_t     fragment = 0;
+                        uint16_t    *steps = nullptr; ///< Each fragment's step (0: not met yet), by its number.
+                        uint16_t     lastStep = 0;    ///< The last step given (a fragment's, a beat's).
+                        uint32_t     scripts = 0;     ///< Regions laid out so far.
                         uint32_t     listDepth = 0;
                         Color        color = 0;        ///< Body text's.
                         Color        headingColor = 0; ///< 0: the theme's.
@@ -117,6 +121,16 @@ namespace preso {
                 return true;
         }
 
+        uint16_t Layouter::stepOf(Flow &flow) {
+                // Fragments and beats take the slide's steps in the document's order: a fragment's
+                // is the one after the last given when it is first met (a region before it has
+                // taken its beats' steps).
+                uint16_t f = flow.fragment;
+                if (f == 0 || flow.steps == nullptr || f > flow.slide->fragments) return 0;
+                if (flow.steps[f] == 0) flow.steps[f] = ++flow.lastStep;
+                return flow.steps[f];
+        }
+
         DrawOp *Layouter::op(Flow &flow, OpType type) {
                 DrawOp *o = flow.arena->make<DrawOp>();
                 if (o == nullptr) {
@@ -124,7 +138,7 @@ namespace preso {
                         return nullptr;
                 }
                 o->type = type;
-                o->fragment = flow.fragment;
+                o->fragment = stepOf(flow);
                 *flow.tail = o;
                 flow.tail = &o->next;
                 return o;
@@ -439,9 +453,48 @@ namespace preso {
                 return;
         }
 
+        bool Layouter::scriptOp(Flow &flow, ScriptPlace &place, const Image *image, const Rect &r) {
+                // A region its script draws in, its beats the steps after the last given (the
+                // fragments after it come later). False without scripts (or memory).
+                if (_scripts == nullptr || r.width <= 0 || r.height <= 0) return false;
+                place.slide = flow.slide;
+                place.image = image;
+                place.theme = _theme;
+                place.width = r.width;
+                place.height = r.height;
+                place.index = flow.scripts++;
+                ScriptRegion *region = _scripts->open(place);
+                if (region == nullptr) return false;
+                DrawOp *o = op(flow, OpType::Script);
+                if (o == nullptr) return true;
+                o->x = r.x;
+                o->y = r.y;
+                o->width = r.width;
+                o->height = r.height;
+                o->clip = r;
+                o->image = image;
+                o->script = region;
+                uint32_t beats = region->beats();
+                if (beats > 0xFFFFu - flow.lastStep) beats = 0xFFFFu - flow.lastStep;
+                o->beat = uint16_t(flow.lastStep + 1);
+                flow.lastStep = uint16_t(flow.lastStep + beats);
+                return true;
+        }
+
+        void Layouter::scriptBox(Flow &flow, const Image &image, int32_t x, int32_t y, int32_t w, int32_t h) {
+                // A region its script draws in; without scripts (or memory), a box naming it.
+                ScriptPlace place;
+                if (!scriptOp(flow, place, &image, Rect{x, y, w, h})) placeholder(flow, image, x, y, w, h);
+                return;
+        }
+
         void Layouter::imageBox(Flow &flow, const Image &image, int32_t x, int32_t y, int32_t w, int32_t h,
                                 bool background) {
-                if (image.isScript() || _images == nullptr || w <= 0 || h <= 0) {
+                if (image.isScript()) {
+                        scriptBox(flow, image, x, y, w, h);
+                        return;
+                }
+                if (_images == nullptr || w <= 0 || h <= 0) {
                         placeholder(flow, image, x, y, w, h);
                         return;
                 }
@@ -586,7 +639,7 @@ namespace preso {
                         return nullptr;
                 }
                 o->type = type;
-                o->fragment = flow.fragment;
+                o->fragment = stepOf(flow);
                 o->next = *at;
                 *at = o;
                 if (flow.tail == at) flow.tail = &o->next;
@@ -820,6 +873,12 @@ namespace preso {
                 const TextStyle &style = _theme->code;
                 FontMetrics      m = _fonts.metrics(style.font);
                 int32_t          pad = _theme->codePadding;
+                // `angel run`: the code beside its pane (45% of the width), or above it (`below`).
+                bool    runs = b.has(BlockFlag::Run) && _scripts != nullptr;
+                bool    below = b.has(BlockFlag::RunBelow);
+                int32_t savedWidth = flow.width;
+                int32_t paneHeight = 6 * m.lineHeight + 2 * pad;
+                if (runs && !below) flow.width = savedWidth * 55 / 100 - pad / 2;
                 uint32_t         count = 1;
                 for (uint32_t i = 0; i < b.text.length(); i++) {
                         if (b.text[i] == '\n') count++;
@@ -892,8 +951,34 @@ namespace preso {
                         _deck.report(Severity::Warning, b.line, "slide %u: a code line is wider than the slide: cut",
                                      unsigned(flow.slide->number));
                 }
+                if (runs && !below && box->height < paneHeight) box->height = paneHeight;
                 frame(flow, Rect{box->x, box->y, box->width, box->height}, _theme->codeFrame, style.color);
                 flow.y = box->y + box->height;
+                flow.width = savedWidth;
+                if (runs) {
+                        // The pane: the block's region on the code's background. Its first beat (the
+                        // step after the code appears) runs the script.
+                        Rect    pane = below ? Rect{flow.x0, flow.y + pad, savedWidth, paneHeight}
+                                             : Rect{box->x + box->width + pad, box->y, savedWidth - box->width - pad,
+                                                 box->height};
+                        DrawOp *back = op(flow, OpType::Fill);
+                        if (back != nullptr) {
+                                back->x = pane.x;
+                                back->y = pane.y;
+                                back->width = pane.width;
+                                back->height = pane.height;
+                                back->color = _theme->codeBackground;
+                        }
+                        ScriptPlace place;
+                        place.source = b.text;
+                        place.firstLine = b.line; // its first line of code
+                        place.gated = true;
+                        place.console = true;
+                        Rect inner{pane.x + pad, pane.y + pad, pane.width - 2 * pad, pane.height - 2 * pad};
+                        (void)scriptOp(flow, place, nullptr, inner);
+                        frame(flow, pane, _theme->codeFrame, style.color);
+                        if (pane.y + pane.height > flow.y) flow.y = pane.y + pane.height;
+                }
                 return;
         }
 
@@ -1061,6 +1146,12 @@ namespace preso {
                 flow.y = _theme->marginTop;
                 flow.bottom = _height - _theme->marginBottom;
                 flow.gap = _fonts.metrics(_theme->body.font).lineHeight * _theme->blockGap16 / 16;
+                if (slide.fragments > 0) {
+                        flow.steps = static_cast<uint16_t *>(
+                                arena.allocate((uint32_t(slide.fragments) + 1) * sizeof(uint16_t), alignof(uint16_t)));
+                        if (flow.steps == nullptr) return nullptr;
+                        for (uint32_t i = 0; i <= slide.fragments; i++) flow.steps[i] = 0;
+                }
                 if (!s.color.isEmpty()) {
                         if (parseColor(s.color, &c)) {
                                 // 0 means "the theme's" here: black is a hair off it.
@@ -1158,6 +1249,7 @@ namespace preso {
                 // A frame round the whole slide (a window), over everything.
                 frame(flow, Rect{0, 0, _width, _height}, _theme->slideFrame, _theme->body.color);
                 result->ops = flow.first;
+                result->steps = flow.lastStep;
                 return _outOfMemory ? nullptr : result;
         }
 
@@ -1192,14 +1284,59 @@ namespace preso {
         }
 
         void drawSlide(const SlideLayout &layout, uint32_t step, Canvas &canvas, FontCache &fonts, ImageCache *images,
-                       uint32_t maxCharacters) {
+                       uint32_t maxCharacters, const Rect *area, bool moving) {
                 uint32_t       budget = maxCharacters;
                 const Theme   *theme = layout.theme;
                 const Palette *palette = theme != nullptr && theme->palette.count > 0 ? &theme->palette : nullptr;
-                canvas.clearClip();
-                canvas.fill(Rect{0, 0, canvas.width(), canvas.height()}, layout.background);
+                // All of it, or only the area (what doesn't touch it is passed over).
+                Rect slide{0, 0, canvas.width(), canvas.height()};
+                Rect base = area != nullptr ? area->intersected(slide) : slide;
+                if (base.isEmpty()) return;
+                // An area under effects is drawn on the slide's grid of four (scanlines on the same
+                // rows, the glow's quarter samples on the same pixels), and with the glow as far
+                // round it as the glow reaches, so the area glows as the whole slide would; what is
+                // drawn outside the area is then put back as it was (it hasn't changed).
+                Rect     want = base;
+                uint8_t *saved = nullptr;
+                bool     glow = theme != nullptr && theme->glow > 0 && !moving;
+                bool     effects = theme != nullptr && maxCharacters == UINT32_MAX && (glow || theme->scanlines > 0);
+                if (area != nullptr && effects) {
+                        int32_t margin = glow ? effectReach(*theme) : 0;
+                        int32_t x0 = (base.x - margin) & ~3, y0 = (base.y - margin) & ~3;
+                        int32_t x1 = (base.x + base.width + margin + 3) & ~3,
+                                y1 = (base.y + base.height + margin + 3) & ~3;
+                        Rect grown = Rect{x0, y0, x1 - x0, y1 - y0}.intersected(slide);
+                        if (glow) {
+                                uint32_t bpp = bytesPerPixel(canvas.format());
+                                saved = static_cast<uint8_t *>(
+                                        malloc(size_t(grown.width) * size_t(grown.height) * bpp));
+                                if (saved != nullptr) {
+                                        for (int32_t y = 0; y < grown.height; y++) {
+                                                memcpy(saved + size_t(y) * size_t(grown.width) * bpp,
+                                                       canvas.pixels() + size_t(grown.y + y) * canvas.stride() +
+                                                               size_t(grown.x) * bpp,
+                                                       size_t(grown.width) * bpp);
+                                        }
+                                        want = grown;
+                                }
+                        } else {
+                                want = grown;
+                        }
+                }
+                Rect inner = base; // what must come out right
+                base = want;
+                canvas.setClip(base);
+                canvas.fill(base, layout.background);
                 for (const DrawOp *o = layout.ops; o != nullptr; o = o->next) {
                         if (o->fragment > step) continue;
+                        if (area != nullptr && o->type != OpType::Pattern) {
+                                // Text's box is its line; a little over for what leans past it.
+                                int32_t h = o->height > 0 ? o->height : int32_t(o->font.size) * 2;
+                                int32_t pad = o->type == OpType::Text ? int32_t(o->font.size) / 2 : 0;
+                                Rect    box{o->x - pad, o->y - pad, o->width + 2 * pad, h + 2 * pad};
+                                if (o->type == OpType::Image) box = box.intersected(o->clip);
+                                if (box.intersected(base).isEmpty()) continue;
+                        }
                         switch (o->type) {
                                 case OpType::Fill:
                                         canvas.blend(Rect{o->x, o->y, o->width, o->height}, o->color, o->alpha);
@@ -1228,7 +1365,7 @@ namespace preso {
                                         // The part of it inside its area and the slide: all that is scaled.
                                         Rect shown =
                                                 Rect{o->x, o->y, o->width, o->height}.intersected(o->clip).intersected(
-                                                        Rect{0, 0, canvas.width(), canvas.height()});
+                                                        base);
                                         if (shown.isEmpty()) break;
                                         Rect window{shown.x - o->x, shown.y - o->y, shown.width, shown.height};
                                         const ScaledImage *image =
@@ -1256,19 +1393,58 @@ namespace preso {
                                                                                 whole, 0, palette, canvas.format())
                                                                   : nullptr;
                                         if (tile == nullptr) break;
-                                        canvas.setClip(o->clip);
-                                        for (int32_t y = o->clip.y; y < o->clip.y + o->clip.height; y += o->height) {
-                                                for (int32_t x = o->clip.x; x < o->clip.x + o->clip.width;
-                                                     x += o->width) {
+                                        Rect tiled = o->clip.intersected(base);
+                                        canvas.setClip(tiled);
+                                        // From the first tile touching it, on the pattern's grid.
+                                        int32_t x0 = o->clip.x + (tiled.x - o->clip.x) / o->width * o->width;
+                                        int32_t y0 = o->clip.y + (tiled.y - o->clip.y) / o->height * o->height;
+                                        for (int32_t y = y0; y < tiled.y + tiled.height; y += o->height) {
+                                                for (int32_t x = x0; x < tiled.x + tiled.width; x += o->width) {
                                                         blitImage(canvas, *tile, x, y);
                                                 }
                                         }
-                                        canvas.clearClip();
+                                        canvas.setClip(base);
                                         break;
                                 }
+                                case OpType::Script:
+                                        if (o->script != nullptr) {
+                                                canvas.setClip(o->clip.intersected(base));
+                                                o->script->draw(canvas, o->x, o->y);
+                                                canvas.setClip(base);
+                                        }
+                                        break;
                         }
                 }
-                if (theme != nullptr && maxCharacters == UINT32_MAX) applyEffects(canvas, *theme);
+                canvas.clearClip();
+                if (theme == nullptr || maxCharacters != UINT32_MAX) return;
+                if (area == nullptr) {
+                        applyEffects(canvas, *theme);
+                        return;
+                }
+                // The area drawn (on the grid), as a canvas of its own.
+                uint32_t bpp = bytesPerPixel(canvas.format());
+                Canvas   part;
+                part.attach(canvas.pixels() + size_t(base.y) * canvas.stride() + size_t(base.x) * bpp, canvas.stride(),
+                            base.width, base.height, canvas.format());
+                applyEffects(part, *theme, glow);
+                if (saved != nullptr) {
+                        // Round the area, the pixels as they were.
+                        for (int32_t y = 0; y < base.height; y++) {
+                                const uint8_t *from = saved + size_t(y) * size_t(base.width) * bpp;
+                                uint8_t       *to =
+                                        canvas.pixels() + size_t(base.y + y) * canvas.stride() + size_t(base.x) * bpp;
+                                int32_t sy = base.y + y;
+                                if (sy < inner.y || sy >= inner.y + inner.height) {
+                                        memcpy(to, from, size_t(base.width) * bpp);
+                                        continue;
+                                }
+                                int32_t left = inner.x - base.x, right = base.x + base.width - (inner.x + inner.width);
+                                memcpy(to, from, size_t(left) * bpp);
+                                memcpy(to + size_t(base.width - right) * bpp, from + size_t(base.width - right) * bpp,
+                                       size_t(right) * bpp);
+                        }
+                        free(saved);
+                }
                 return;
         }
 

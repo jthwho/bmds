@@ -473,7 +473,14 @@ Plan: [`input.md`](input.md).
   themes (paper, vga, amber, green, classic, bbs), heading bands, frames and dividers, a glow and
   scanlines, `Scale=nearest` by whole multiples, `preso theme`); step 5 (2026-11-03: wipe,
   dissolve, pixelate, crt and type transitions as pieces the 2D-DMA copies, the overview, black
-  and white screens, going to a slide by its number).
+  and white screens, going to a slide by its number); step 6 (2026-11-03: `libangel` split from
+  angel; script regions with beats among the fragments, Previous by fast-forward, deterministic
+  time and random numbers, the runaway stop; the scene (objects, animations, `draw()`) drawn
+  antialiased in native code, redrawing only what moved; the deck profile, sandboxed to the
+  deck's folder, locked in `tests/preso/api.lock`); step 7 (2026-11-03: `angel run` blocks run on
+  the step after their code into a pane; interactive regions entered by a key or a click, with
+  `event()`, `tick()`, the pointer and widgets (Slider, Button, Toggle); sounds through
+  libbmdsgame's mixer; `preso --trust`; the question before a deck's `run:` demos).
 
 ## Phase 8 — Self-Hosting
 

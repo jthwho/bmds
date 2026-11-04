@@ -71,7 +71,7 @@ namespace preso {
 
         } // namespace
 
-        bool applyGlow(Canvas &canvas, Color background, uint8_t strength, uint8_t radius) {
+        bool applyGlow(Canvas &canvas, Color background, uint8_t strength, uint8_t radius, const Color *brightest) {
                 if (strength == 0) return true;
                 // At a quarter of the size each way: a sixteenth of the pixels to blur. Every pass reads
                 // memory in order (a column's blur keeps a running sum per column, not a copy of it).
@@ -177,6 +177,12 @@ namespace preso {
                 // At a quarter's size, a pixel j of each four lies between low samples k - 1 and k
                 // (j 0, 1) or k and k + 1 (j 2, 3), sixteenths 10, 14, 2, 6 of the way: fixed, so
                 // nothing is worked out a pixel.
+                if (brightest != nullptr) {
+                        int32_t c[3] = {int32_t((*brightest >> 16) & 0xFF), int32_t((*brightest >> 8) & 0xFF),
+                                        int32_t(*brightest & 0xFF)};
+                        int32_t g[3] = {br, bg, bb};
+                        for (int i = 0; i < 3; i++) most[i] = uint32_t(c[i] > g[i] ? c[i] - g[i] : 0);
+                }
                 const int32_t            cap[3] = {br + int32_t(most[0]), bg + int32_t(most[1]), bb + int32_t(most[2])};
                 static constexpr int32_t Weight[Q] = {10, 14, 2, 6};
                 static constexpr int32_t Offset[Q] = {-1, -1, 0, 0};
@@ -235,6 +241,11 @@ namespace preso {
                 return true;
         }
 
+        int32_t effectReach(const Theme &theme) {
+                // Three box blurs at a quarter of the size, and the samples between them.
+                return theme.glow > 0 ? 3 * ((theme.glowRadius + 2) / 4) * 4 + 8 : 0;
+        }
+
         void applyScanlines(Canvas &canvas, uint8_t strength) {
                 if (strength == 0) return;
                 int32_t keep = 255 - strength;
@@ -261,9 +272,45 @@ namespace preso {
                 return;
         }
 
-        void applyEffects(Canvas &canvas, const Theme &theme) {
+        namespace {
+
+                // A theme's brightest colours, a channel at a time: its text's, its scripts', its
+                // palette's (what its pictures become).
+                Color brightestOf(const Theme &t) {
+                        uint32_t most[3] = {0, 0, 0};
+                        auto     take = [&](Color c) {
+                                if (c == NoColor) return;
+                                uint32_t v[3] = {(c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF};
+                                for (int i = 0; i < 3; i++) most[i] = v[i] > most[i] ? v[i] : most[i];
+                        };
+                        take(t.body.color);
+                        for (const HeadingStyle &h : t.heading) {
+                                take(h.text.color);
+                                take(h.frameColor);
+                                take(h.underlineColor);
+                        }
+                        take(t.code.color);
+                        take(t.header.color);
+                        take(t.accent);
+                        take(t.link);
+                        take(t.quoteColor);
+                        take(t.quoteBar);
+                        take(t.rule);
+                        take(t.bulletColor);
+                        for (Color c : t.syntax) take(c);
+                        for (uint32_t i = 0; i < t.scriptColorCount; i++) take(t.scriptColors[i].color);
+                        for (uint32_t i = 0; i < t.palette.count; i++) take(t.palette.colors[i]);
+                        take(0xE66100); // Script.Highlight's default
+                        return (most[0] << 16) | (most[1] << 8) | most[2];
+                }
+
+        } // namespace
+
+        void applyEffects(Canvas &canvas, const Theme &theme, bool glow) {
                 canvas.clearClip();
-                if (theme.glow != 0) (void)applyGlow(canvas, theme.background, theme.glow, theme.glowRadius);
+                Color brightest = brightestOf(theme);
+                if (glow && theme.glow != 0)
+                        (void)applyGlow(canvas, theme.background, theme.glow, theme.glowRadius, &brightest);
                 if (theme.scanlines != 0) applyScanlines(canvas, theme.scanlines);
                 return;
         }

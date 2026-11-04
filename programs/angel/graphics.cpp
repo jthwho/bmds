@@ -289,51 +289,6 @@ namespace angel {
                                 }
                 };
 
-                // HID keys (page 7) and their names.
-                struct KeyName {
-                                uint8_t     usage;
-                                const char *name;
-                };
-                constexpr KeyName keyNames[] = {
-                        {0x28, "Enter"},    {0x29, "Escape"},      {0x2a, "Backspace"},  {0x2b, "Tab"},
-                        {0x2c, "Space"},    {0x2d, "-"},           {0x2e, "="},          {0x2f, "["},
-                        {0x30, "]"},        {0x31, "\\"},          {0x33, ";"},          {0x34, "'"},
-                        {0x35, "`"},        {0x36, ","},           {0x37, "."},          {0x38, "/"},
-                        {0x39, "CapsLock"}, {0x3a, "F1"},          {0x3b, "F2"},         {0x3c, "F3"},
-                        {0x3d, "F4"},       {0x3e, "F5"},          {0x3f, "F6"},         {0x40, "F7"},
-                        {0x41, "F8"},       {0x42, "F9"},          {0x43, "F10"},        {0x44, "F11"},
-                        {0x45, "F12"},      {0x46, "PrintScreen"}, {0x47, "ScrollLock"}, {0x48, "Pause"},
-                        {0x49, "Insert"},   {0x4a, "Home"},        {0x4b, "PageUp"},     {0x4c, "Delete"},
-                        {0x4d, "End"},      {0x4e, "PageDown"},    {0x4f, "Right"},      {0x50, "Left"},
-                        {0x51, "Down"},     {0x52, "Up"},          {0x53, "NumLock"},    {0x58, "Enter"},
-                        {0xe0, "Ctrl"},     {0xe1, "Shift"},       {0xe2, "Alt"},        {0xe3, "Super"},
-                        {0xe4, "Ctrl"},     {0xe5, "Shift"},       {0xe6, "Alt"},        {0xe7, "Super"},
-                };
-
-#ifdef ANGEL_BMDS
-                // A key's name: letters and digits as themselves (small), others by keyNames.
-                void nameOf(uint32_t usage, char *out, size_t size) {
-                        out[0] = 0;
-                        if ((usage >> 16) != 7) return;
-                        const uint32_t u = usage & 0xffff;
-                        if (u >= 0x04 && u <= 0x1d) {
-                                snprintf(out, size, "%c", char('a' + (u - 0x04)));
-                        } else if (u >= 0x1e && u <= 0x27) {
-                                snprintf(out, size, "%c", u == 0x27 ? '0' : char('1' + (u - 0x1e)));
-                        } else if (u >= 0x59 && u <= 0x62) {
-                                snprintf(out, size, "Keypad%c", u == 0x62 ? '0' : char('1' + (u - 0x59)));
-                        } else {
-                                for (const KeyName &k : keyNames)
-                                        if (k.usage == u) {
-                                                snprintf(out, size, "%s", k.name);
-                                                return;
-                                        }
-                        }
-                        return;
-                }
-
-#endif
-
                 // The keys a name stands for (Shift: either), as a usage range; false if none.
                 bool usagesOf(const char *name, uint32_t &first, uint32_t &second) {
                         first = second = 0;
@@ -354,13 +309,15 @@ namespace angel {
                                         return true;
                                 }
                         }
-                        for (const KeyName &k : keyNames)
+                        for (size_t i = 0; i < keyNameCount; i++) {
+                                const KeyName &k = keyNames[i];
                                 if (strcasecmp(k.name, name) == 0) {
                                         if (first == 0)
                                                 first = k.usage;
                                         else
                                                 second = k.usage;
                                 }
+                        }
                         if (first == 0 && strncasecmp(name, "Keypad", 6) == 0 && name[6] >= '0' && name[6] <= '9' &&
                             name[7] == 0)
                                 first = name[6] == '0' ? 0x62 : 0x59 + uint32_t(name[6] - '1');
@@ -1307,7 +1264,7 @@ namespace angel {
                                                 }
                                                 e.type = down ? KeyDown : KeyUp;
                                                 e.repeat = (s.flags & BMDS_KEY_REPEAT) != 0;
-                                                nameOf(usage, e.key, sizeof(e.key));
+                                                keyName(usage, e.key, sizeof(e.key));
                                                 if (down && s.data[2] >= 32 && s.data[2] != 127)
                                                         utf8(s.data[2], e.text);
                                                 e.x = _mouseX;
@@ -2339,59 +2296,6 @@ namespace angel {
                         window(gen)->setOnEvent(static_cast<asIScriptFunction *>(gen->GetArgObject(0)));
                 }
 
-                // ---- Colours
-
-                struct NamedColor {
-                                const char *name;
-                                uint32_t    rgb;
-                };
-                constexpr NamedColor colors[] = {
-                        {"Black", 0x000000},    {"White", 0xffffff},   {"Gray", 0x808080},   {"LightGray", 0xc0c0c0},
-                        {"DarkGray", 0x404040}, {"Red", 0xff0000},     {"Green", 0x00a000},  {"Lime", 0x00ff00},
-                        {"Blue", 0x0000ff},     {"Navy", 0x000080},    {"Sky", 0x87ceeb},    {"Yellow", 0xffff00},
-                        {"Cyan", 0x00ffff},     {"Magenta", 0xff00ff}, {"Orange", 0xff8000}, {"Purple", 0x800080},
-                        {"Brown", 0x8b4513},    {"Pink", 0xffc0cb},
-                };
-                uint32_t colorValues[sizeof(colors) / sizeof(colors[0])];
-
-                uint32_t channel(int v) {
-                        return uint32_t(v < 0 ? 0 : v > 255 ? 255 : v);
-                }
-                void rgb(asIScriptGeneric *gen) {
-                        gen->SetReturnDWord(channel(argInt(gen, 0)) << 16 | channel(argInt(gen, 1)) << 8 |
-                                            channel(argInt(gen, 2)));
-                }
-                void hsv(asIScriptGeneric *gen) {
-                        float       h = gen->GetArgFloat(0) / 60.0f;
-                        const float s = fminf(fmaxf(gen->GetArgFloat(1), 0), 1),
-                                    v = fminf(fmaxf(gen->GetArgFloat(2), 0), 1);
-                        h -= 6.0f * floorf(h / 6.0f);
-                        const int   sector = int(h) % 6;
-                        const float f = h - floorf(h);
-                        const float p = v * (1 - s), q = v * (1 - s * f), t = v * (1 - s * (1 - f));
-                        float       r = v, g = t, b = p;
-                        switch (sector) {
-                                case 1: r = q, g = v, b = p; break;
-                                case 2: r = p, g = v, b = t; break;
-                                case 3: r = p, g = q, b = v; break;
-                                case 4: r = t, g = p, b = v; break;
-                                case 5: r = v, g = p, b = q; break;
-                                default: break;
-                        }
-                        gen->SetReturnDWord(uint32_t(r * 255 + 0.5f) << 16 | uint32_t(g * 255 + 0.5f) << 8 |
-                                            uint32_t(b * 255 + 0.5f));
-                }
-                void mix(asIScriptGeneric *gen) {
-                        const uint32_t a = argColor(gen, 0), b = argColor(gen, 1);
-                        const float    t = fminf(fmaxf(gen->GetArgFloat(2), 0), 1);
-                        uint32_t       out = 0;
-                        for (int shift = 0; shift <= 16; shift += 8) {
-                                const float x = float((a >> shift) & 0xff), y = float((b >> shift) & 0xff);
-                                out |= uint32_t(x + (y - x) * t + 0.5f) << shift;
-                        }
-                        gen->SetReturnDWord(out);
-                }
-
                 // The methods Screen, Image and the GUI's Canvas have (a canvas's through @p hooks: its
                 // size is its properties).
                 void registerDrawing(asIScriptEngine *engine, const char *type, const CanvasHooks *hooks = nullptr) {
@@ -2638,22 +2542,7 @@ namespace angel {
         }
 
         void registerGraphics(asIScriptEngine *engine) {
-                check(engine->SetDefaultNamespace("Color"), "namespace Color");
-                for (size_t i = 0; i < sizeof(colors) / sizeof(colors[0]); ++i) {
-                        colorValues[i] = colors[i].rgb;
-                        char decl[48];
-                        snprintf(decl, sizeof(decl), "const uint %s", colors[i].name);
-                        property(engine, decl, &colorValues[i], nullptr);
-                }
-                check(engine->SetDefaultNamespace(""), "namespace");
-                def(engine, "uint rgb(int red, int green, int blue)", rgb,
-                    "A colour from its red, green and blue, each 0 to 255.");
-                def(engine, "uint hsv(float hue, float saturation, float value)", hsv,
-                    "A colour from its hue (0 to 360 degrees: red, yellow, green, cyan, blue, magenta), saturation and "
-                    "value "
-                    "(0 to 1).");
-                def(engine, "uint mix(uint color1, uint color2, float amount)", mix,
-                    "A colour between two: amount 0 is the first, 1 the second.");
+                registerColors(engine);
                 def(engine, "int textWidth(const ?&in value, int scale = 1)", textWidth,
                     "How wide text() writes a value, in pixels.");
                 def(engine, "int textHeight(int scale = 1)", textHeight, "How tall text() writes a line, in pixels.");

@@ -765,3 +765,25 @@ manager):
   no key.
 - **Found on the way:** the ROM's `angel` didn't relink when `sdk/game` changed (the dist
   sources' list lacked it, and its Makefile didn't depend on the SDK's libraries). Both fixed.
+
+## 17. libangel (2026-11-03, Preso's step 6)
+
+angel's runtime is also a library, `libangel`: every file of `programs/angel` but `main.cpp` and
+`debug.cpp` (`bmds_libangel` on the host; `dist/preso` builds it for the board). Preso links it
+for its decks' scripts (`devplan/preso.md` §7.9). For that:
+- `engine.cpp`'s `createEngine()` holds the engine settings table (the language's ABI, §4), so
+  both programs build the same language.
+- The core's registration is split: `registerLanguage` (print, maths, random numbers, millis,
+  assert, throw) and `registerProgram` (`program.cpp`: input, args, env, exit, sleep).
+  `registerCore` is both.
+- The colours (`Color::`, `rgb`, `hsv`, `mix`) are `colors.cpp`'s, out of the graphics.
+- A host's `LanguageHost` decides where print writes, what millis counts, and whose random state
+  is drawn from (angel's: stdout, the clock, one state).
+- The caches that held the first engine's type ids are reset as each engine registers, and
+  `forgetHelp()` frees the help kept for one.
+
+angel's API and its lock are unchanged.
+
+Keys' names (`Event.key`: `a`, `5`, `Left`, `Space`, `F5`...) are libangel's too (`keys.cpp`,
+`angel::keyName`), so a deck's `event()` names keys as angel's screens do (2026-11-03, Preso's
+step 7).

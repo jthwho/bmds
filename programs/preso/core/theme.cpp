@@ -100,6 +100,7 @@ namespace preso {
                         "[Table]\nHeader=#0000FF\nRule=#5555FF\n"
                         "[Link]\nColor=#55FFFF\n"
                         "[Header]\nFont=unscii 16\nColor=#000000\nBackground=#AAAAAA\n"
+                        "[Script]\nAccent=#55FFFF\nHighlight=#FF5555\nMuted=#5555FF\nFill=#000088\n"
                         "[Class title]\nAlign=middle\nCenter=true\nH1.Font=unscii 48\n"
                         "[Class lead]\nAlign=middle\nCenter=true\n";
 
@@ -119,6 +120,7 @@ namespace preso {
                         "[Table]\nHeader=#2E1C00\nRule=#7A4D00\n"
                         "[Link]\nColor=#FFD480\n"
                         "[Header]\nFont=unscii 16\nColor=#A36800\n"
+                        "[Script]\nHighlight=#FFF0C0\nMuted=#7A4D00\n"
                         "[Class title]\nAlign=middle\nCenter=true\nH1.Font=unscii 96\n"
                         "[Class lead]\nAlign=middle\nCenter=true\n";
 
@@ -132,7 +134,8 @@ namespace preso {
                         "[Quote]\nBar=#00A32A\nColor=#10CC38\n"
                         "[Table]\nHeader=#002E08\nRule=#007A1F\n"
                         "[Link]\nColor=#A0FFA0\n"
-                        "[Header]\nColor=#00A32A\n";
+                        "[Header]\nColor=#00A32A\n"
+                        "[Script]\nHighlight=#E0FFE0\nMuted=#007A1F\n";
 
                 // The toolkit's own look: grey, a navy title bar on each slide, a raised window.
                 constexpr char ClassicText[] =
@@ -171,6 +174,7 @@ namespace preso {
                         "[Table]\nHeader=#0000AA\nRule=#555555\n"
                         "[Link]\nColor=#55FFFF\n"
                         "[Header]\nFont=unscii 16\nColor=#555555\n"
+                        "[Script]\nAccent=#55FFFF\nHighlight=#FFFF55\nMuted=#5555FF\nFill=#0000AA\n"
                         "[Class title]\nAlign=middle\nCenter=true\nH1.Font=unscii 48\n"
                         "[Class lead]\nAlign=middle\nCenter=true\n";
 
@@ -334,6 +338,58 @@ namespace preso {
 
         const Theme &Theme::paper() {
                 return Paper;
+        }
+
+        bool Theme::scriptColor(StringView wanted, Color *color) const {
+                if (wanted.startsWith("Script.")) {
+                        StringView own = wanted.mid(7);
+                        for (uint32_t i = 0; i < scriptColorCount; i++) {
+                                if (scriptColors[i].name.equals(own)) {
+                                        *color = scriptColors[i].color;
+                                        return true;
+                                }
+                        }
+                        // The ones every theme has, from its own colours if it doesn't say.
+                        if (own.equals("Accent")) {
+                                *color = accent;
+                        } else if (own.equals("Highlight")) {
+                                *color = 0xE66100;
+                        } else if (own.equals("Muted")) {
+                                *color = quoteColor;
+                        } else if (own.equals("Line")) {
+                                *color = body.color;
+                        } else if (own.equals("Fill")) {
+                                *color = codeBackground;
+                        } else {
+                                return false;
+                        }
+                        return true;
+                }
+                struct Named {
+                                const char *name;
+                                Color       color;
+                };
+                const Named named[] = {
+                        {"Background", background},
+                        {"Text", body.color},
+                        {"Body", body.color},
+                        {"H1", heading[0].text.color},
+                        {"H2", heading[1].text.color},
+                        {"H3", heading[2].text.color},
+                        {"Accent", accent},
+                        {"Link", link},
+                        {"Code", code.color},
+                        {"CodeBackground", codeBackground},
+                        {"Quote", quoteColor},
+                        {"Rule", rule},
+                };
+                for (const Named &n : named) {
+                        if (wanted.equals(n.name)) {
+                                *color = n.color;
+                                return true;
+                        }
+                }
+                return false;
         }
 
         const char *const *ThemeSet::builtInNames() {
@@ -681,7 +737,29 @@ namespace preso {
                         }
                         return false;
                 }
-                if (section.equals("Script")) return true; // the scripts' colours and fonts (step 6)
+                if (section.equals("Script")) {
+                        // Colours scripts name: any name, a colour each.
+                        *why = "is a colour";
+                        Color color = 0;
+                        if (!parseColor(v, &color)) return false;
+                        for (uint32_t i = 0; i < t.scriptColorCount; i++) {
+                                if (t.scriptColors[i].name.equals(key)) {
+                                        t.scriptColors[i].color = color;
+                                        return true;
+                                }
+                        }
+                        if (t.scriptColorCount == Theme::MaxScriptColors) {
+                                *why = "is one colour too many (a theme has 16 for scripts)";
+                                return false;
+                        }
+                        bool       ok = false;
+                        StringView name = _arena.copy(key, &ok);
+                        if (!ok) return false;
+                        t.scriptColors[t.scriptColorCount].name = name;
+                        t.scriptColors[t.scriptColorCount].color = color;
+                        t.scriptColorCount++;
+                        return true;
+                }
                 (void)c;
                 *why = "is in a section themes don't have";
                 return false;

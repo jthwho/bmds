@@ -54,6 +54,7 @@ namespace preso {
                         Error       openScreen(int32_t width, int32_t height, const char *title, bool sharp) override;
                         const char *dataFolder() override;
                         void        present(const Canvas &canvas) override;
+                        void        presentAreas(const Canvas &canvas, const Rect *areas, uint32_t count) override;
                         bool        beginPieces(const Canvas &from, const Canvas &to) override;
                         bool        presentPieces(const Piece *pieces, uint32_t count) override;
                         void        endPieces() override;
@@ -63,21 +64,33 @@ namespace preso {
                         void        endFrame() override;
                         void        animate(bool on) override { _animating = on; }
                         void        setInputMode(InputMode mode) override;
+                        void        setPointerVisible(bool visible) override;
+                        int32_t     openSound(const char *path) override;
+                        void        playSound(int32_t sound, float volume) override;
+                        void        closeSound(int32_t sound) override;
                         int64_t     now() override;
                         Error       watch(const char *path) override;
                         Error       run(App &app) override;
                         void        quit() override { _quit = true; }
 
                 private:
+                        static constexpr uint32_t MaxSounds = 32;
+
                         void dispatch(App &app);
+                        void freeQuietSounds();
+                        // A buffer's content is no longer the slide's (a frame drawn straight in).
+                        void staleAll();
 
                         int32_t   _surface = -1;
-                        int32_t   _watch = -1;
+                        static constexpr uint32_t MaxWatches = 8;
+                        int32_t   _watches[MaxWatches] = {-1, -1, -1, -1, -1, -1, -1, -1}; ///< The deck's folders'.
+                        uint32_t  _watchCount = 0;
                         int32_t   _width = 0;
                         int32_t   _height = 0;
                         void     *_buffers[3] = {};
                         uint32_t  _strides[3] = {};
                         uint32_t  _bufferCount = 0;
+                        Rect      _stale[3]; ///< What each buffer lacks of the slide presented since it was.
                         bool      _controls = false;
                         bool      _animating = false;
                         int32_t   _frame = -1; ///< The buffer beginFrame() acquired.
@@ -85,6 +98,18 @@ namespace preso {
                         bool      _dmaPieces = false; ///< beginPieces() gave the pictures to the 2D-DMA.
                         uint32_t  _shownFrame = 0;    ///< The display's frame the last present was for.
                         char      _data[256] = {};
+                        int32_t   _pointerX = 0; ///< Where the pointer was last (a wheel's place).
+                        int32_t   _pointerY = 0;
+                        // Sounds: libbmdsgame's mixer, opened with the first; each slot's last voice (a
+                        // sound closed while it plays is freed once it has stopped).
+                        void *_audio = nullptr; ///< A bmds_game_audio_t.
+                        bool  _audioFailed = false;
+                        struct Sound {
+                                        void   *loaded = nullptr; ///< A bmds_game_sound_t (game.h stays in the .cpp).
+                                        int32_t voice = -1;
+                                        bool    closed = false;
+                        };
+                        Sound     _sounds[MaxSounds];
                         bool      _quit = false;
         };
 

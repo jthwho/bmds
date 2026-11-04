@@ -51,6 +51,8 @@ namespace preso {
                 Entry &e = _entries[slot];
                 e = Entry();
                 e.key = key;
+                snprintf(e.family, sizeof e.family, "%s", key.family);
+                e.key.family = e.family;
                 e.used = _clock;
                 char name[96];
                 nameOf(key, key.family, name, sizeof name);

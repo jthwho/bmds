@@ -485,6 +485,7 @@ namespace angel {
         }
 
         void registerString(asIScriptEngine *engine) {
+                arrayOfString = nullptr; // this engine's (a host may make another)
                 check(engine->RegisterObjectType("string", sizeof(String), asOBJ_VALUE | asOBJ_APP_CLASS_CDAK),
                       "string");
                 check(engine->RegisterStringFactory("string", &factory), "the string factory");

@@ -319,15 +319,23 @@ target_compile_definitions(bmds_angelscript PUBLIC AS_MAX_PORTABILITY AS_FLOAT_L
         AS_NO_EXCEPTIONS)
 # AngelScript as released compiles with warnings: not ours to fix.
 target_compile_options(bmds_angelscript PRIVATE -std=gnu++20 -fno-exceptions -fno-rtti -w)
-file(GLOB BMDS_ANGEL_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT}/programs/angel/*.cpp)
+# libangel (devplan/preso.md §7.9): the runtime, everything in programs/angel but angel's
+# main.cpp and debug.cpp. A program gets the parts it reaches: Preso's decks the language's.
+file(GLOB BMDS_LIBANGEL_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT}/programs/angel/*.cpp)
+list(REMOVE_ITEM BMDS_LIBANGEL_SOURCES ${BMDS_ROOT}/programs/angel/main.cpp ${BMDS_ROOT}/programs/angel/debug.cpp)
+add_library(bmds_libangel STATIC ${BMDS_LIBANGEL_SOURCES})
+target_include_directories(bmds_libangel PUBLIC ${BMDS_ROOT}/programs/angel PRIVATE ${BMDS_ROOT}/sdk/include)
+target_link_libraries(bmds_libangel PUBLIC bmds_angelscript m)
+bmds_target_options(bmds_libangel)
 # The drawing is libbmdsgame's; a window on the host is only its picture (no ANGEL_BMDS).
 # The GUI's client (libbmdsgui) too: a host has no GUI service, so scripts' GUI objects can't be
 # made there, but the bindings are registered (--api, the lock).
-add_executable(angel ${BMDS_ANGEL_SOURCES} ${BMDS_ROOT}/sdk/game/canvas.c ${BMDS_ROOT}/sdk/game/shapes.c
+add_executable(angel ${BMDS_ROOT}/programs/angel/main.cpp ${BMDS_ROOT}/programs/angel/debug.cpp
+        ${BMDS_ROOT}/sdk/game/canvas.c ${BMDS_ROOT}/sdk/game/shapes.c
         ${BMDS_ROOT}/sdk/game/text.c ${BMDS_ROOT}/sdk/gui/gui.c
         angelsys.cpp fakefonts.cpp ${CMAKE_CURRENT_LIST_DIR}/hostmemory.cpp)
 target_include_directories(angel PRIVATE ${BMDS_ROOT}/sdk/include)
-target_link_libraries(angel PRIVATE bmds_angelscript bmds_fonts pthread m)
+target_link_libraries(angel PRIVATE bmds_libangel bmds_fonts pthread m)
 # The font calls' fake (fakefonts.cpp): the real library over IBM Plex.
 target_compile_definitions(angel PRIVATE BMDS_FONTS_DIR="${BMDS_ROOT}/thirdparty/plex/fonts")
 bmds_target_options(angel)
@@ -353,15 +361,25 @@ file(GLOB PRESO_CORE_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT}/programs/preso/core/
 add_library(preso_core STATIC ${PRESO_CORE_SOURCES} ${BMDS_ROOT}/programs/preso/headless/headless.cpp)
 target_link_libraries(preso_core PUBLIC preso_md4c)
 bmds_target_options(preso_core)
+# Its scripts (programs/preso/script): AngelScript and libangel's language, outside the core.
+file(GLOB PRESO_SCRIPT_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT}/programs/preso/script/*.cpp)
+add_library(preso_script STATIC ${PRESO_SCRIPT_SOURCES})
+target_link_libraries(preso_script PUBLIC preso_core bmds_libangel)
+bmds_target_options(preso_script)
 add_executable(preso ${BMDS_ROOT}/programs/preso/main.cpp)
-target_link_libraries(preso PRIVATE preso_core)
+target_link_libraries(preso PRIVATE preso_script)
 bmds_target_options(preso)
-add_executable(preso_tests preso/main.cpp preso/deck.cpp preso/layout.cpp preso/images.cpp preso/themes.cpp preso/present.cpp)
+add_executable(preso_tests preso/main.cpp preso/deck.cpp preso/layout.cpp preso/images.cpp preso/themes.cpp preso/present.cpp preso/scripts.cpp)
 target_include_directories(preso_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest ${BMDS_ROOT}/programs/preso)
 target_compile_definitions(preso_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
-target_link_libraries(preso_tests PRIVATE preso_core)
+target_link_libraries(preso_tests PRIVATE preso_script)
 bmds_target_options(preso_tests)
 add_test(NAME preso_core COMMAND preso_tests)
+# The deck profile's script API is userspace ABI too (devplan/preso.md §7.8).
+if(Python3_Interpreter_FOUND)
+        add_test(NAME preso_api_lock COMMAND ${Python3_EXECUTABLE} ${BMDS_ROOT}/tests/scripts/apilock.py
+                 $<TARGET_FILE:preso> ${BMDS_ROOT}/tests/preso/api.lock)
+endif()
 
 # The corpus's expectations, checked against real bash (when there is one).
 find_program(BASH_PROGRAM bash)

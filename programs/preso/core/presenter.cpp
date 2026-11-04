@@ -7,6 +7,7 @@
  */
 
 #include "presenter.h"
+#include "effects.h"
 #include <new>
 #include <stdlib.h>
 
@@ -18,6 +19,7 @@ namespace preso {
                         Arena         arena;
                         ThemeSet      themes;
                         Layouter     *layouter = nullptr;
+                        Scripts      *scripts = nullptr; ///< The deck's script regions (nullptr: boxes).
                         SlideLayout **layouts = nullptr;
                         uint32_t      printed = 0; ///< Diagnostics written to the messages so far.
         };
@@ -36,6 +38,60 @@ namespace preso {
                         return;
                 }
 
+                void destroyScripts(Scripts *scripts) {
+                        if (scripts == nullptr) return;
+                        scripts->~Scripts();
+                        free(scripts);
+                        return;
+                }
+
+                // A step only a region's beat takes: nothing else appears at it.
+                bool beatOnly(const SlideLayout &layout, uint32_t step) {
+                        for (const DrawOp *o = layout.ops; o != nullptr; o = o->next) {
+                                if (o->fragment == step) return false;
+                        }
+                        return true;
+                }
+
+                // The beat a region shows at @p step.
+                uint32_t beatAt(const DrawOp &o, uint32_t step) {
+                        uint32_t beats = o.script->beats();
+                        uint32_t beat = step >= o.beat ? step - o.beat + 1 : 0;
+                        return beat > beats ? beats : beat;
+                }
+
+                constexpr uint32_t MaxDamage = 16;
+
+                // What changing @p area changes of the slide: as far round it as the theme's effects
+                // reach (a glow), on their grid of four.
+                Rect reached(const SlideLayout &layout, const Rect &area, const Canvas &canvas, bool moving) {
+                        // Moving, the glow is left out (drawSlide()), and so is its reach.
+                        int32_t reach = layout.theme != nullptr && !moving ? effectReach(*layout.theme) : 0;
+                        if (reach == 0) return area;
+                        int32_t x0 = (area.x - reach) & ~3, y0 = (area.y - reach) & ~3;
+                        int32_t x1 = (area.x + area.width + reach + 3) & ~3,
+                                y1 = (area.y + area.height + reach + 3) & ~3;
+                        return Rect{x0, y0, x1 - x0, y1 - y0}.intersected(Rect{0, 0, canvas.width(), canvas.height()});
+                }
+
+                // @p r added to @p areas (@p n of them, MaxDamage at most): joined to one it overlaps,
+                // or the last joined when there is no room.
+                void addDamage(Rect *areas, uint32_t &n, const Rect &r) {
+                        if (r.isEmpty()) return;
+                        for (uint32_t i = 0; i < n; i++) {
+                                if (!areas[i].intersected(r).isEmpty()) {
+                                        areas[i] = uniteRects(areas[i], r);
+                                        return;
+                                }
+                        }
+                        if (n < MaxDamage) {
+                                areas[n++] = r;
+                        } else {
+                                areas[n - 1] = uniteRects(areas[n - 1], r);
+                        }
+                        return;
+                }
+
                 void printDiagnostic(FILE *out, const char *path, const Diagnostic &d) {
                         const char *kind = d.severity == Severity::Error ? "error" : "warning";
                         if (d.line > 0) {
@@ -49,10 +105,12 @@ namespace preso {
 
         } // namespace
 
-        Presenter::Presenter(Platform &platform, const char *path, FILE *messages)
-            : _platform(platform), _path(path), _messages(messages), _fonts(platform), _images(platform, path) {}
+        Presenter::Presenter(Platform &platform, const char *path, FILE *messages, ScriptsMaker scripts, bool trusted)
+            : _platform(platform), _path(path), _messages(messages), _makeScripts(scripts), _fonts(platform),
+              _images(platform, path), _trusted(trusted), _demosAllowed(trusted) {}
 
         Presenter::~Presenter() {
+                if (_slideSound >= 0) _platform.closeSound(_slideSound);
                 free(_pieces);
                 dropThumbnails();
                 drop(_loaded);
@@ -62,7 +120,17 @@ namespace preso {
 
         void Presenter::drop(Loaded *loaded) {
                 if (loaded == nullptr) return;
+                if (loaded == _loaded) {
+                        // Its regions go with it: the one with the keys, the one a button is held in.
+                        if (_entered != nullptr) {
+                                _entered->script->setEntered(false);
+                                _entered = nullptr;
+                                _platform.setInputMode(InputMode::Deck);
+                        }
+                        _pointerRegion = nullptr;
+                }
                 destroy(loaded->layouter);
+                destroyScripts(loaded->scripts);
                 destroy(loaded);
                 return;
         }
@@ -92,6 +160,18 @@ namespace preso {
                                 error = Error::NoMemory;
                         } else {
                                 for (uint32_t i = 0; i < n; i++) l->layouts[i] = nullptr;
+                                if (_makeScripts != nullptr) {
+                                        ScriptSetup setup;
+                                        setup.platform = &_platform;
+                                        setup.deck = &l->deck;
+                                        setup.themes = &l->themes;
+                                        setup.fonts = &_fonts;
+                                        setup.images = &_images;
+                                        setup.deckPath = _path;
+                                        setup.trusted = _trusted;
+                                        l->scripts = _makeScripts(setup);
+                                        l->layouter->setScripts(l->scripts);
+                                }
                         }
                 }
                 if (error != Error::Ok) {
@@ -127,18 +207,32 @@ namespace preso {
                 return;
         }
 
-        uint32_t Presenter::fragments(uint32_t slide) const {
+        SlideLayout *Presenter::layoutOf(uint32_t slide) {
+                const Slide *s = _deck != nullptr ? _deck->slide(slide) : nullptr;
+                if (s == nullptr) return nullptr;
+                SlideLayout *&layout = _loaded->layouts[slide - 1];
+                if (layout == nullptr) {
+                        layout = _loaded->layouter->layout(*s, _loaded->arena, true);
+                        printNewDiagnostics();
+                }
+                return layout;
+        }
+
+        uint32_t Presenter::steps(uint32_t slide) {
+                // Its fragments and its regions' beats, which only its layout knows.
+                SlideLayout *layout = layoutOf(slide);
+                if (layout != nullptr) return layout->steps;
                 const Slide *s = _deck != nullptr ? _deck->slide(slide) : nullptr;
                 return s != nullptr ? s->fragments : 0;
         }
 
-        void Presenter::target(Action action, uint32_t &slide, uint32_t &step) const {
+        void Presenter::target(Action action, uint32_t &slide, uint32_t &step) {
                 slide = _slide;
                 step = _step;
                 uint32_t count = _deck != nullptr ? _deck->slideCount() : 1;
                 switch (action) {
                         case Action::Next:
-                                if (step < fragments(slide)) {
+                                if (step < steps(slide)) {
                                         step++;
                                 } else if (slide < count) {
                                         slide++;
@@ -151,7 +245,7 @@ namespace preso {
                                         step--;
                                 } else if (slide > 1) {
                                         slide--;
-                                        step = fragments(slide);
+                                        step = steps(slide);
                                 }
                                 break;
                         case Action::First:
@@ -160,7 +254,7 @@ namespace preso {
                                 break;
                         case Action::Last:
                                 slide = count;
-                                step = fragments(count);
+                                step = steps(count);
                                 break;
                         default: break; // not a move
                 }
@@ -178,11 +272,7 @@ namespace preso {
                                         fprintf(_messages, "preso: %s: can't be drawn: %s\n", path, errorName(why));
                         }
                 };
-                SlideLayout *&layout = _loaded->layouts[slide - 1];
-                if (layout == nullptr) {
-                        layout = _loaded->layouter->layout(*s, _loaded->arena, true);
-                        printNewDiagnostics();
-                }
+                SlideLayout *layout = layoutOf(slide);
                 if (layout != nullptr) {
                         drawSlide(*layout, step, canvas, _fonts, &_images);
                         failures();
@@ -201,23 +291,48 @@ namespace preso {
                 return;
         }
 
-        void Presenter::show(bool forward) {
+        void Presenter::show(bool forward, bool play) {
+                _arriving = play;
+                // Script regions first: what they show at the new step.
+                bool same = _shownSlide == _slide;
+                if (same && forward && _step == _shownStep + 1) {
+                        if (stepRegions()) {
+                                // Only a region's beat: its frames change, nothing else.
+                                _shownStep = _step;
+                                _aheadValid = false;
+                                redrawRegions(true);
+                                prepareAhead();
+                                updateAnimation();
+                                return;
+                        }
+                } else if (!(same && _step == _shownStep)) {
+                        // Onto another slide's start going on: its regions play their first beat;
+                        // anything else (back, reading the deck again) shows its beats played.
+                        seekRegions(_slide, _step, !(play && _step == 0 && !same));
+                }
                 // The new picture into _ahead (it may be there already), the old one kept in _shown.
-                if (!(_aheadValid && _aheadSlide == _slide && _aheadStep == _step)) draw(_ahead, _slide, _step);
+                bool prepared = _aheadValid && _aheadSlide == _slide && _aheadStep == _step;
+                if (!prepared) draw(_ahead, _slide, _step);
+                // Drawn ahead on this slide, its regions may have moved since.
+                _regionsStale = prepared && same;
                 _aheadValid = false;
                 // Onto another slide going forward: its transition, if the screen can play one.
                 const Slide *s = _deck->slide(_slide);
                 Transition   t;
                 const char  *why = "";
-                bool         play =
+                bool         transition =
                         _screen && forward && _shownSlide != 0 && _shownSlide != _slide && s != nullptr &&
                         parseTransition(s->settings.transition.isEmpty() ? StringView("cut") : s->settings.transition,
                                         &t, &why) &&
                         t.kind != TransitionKind::Cut && t.durationMs > 0;
-                if (play && _pieces == nullptr) _pieces = static_cast<Piece *>(malloc(MaxPieces * sizeof(Piece)));
+                if (transition && _pieces == nullptr) _pieces = static_cast<Piece *>(malloc(MaxPieces * sizeof(Piece)));
                 SlideLayout *layout = _loaded->layouts[_slide - 1];
-                if (play && (_pieces == nullptr || (t.kind == TransitionKind::Type && layout == nullptr))) play = false;
-                if (play) {
+                if (transition && (_pieces == nullptr || (t.kind == TransitionKind::Type && layout == nullptr)))
+                        transition = false;
+                if (transition) {
+                        // The transition's frames from now; the regions wait for its end.
+                        if (_animating) _platform.animate(false);
+                        _animating = false;
                         _mode = Mode::Transition;
                         _transition = t;
                         _transitionStart = _platform.now();
@@ -252,15 +367,417 @@ namespace preso {
                 void *p = _pixels[0];
                 _pixels[0] = _pixels[1];
                 _pixels[1] = p;
+                uint32_t from = _shownSlide;
                 _shownSlide = _slide;
                 _shownStep = _step;
+                if (_regionsStale) redrawRegions(false);
+                _regionsStale = false;
                 if (_mode == Mode::Transition) {
                         _mode = Mode::Slides;
                         _platform.endPieces();
                         _platform.animate(false);
                 }
+                if (from != _shownSlide) arrived(from);
                 if (_screen) _platform.present(_shown);
                 prepareAhead();
+                updatePointer();
+                updateAnimation();
+                return;
+        }
+
+        // ---- Interactive pieces
+
+        void Presenter::arrived(uint32_t from) {
+                // Another slide shown: the one before's regions go quiet and give back the keys; this
+                // one's are heard, its sound plays (going on), and an interactive slide enters its
+                // region.
+                leave();
+                _pointerRegion = nullptr;
+                SlideLayout *before = from != 0 ? layoutOf(from) : nullptr;
+                for (const DrawOp *o = before != nullptr ? before->ops : nullptr; o != nullptr; o = o->next) {
+                        if (o->type == OpType::Script && o->script != nullptr) o->script->setAudible(false);
+                }
+                SlideLayout *now = layoutOf(_shownSlide);
+                for (const DrawOp *o = now != nullptr ? now->ops : nullptr; o != nullptr; o = o->next) {
+                        if (o->type == OpType::Script && o->script != nullptr) o->script->setAudible(true);
+                }
+                const Slide *s = _deck->slide(_shownSlide);
+                if (s != nullptr && _arriving && !s->sound.isEmpty() && _screen) {
+                        if (_slideSound >= 0) _platform.closeSound(_slideSound);
+                        _slideSound = -1;
+                        char folder[512], path[700];
+                        folderOf(_path, folder, sizeof folder);
+                        snprintf(path, sizeof path, "%s/%.*s", folder, int(s->sound.length()), s->sound.data());
+                        _slideSound = _platform.openSound(path);
+                        if (_slideSound >= 0) {
+                                _platform.playSound(_slideSound, 1);
+                        } else if (_messages != nullptr) {
+                                fprintf(_messages, "preso: slide %u: sound %s can't be played\n", unsigned(_shownSlide),
+                                        path);
+                        }
+                }
+                if (s != nullptr && s->interactive) {
+                        const DrawOp *o = firstInteractive();
+                        if (o != nullptr) enter(o);
+                }
+                return;
+        }
+
+        const DrawOp *Presenter::firstInteractive() {
+                SlideLayout *layout = _shownSlide != 0 ? layoutOf(_shownSlide) : nullptr;
+                for (const DrawOp *o = layout != nullptr ? layout->ops : nullptr; o != nullptr; o = o->next) {
+                        if (o->type == OpType::Script && o->script != nullptr && o->fragment <= _shownStep &&
+                            o->script->isInteractive()) {
+                                return o;
+                        }
+                }
+                return nullptr;
+        }
+
+        const DrawOp *Presenter::regionAt(int32_t x, int32_t y) {
+                // The last laid out over the point: the one on top.
+                SlideLayout  *layout = _shownSlide != 0 ? layoutOf(_shownSlide) : nullptr;
+                const DrawOp *found = nullptr;
+                for (const DrawOp *o = layout != nullptr ? layout->ops : nullptr; o != nullptr; o = o->next) {
+                        if (o->type != OpType::Script || o->script == nullptr || o->fragment > _shownStep) continue;
+                        const Rect &r = o->clip;
+                        if (x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height) found = o;
+                }
+                return found;
+        }
+
+        void Presenter::enter(const DrawOp *op) {
+                if (op == _entered) return;
+                leave();
+                if (op == nullptr || !op->script->isInteractive()) return;
+                _entered = op;
+                op->script->setEntered(true);
+                _platform.setInputMode(InputMode::Script);
+                if (_screen && _mode == Mode::Slides) redrawRegions(true);
+                updateAnimation();
+                return;
+        }
+
+        void Presenter::leave() {
+                if (_entered == nullptr) return;
+                _entered->script->setEntered(false);
+                _entered = nullptr;
+                _platform.setInputMode(InputMode::Deck);
+                if (_screen && _mode == Mode::Slides) redrawRegions(true);
+                updateAnimation();
+                return;
+        }
+
+        void Presenter::toRegion(const DrawOp *op, const ScriptInput &input) {
+                // Input for a region: what it changed drawn again and shown.
+                ScriptInput in = input;
+                in.x -= op->x;
+                in.y -= op->y;
+                Rect         changed[ScriptRegion::MaxAreas];
+                uint32_t     count = op->script->input(in, changed);
+                SlideLayout *layout = layoutOf(_shownSlide);
+                if (layout != nullptr && count > 0 && _screen && _mode == Mode::Slides && _blank == NoColor) {
+                        Rect     damage[MaxDamage];
+                        uint32_t n = 0;
+                        for (uint32_t i = 0; i < count; i++) {
+                                Rect area = Rect{op->x + changed[i].x, op->y + changed[i].y, changed[i].width,
+                                                 changed[i].height}
+                                                    .intersected(op->clip);
+                                if (area.isEmpty()) continue;
+                                area = reached(*layout, area, _shown, false);
+                                drawSlide(*layout, _shownStep, _shown, _fonts, &_images, UINT32_MAX, &area);
+                                addDamage(damage, n, area);
+                        }
+                        if (n > 0) _platform.presentAreas(_shown, damage, n);
+                }
+                updateAnimation();
+                return;
+        }
+
+        void Presenter::pointer(const Event &event) {
+                // Over a region (or held since a button went down in one): its. A press enters it.
+                if (_mode != Mode::Slides || _blank != NoColor) return;
+                uint32_t      pressed = event.buttons & ~_buttons, released = _buttons & ~event.buttons;
+                const DrawOp *op = _pointerRegion != nullptr ? _pointerRegion : regionAt(event.x, event.y);
+                _buttons = event.buttons;
+                if (op == nullptr || !op->script->isInteractive()) {
+                        if (_buttons == 0) _pointerRegion = nullptr;
+                        return;
+                }
+                ScriptInput in;
+                in.x = event.x;
+                in.y = event.y;
+                if (event.type == Event::Type::Wheel) {
+                        in.type = ScriptInput::Type::Wheel;
+                        in.wheel = event.wheel;
+                        toRegion(op, in);
+                        return;
+                }
+                if (pressed != 0) {
+                        if (op != _entered) enter(op);
+                        _pointerRegion = op;
+                        for (int32_t b = 0; b < 3; b++) {
+                                if ((pressed & (1u << b)) == 0) continue;
+                                in.type = ScriptInput::Type::PointerDown;
+                                in.button = b + 1;
+                                toRegion(op, in);
+                        }
+                } else if (released != 0) {
+                        for (int32_t b = 0; b < 3; b++) {
+                                if ((released & (1u << b)) == 0) continue;
+                                in.type = ScriptInput::Type::PointerUp;
+                                in.button = b + 1;
+                                toRegion(op, in);
+                        }
+                        if (_buttons == 0) _pointerRegion = nullptr;
+                } else {
+                        in.type = ScriptInput::Type::PointerMove;
+                        toRegion(op, in);
+                }
+                return;
+        }
+
+        void Presenter::updatePointer() {
+                // The system's pointer where there is something to point at.
+                bool want = _screen && _mode == Mode::Slides && firstInteractive() != nullptr;
+                if (want != _pointerShown) _platform.setPointerVisible(want);
+                _pointerShown = want;
+                return;
+        }
+
+        void Presenter::watchFolders(const char *deckFolder) {
+                // The folders the deck's scripts and pictures are in (`anim/`), each once: an edit
+                // there reloads the deck as an edit of the deck does.
+                constexpr uint32_t Max = 7;
+                StringView         seen[Max];
+                uint32_t           n = 0;
+                auto               watchOf = [&](StringView file) {
+                        int32_t slash = -1;
+                        for (uint32_t i = 0; i < file.length(); i++) {
+                                if (file[i] == '/') slash = int32_t(i);
+                        }
+                        if (slash <= 0 || n == Max || file.startsWith("/") || file.indexOf(':') >= 0) return;
+                        StringView sub = file.left(uint32_t(slash));
+                        for (uint32_t i = 0; i < n; i++) {
+                                if (seen[i].equals(sub)) return;
+                        }
+                        seen[n++] = sub;
+                        char path[600];
+                        snprintf(path, sizeof path, "%s/%.*s", deckFolder, int(sub.length()), sub.data());
+                        (void)_platform.watch(path);
+                };
+                // Every image of the slides: their backgrounds, and those in their text.
+                auto inBlocks = [&](auto &self, const Block *b) -> void {
+                        for (; b != nullptr; b = b->next) {
+                                for (const Inline *i = b->inlines; i != nullptr; i = i->next) {
+                                        if (i->image != nullptr)
+                                                watchOf(i->image->isScript() ? i->image->script : i->image->path);
+                                }
+                                self(self, b->children);
+                        }
+                };
+                for (const Slide *s = _deck->slides(); s != nullptr; s = s->next) {
+                        for (const Image *i = s->backgrounds; i != nullptr; i = i->next) {
+                                watchOf(i->isScript() ? i->script : i->path);
+                        }
+                        inBlocks(inBlocks, s->blocks);
+                }
+                return;
+        }
+
+        uint32_t Presenter::demoNames(char *out, size_t size) {
+                // The programs the deck's `run:` slides start, each once: "luckyduck, sysmon".
+                uint32_t n = 0;
+                size_t   used = 0;
+                out[0] = '\0';
+                for (const Slide *s = _deck->slides(); s != nullptr; s = s->next) {
+                        if (s->run.isEmpty()) continue;
+                        StringView name = s->run.trimmed();
+                        int32_t    space = name.indexOf(' ');
+                        if (space > 0) name = name.left(uint32_t(space));
+                        int32_t slash = -1;
+                        for (uint32_t i = 0; i < name.length(); i++) {
+                                if (name[i] == '/') slash = int32_t(i);
+                        }
+                        if (slash >= 0) name = name.mid(uint32_t(slash) + 1);
+                        bool seen = false;
+                        for (const Slide *t = _deck->slides(); t != s && !seen; t = t->next) {
+                                if (t->run.isEmpty()) continue;
+                                StringView other = t->run.trimmed();
+                                int32_t    sp = other.indexOf(' ');
+                                if (sp > 0) other = other.left(uint32_t(sp));
+                                int32_t sl = -1;
+                                for (uint32_t i = 0; i < other.length(); i++) {
+                                        if (other[i] == '/') sl = int32_t(i);
+                                }
+                                if (sl >= 0) other = other.mid(uint32_t(sl) + 1);
+                                seen = other.equals(name);
+                        }
+                        if (seen) continue;
+                        int k = snprintf(out + used, size - used, "%s%.*s", n > 0 ? ", " : "", int(name.length()),
+                                         name.data());
+                        if (k < 0 || used + size_t(k) >= size) break;
+                        used += size_t(k);
+                        n++;
+                }
+                return n;
+        }
+
+        void Presenter::drawQuestion() {
+                // A box in the middle of the screen: what the deck runs, and the keys.
+                Canvas screen;
+                if (!_screen || !_platform.beginFrame(screen)) return;
+                int32_t w = screen.width(), h = screen.height();
+                screen.clearClip();
+                screen.fill(Rect{0, 0, w, h}, 0x202020);
+                FontKey font = _loaded->themes.base().header.font;
+                font.family = "IBM Plex Sans";
+                font.style = 0;
+                font.size = uint16_t(h / 24 > 12 ? h / 24 : 12);
+                FontMetrics m = _fonts.metrics(font);
+                char        names[200], line[260];
+                demoNames(names, sizeof names);
+                snprintf(line, sizeof line, "This deck runs programs: %s", names);
+                const char *lines[3] = {line, "Y: run them as the deck reaches them",
+                                        "N or Escape: present it without them"};
+                int32_t     y = h / 2 - 2 * m.lineHeight;
+                for (int i = 0; i < 3; i++) {
+                        StringView t(lines[i]);
+                        t = t.left(_fonts.fit(font, t, w - 2 * m.lineHeight));
+                        int32_t tw = _fonts.width(font, t);
+                        _fonts.draw(screen, font, (w - tw) / 2, y, t, i == 0 ? 0xFFFFFF : 0xC8C8C8);
+                        y += m.lineHeight * (i == 0 ? 2 : 1);
+                }
+                _platform.endFrame();
+                return;
+        }
+
+        void Presenter::answer(bool yes) {
+                _demosAllowed = yes;
+                _mode = Mode::Slides;
+                if (_messages != nullptr) {
+                        fprintf(_messages, "preso: the deck's demos %s\n", yes ? "will run" : "won't run");
+                        fflush(_messages);
+                }
+                show(false, true);
+                return;
+        }
+
+        // ---- Script regions
+
+        void Presenter::seekRegions(uint32_t slide, uint32_t step, bool played) {
+                SlideLayout *layout = layoutOf(slide);
+                for (const DrawOp *o = layout != nullptr ? layout->ops : nullptr; o != nullptr; o = o->next) {
+                        if (o->type != OpType::Script || o->script == nullptr) continue;
+                        // Not there yet: it plays from its start when it appears.
+                        if (o->fragment > step) {
+                                o->script->seek(0, false);
+                                continue;
+                        }
+                        o->script->seek(beatAt(*o, step), played);
+                }
+                return;
+        }
+
+        bool Presenter::stepRegions() {
+                // One step on: a region appearing plays its first beat, a region whose beat this is
+                // goes on to it. True if nothing but beats changed.
+                SlideLayout *layout = layoutOf(_slide);
+                if (layout == nullptr) return false;
+                for (const DrawOp *o = layout->ops; o != nullptr; o = o->next) {
+                        if (o->type != OpType::Script || o->script == nullptr || o->fragment > _step) continue;
+                        if (o->fragment == _step) {
+                                o->script->seek(0, false);
+                        } else if (beatAt(*o, _step) > beatAt(*o, _step - 1)) {
+                                o->script->next();
+                        }
+                }
+                return beatOnly(*layout, _step);
+        }
+
+        void Presenter::redrawRegions(bool present) {
+                // Each region's part of the slide drawn again into _shown, as it now is.
+                SlideLayout *layout = _shownSlide != 0 ? layoutOf(_shownSlide) : nullptr;
+                Rect         damage[MaxDamage];
+                uint32_t     n = 0;
+                for (const DrawOp *o = layout != nullptr ? layout->ops : nullptr; o != nullptr; o = o->next) {
+                        if (o->type != OpType::Script || o->script == nullptr || o->fragment > _shownStep) continue;
+                        Rect area = reached(*layout, o->clip, _shown, false);
+                        drawSlide(*layout, _shownStep, _shown, _fonts, &_images, UINT32_MAX, &area);
+                        addDamage(damage, n, area);
+                }
+                if (present && _screen && n > 0) _platform.presentAreas(_shown, damage, n);
+                return;
+        }
+
+        bool Presenter::regionsMoving() {
+                SlideLayout *layout = _shownSlide != 0 ? layoutOf(_shownSlide) : nullptr;
+                for (const DrawOp *o = layout != nullptr ? layout->ops : nullptr; o != nullptr; o = o->next) {
+                        if (o->type == OpType::Script && o->script != nullptr && o->fragment <= _shownStep &&
+                            o->script->isMoving()) {
+                                return true;
+                        }
+                }
+                return false;
+        }
+
+        void Presenter::updateAnimation() {
+                // Regions' clocks run while their slide is shown as it is: not blanked, not under an
+                // overlay, not in a transition or the overview.
+                bool want =
+                        _screen && _mode == Mode::Slides && _blank == NoColor && _typedLength == 0 && regionsMoving();
+                if (want && !_animating) {
+                        _lastFrame = _platform.now();
+                        _platform.animate(true);
+                } else if (!want && _animating) {
+                        _platform.animate(false);
+                }
+                _animating = want;
+                return;
+        }
+
+        void Presenter::frameRegions(int64_t ns) {
+                int64_t elapsed = ns - _lastFrame;
+                _lastFrame = ns;
+                if (elapsed < 0) elapsed = 0;
+                SlideLayout *layout = layoutOf(_shownSlide);
+                Rect         damage[MaxDamage];
+                uint32_t     n = 0;
+                for (const DrawOp *o = layout != nullptr ? layout->ops : nullptr; o != nullptr; o = o->next) {
+                        if (o->type != OpType::Script || o->script == nullptr || o->fragment > _shownStep ||
+                            !o->script->isMoving()) {
+                                continue;
+                        }
+                        Rect     changed[ScriptRegion::MaxAreas];
+                        uint32_t count = o->script->advance(elapsed, changed);
+                        // What changed, drawn again: the slide under it, the region, what is over it.
+                        for (uint32_t i = 0; i < count; i++) {
+                                Rect area = Rect{o->x + changed[i].x, o->y + changed[i].y, changed[i].width,
+                                                 changed[i].height}
+                                                    .intersected(o->clip);
+                                if (area.isEmpty()) continue;
+                                area = reached(*layout, area, _shown, true);
+                                drawSlide(*layout, _shownStep, _shown, _fonts, &_images, UINT32_MAX, &area, true);
+                                if (layout->theme != nullptr && layout->theme->glow > 0)
+                                        _unglowed = uniteRects(_unglowed, area);
+                                addDamage(damage, n, area);
+                        }
+                }
+                if (n > 0) {
+                        _platform.presentAreas(_shown, damage, n);
+                } else {
+                        _platform.waitFrame();
+                }
+                if (!regionsMoving()) {
+                        // Still: what moved drawn again with what its frames left out (a theme's glow).
+                        if (layout != nullptr && !_unglowed.isEmpty()) {
+                                Rect area = reached(*layout, _unglowed, _shown, false);
+                                drawSlide(*layout, _shownStep, _shown, _fonts, &_images, UINT32_MAX, &area);
+                                _platform.presentAreas(_shown, &area, 1);
+                        }
+                        _unglowed = Rect{};
+                        updateAnimation();
+                }
                 return;
         }
 
@@ -326,6 +843,10 @@ namespace preso {
                         if (!more) _platform.animate(false);
                         return;
                 }
+                if (_animating) {
+                        frameRegions(ns);
+                        return;
+                }
                 _platform.animate(false);
                 return;
         }
@@ -381,6 +902,14 @@ namespace preso {
                 uint32_t slide = 0, step = 0;
                 target(Action::Next, slide, step);
                 if (slide == _slide && step == _step) return;
+                if (slide == _slide) {
+                        // A beat changes only its region: nothing to draw ahead.
+                        SlideLayout *layout = layoutOf(slide);
+                        if (layout != nullptr && beatOnly(*layout, step)) return;
+                } else {
+                        // The next slide as it appears: its regions at their first beat's start.
+                        seekRegions(slide, 0, false);
+                }
                 draw(_ahead, slide, step);
                 _aheadSlide = slide;
                 _aheadStep = step;
@@ -389,7 +918,9 @@ namespace preso {
         }
 
         void Presenter::showOverlay() {
-                // The slide, with the number being typed in a box over its corner (or blanked).
+                // The slide, with the number being typed in a box over its corner (or blanked); its
+                // regions wait meanwhile.
+                updateAnimation();
                 Canvas screen;
                 if (!_screen || !_platform.beginFrame(screen)) return;
                 if (_blank != NoColor) {
@@ -423,13 +954,28 @@ namespace preso {
                 _step = 0;
                 if (_slide == _shownSlide && _step == _shownStep) {
                         if (_screen) _platform.present(_shown);
+                        updateAnimation();
                         return;
                 }
-                show(forward && slide == _shownSlide + 1);
+                show(forward && slide == _shownSlide + 1, true);
                 return;
         }
 
         void Presenter::act(Action action) {
+                if (_mode == Mode::Question) {
+                        if (action == Action::Quit || action == Action::Close || action == Action::Leave) answer(false);
+                        return;
+                }
+                if (action == Action::Into) {
+                        enter(firstInteractive());
+                        return;
+                }
+                if (action == Action::Leave) {
+                        leave();
+                        return;
+                }
+                // Stepping (a clicker's keys work while a region has the others): the keys back first.
+                if (_entered != nullptr && action != Action::Next && action != Action::Previous) leave();
                 // A transition playing is finished at once: the presenter is ahead of it.
                 if (_mode == Mode::Transition) finishTransition();
                 if (_mode == Mode::Overview) {
@@ -452,6 +998,7 @@ namespace preso {
                                 _typedLength--;
                                 if (_typedLength == 0 && _screen) {
                                         _platform.present(_shown);
+                                        updateAnimation();
                                 } else {
                                         showOverlay();
                                 }
@@ -459,8 +1006,8 @@ namespace preso {
                         }
                         _typedLength = 0;
                         if (action == Action::Quit) {
-                                showOverlay();
                                 if (_screen) _platform.present(_shown);
+                                updateAnimation();
                                 return;
                         }
                 }
@@ -472,6 +1019,7 @@ namespace preso {
                                 _blank = _blank == want ? NoColor : want;
                                 if (_blank == NoColor) {
                                         if (_screen) _platform.present(_shown);
+                                        updateAnimation();
                                 } else {
                                         showOverlay();
                                 }
@@ -484,6 +1032,7 @@ namespace preso {
                 if (_blank != NoColor && (action == Action::Next || action == Action::Previous)) {
                         _blank = NoColor;
                         if (_screen) _platform.present(_shown);
+                        updateAnimation();
                         return;
                 }
                 _blank = NoColor;
@@ -492,13 +1041,19 @@ namespace preso {
                 if (slide == _slide && step == _step) return;
                 _slide = slide;
                 _step = step;
-                show(action == Action::Next);
+                show(action == Action::Next, action == Action::Next);
                 return;
         }
 
         void Presenter::key(const Event &event) {
                 uint32_t usage = event.key & 0xFFFF;
                 bool     enter = usage == 0x28 || usage == 0x58;
+                if (_mode == Mode::Question) {
+                        // Y yes; N no (Escape comes as Quit).
+                        if (usage == 0x1C || event.character == 'y' || event.character == 'Y') answer(true);
+                        if (usage == 0x11 || event.character == 'n' || event.character == 'N') answer(false);
+                        return;
+                }
                 if (_mode == Mode::Overview) {
                         if (enter) closeOverview(true);
                         return;
@@ -522,11 +1077,12 @@ namespace preso {
                         }
                         uint32_t n = uint32_t(StringView(_typed, _typedLength).toInt(0));
                         _typedLength = 0;
-                        if (n >= 1 && n <= _deck->slideCount()) {
+                        if (n >= 1 && n <= _deck->slideCount() && n != _slide) {
                                 goTo(n);
                         } else if (_screen) {
                                 _platform.present(_shown);
                         }
+                        updateAnimation();
                 }
                 return;
         }
@@ -561,6 +1117,8 @@ namespace preso {
                 int32_t rows = (h - 2 * margin - h / 20 + gap) / (_thumbHeight + label + gap);
                 _rows = rows > 0 ? uint32_t(rows) : 1;
                 _selected = _slide;
+                if (_animating) _platform.animate(false);
+                _animating = false;
                 _mode = Mode::Overview;
                 _platform.setInputMode(InputMode::Overview);
                 _platform.animate(true);
@@ -581,11 +1139,12 @@ namespace preso {
                 if (choose && _selected != _slide) {
                         _slide = _selected;
                         _step = 0;
-                        show(false);
+                        show(false, true);
                         return;
                 }
                 if (_screen) _platform.present(_shown);
                 prepareAhead();
+                updateAnimation();
                 return;
         }
 
@@ -618,7 +1177,9 @@ namespace preso {
                                 }
                         }
                         _aheadValid = false;
-                        draw(_ahead, n, fragments(n));
+                        // As it ends; the slide shown keeps its regions as they are.
+                        if (n != _slide) seekRegions(n, steps(n), true);
+                        draw(_ahead, n, steps(n));
                         Picture p;
                         p.pixels = reinterpret_cast<uint32_t *>(_ahead.pixels());
                         p.width = _ahead.width();
@@ -694,7 +1255,7 @@ namespace preso {
                         if (_messages != nullptr) fprintf(_messages, "preso: %s\n", _status);
                         _aheadValid = false;
                         _shownSlide = 0;
-                        show(false);
+                        show(false, false);
                         return false;
                 }
                 // The same slide: by its title if the slides moved, else by its number.
@@ -720,7 +1281,7 @@ namespace preso {
                 _loaded = l;
                 _deck = &l->deck;
                 _slide = number;
-                if (_step > fragments(_slide)) _step = fragments(_slide);
+                if (_step > steps(_slide)) _step = steps(_slide);
                 _status[0] = '\0';
                 printNewDiagnostics();
                 _aheadValid = false;
@@ -730,7 +1291,7 @@ namespace preso {
                 if (_mode == Mode::Transition) finishTransition();
                 dropThumbnails();
                 _shownSlide = 0;
-                show(false);
+                show(false, false);
                 return true;
         }
 
@@ -763,8 +1324,17 @@ namespace preso {
                 folderOf(_path, folder, sizeof folder);
                 if (_platform.watch(folder) != Error::Ok && _messages != nullptr) {
                         fprintf(_messages, "preso: %s isn't watched: the deck won't reload as it changes\n", folder);
+                } else {
+                        watchFolders(folder);
                 }
-                show(false);
+                // A deck that starts programs says so first, unless trusted (§7.7).
+                char names[200];
+                if (!_trusted && demoNames(names, sizeof names) > 0) {
+                        _mode = Mode::Question;
+                        drawQuestion();
+                        return _platform.run(*this);
+                }
+                show(false, true);
                 return _platform.run(*this);
         }
 
@@ -772,7 +1342,26 @@ namespace preso {
                 switch (event.type) {
                         case Event::Type::Action: act(event.action); break;
                         case Event::Type::Close: _platform.quit(); break;
-                        case Event::Type::Key: key(event); break;
+                        case Event::Type::Key:
+                        case Event::Type::KeyUp: {
+                                if (_entered != nullptr && _mode == Mode::Slides) {
+                                        // An entered region's keys.
+                                        ScriptInput in;
+                                        in.type = event.type == Event::Type::KeyUp ? ScriptInput::Type::KeyUp
+                                                                                   : ScriptInput::Type::KeyDown;
+                                        in.key = event.key;
+                                        in.character = event.character;
+                                        in.repeat = event.repeat;
+                                        in.x = _entered->x;
+                                        in.y = _entered->y;
+                                        toRegion(_entered, in);
+                                        break;
+                                }
+                                if (event.type == Event::Type::Key) key(event);
+                                break;
+                        }
+                        case Event::Type::Pointer:
+                        case Event::Type::Wheel: pointer(event); break;
                 }
                 return;
         }
@@ -782,12 +1371,13 @@ namespace preso {
                 return;
         }
 
-        int checkDeck(Platform &platform, const char *path, bool verbose, FILE *out) {
+        int checkDeck(Platform &platform, const char *path, bool verbose, FILE *out, ScriptsMaker scripts) {
                 char    *source = nullptr;
                 uint32_t length = 0;
                 Error    error = platform.readFile(path, Deck::MaxSource, &source, &length);
                 if (error == Error::Ok) {
-                        Deck *deck = create<Deck>();
+                        Deck     *deck = create<Deck>();
+                        uint16_t *steps = nullptr; // each slide's, by its number
                         if (deck == nullptr) {
                                 free(source);
                                 error = Error::NoMemory;
@@ -804,12 +1394,32 @@ namespace preso {
                                                                                                    platform, &images)
                                                                                 : nullptr;
                                         if (layouter == nullptr) error = Error::NoMemory;
+                                        // Every script runs to its end as its slide is laid out.
+                                        Scripts *regions = nullptr;
+                                        if (error == Error::Ok && scripts != nullptr) {
+                                                ScriptSetup setup;
+                                                setup.platform = &platform;
+                                                setup.deck = deck;
+                                                setup.themes = &themes;
+                                                setup.fonts = &fonts;
+                                                setup.images = &images;
+                                                setup.deckPath = path;
+                                                regions = scripts(setup);
+                                                layouter->setScripts(regions);
+                                        }
+                                        steps = static_cast<uint16_t *>(
+                                                calloc(deck->slideCount() + 1, sizeof(uint16_t)));
                                         for (const Slide *s = deck->slides(); s != nullptr && error == Error::Ok;
                                              s = s->next) {
-                                                if (layouter->layout(*s, arena, true) == nullptr)
+                                                SlideLayout *layout = layouter->layout(*s, arena, true);
+                                                if (layout == nullptr) {
                                                         error = Error::NoMemory;
+                                                } else if (steps != nullptr) {
+                                                        steps[s->number] = layout->steps;
+                                                }
                                         }
                                         destroy(layouter);
+                                        destroyScripts(regions);
                                 }
                                 if (error == Error::Ok) {
                                         for (const Diagnostic *d = deck->diagnostics(); d != nullptr; d = d->next) {
@@ -819,9 +1429,8 @@ namespace preso {
                                                 for (const Slide *s = deck->slides(); s != nullptr; s = s->next) {
                                                         fprintf(out, "%3u  %.*s", unsigned(s->number),
                                                                 int(s->title.length()), s->title.data());
-                                                        if (s->fragments > 0)
-                                                                fprintf(out, "  (%u steps)",
-                                                                        unsigned(s->fragments) + 1);
+                                                        uint32_t n = steps != nullptr ? steps[s->number] : s->fragments;
+                                                        if (n > 0) fprintf(out, "  (%u steps)", unsigned(n) + 1);
                                                         if (!s->run.isEmpty()) {
                                                                 fprintf(out, "  [run: %.*s]", int(s->run.length()),
                                                                         s->run.data());
@@ -834,6 +1443,7 @@ namespace preso {
                                         }
                                 }
                                 int status = error != Error::Ok ? 2 : deck->diagnosticCount() > 0 ? 1 : 0;
+                                free(steps);
                                 destroy(deck);
                                 if (error == Error::Ok) return status;
                         }

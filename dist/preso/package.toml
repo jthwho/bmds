@@ -1,10 +1,13 @@
 # Preso (programs/preso, devplan/preso.md): presentations written in Markdown, Marp's format,
-# with retro themes and scripted animations; md4c from thirdparty/md4c.
+# with retro themes and scripted animations; md4c from thirdparty/md4c, AngelScript from
+# thirdparty/angelscript and angel's runtime (libangel, programs/angel) for the scripts.
 name = "preso"
 version = "0.1"
 description = "Preso: presentations written in Markdown (Marp's format), with retro themes"
 title = "Preso"
 category = "Office"
-license = "MIT"
+license = "MIT AND Zlib"
 source_tree = "programs/preso"
 license_files = ["../../LICENSE", "../../thirdparty/md4c/LICENSE.md"]
+# Bytes of stack: the script compiler recurses into nested expressions (as angel's).
+stack = 65536

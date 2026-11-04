@@ -92,6 +92,13 @@ namespace preso {
                 return;
         }
 
+        bool Platform::fileExists(const char *path) {
+                FILE *f = fopen(path, "rb");
+                if (f == nullptr) return false;
+                fclose(f);
+                return true;
+        }
+
         void *Platform::allocatePixels(uint32_t bytes) {
                 return malloc(bytes);
         }

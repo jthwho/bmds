@@ -19,6 +19,7 @@
 #include "fonts.h"
 #include "layout.h"
 #include "platform.h"
+#include "scripts.h"
 #include "theme.h"
 #include "transitions.h"
 
@@ -34,9 +35,11 @@ namespace preso {
                 public:
                         /**
                          * @brief Presents the deck at @p path (kept: it must live as long as this),
-                         *        its problems written to @p messages (nullptr: nowhere).
+                         *        its problems written to @p messages (nullptr: nowhere), its scripts
+                         *        made by @p scripts (nullptr: none, their regions boxes).
                          */
-                        Presenter(Platform &platform, const char *path, FILE *messages);
+                        Presenter(Platform &platform, const char *path, FILE *messages, ScriptsMaker scripts = nullptr,
+                                  bool trusted = false);
                         ~Presenter() override;
                         Presenter(const Presenter &) = delete;
                         Presenter &operator=(const Presenter &) = delete;
@@ -56,6 +59,12 @@ namespace preso {
                         uint32_t step() const { return _step; }
                         bool     inTransition() const { return _mode == Mode::Transition; }
                         bool     inOverview() const { return _mode == Mode::Overview; }
+                        /** @brief Whether the deck's `run:` demos are asked about now (§7.7). */
+                        bool asking() const { return _mode == Mode::Question; }
+                        /** @brief Whether its `run:` demos may run: trusted, or the question answered yes. */
+                        bool demosAllowed() const { return _demosAllowed; }
+                        /** @brief Whether a script region has the keys now. */
+                        bool     regionEntered() const { return _entered != nullptr; }
                         uint32_t selected() const { return _selected; }
                         /** @brief The colour the screen is blanked to (Action::Black, White), or NoColor. */
                         Color         blank() const { return _blank; }
@@ -74,14 +83,17 @@ namespace preso {
                         enum class Mode : uint8_t {
                                 Slides,
                                 Transition,
-                                Overview
+                                Overview,
+                                Question ///< The deck's demos asked about, before its first slide.
                         };
 
                         Error read(Loaded *&loaded);
                         void  drop(Loaded *loaded);
-                        void  target(Action action, uint32_t &slide, uint32_t &step) const;
+                        void  target(Action action, uint32_t &slide, uint32_t &step);
                         void  draw(Canvas &canvas, uint32_t slide, uint32_t step);
-                        void  show(bool forward);
+                        // Shows the slide and step now wanted; going @p forward (a transition may play),
+                        // its regions playing their first beat if it is at its start and @p play.
+                        void  show(bool forward, bool play);
                         void  finishTransition();
                         void  showOverlay();
                         void  key(const Event &event);
@@ -96,12 +108,36 @@ namespace preso {
                         uint32_t perPage() const { return _columns * _rows; }
                         void     prepareAhead();
                         void     printNewDiagnostics();
-                        uint32_t fragments(uint32_t slide) const;
+                        // The slide's layout (made if it isn't yet), nullptr if it can't be.
+                        SlideLayout *layoutOf(uint32_t slide);
+                        uint32_t     steps(uint32_t slide);
+                        // Script regions: sought to what @p step shows (played: as their beats end),
+                        // their frames drawn, the frame loop on while they move.
+                        void seekRegions(uint32_t slide, uint32_t step, bool played);
+                        bool stepRegions();
+                        void redrawRegions(bool present);
+                        bool regionsMoving();
+                        void updateAnimation();
+                        void frameRegions(int64_t ns);
+                        // Interactive pieces (§7.10)
+                        void          arrived(uint32_t from);
+                        void          enter(const DrawOp *op);
+                        void          leave();
+                        const DrawOp *regionAt(int32_t x, int32_t y);
+                        const DrawOp *firstInteractive();
+                        void          toRegion(const DrawOp *op, const ScriptInput &input);
+                        void          pointer(const Event &event);
+                        void          updatePointer();
+                        void          drawQuestion();
+                        void          answer(bool yes);
+                        uint32_t      demoNames(char *out, size_t size);
+                        void          watchFolders(const char *deckFolder);
 
                         Platform   &_platform;
                         const char *_path;
-                        FILE       *_messages;
-                        FontCache   _fonts;
+                        FILE        *_messages;
+                        ScriptsMaker _makeScripts;
+                        FontCache    _fonts;
                         ImageCache  _images;
                         Loaded     *_loaded = nullptr;
                         Deck       *_deck = nullptr;
@@ -130,6 +166,18 @@ namespace preso {
                         uint32_t _lastStage = UINT32_MAX; ///< Pixelate's stage last shown.
                         uint32_t _frameIndex = 0;
                         Color    _blank = NoColor;
+                        bool          _animating = false;       ///< Regions' frames asked for.
+                        bool          _regionsStale = false;    ///< _ahead's regions drawn before they last changed.
+                        int64_t       _lastFrame = 0;           ///< When regions' clocks last moved.
+                        Rect          _unglowed;                ///< What moving frames drew without the theme's glow.
+                        const DrawOp *_entered = nullptr;       ///< The region with the keys.
+                        const DrawOp *_pointerRegion = nullptr; ///< The region a held button went down in.
+                        uint32_t      _buttons = 0;             ///< The pointer's, as last told.
+                        bool          _pointerShown = false;
+                        bool          _arriving = false; ///< show() going on (its slide's sound plays).
+                        int32_t       _slideSound = -1;  ///< `sound:`'s, loaded.
+                        bool          _trusted = false;
+                        bool          _demosAllowed = false;
                         char     _typed[8] = {}; ///< A slide's number, typed before Enter.
                         uint32_t _typedLength = 0;
                         // The overview: a grid of thumbnails, made one a frame and kept.
@@ -144,11 +192,12 @@ namespace preso {
         };
 
         /**
-         * @brief `preso check`'s work: reads @p path, lays out every slide, and writes what it
-         *        found to @p out (`file:line: warning: ...`); with @p verbose, the slides too.
+         * @brief `preso check`'s work: reads @p path, lays out every slide (running each script to
+         *        its end, with @p scripts), and writes what it found to @p out (`file:line:
+         *        warning: ...`); with @p verbose, the slides too.
          * @return 0: nothing found; 1: something reported; 2: the deck couldn't be read.
          */
-        int checkDeck(Platform &platform, const char *path, bool verbose, FILE *out);
+        int checkDeck(Platform &platform, const char *path, bool verbose, FILE *out, ScriptsMaker scripts = nullptr);
 
 } // namespace preso
 

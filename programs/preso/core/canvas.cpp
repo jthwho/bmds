@@ -22,6 +22,15 @@ namespace preso {
                 return Rect{left, top, right - left, bottom - top};
         }
 
+        Rect uniteRects(const Rect &a, const Rect &b) {
+                if (a.isEmpty()) return b;
+                if (b.isEmpty()) return a;
+                int32_t x0 = a.x < b.x ? a.x : b.x, y0 = a.y < b.y ? a.y : b.y;
+                int32_t x1 = a.x + a.width > b.x + b.width ? a.x + a.width : b.x + b.width;
+                int32_t y1 = a.y + a.height > b.y + b.height ? a.y + a.height : b.y + b.height;
+                return Rect{x0, y0, x1 - x0, y1 - y0};
+        }
+
         void Canvas::attach(void *pixels, uint32_t stride, int32_t width, int32_t height, PixelFormat format) {
                 _pixels = static_cast<uint8_t *>(pixels);
                 _stride = stride;

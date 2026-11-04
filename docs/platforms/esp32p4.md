@@ -757,7 +757,15 @@ until silicon v3; then test again.
 - **No double-precision FPU:** a `double` is software (the ROM's libgcc; `tools/bmds-prof` shows
   the samples as `??`, called from the code that uses the doubles). SVOX Pico's fast exponential
   was double: a tenth of its synthesis; in `float`, 11 % faster (`devplan/speech.md` §12). Look
-  for `double` and unsuffixed constants (`0.5`) in vendored DSP code.
+  for `double` and unsuffixed constants (`0.5`) in vendored DSP code. musl's `sinf`, `cosf` and
+  `powf` work in `double` inside, so calling them per point (a circle's 125) is software
+  arithmetic: Preso turns a step instead (`ellipsePoints()`, two sines a circle) and cubes its
+  easing by hand (`devplan/preso.md` §14, step 6).
+- **Mixing RGB565 pixels:** spread a pixel as `(p | p << 16) & 0x07E0F81F` and its three
+  channels mix in one multiply by a 5-bit opacity, then fold back (`m | m >> 16`). Preso's
+  per-pixel `Canvas::blend` (unpack, a general colour mix, repack, through calls) took 5.6 ms for
+  a 120-pixel circle filled half transparent on a PSRAM canvas; mixed this way, 2.3 ms
+  (`core/raster.cpp`). 32 levels show no banding on antialiased edges.
 - **`#pragma GCC unroll 4` didn't help** the voice loop (68 cycles a sample either way).
 - **`std::atomic<bool>::load` isn't always inlined at `-Os`,** and an out-of-line copy is a weak
   function in flash. The scanout's DW-GDMA interrupt (`BMDS_ISR_ATTR`, IRAM-safe: it runs while

@@ -91,6 +91,9 @@ namespace preso {
                 Down,
                 Choose, ///< Go to the slide chosen.
                 Close,  ///< Back to the slide shown before.
+                // Script regions (§7.10):
+                Into,  ///< Enter the slide's interactive region: its keys are the script's (I).
+                Leave, ///< Give the keys back (InputMode::Script's, Escape).
         };
 
         /**
@@ -118,6 +121,7 @@ namespace preso {
         enum class InputMode : uint8_t {
                 Deck,     ///< Next, Previous...
                 Overview, ///< Left, Right, Up, Down, Choose, Close.
+                Script,   ///< Leave; every other key a key (an entered script region's).
         };
 
         struct Event {
@@ -125,6 +129,9 @@ namespace preso {
                                 Action, ///< `action`.
                                 Key,    ///< A key no action took: `key` (HID usage), `character` (0: none).
                                 Close,  ///< The window was closed.
+                                KeyUp,  ///< A key let go (InputMode::Script's): `key`.
+                                Pointer, ///< The pointer moved or a button changed: `x`, `y`, `buttons`.
+                                Wheel,   ///< `wheel` notches (away from the user positive), at `x`, `y`.
                         };
 
                         Type     type = Type::Action;
@@ -132,6 +139,10 @@ namespace preso {
                         bool     repeat = false; ///< A held key's repeat.
                         uint32_t key = 0;
                         uint32_t character = 0;
+                        int32_t  x = 0; ///< Pointer, Wheel: in the slide's pixels.
+                        int32_t  y = 0;
+                        uint32_t buttons = 0; ///< Pointer: down, a bit each (1 the first).
+                        int32_t  wheel = 0;
         };
 
         /** @brief What the platform's loop calls (Platform::run()). */
@@ -168,6 +179,8 @@ namespace preso {
                          */
                         [[nodiscard]] virtual Error readFile(const char *path, uint32_t maxLength, char **data,
                                                              uint32_t *length);
+                        /** @brief Whether there is a file at @p path (by default through stdio). */
+                        virtual bool fileExists(const char *path);
 
                         // ---- Fonts: a font is a name ("IBM Plex Sans 32 bold"), open as a handle.
 
@@ -254,6 +267,16 @@ namespace preso {
                         /** @brief Shows @p canvas (the screen's size and format). */
                         virtual void present(const Canvas &canvas) { (void)canvas; }
                         /**
+                         * @brief Shows @p canvas where only @p count @p areas changed since the last
+                         *        present() or presentAreas() (a script region's frame). By default
+                         *        all of it.
+                         */
+                        virtual void presentAreas(const Canvas &canvas, const Rect *areas, uint32_t count) {
+                                (void)areas;
+                                (void)count;
+                                present(canvas);
+                        }
+                        /**
                          * @brief A screen buffer to draw a frame straight into (a transition, an
                          *        overlay), as @p canvas: false if the platform has none (then the
                          *        frame isn't drawn). Waits for one to be free: on BMDS that paces
@@ -291,6 +314,22 @@ namespace preso {
                         virtual void animate(bool on) { (void)on; }
                         /** @brief What the keys mean from now on. */
                         virtual void setInputMode(InputMode mode) { (void)mode; }
+                        /** @brief The system's pointer over the slides, or none (the default). */
+                        virtual void setPointerVisible(bool visible) { (void)visible; }
+
+                        // ---- Sounds (none: -1)
+
+                        /** @brief A sound file (WAV, MP3, Ogg, FLAC: the platform's) loaded to play, or a negative error. */
+                        virtual int32_t openSound(const char *path) {
+                                (void)path;
+                                return -1;
+                        }
+                        /** @brief Plays sound @p sound at @p volume (0 to 1), over what plays. */
+                        virtual void playSound(int32_t sound, float volume) {
+                                (void)sound;
+                                (void)volume;
+                        }
+                        virtual void closeSound(int32_t sound) { (void)sound; }
                         /** @brief Monotonic nanoseconds (by default C11's timespec_get). */
                         virtual int64_t now();
 

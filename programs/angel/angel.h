@@ -94,14 +94,58 @@ namespace angel {
         void check(int r, const char *what);
         // Every declaration registered, one a line, sorted (`--api`); with their help (`--api-help`).
         void printApi(asIScriptEngine *engine, bool help);
+        // The help kept for the declarations registered let go (a host that makes engines again:
+        // the next one's registrations keep theirs).
+        void forgetHelp();
         // The same as records for an editor (`angel --serve`'s `api`): `api KIND NAME DECLARATION
         // HELP`, tab-separated, a line each; KIND is type, constructor, method, property, enum,
         // constant, function or variable; a member's NAME is `Type.name`.
         void printApiRecords(asIScriptEngine *engine);
 
+        // ---- The engine (engine.cpp): the language's settings, as every host makes it; with
+        // @p lineCues, built with the cues a line callback needs (a debugger's, a runaway stop).
+        // @p message gets the compiler's messages (null: none). @return Null if it can't be made.
+        using MessageCallback = void (*)(const asSMessageInfo *message, void *context);
+        asIScriptEngine *createEngine(MessageCallback message, void *context, bool lineCues);
+
+        // ---- What the language's functions reach outside the script (core.cpp). A host that
+        // embeds angel sets its own (devplan/preso.md §7.9); angel's are stdout, the clock, and
+        // one random state seeded from the system.
+        struct RandomState {
+                        uint32_t state[4];
+                        bool     seeded;
+        };
+        struct LanguageHost {
+                        void (*write)(void *context, const char *data, size_t length); // print's (null: stdout)
+                        uint64_t (*millis)(void *context); // millis()'s (null: the engine's age)
+                        RandomState *random;               // random()'s (null: angel's own)
+                        void        *context;
+        };
+        // From now on (kept, not copied; null: angel's own).
+        void setLanguageHost(const LanguageHost *host);
+        void seedRandom(RandomState &state, uint32_t seed);
+
         // ---- The parts (each registers its own).
         void registerString(asIScriptEngine *engine);
+        // The language's part of the core, which every host has: print, maths, random numbers,
+        // millis, assert, throw.
+        void registerLanguage(asIScriptEngine *engine);
+        // The program's (program.cpp): input, args, env, exit, sleep.
+        void registerProgram(asIScriptEngine *engine);
+        // Both of them.
         void registerCore(asIScriptEngine *engine);
+        // Colours (colors.cpp): Color::, rgb(), hsv(), mix(); the graphics register them.
+        void registerColors(asIScriptEngine *engine);
+
+        // ---- Keys' names (keys.cpp): HID keys (page 7) as scripts name them.
+        struct KeyName {
+                        uint8_t     usage;
+                        const char *name;
+        };
+        extern const KeyName keyNames[];
+        extern const size_t  keyNameCount;
+        // HID usage @p usage ((page << 16) | usage) as scripts name it into @p out ("" if none).
+        void keyName(uint32_t usage, char *out, size_t size);
         void registerConsole(asIScriptEngine *engine);
         void registerFiles(asIScriptEngine *engine);
         void registerSystem(asIScriptEngine *engine);

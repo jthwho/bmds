@@ -47,7 +47,8 @@ namespace preso {
 
                 private:
                         struct Entry {
-                                        FontKey     key;
+                                        FontKey     key; ///< Its family is `family`: a script's font may go first.
+                                        char        family[64] = {};
                                         int32_t     handle = -1;
                                         FontMetrics metrics;
                                         uint32_t    used = 0;

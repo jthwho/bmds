@@ -17,6 +17,7 @@
 #include "deck.h"
 #include "fonts.h"
 #include "images.h"
+#include "scripts.h"
 #include "theme.h"
 
 namespace preso {
@@ -27,12 +28,14 @@ namespace preso {
                 Text,    ///< `text` in `font` and `color`, its top left at (`x`, `y`).
                 Image,   ///< `image` scaled to `width` × `height` at (`x`, `y`), inside `clip`; `alpha`: its filters.
                 Pattern, ///< `image` at its own size (`width` × `height`), tiled over `clip`.
+                Script,  ///< `script`'s region, `width` × `height` at (`x`, `y`); its beats from step `beat`.
         };
 
         struct DrawOp {
                         OpType       type = OpType::Fill;
                         uint8_t      alpha = 255;  ///< Fill: opacity; Frame: line width.
                         uint16_t     fragment = 0; ///< Drawn from this step on (0: always).
+                        uint16_t      beat = 0;     ///< Script: the step of its first beat.
                         int32_t      x = 0;
                         int32_t      y = 0;
                         int32_t      width = 0;
@@ -40,8 +43,9 @@ namespace preso {
                         Color        color = 0;
                         FontKey      font;
                         StringView   text;
-                        const Image *image = nullptr;
-                        Rect         clip;
+                        const Image  *image = nullptr;
+                        ScriptRegion *script = nullptr;
+                        Rect          clip;
                         DrawOp      *next = nullptr;
         };
 
@@ -50,6 +54,7 @@ namespace preso {
                         const Theme *theme = nullptr; ///< The slide's (its classes' variant).
                         Color        background = 0xFFFFFF;
                         DrawOp      *ops = nullptr;
+                        uint16_t     steps = 0;         ///< Its steps after the first: fragments and beats.
                         int32_t      contentBottom = 0; ///< Where the content ended.
                         bool         overflows = false; ///< Past the content's box: cut at the slide's edge.
         };
@@ -71,6 +76,9 @@ namespace preso {
                         ~Layouter();
                         Layouter(const Layouter &) = delete;
                         Layouter &operator=(const Layouter &) = delete;
+
+                        /** @brief Script regions made by @p scripts (nullptr, the default: boxes). */
+                        void setScripts(Scripts *scripts) { _scripts = scripts; }
 
                         /**
                          * @brief Lays out @p slide in @p arena (which must live as long as the deck);
@@ -101,6 +109,9 @@ namespace preso {
                         void    imageBox(Flow &flow, const Image &image, int32_t x, int32_t y, int32_t w, int32_t h,
                                          bool background);
                         void    placeholder(Flow &flow, const Image &image, int32_t x, int32_t y, int32_t w, int32_t h);
+                        void     scriptBox(Flow &flow, const Image &image, int32_t x, int32_t y, int32_t w, int32_t h);
+                        uint16_t stepOf(Flow &flow);
+                        bool     scriptOp(Flow &flow, ScriptPlace &place, const Image *image, const Rect &r);
                         bool    naturalSize(const Image &image, int32_t *w, int32_t *h);
                         void    backgrounds(Flow &flow, const Slide &slide);
                         void    heading(Flow &flow, const Block &b);
@@ -116,6 +127,7 @@ namespace preso {
                         FontCache   &_fonts;
                         Platform    &_platform;
                         ImageCache  *_images;
+                        Scripts     *_scripts = nullptr;
                         int32_t      _width;
                         int32_t      _height;
                         Piece       *_pieces = nullptr;
@@ -124,15 +136,18 @@ namespace preso {
                         bool         _outOfMemory = false;
         };
 
-        /** @brief Draws @p layout as it is at step @p step (0: before any fragment) onto @p canvas. */
         /**
          * @brief Draws @p layout as it is at step @p step (0: before any fragment) onto @p canvas, its
          *        pictures from @p images (nullptr: their boxes) in its theme's palette, its theme's
          *        effects over it. With @p maxCharacters, only that many of its text's characters (the
-         *        `type` transition), and no effects (they come with the whole of it).
+         *        `type` transition), and no effects (they come with the whole of it). With @p area,
+         *        only that part of it (a script region's frame), effects included: an area that
+         *        changed must be grown by effectReach() first (a glow reaches round what changed).
+         *        With @p moving (a frame of something moving), the area's glow is left out: on the
+         *        board it costs a tenth of a second for a region's part, and is drawn when it stops.
          */
         void drawSlide(const SlideLayout &layout, uint32_t step, Canvas &canvas, FontCache &fonts, ImageCache *images,
-                       uint32_t maxCharacters = UINT32_MAX);
+                       uint32_t maxCharacters = UINT32_MAX, const Rect *area = nullptr, bool moving = false);
 
         /** @brief The characters of @p layout's text at step @p step (what `type` types). */
         uint32_t countCharacters(const SlideLayout &layout, uint32_t step);

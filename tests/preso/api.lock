@@ -1,0 +1,654 @@
+# The deck profile's lock (devplan/preso.md §7.8; checked by tests/scripts/apilock.py against preso --api).
+# Userspace ABI: append only. A line here is never changed or removed to make the check pass;
+# new API is appended (the one edit allowed).
+Animation@ Animation::delay(float)
+Animation@ Animation::duration(float)
+Animation@ Animation::ease(Ease)
+Animation@ Bars::highlight(int)
+Animation@ Bars::highlight(int, uint)
+Animation@ Bars::set(int, float)
+Animation@ Bars::swap(int, int)
+Animation@ Bars::unhighlight(int)
+Animation@ colorTo(Shape@, uint)
+Animation@ fadeIn(Shape@)
+Animation@ fadeOut(Shape@)
+Animation@ fillTo(Shape@, uint)
+Animation@ grow(Shape@)
+Animation@ move(Shape@, float, float)
+Animation@ rotateTo(Shape@, float)
+Animation@ scaleTo(Shape@, float)
+Animation@ shift(Shape@, float, float)
+Animation@ shrink(Shape@)
+Animation@ transform(Shape@, Shape@)
+Animation@ tween(Shape@, const string&in, float)
+Animation@ write(Shape@)
+Arrow@ Arrow(float, float, float, float)
+Arrow@ Arrow::at(float, float)
+Arrow@ Shape::opCast()
+Bars@ Bars(const float[]&in, float = 600, float = 300)
+Bars@ Bars::at(float, float)
+Bars@ Shape::opCast()
+Circle@ Circle(float)
+Circle@ Circle::at(float, float)
+Circle@ Shape::opCast()
+Code@ Code(const string&in, const string&in = "")
+Code@ Code::at(float, float)
+Code@ Shape::opCast()
+Ease::Bounce = 4
+Ease::In = 1
+Ease::InOut = 3
+Ease::Linear = 0
+Ease::Out = 2
+Font@ Font(const string&in)
+Font@ Font::sized(int) const
+Font@ Theme::font(const string&in) const
+Grid@ Grid(float, float, float)
+Grid@ Grid::at(float, float)
+Grid@ Shape::opCast()
+Group@ Group()
+Group@ Group::at(float, float)
+Group@ Shape::opCast()
+Image@ Image(const string&in)
+Image@ Image(const string&in, float, float)
+Image@ Image::at(float, float)
+Image@ Shape::opCast()
+Line@ Line(float, float, float, float)
+Line@ Line::at(float, float)
+Line@ Shape::opCast()
+Polygon@ Polygon(const float[]&in)
+Polygon@ Polygon::at(float, float)
+Polygon@ Shape::opCast()
+Rect@ Rect(float, float)
+Rect@ Rect::at(float, float)
+Rect@ Shape::opCast()
+Shape@ Arrow::opImplCast()
+Shape@ Bars::opImplCast()
+Shape@ Circle::opImplCast()
+Shape@ Code::opImplCast()
+Shape@ Grid::opImplCast()
+Shape@ Group::opImplCast()
+Shape@ Image::opImplCast()
+Shape@ Line::opImplCast()
+Shape@ Polygon::opImplCast()
+Shape@ Rect::opImplCast()
+Shape@ Shape::at(float, float)
+Shape@ Text::opImplCast()
+T& T[]::opIndex(uint)
+T[]& T[]::opAssign(const T[]&in)
+T[]@ $list(int&in, int&in) { repeat T }
+T[]@ array(int&in)
+T[]@ array(int&in, uint)
+T[]@ array(int&in, uint, const T&in)
+Text@ Shape::opCast()
+Text@ Text(const ?&in, Font@ = null)
+Text@ Text::at(float, float)
+bool Arrow::get_visible() const
+bool Bars::get_visible() const
+bool Circle::get_visible() const
+bool Code::get_visible() const
+bool Grid::get_visible() const
+bool Group::get_visible() const
+bool Image::get_visible() const
+bool Line::get_visible() const
+bool Polygon::get_visible() const
+bool Rect::get_visible() const
+bool Shape::get_visible() const
+bool T[]::isEmpty() const
+bool T[]::opEquals(const T[]&in) const
+bool T[]::opForEnd(uint) const
+bool Text::get_visible() const
+bool string::contains(const string&in) const
+bool string::endsWith(const string&in) const
+bool string::isEmpty() const
+bool string::opEquals(const string&in) const
+bool string::startsWith(const string&in) const
+class Animation
+class Arrow
+class Bars
+class Canvas
+class Circle
+class Code
+class Font
+class Grid
+class Group
+class Image
+class Line
+class Polygon
+class Rect
+class Region
+class Shape
+class Text
+class Theme
+class array<T>
+const Region region
+const T& T[]::opForValue0(uint) const
+const T& T[]::opIndex(uint) const
+const Theme theme
+const float PI
+const uint Color::Black
+const uint Color::Blue
+const uint Color::Brown
+const uint Color::Cyan
+const uint Color::DarkGray
+const uint Color::Gray
+const uint Color::Green
+const uint Color::LightGray
+const uint Color::Lime
+const uint Color::Magenta
+const uint Color::Navy
+const uint Color::Orange
+const uint Color::Pink
+const uint Color::Purple
+const uint Color::Red
+const uint Color::Sky
+const uint Color::White
+const uint Color::Yellow
+const uint8& string::opIndex(uint) const
+double abs(double)
+double acos(double)
+double asin(double)
+double atan(double)
+double atan2(double, double)
+double ceil(double)
+double clamp(double, double, double)
+double cos(double)
+double exp(double)
+double floor(double)
+double log(double)
+double log10(double)
+double max(double, double)
+double min(double, double)
+double parseDouble(const string&in)
+double pow(double, double)
+double round(double)
+double sin(double)
+double sqrt(double)
+double tan(double)
+enum Ease
+float Arrow::get_fillOpacity() const
+float Arrow::get_lineWidth() const
+float Arrow::get_opacity() const
+float Arrow::get_rotation() const
+float Arrow::get_scale() const
+float Arrow::get_x() const
+float Arrow::get_y() const
+float Bars::get_fillOpacity() const
+float Bars::get_lineWidth() const
+float Bars::get_opacity() const
+float Bars::get_rotation() const
+float Bars::get_scale() const
+float Bars::get_x() const
+float Bars::get_y() const
+float Bars::value(int) const
+float Circle::get_fillOpacity() const
+float Circle::get_lineWidth() const
+float Circle::get_opacity() const
+float Circle::get_radius() const
+float Circle::get_rotation() const
+float Circle::get_scale() const
+float Circle::get_x() const
+float Circle::get_y() const
+float Code::get_fillOpacity() const
+float Code::get_lineWidth() const
+float Code::get_opacity() const
+float Code::get_rotation() const
+float Code::get_scale() const
+float Code::get_x() const
+float Code::get_y() const
+float Grid::get_fillOpacity() const
+float Grid::get_lineWidth() const
+float Grid::get_opacity() const
+float Grid::get_rotation() const
+float Grid::get_scale() const
+float Grid::get_x() const
+float Grid::get_y() const
+float Group::get_fillOpacity() const
+float Group::get_lineWidth() const
+float Group::get_opacity() const
+float Group::get_rotation() const
+float Group::get_scale() const
+float Group::get_x() const
+float Group::get_y() const
+float Image::get_fillOpacity() const
+float Image::get_height() const
+float Image::get_lineWidth() const
+float Image::get_opacity() const
+float Image::get_rotation() const
+float Image::get_scale() const
+float Image::get_width() const
+float Image::get_x() const
+float Image::get_y() const
+float Line::get_fillOpacity() const
+float Line::get_lineWidth() const
+float Line::get_opacity() const
+float Line::get_rotation() const
+float Line::get_scale() const
+float Line::get_x() const
+float Line::get_y() const
+float Polygon::get_fillOpacity() const
+float Polygon::get_lineWidth() const
+float Polygon::get_opacity() const
+float Polygon::get_rotation() const
+float Polygon::get_scale() const
+float Polygon::get_x() const
+float Polygon::get_y() const
+float Rect::get_fillOpacity() const
+float Rect::get_height() const
+float Rect::get_lineWidth() const
+float Rect::get_opacity() const
+float Rect::get_rotation() const
+float Rect::get_scale() const
+float Rect::get_width() const
+float Rect::get_x() const
+float Rect::get_y() const
+float Shape::get_fillOpacity() const
+float Shape::get_lineWidth() const
+float Shape::get_opacity() const
+float Shape::get_rotation() const
+float Shape::get_scale() const
+float Shape::get_x() const
+float Shape::get_y() const
+float Text::get_fillOpacity() const
+float Text::get_height() const
+float Text::get_lineWidth() const
+float Text::get_opacity() const
+float Text::get_rotation() const
+float Text::get_scale() const
+float Text::get_width() const
+float Text::get_x() const
+float Text::get_y() const
+float abs(float)
+float acos(float)
+float asin(float)
+float atan(float)
+float atan2(float, float)
+float ceil(float)
+float clamp(float, float, float)
+float cos(float)
+float exp(float)
+float floor(float)
+float log(float)
+float log10(float)
+float max(float, float)
+float min(float, float)
+float parseFloat(const string&in)
+float pow(float, float)
+float random()
+float round(float)
+float sin(float)
+float sqrt(float)
+float tan(float)
+funcdef bool T[]::less(const T&in, const T&in)
+int Canvas::height() const
+int Canvas::text(float, float, const ?&in, uint, Font@ = null)
+int Canvas::width() const
+int Font::get_size() const
+int Region::get_height() const
+int Region::get_width() const
+int T[]::find(const T&in) const
+int T[]::find(uint, const T&in) const
+int T[]::findByRef(const T&in) const
+int T[]::findByRef(uint, const T&in) const
+int abs(int)
+int clamp(int, int, int)
+int max(int, int)
+int min(int, int)
+int random(int, int)
+int string::find(const string&in, int = 0) const
+int string::findLast(const string&in, int = -1) const
+int string::opCmp(const string&in) const
+int64 parseInt(const string&in, uint = 10)
+string Text::get_text() const
+string chr(uint)
+string formatFloat(double, uint)
+string getExceptionInfo()
+string join(const string[]&in, const string&in)
+string readText(const string&in)
+string string::opAdd(bool) const
+string string::opAdd(const string&in) const
+string string::opAdd(double) const
+string string::opAdd(float) const
+string string::opAdd(int64) const
+string string::opAdd(uint64) const
+string string::opAdd_r(bool) const
+string string::opAdd_r(double) const
+string string::opAdd_r(float) const
+string string::opAdd_r(int64) const
+string string::opAdd_r(uint64) const
+string string::replace(const string&in, const string&in) const
+string string::substr(int, int = -1) const
+string string::toLower() const
+string string::toUpper() const
+string string::trim() const
+string& string::opAddAssign(bool)
+string& string::opAddAssign(const string&in)
+string& string::opAddAssign(double)
+string& string::opAddAssign(float)
+string& string::opAddAssign(int64)
+string& string::opAddAssign(uint64)
+string& string::opAssign(const string&in)
+string::string()
+string::string(const string&in)
+string[]@ string::split() const
+string[]@ string::split(const string&in) const
+uint Arrow::get_color() const
+uint Arrow::get_fill() const
+uint Bars::get_color() const
+uint Bars::get_count() const
+uint Bars::get_fill() const
+uint Circle::get_color() const
+uint Circle::get_fill() const
+uint Code::get_color() const
+uint Code::get_fill() const
+uint Grid::get_color() const
+uint Grid::get_fill() const
+uint Group::get_color() const
+uint Group::get_count() const
+uint Group::get_fill() const
+uint Image::get_color() const
+uint Image::get_fill() const
+uint Line::get_color() const
+uint Line::get_fill() const
+uint Polygon::get_color() const
+uint Polygon::get_fill() const
+uint Rect::get_color() const
+uint Rect::get_fill() const
+uint Shape::get_color() const
+uint Shape::get_fill() const
+uint T[]::length() const
+uint T[]::opForBegin() const
+uint T[]::opForNext(uint) const
+uint T[]::opForValue1(uint) const
+uint Text::get_color() const
+uint Text::get_fill() const
+uint Theme::color(const string&in) const
+uint hsv(float, float, float)
+uint mix(uint, uint, float)
+uint ord(const string&in)
+uint rgb(int, int, int)
+uint string::length() const
+uint64 millis()
+uint8& string::opIndex(uint)
+value string
+void Arrow::set_color(uint)
+void Arrow::set_fill(uint)
+void Arrow::set_fillOpacity(float)
+void Arrow::set_lineWidth(float)
+void Arrow::set_opacity(float)
+void Arrow::set_rotation(float)
+void Arrow::set_scale(float)
+void Arrow::set_visible(bool)
+void Arrow::set_x(float)
+void Arrow::set_y(float)
+void Bars::set_color(uint)
+void Bars::set_fill(uint)
+void Bars::set_fillOpacity(float)
+void Bars::set_lineWidth(float)
+void Bars::set_opacity(float)
+void Bars::set_rotation(float)
+void Bars::set_scale(float)
+void Bars::set_visible(bool)
+void Bars::set_x(float)
+void Bars::set_y(float)
+void Canvas::circle(float, float, float, uint, float = 2)
+void Canvas::clear(uint = Color::Black)
+void Canvas::ellipse(float, float, float, float, uint, float = 2)
+void Canvas::fillCircle(float, float, float, uint, float = 1)
+void Canvas::fillEllipse(float, float, float, float, uint, float = 1)
+void Canvas::fillPolygon(const float[]&in, uint, float = 1)
+void Canvas::fillRect(float, float, float, float, uint, float = 1)
+void Canvas::line(float, float, float, float, uint, float = 2)
+void Canvas::plot(float, float, uint)
+void Canvas::polygon(const float[]&in, uint, float = 2)
+void Canvas::rect(float, float, float, float, uint, float = 2)
+void Circle::set_color(uint)
+void Circle::set_fill(uint)
+void Circle::set_fillOpacity(float)
+void Circle::set_lineWidth(float)
+void Circle::set_opacity(float)
+void Circle::set_radius(float)
+void Circle::set_rotation(float)
+void Circle::set_scale(float)
+void Circle::set_visible(bool)
+void Circle::set_x(float)
+void Circle::set_y(float)
+void Code::set_color(uint)
+void Code::set_fill(uint)
+void Code::set_fillOpacity(float)
+void Code::set_lineWidth(float)
+void Code::set_opacity(float)
+void Code::set_rotation(float)
+void Code::set_scale(float)
+void Code::set_visible(bool)
+void Code::set_x(float)
+void Code::set_y(float)
+void Grid::set_color(uint)
+void Grid::set_fill(uint)
+void Grid::set_fillOpacity(float)
+void Grid::set_lineWidth(float)
+void Grid::set_opacity(float)
+void Grid::set_rotation(float)
+void Grid::set_scale(float)
+void Grid::set_visible(bool)
+void Grid::set_x(float)
+void Grid::set_y(float)
+void Group::add(Shape@)
+void Group::remove(Shape@)
+void Group::set_color(uint)
+void Group::set_fill(uint)
+void Group::set_fillOpacity(float)
+void Group::set_lineWidth(float)
+void Group::set_opacity(float)
+void Group::set_rotation(float)
+void Group::set_scale(float)
+void Group::set_visible(bool)
+void Group::set_x(float)
+void Group::set_y(float)
+void Image::set_color(uint)
+void Image::set_fill(uint)
+void Image::set_fillOpacity(float)
+void Image::set_height(float)
+void Image::set_lineWidth(float)
+void Image::set_opacity(float)
+void Image::set_rotation(float)
+void Image::set_scale(float)
+void Image::set_visible(bool)
+void Image::set_width(float)
+void Image::set_x(float)
+void Image::set_y(float)
+void Line::set_color(uint)
+void Line::set_fill(uint)
+void Line::set_fillOpacity(float)
+void Line::set_lineWidth(float)
+void Line::set_opacity(float)
+void Line::set_rotation(float)
+void Line::set_scale(float)
+void Line::set_visible(bool)
+void Line::set_x(float)
+void Line::set_y(float)
+void Polygon::set_color(uint)
+void Polygon::set_fill(uint)
+void Polygon::set_fillOpacity(float)
+void Polygon::set_lineWidth(float)
+void Polygon::set_opacity(float)
+void Polygon::set_rotation(float)
+void Polygon::set_scale(float)
+void Polygon::set_visible(bool)
+void Polygon::set_x(float)
+void Polygon::set_y(float)
+void Rect::set_color(uint)
+void Rect::set_fill(uint)
+void Rect::set_fillOpacity(float)
+void Rect::set_height(float)
+void Rect::set_lineWidth(float)
+void Rect::set_opacity(float)
+void Rect::set_rotation(float)
+void Rect::set_scale(float)
+void Rect::set_visible(bool)
+void Rect::set_width(float)
+void Rect::set_x(float)
+void Rect::set_y(float)
+void Shape::set_color(uint)
+void Shape::set_fill(uint)
+void Shape::set_fillOpacity(float)
+void Shape::set_lineWidth(float)
+void Shape::set_opacity(float)
+void Shape::set_rotation(float)
+void Shape::set_scale(float)
+void Shape::set_visible(bool)
+void Shape::set_x(float)
+void Shape::set_y(float)
+void T[]::insertAt(uint, const T&in)
+void T[]::insertAt(uint, const T[]&inout)
+void T[]::insertLast(const T&in)
+void T[]::removeAt(uint)
+void T[]::removeLast()
+void T[]::removeRange(uint, uint)
+void T[]::reserve(uint)
+void T[]::resize(uint)
+void T[]::reverse()
+void T[]::sort(T[]::less&in, uint = 0, uint = uint(-1))
+void T[]::sortAsc()
+void T[]::sortAsc(uint, uint)
+void T[]::sortDesc()
+void T[]::sortDesc(uint, uint)
+void Text::set_color(uint)
+void Text::set_fill(uint)
+void Text::set_fillOpacity(float)
+void Text::set_lineWidth(float)
+void Text::set_opacity(float)
+void Text::set_rotation(float)
+void Text::set_scale(float)
+void Text::set_text(const string&in)
+void Text::set_visible(bool)
+void Text::set_x(float)
+void Text::set_y(float)
+void add(Shape@)
+void assert(bool, const string&in = "")
+void pause()
+void play(Animation@, Animation@, Animation@, Animation@, Animation@, Animation@, float = 1)
+void play(Animation@, Animation@, Animation@, Animation@, Animation@, float = 1)
+void play(Animation@, Animation@, Animation@, Animation@, float = 1)
+void play(Animation@, Animation@, Animation@, float = 1)
+void play(Animation@, Animation@, float = 1)
+void play(Animation@, float = 1)
+void play(const Animation@[]&in, float = 1)
+void print(const ?&in)
+void println()
+void println(const ?&in)
+void randomSeed(uint)
+void remove(Shape@)
+void string::erase(uint, int = -1)
+void string::insert(uint, const string&in)
+void throw(const string&in)
+void wait(float = 1)
+# 2026-11-03: step 7, interactive pieces: Event, widgets, start(), Sound.
+Button@ Button(const string&in)
+Button@ Button::at(float, float)
+Button@ Shape::opCast()
+Event::const EventType type
+Event::const bool repeat
+Event::const int button
+Event::const int wheel
+Event::const int x
+Event::const int y
+Event::const string key
+Event::const string text
+EventType::KeyDown = 0
+EventType::KeyUp = 1
+EventType::MouseDown = 3
+EventType::MouseMove = 2
+EventType::MouseUp = 4
+EventType::Wheel = 5
+Shape@ Button::opImplCast()
+Shape@ Slider::opImplCast()
+Shape@ Toggle::opImplCast()
+Slider@ Shape::opCast()
+Slider@ Slider(float = 0, float = 1, float = 0, float = 300)
+Slider@ Slider::at(float, float)
+Sound@ Sound(const string&in)
+Toggle@ Shape::opCast()
+Toggle@ Toggle(const string&in, bool = false)
+Toggle@ Toggle::at(float, float)
+bool Button::get_visible() const
+bool Slider::get_visible() const
+bool Toggle::get_on() const
+bool Toggle::get_visible() const
+class Button
+class Event
+class Slider
+class Sound
+class Toggle
+enum EventType
+float Button::get_fillOpacity() const
+float Button::get_lineWidth() const
+float Button::get_opacity() const
+float Button::get_rotation() const
+float Button::get_scale() const
+float Button::get_x() const
+float Button::get_y() const
+float Slider::get_fillOpacity() const
+float Slider::get_lineWidth() const
+float Slider::get_maximum() const
+float Slider::get_minimum() const
+float Slider::get_opacity() const
+float Slider::get_rotation() const
+float Slider::get_scale() const
+float Slider::get_value() const
+float Slider::get_x() const
+float Slider::get_y() const
+float Toggle::get_fillOpacity() const
+float Toggle::get_lineWidth() const
+float Toggle::get_opacity() const
+float Toggle::get_rotation() const
+float Toggle::get_scale() const
+float Toggle::get_x() const
+float Toggle::get_y() const
+funcdef void Callback()
+string Button::get_label() const
+string Toggle::get_label() const
+uint Button::get_color() const
+uint Button::get_fill() const
+uint Slider::get_color() const
+uint Slider::get_fill() const
+uint Toggle::get_color() const
+uint Toggle::get_fill() const
+void Button::onChange(Callback@)
+void Button::set_color(uint)
+void Button::set_fill(uint)
+void Button::set_fillOpacity(float)
+void Button::set_label(const string&in)
+void Button::set_lineWidth(float)
+void Button::set_opacity(float)
+void Button::set_rotation(float)
+void Button::set_scale(float)
+void Button::set_visible(bool)
+void Button::set_x(float)
+void Button::set_y(float)
+void Slider::onChange(Callback@)
+void Slider::set_color(uint)
+void Slider::set_fill(uint)
+void Slider::set_fillOpacity(float)
+void Slider::set_lineWidth(float)
+void Slider::set_opacity(float)
+void Slider::set_rotation(float)
+void Slider::set_scale(float)
+void Slider::set_value(float)
+void Slider::set_visible(bool)
+void Slider::set_x(float)
+void Slider::set_y(float)
+void Sound::play(float = 1)
+void Toggle::onChange(Callback@)
+void Toggle::set_color(uint)
+void Toggle::set_fill(uint)
+void Toggle::set_fillOpacity(float)
+void Toggle::set_label(const string&in)
+void Toggle::set_lineWidth(float)
+void Toggle::set_on(bool)
+void Toggle::set_opacity(float)
+void Toggle::set_rotation(float)
+void Toggle::set_scale(float)
+void Toggle::set_visible(bool)
+void Toggle::set_x(float)
+void Toggle::set_y(float)
+void start(Animation@, float = 1)

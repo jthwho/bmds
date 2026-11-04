@@ -167,6 +167,15 @@ namespace angel {
                 return;
         }
 
+        void forgetHelp() {
+                for (size_t i = 0; i < helpCount; ++i) free(helps[i].decl);
+                free(helps);
+                helps = nullptr;
+                helpCount = 0;
+                helpCapacity = 0;
+                return;
+        }
+
         void printApi(asIScriptEngine *engine, bool help) {
                 Lines lines;
                 Text  line;

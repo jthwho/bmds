@@ -5,8 +5,10 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * The core of the script API: print and input, math, random numbers, time, the command
- * line (`args`), the environment, exit, assert, and script exceptions (throw).
+ * The language's part of the script API, which every host has (devplan/preso.md §7.9): print,
+ * math, random numbers, millis, assert, and script exceptions (throw). What it reaches outside
+ * the script (where print writes, what millis counts, the random numbers' state) is the host's
+ * (setLanguageHost); the program's part (input, args, env, exit, sleep) is program.cpp's.
  */
 
 #include <math.h>
@@ -23,13 +25,11 @@ namespace angel {
 
         namespace {
 
-                int    argumentCount = 0;
-                char **argumentValues = nullptr;
-
-                CScriptArray *arguments = nullptr;
                 int           stringTypeId = 0;
                 const float   pi = 3.14159265358979323846f;
                 int64_t       startMs = 0;
+                // The host's (setLanguageHost), else nullptr: stdout, the clock, ownRandom.
+                const LanguageHost *host = nullptr;
 
                 int64_t monotonicMs() {
                         struct timespec t;
@@ -145,68 +145,30 @@ namespace angel {
                 return;
         }
 
-        void setArguments(int count, char **values) {
-                argumentCount = count;
-                argumentValues = values;
-                return;
-        }
-
-        const char *scriptPath() {
-                return argumentCount > 0 ? argumentValues[0] : nullptr;
-        }
-
-        void releaseArguments() {
-                if (arguments != nullptr) arguments->Release();
-                arguments = nullptr;
-                return;
-        }
-
         namespace {
 
-                // ---- print and input
+                // ---- print
 
-                void writeOut(const Text &text) {
-                        fwrite(text.data(), 1, text.length(), stdout);
+                void writeOut(const char *data, size_t length) {
+                        if (host != nullptr && host->write != nullptr)
+                                host->write(host->context, data, length);
+                        else
+                                fwrite(data, 1, length, stdout);
                         return;
                 }
                 void print(asIScriptGeneric *gen) {
                         Text text;
                         formatValue(gen->GetEngine(), text, gen->GetArgAddress(0), gen->GetArgTypeId(0));
-                        writeOut(text);
+                        writeOut(text.data(), text.length());
                 }
                 void println(asIScriptGeneric *gen) {
                         Text text;
                         formatValue(gen->GetEngine(), text, gen->GetArgAddress(0), gen->GetArgTypeId(0));
                         text.append("\n");
-                        writeOut(text);
+                        writeOut(text.data(), text.length());
                 }
                 void printNewline(asIScriptGeneric *) {
-                        fputc('\n', stdout);
-                }
-                // A line from stdin, without its newline ("" at the end of the input).
-                void readLine(asIScriptGeneric *gen) {
-                        fflush(stdout);
-                        cookedTerminal();
-                        Text line;
-                        char chunk[256];
-                        while (fgets(chunk, sizeof(chunk), stdin) != nullptr) {
-                                size_t     n = strlen(chunk);
-                                const bool end = n != 0 && chunk[n - 1] == '\n';
-                                if (end) --n;
-                                line.append(chunk, n);
-                                if (end) break;
-                        }
-                        size_t n = line.length();
-                        if (n != 0 && line.data()[n - 1] == '\r') --n;
-                        new (gen->GetAddressOfReturnLocation()) String(line.data(), n);
-                }
-                void input(asIScriptGeneric *gen) {
-                        readLine(gen);
-                }
-                void inputPrompt(asIScriptGeneric *gen) {
-                        const String *prompt = static_cast<const String *>(gen->GetArgAddress(0));
-                        fwrite(prompt->data(), 1, prompt->length(), stdout);
-                        readLine(gen);
+                        writeOut("\n", 1);
                 }
 
                 // ---- Math (float, double and int overloads)
@@ -267,33 +229,26 @@ namespace angel {
                         gen->SetReturnDouble(v < lo ? lo : v > hi ? hi : v);
                 }
 
-                // ---- Random numbers: xoshiro128**, seeded from the system's random pool.
+                // ---- Random numbers: xoshiro128**, seeded from the system's random pool unless the
+                // host's state is seeded (a deck's scripts are deterministic).
 
-                uint32_t state[4];
-                bool     seeded = false;
+                RandomState ownRandom = {};
 
+                RandomState &randomState() {
+                        return host != nullptr && host->random != nullptr ? *host->random : ownRandom;
+                }
                 uint32_t rotl(uint32_t x, int k) {
                         return (x << k) | (x >> (32 - k));
                 }
-                void seed(uint32_t value) {
-                        // splitmix32 spreads one number over the state.
-                        for (uint32_t &s : state) {
-                                value += 0x9e3779b9u;
-                                uint32_t z = value;
-                                z = (z ^ (z >> 16)) * 0x85ebca6bu;
-                                z = (z ^ (z >> 13)) * 0xc2b2ae35u;
-                                s = z ^ (z >> 16);
-                        }
-                        seeded = true;
-                        return;
-                }
                 uint32_t next() {
-                        if (!seeded) {
+                        RandomState &r = randomState();
+                        if (!r.seeded) {
                                 uint32_t value = 0;
                                 if (getrandom(&value, sizeof(value), 0) != sizeof(value))
                                         value = uint32_t(time(nullptr));
-                                seed(value);
+                                seedRandom(r, value);
                         }
+                        uint32_t      *state = r.state;
                         const uint32_t result = rotl(state[1] * 5, 7) * 9;
                         const uint32_t t = state[1] << 9;
                         state[2] ^= state[0];
@@ -323,32 +278,20 @@ namespace angel {
                         gen->SetReturnFloat(float(next() >> 8) * (1.0f / 16777216.0f));
                 }
                 void randomSeed(asIScriptGeneric *gen) {
-                        seed(gen->GetArgDWord(0));
+                        seedRandom(randomState(), gen->GetArgDWord(0));
                 }
 
                 // ---- Time
 
                 void millis(asIScriptGeneric *gen) {
-                        gen->SetReturnQWord(asQWORD(monotonicMs() - startMs));
-                }
-                void sleepMs(asIScriptGeneric *gen) {
-                        fflush(stdout);
-                        const uint32_t  ms = gen->GetArgDWord(0);
-                        struct timespec t = {time_t(ms / 1000), long(ms % 1000) * 1000000L};
-                        while (nanosleep(&t, &t) != 0) {}
+                        if (host != nullptr && host->millis != nullptr)
+                                gen->SetReturnQWord(asQWORD(host->millis(host->context)));
+                        else
+                                gen->SetReturnQWord(asQWORD(monotonicMs() - startMs));
                 }
 
-                // ---- The program
+                // ---- Exceptions
 
-                void exitScript(asIScriptGeneric *gen) {
-                        restoreTerminal();
-                        exit(int(gen->GetArgDWord(0)));
-                }
-                void env(asIScriptGeneric *gen) {
-                        const String *name = static_cast<const String *>(gen->GetArgAddress(0));
-                        const char   *value = getenv(name->cStr());
-                        new (gen->GetAddressOfReturnLocation()) String(value != nullptr ? value : "");
-                }
                 void assertTrue(asIScriptGeneric *gen) {
                         if (gen->GetArgByte(0) != 0) return;
                         const String *message = static_cast<const String *>(gen->GetArgAddress(1));
@@ -370,16 +313,31 @@ namespace angel {
 
         } // namespace
 
-        void registerCore(asIScriptEngine *engine) {
+        void seedRandom(RandomState &state, uint32_t value) {
+                // splitmix32 spreads one number over the state.
+                for (uint32_t &s : state.state) {
+                        value += 0x9e3779b9u;
+                        uint32_t z = value;
+                        z = (z ^ (z >> 16)) * 0x85ebca6bu;
+                        z = (z ^ (z >> 13)) * 0xc2b2ae35u;
+                        s = z ^ (z >> 16);
+                }
+                state.seeded = true;
+                return;
+        }
+
+        void setLanguageHost(const LanguageHost *language) {
+                host = language;
+                return;
+        }
+
+        void registerLanguage(asIScriptEngine *engine) {
+                stringTypeId = 0; // this engine's (a host may make another)
                 startMs = monotonicMs();
 
                 def(engine, "void print(const ?&in)", print, "Shows a value (text, a number, an array...).");
                 def(engine, "void println(const ?&in)", println, "Shows a value, then starts a new line.");
                 def(engine, "void println()", printNewline, "Starts a new line.");
-                def(engine, "string input()", input,
-                    "Reads a line typed (without its Enter; \"\" at the end of the input).");
-                def(engine, "string input(const string &in prompt)", inputPrompt,
-                    "Shows the prompt, then reads a line.");
 
                 property(engine, "const float PI", const_cast<float *>(&pi), "3.14159..., half a turn in radians.");
                 def(engine, "float sqrt(float)", math1f<sqrtf, sqrt>, "The square root.");
@@ -435,19 +393,6 @@ namespace angel {
                     "Starts the random numbers from a seed: the same seed, the same numbers.");
 
                 def(engine, "uint64 millis()", millis, "Milliseconds since the script started.");
-                def(engine, "void sleep(uint ms)", sleepMs, "Waits so many milliseconds.");
-
-                arguments = CScriptArray::Create(stringArrayType(engine), asUINT(argumentCount));
-                for (int i = 0; i < argumentCount; ++i) {
-                        String *s = static_cast<String *>(arguments->At(asUINT(i)));
-                        *s = String(argumentValues[i]);
-                }
-                property(engine, "const array<string> args", arguments,
-                         "The command line: args[0] is the script, then its arguments.");
-                def(engine, "string env(const string &in name)", env,
-                    "An environment variable (\"\" if it isn't set).");
-                def(engine, "void exit(int status = 0)", exitScript,
-                    "Ends the script, with an exit status (0: all went well).");
                 def(engine, "void assert(bool condition, const string &in message = \"\")", assertTrue,
                     "Stops the script with an error if the condition isn't true.");
                 def(engine, "void throw(const string &in message)", throwException,

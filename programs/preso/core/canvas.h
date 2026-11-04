@@ -39,6 +39,9 @@ namespace preso {
                         Rect intersected(const Rect &other) const;
         };
 
+        /** @brief The smallest rectangle holding @p a and @p b (an empty one adds nothing). */
+        Rect uniteRects(const Rect &a, const Rect &b);
+
         /**
          * @brief A picture to draw on: pixels someone else owns, a format, a clip.
          *

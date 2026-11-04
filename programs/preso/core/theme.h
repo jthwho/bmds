@@ -118,6 +118,19 @@ namespace preso {
                         /** @brief Space between blocks, in body lines (as sixteenths). */
                         int32_t blockGap16 = 8;
 
+                        /**
+                         * @brief Colours scripts name (`theme.color("Script.Highlight")`), from the
+                         *        theme's `[Script]` section; Script.Accent, Highlight, Muted, Line and
+                         *        Fill have defaults (scriptColor()).
+                         */
+                        static constexpr uint32_t MaxScriptColors = 16;
+                        struct ScriptColor {
+                                        StringView name;
+                                        Color      color = 0;
+                        };
+                        ScriptColor scriptColors[MaxScriptColors];
+                        uint32_t    scriptColorCount = 0;
+
                         // ---- Effects, drawn over the finished slide.
                         uint8_t scanlines = 0;  ///< Every other row darkened by this (of 255).
                         uint8_t glow = 0;       ///< The slide's bright parts blurred and added, this much (of 255).
@@ -125,6 +138,13 @@ namespace preso {
 
                         /** @brief Paper as built in, without its class rules (the start of every theme). */
                         static const Theme &paper();
+
+                        /**
+                         * @brief A colour scripts name: `Script.NAME` (the `[Script]` section's, or a
+                         *        default), or the theme's own (`Accent`, `Text`, `H1`...). False if there
+                         *        is none of that name.
+                         */
+                        bool scriptColor(StringView name, Color *color) const;
         };
 
         /**

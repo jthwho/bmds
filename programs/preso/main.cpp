@@ -6,13 +6,15 @@
  * See LICENSE file in the project root folder for license information.
  *
  * preso (devplan/preso.md): presentations written in Markdown. `preso DECK [SLIDE]` presents
- * a deck; `preso check DECK...` reads decks, lays out their slides, and reports what is wrong.
+ * a deck; `preso check DECK...` reads decks, lays out their slides (running their scripts), and
+ * reports what is wrong; `preso --api` lists what a deck's scripts have (tests/preso/api.lock).
  * The platform is BMDS's on the board (PRESO_BMDS), the headless one elsewhere.
  */
 
 #include <stdio.h>
 #include <string.h>
 #include "core/presenter.h"
+#include "script/runtime.h"
 
 #ifdef PRESO_BMDS
 #include "bmds/bmdsplatform.h"
@@ -30,8 +32,12 @@ namespace {
 
         void usage(FILE *out) {
                 fputs("usage: preso DECK [SLIDE]          present a deck (from slide SLIDE)\n"
+                      "       preso --trust DECK [SLIDE] the same, its scripts with files, the system and the "
+                      "network,\n"
+                      "                                  its demos run without asking\n"
                       "       preso check [-v] DECK...   report what is wrong in decks\n"
                       "       preso theme [NAME]         list the built-in themes, or print one (a start for yours)\n"
+                      "       preso --api | --api-help   what a deck's scripts have, one a line (with help)\n"
                       "       preso --version\n",
                       out);
                 return;
@@ -47,7 +53,7 @@ namespace {
                                 verbose = true;
                                 continue;
                         }
-                        int s = preso::checkDeck(platform, argv[i], verbose, stdout);
+                        int s = preso::checkDeck(platform, argv[i], verbose, stdout, preso::makeAngelScripts);
                         if (s > status) status = s;
                         decks++;
                 }
@@ -58,9 +64,9 @@ namespace {
                 return status;
         }
 
-        int present(const char *path, uint32_t slide) {
+        int present(const char *path, uint32_t slide, bool trusted) {
                 SystemPlatform   platform;
-                preso::Presenter presenter(platform, path, stdout);
+                preso::Presenter presenter(platform, path, stdout, preso::makeAngelScripts, trusted);
                 if (presenter.load() != preso::Error::Ok) return 2;
                 preso::Error error = presenter.run(slide);
                 if (error != preso::Error::Ok) {
@@ -75,6 +81,10 @@ namespace {
 int main(int argc, char **argv) {
         if (argc >= 2 && strcmp(argv[1], "--version") == 0) {
                 printf("preso %s\n", PRESO_VERSION);
+                return 0;
+        }
+        if (argc == 2 && (strcmp(argv[1], "--api") == 0 || strcmp(argv[1], "--api-help") == 0)) {
+                preso::printDeckApi(strcmp(argv[1], "--api-help") == 0);
                 return 0;
         }
         if (argc >= 2 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
@@ -96,13 +106,16 @@ int main(int argc, char **argv) {
                 fputs(text, stdout);
                 return 0;
         }
-        if (argc == 2 || argc == 3) {
-                int32_t slide = argc == 3 ? preso::StringView(argv[2]).toInt(-1) : 1;
-                if (slide < 1) {
+        // Only the command line trusts a deck (devplan/preso.md §7.7).
+        bool trusted = argc >= 2 && strcmp(argv[1], "--trust") == 0;
+        int  first = trusted ? 2 : 1;
+        if (argc - first == 1 || argc - first == 2) {
+                int32_t slide = argc - first == 2 ? preso::StringView(argv[first + 1]).toInt(-1) : 1;
+                if (slide < 1 || argv[first][0] == '-') {
                         usage(stderr);
                         return 2;
                 }
-                return present(argv[1], uint32_t(slide));
+                return present(argv[first], uint32_t(slide), trusted);
         }
         usage(stderr);
         return 2;

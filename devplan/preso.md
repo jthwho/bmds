@@ -6,7 +6,7 @@ SDK program on the card; the talk about BMDS given on BMDS).
 
 The program is `preso` (the user's name, 2026-10-30).
 
-Status: **steps 1 to 5 built** (2026-11-03, §14).
+Status: **steps 1 to 7 built** (2026-11-03, §14).
 
 Revised 2026-11-03 with the user: AngelScript in decks for small animations and interactive
 pieces in the spirit of Manim, the bulk of a deck still Markdown (§7); both forms of script
@@ -409,6 +409,103 @@ Decks are files people keep, so the scene API, the deck profile and the beat rul
 ABI once released: append only, with a lock of their own (`tests/preso/api.lock`, from
 `preso --api`, as angel's `tests/scripts/api.lock`).
 
+### 7.9 Step 6's design (2026-11-03)
+
+What step 6 settles that the sections above leave open:
+
+- **`libangel` is a build split, not a move.** Its files stay in `programs/angel`. The host
+  build makes `bmds_libangel` of them all but `main.cpp` and `debug.cpp`, and the board's
+  makefiles make `libangel.a` the same way. Both `angel` and `preso` link it, and a static
+  library brings in only the files a program reaches: Preso reaches the string, the API's
+  registration, the core and the colours, never the graphics, GUI or network files.
+  - **The engine's settings** (the language's ABI, angel's table) move into
+    `libangel`'s `createEngine()`, so a deck's scripts are the same language as angel's. Only
+    the line cues differ (on in Preso, §7.6).
+  - **The core splits in two.** `registerLanguage` has print, maths, random numbers,
+    `millis`, `assert` and `throw`. `registerProgram` has `input`, `args`, `env`, `exit` and
+    `sleep`. `registerCore` is both, as before, so angel's API is unchanged.
+  - **What the language reaches outside is a host's:** where `print` writes, what `millis`
+    counts, and whose random state is drawn from. Angel's are stdout, the clock and one state;
+    Preso's are the region's.
+  - **The colours** (`Color::`, `rgb`, `hsv`, `mix`) move out of the graphics into their own
+    file, shared.
+- **Where the code lives:**
+  - The core knows scripts only through an interface (`core/scripts.h`: `Scripts`,
+    `ScriptRegion`), so it still has nothing but itself and md4c on its include path. A build
+    without scripting passes no scripts, and regions are boxes.
+  - The runtime is `programs/preso/script/`: AngelScript and `libangel` on its path, portable,
+    no platform header. The antialiased shapes it draws with are the core's (`core/raster`),
+    on the core's `Canvas`.
+- **Steps:** a region's beats are steps of its slide, in the document's order with its
+  fragments. A region met in the layout adds its beats there, and the fragments after it move
+  up. A region knows its beats from a run to its end in fast-forward when it is laid out, so
+  `preso check` runs every script just by laying out every slide.
+- **Positions are centres** (Manim's). An object's `x` and `y` are its centre in the region's
+  pixels, `rotation` is in degrees, clockwise. Objects appear when `add`ed or when an
+  animation brings them in (`fadeIn`, `grow`, `write`), and go with `remove` or an animation
+  that takes them out (`fadeOut`, `shrink`).
+- **Drawing:**
+  - Shapes are polygons filled with exact coverage, so they are smooth as they move.
+  - Text is rendered once into a coverage mask, and drawn from it moved, scaled, turned and
+    faded.
+  - Each frame redraws only the region's part that changed: what the objects covered before,
+    and what they cover now. That part of the slide is redrawn under them, clipped, the theme's
+    effects included, and given to the platform as the damage. (As built, a moving frame leaves
+    a theme's glow out, and the region gets it when it comes to rest: §14.)
+- **Timing:**
+  - A region's clock runs only while its slide is shown and still. A transition shows its
+    first frame.
+  - `play` and `wait` suspend the script's context; `pause` suspends it until Next.
+  - Next while a region is still moving finishes its beat at once, passes the pause, and plays
+    the next beat. Previous and every jump re-run the script in fast-forward: they run `$top`
+    (or `main`) again on a fresh context, which re-initializes the globals, since the top-level
+    patch initializes each one where it is declared.
+- **`--trust` (step 7)** will add angel's system API without its windows and drawing (no
+  `Screen`, `Image`, GUI): the deck's own names (`Rect`, `Image`, `Canvas`, `Slider`) are the
+  scene's, so they don't clash.
+- **Sound** comes with step 7's interactive pieces: it needs the platform's audio, which the
+  core doesn't have yet.
+
+### 7.10 Step 7's design (2026-11-03)
+
+- **`angel run` blocks:** the code box takes the slide's width less a pane (beside it, 45%, at
+  least six code lines tall; `below`: under it, the width, six lines). The pane is a script region
+  whose script is the block's text.
+  - **The gate:** a block's region has a beat before its first statement, so the step after the
+    code appears runs it. Its beats are that and its `pause()`s.
+  - **Output:** printed lines fill the pane in the theme's code font on the code's background;
+    its scene and `draw()` are in the pane too.
+  - **Errors** name the deck's line: the block's first line is the script's line 1.
+- **Interactive pieces:**
+  - **A script's handlers:** `void event(Event@ e)` (angel's names: `EventType::KeyDown`,
+    `MouseDown`..., `e.key` as angel names keys, `x` and `y` in the region's pixels) and
+    `void tick(float dt)`. Either makes its region interactive, and so do widgets.
+  - **Entering a region:** the Into action (I, a pad's West button), a click in it, or
+    `<!-- interactive -->` as its slide appears. While a region is entered, keys go to the
+    script, `tick()` runs each frame, and the region has a thin accent frame. Escape (the
+    `script` set's Leave) gives the keys back. Leaving the slide leaves the region.
+  - **The pointer:** on a slide with an interactive region the system's pointer shows; its moves
+    and clicks over a region are that region's. Elsewhere it stays hidden (the presenter's
+    pointer and ink are step 8's).
+  - **In handlers:** `play()`, `wait()` and `pause()` belong to the script's statements, so a
+    handler starts animations that run alongside with `start(animation, seconds)`.
+  - **Widgets** (objects of the scene, drawn in the theme): `Slider(min, max, value)`,
+    `Button(label)`, `Toggle(label)`, with `value`/`on` and `onChange(callback)`. While entered,
+    Tab moves among them, arrows move a slider, Space or Enter presses; the pointer drags and
+    clicks.
+  - **What isn't replayed:** Previous on an interactive slide runs it from its start (§7.6).
+- **Sound:** `Sound("click.wav").play(volume)` from the deck's folder, and the slide directive
+  `sound: FILE` as a slide appears going forward. Played only live: never in fast-forward or
+  `preso check`. The platform plays sounds (BMDS: libbmdsgame's mixer; the headless one none).
+- **`preso --trust DECK`:** angel's system API without its windows, drawing, sound or GUI
+  (files, the system, the network; as built not its processes, which answer through angel's GUI
+  loop: §14), for that run. Trusted scripts' runaway limit is
+  a second, since a system call may block. `preso check` builds a script that fails the deck
+  profile again with the trusted API: if it builds then, it says the script needs `--trust`.
+- **The question before `run:` demos:** a deck with `run:` slides, opened without `--trust`,
+  asks once before its first slide (Y runs them, N or Escape presents without them). The demos
+  themselves are step 9; until then the answer is kept for them.
+
 ## 8. Also from the same code
 
 - **`preso check DECK`:** parses and lays out every slide without a screen; reports missing
@@ -484,11 +581,11 @@ What an SDL3 platform layer (`programs/preso/sdl/`) needs, so the core is writte
 4. [x] The theme format in full and the retro themes; effects; `Scale=nearest` (§14).
 5. [x] Transitions, the overview, black and white screens, go to (`*` fragments came with step 2;
    §14).
-6. [ ] `libangel` split from angel, with profiles; script regions; the scene API and
+6. [x] `libangel` split from angel, with profiles; script regions; the scene API and
    animations; beats, Previous by fast-forward, determinism, the runaway stop; the deck profile;
-   the API lock.
-7. [ ] `angel run` blocks; interactive pieces (events, entering a region, the widgets);
-   `--trust`, and the question before `run:` demos.
+   the API lock (§7.9, §14). Sound moved to step 7.
+7. [x] `angel run` blocks; interactive pieces (events, entering a region, the widgets); sound;
+   `--trust`, and the question before `run:` demos (§7.10, §14).
 8. [ ] Notes and keys over the terminal, the timer and the pace, starting at a slide; pad
    bindings checked with the user's pad; the pointer and ink.
 9. [ ] Live demos, with hiding a surface (§6a, §9).
@@ -908,3 +1005,245 @@ What an SDL3 platform layer (`programs/preso/sdl/`) needs, so the core is writte
   They run on a platform with a screen buffer and a clock of the test's, and under ASan and
   UBSan. On the board: a seven-slide deck of every transition (measured, at 1280 and at 640),
   the overview, go-to and black, seen in screenshots.
+
+### Step 6 (2026-11-03): libangel, script regions, the scene, beats
+
+- **libangel** (§7.9): angel's runtime as a library, with nothing moved.
+  - **The host build** makes `bmds_libangel` of `programs/angel` minus `main.cpp` and
+    `debug.cpp`.
+  - **The board** builds `libangel.a` in `dist/preso`'s makefile, the same way.
+  - **New files:**
+    - `engine.cpp` (`createEngine()`) holds angel's settings table, so the language is shared.
+    - `program.cpp` holds `input`, `args`, `env`, `exit` and `sleep`.
+    - `colors.cpp` holds `Color::`, `rgb`, `hsv` and `mix`, out of the graphics.
+  - **`core.cpp`** is now the language part (`registerLanguage`). `registerCore` is both parts,
+    so angel's API and its lock are unchanged.
+  - **A host's hooks:** a `LanguageHost` says where `print` writes, what `millis` counts, and
+    which random state is drawn from. `forgetHelp()` frees the help kept for an engine.
+  - **Caches reset per engine:** the string array type and the string type id were cached for
+    the process's first engine. They are now reset as each engine registers, since a reload
+    makes a new one.
+- **Where the code is:**
+  - **The core** knows scripts through `core/scripts.h` only (`Scripts`, `ScriptRegion`), and
+    still includes nothing but itself and md4c.
+  - **`programs/preso/script/`:**
+    - `scene` holds objects and their drawing;
+    - `animation` holds properties eased from their values to where they end;
+    - `region` holds a script's run, beats and fast-forward;
+    - `api` holds the deck profile.
+  - **`core/raster`** draws smooth shapes on the core's `Canvas`.
+  - **The board's program** is 2.1 MB with AngelScript in it.
+- **Steps:** the layout numbers steps in document order. A fragment's step is the next free one
+  when it is first met, and a region takes its beats' steps where it stands, so fragments after
+  it come after its beats (`SlideLayout::steps`, `DrawOp::beat`). A region counts its beats by
+  running to its end in fast-forward as the slide is laid out, so `preso check` runs every
+  script and reports script errors with the deck's line: `slide 2: sort.as:12: message`.
+- **Running a region** (`region.cpp`):
+  - **Suspending:** the script's context is suspended in `play()` and `wait()`, where its clock
+    runs, and in `pause()`, which is a beat.
+  - **Next:**
+    - in a beat still playing, it ends that beat at once (fast-forward to its pause), then
+      plays the next one;
+    - at a pause, it plays the next beat;
+    - after the region's last beat, it goes on to the slide's next step.
+  - **Previous, jumps, coming back:** each re-runs the script from its start in fast-forward.
+    `$top` is run again on a fresh context, and the top-level patch initializes each global
+    where it stands. Back onto a slide shows its beats played; onto a slide going forward (Next,
+    a jump by number, the overview, starting) plays its first beat. A reload keeps them played.
+  - **What a frame redraws:**
+    - It compares each object's signature (all its fields) and box with what was last drawn,
+      and gives the old and new boxes of what changed, at most 8, joined where they overlap.
+    - A `draw()` function, or new printed lines, redraws the whole region.
+    - That part of the slide is drawn again under the region and over it: the background, the
+      region's script, and anything laid out on top.
+    - The platform presents only those rectangles (`presentAreas`; on BMDS one BLIT of pieces,
+      with the damage, and a stale rectangle per buffer for the buffer that missed a frame).
+  - **The runaway stop:** a line callback reads the clock every 256 lines and aborts a script
+    that has run 100 ms since its last `play`, `wait` or `pause`. The region shows
+    `sort.as: ran 100 ms without play(), wait() or pause(): stopped (a loop that never ends?)`.
+  - **Endless loops that yield** (`while (true) play(...)`) run on: fast-forward gives up after
+    600 s of script time or 20,000 yields, and plays from there.
+  - **Errors** show as a red box in the region with `file:line: message`, said once in the
+    deck's diagnostics. A global's initializer that throws is reported with what it threw, not
+    AngelScript's "Failed to initialize".
+  - **Deterministic:** `millis()` is the region's own clock. `random()` is seeded from the
+    deck's file name, the slide's number and the region's index.
+- **The deck profile** (`api.cpp`, 541 declarations locked in `tests/preso/api.lock`, checked by
+  `preso_api_lock`):
+  - **From libangel:** the language, strings, arrays and colours.
+  - **Objects:** `Text`, `Rect`, `Circle`, `Line`, `Arrow`, `Polygon`, `Image`, `Code`,
+    `Group`, `Bars` and `Grid`.
+    - Each has `x`, `y` (its centre), `scale`, `rotation` (degrees, clockwise), `opacity`,
+      `visible`, `color`, `fill` (setting it fills), `fillOpacity` and `lineWidth`, and
+      `at(x, y)` for chaining.
+    - `Shape@` is every kind's; `cast<Text>(shape)` goes back.
+  - **Animations:** `move`, `shift`, `fadeIn`, `fadeOut`, `grow`, `shrink`, `write`,
+    `transform`, `colorTo`, `fillTo`, `scaleTo`, `rotateTo`, `tween`, and Bars' `swap`,
+    `highlight`, `unhighlight` and `set`. Each has `.ease(Ease::...)` (`Linear`, `In`, `Out`,
+    `InOut`, the default, and `Bounce`), `.delay(s)` and `.duration(s)`.
+  - **Time and the scene:** `play()` takes one to six animations or an array, then the seconds;
+    also `wait()`, `pause()`, `add()` and `remove()`.
+  - **The theme and the region:**
+    - `theme.color("Text" | "H1" | "Accent" | ... | "Script.NAME")`, from a `[Script]` section
+      of any names. Script.Accent, Highlight, Muted, Line and Fill always exist, and vga,
+      amber, green and bbs set their own.
+    - `theme.font(...)` and `Font("IBM Plex Sans 40 bold")`.
+    - `region.width` and `region.height`.
+  - **Files:** `readText()`, and `Image` files, from the deck's folder only. An absolute path or
+    `..` is refused.
+  - **`void draw(Canvas@ c, float t)`:** angel's method names, in floats, antialiased.
+  - **Not in this step:** sound (step 7, with the platform's audio), `angel run` blocks,
+    interactive pieces and `--trust`.
+- **Drawing** (`core/raster`, `script/scene`):
+  - **Shapes:** paths filled with exact coverage (signed areas accumulated along each row from
+    an active edge list). Between the cells the edges touch, the coverage is constant, and a run
+    is filled or blended at once. Rectangles' and circles' outlines are rings; polylines get
+    round joins only where they turn enough to show a gap.
+  - **Text:** rendered once into a coverage mask (white on black, the green read back), and
+    drawn moved, scaled, turned and faded from it. Unscaled and unturned, it snaps to whole
+    pixels, since sampled between them it goes soft. `write()` shows the mask a line at a time
+    as far as it has got, with no new render per letter.
+  - **Code:** a sprite of its colours and their coverage.
+  - **Transform:** outlines into outlines, resampled point to point; anything else crossfades as
+    both move to where it ends.
+- **Effects on a part of the slide:**
+  - **The grid:** an area under effects is drawn on the slide's grid of four, so the scanlines
+    fall on the same rows and the glow's samples on the same pixels.
+  - **The glow:**
+    - It is drawn with as much round the area as it reaches, then the pixels outside the area
+      are put back.
+    - What changed is grown by that reach first (`effectReach()`), since a glow changes the
+      slide round what changed.
+    - It is capped at the theme's brightest colours rather than the canvas's, so a part glows
+      as the whole slide does. The test compares a part redrawn with the whole slide, exactly.
+- **Measured on the board** (1280×720, `paper`; a frame's drawing, then the present, which also
+  waits for the display):
+  - **First:** writing a title took 40 ms a frame, and three shapes growing 55–60 ms (16–25
+    frames a second, CPU-bound). In turn:
+    1. Text sampled between pixels, measured several times a frame, and rendered again for each
+       letter written: now 3–6 ms (60 frames a second).
+    2. The fill walked every edge for every row, and a circle's outline was 125 quads with a
+       join disc at every corner: now an active edge list, rings, and spans.
+    3. Each pixel was mixed through `Canvas::blend`'s calls and colour mix: now RGB565's three
+       channels spread so one multiply mixes them, 32 levels. A filled circle went from 5.6 ms
+       to 2.3. Per-point `sinf`/`cosf` gave way to turning a step (the platform notes).
+    4. The union of everything that moved, with the static title, was redrawn: now each
+       object's old and new boxes.
+  - **Now:** three shapes growing and turning redraw about 100,000 pixels in 12–21 ms (30–45
+    frames a second). A moving dot or a written title runs at 60.
+  - **A `draw()` region** redraws all of itself each frame: half the slide, 460,000 pixels, took
+    60 ms plus 20 to present (12 frames a second). Keep `draw()` regions small.
+  - **Amber (glow):** a part's glow with its reach costs about 100 ms (5–9 frames a second).
+    Moving frames leave the glow out and keep the scanlines (4–30 ms a frame); when a region
+    comes to rest, what its frames drew is drawn again with the glow, once.
+  - **`preso check`** of the four-script demo deck took 0.6 s on the board, building and running
+    every script.
+- **Found and fixed:**
+  - **Leak:** in AngelScript's generic call mode 1 a function owns the handles it is given, and
+    every animation passed to `play()` leaked. Handle arguments are now released (`Arg<T>`, as
+    angel's `ImageArg`).
+  - **Dangling font names:** `FontCache` kept the family pointer of the key it was asked for,
+    and a script's `Font` may be freed first. Entries now keep their own copy.
+- **Tests:** 10 more host cases (`tests/host/preso/scripts.cpp`, 87 in all):
+  - the raster in XRGB8888 and RGB565;
+  - beats numbered among fragments;
+  - errors and the sandbox;
+  - the runaway stop and an endless loop that yields;
+  - frames, Next, Previous and coming back;
+  - determinism;
+  - damage limited to what moved;
+  - a part redrawn under effects equal to the whole slide;
+  - a glowing region at rest equal to the slide drawn afresh.
+
+  They pass under ASan and UBSan; UBSan's only reports are AngelScript's own unaligned stack
+  accesses on a 64-bit host. On the board: the demo deck in `paper` and `amber`, stepped through
+  with screenshots, the Previous replay checked against the algorithm, and the frame times
+  measured. The last two fixes (whether a slide plays its first beat, and the glow's cap) were
+  checked on the host only.
+
+### Step 7 (2026-11-03): angel run blocks, interactive pieces, sound, --trust, the demos question
+
+- **`angel run` blocks** (`Layouter::code`): the code takes 55% of the width and a pane the rest
+  (`below`: the pane under it, six code lines tall), on the code's background, as tall as the
+  code or six lines.
+  - **The pane** is a script region whose script is the block's text (`ScriptPlace::source`,
+    `gated`, `console`).
+  - **The gate:** a gated region waits at a beat before its first statement, so the step after the
+    code runs it. Its beats are that and its `pause()`s, and Previous back to the gate empties the
+    pane.
+  - **Output:** printed lines fill the pane in the theme's code font, the last that fit.
+  - **Errors** give the deck's line: `deck.md:16: error: slide 2: line 16: No matching symbol 'y'`.
+- **Interactive pieces** (`ScriptRegion::isInteractive`, `setEntered`, `input`):
+  - **Handlers:** a script may define `void event(Event@)` and `void tick(float)` beside its
+    statements, or instead of them (a script of handlers only, or only `draw()`, is no longer
+    "nothing to run").
+  - **`Event`** is angel's shape: `EventType::KeyDown`, `KeyUp`, `MouseMove`, `MouseDown`,
+    `MouseUp`, `Wheel` with angel's values; `key` names keys as angel does (the names moved to
+    libangel's `keys.cpp`); `text`, `x` and `y` in the region's pixels; `button`, `wheel`,
+    `repeat`.
+  - **Handlers run** on the region's second context (`draw()`'s), with the runaway stop. In them
+    `play()`, `wait()` and `pause()` are refused; `start(animation, seconds)` runs one alongside.
+  - **Entering a region:** the Into action (I, a pad's West button), a click in it, or
+    `<!-- interactive -->` as its slide appears. While entered:
+    - Controls' `script` set has Leave (Escape) and the clicker's PageDown and PageUp as Next and
+      Previous, so every other key is the script's;
+    - `tick()` runs each frame;
+    - a 2-pixel accent frame shows inside its edge.
+
+    Stepping, or another slide, leaves it.
+  - **The pointer:** the system's arrow shows on a slide with an interactive region and is hidden
+    elsewhere. Moves and clicks over a region are its own; a button held carries on to the region
+    it went down in.
+  - **Widgets:** `Slider(min, max, value, width)`, `Button(label)` and `Toggle(label, on)`, each
+    with `onChange(Callback@)` (`funcdef void Callback()`: a `function() {...}` does).
+    - Drawn in the theme: Script.Accent, Muted, Fill and the text colour.
+    - While entered, Tab moves the focus (a ring), arrows, Home and End move a slider, and Space or
+      Enter presses.
+    - The pointer drags a slider and clicks a button (let go over it) or a toggle.
+    - Callbacks run after the input or handler that changed them, a few rounds at most.
+- **Sound:** `Sound("ding.wav").play(volume)` (the deck's folder only) and the slide directive
+  `sound: FILE` as a slide appears going forward.
+  - **The platform plays them** (`openSound`, `playSound`, `closeSound`). On BMDS that is
+    libbmdsgame's mixer, opened with the first sound; a sound closed while it plays is freed once
+    it has stopped. The headless platform has none.
+  - **When:** never in fast-forward or `preso check`. A region's sounds asked for while its slide
+    is only drawn ahead are kept until it is shown (`setAudible`).
+- **`preso --trust DECK [SLIDE]`:** the deck's engine also has angel's files, system and network
+  (`AngelScripts::registerAll`). Not its processes, which answer through angel's GUI loop, nor its
+  windows, drawing, sound or GUI, whose names are the deck's. The runaway limit is a second.
+  - **`preso check`:** a script that doesn't build in the deck profile is built again with that
+    API; if it builds then, its error says `needs --trust: `.
+- **The question before `run:` demos:** a deck with `run:` slides, opened untrusted, asks first.
+  It shows "This deck runs programs: luckyduck, sysmon" (each program once, by its name), Y to run
+  them, N or Escape not. The answer is kept for step 9 (`demosAllowed()`); trusted, it isn't
+  asked.
+- **Reloading:** the presenter also watches the folders of the deck's scripts and pictures
+  (`anim/`), each once; the BMDS platform keeps up to 8 watches. An edit to `anim/x.as` hadn't
+  reloaded the deck.
+- **Found on the board:**
+  - **A kernel panic** (programs run unprotected: `docs/ARCHITECTURE.md`): saving the deck while a
+    region had the keys reloaded it, and `leave()` then used the old deck's freed region. Found
+    from the recovered panic lines (`log show`): the fault and return addresses, fitted against
+    the unstripped ELF at the load base where they named `Presenter::leave()` called from
+    `arrived()`. The presenter now lets go of the entered region and the pointer's as their deck
+    is dropped, and a host test reproduces it under ASan.
+  - **`forEachLine` gives each line's offset, not its number.** Step 6 had used it as a number for
+    printed output and for multi-line `Text` and `Code`, which put their second lines far down.
+    Now counted, and the run block's test checks the lines stack.
+  - The crash left the deck file empty mid-write; an empty deck shows a blank slide.
+- **Tests:** 8 more host cases (94 in all), and the API lock appended (109 lines):
+  - a run block's gate, output and error lines;
+  - entering and leaving by Into, a click and Next, with keys, `tick()` and the pointer's arrow;
+  - widgets by keys and the pointer, with callbacks;
+  - sounds heard only when shown, never in fast-forward or check;
+  - `--trust` and check's `needs --trust`;
+  - the question, answered and trusted;
+  - reloading while a region has the keys.
+
+  They pass under ASan and UBSan. On the board: the three-slide demo deck, with screenshots:
+  - the block's pane before and after its two beats;
+  - the widgets by keys (Right, Tab, Space) and by the pointer (`win pointer`: a drag, a click
+    that started a 45° turn);
+  - the sound slide, with libbmdsgame's mixer thread running (whether it was heard isn't known
+    from here);
+  - the question, answered N.
