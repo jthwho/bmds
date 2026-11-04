@@ -65,6 +65,9 @@ namespace preso {
                         void        animate(bool on) override { _animating = on; }
                         void        setInputMode(InputMode mode) override;
                         void        setPointerVisible(bool visible) override;
+                        bool        readTerminal() override;
+                        bool        outputIsTerminal() override;
+                        void        setTicking(bool on) override { _ticking = on; }
                         int32_t     openSound(const char *path) override;
                         void        playSound(int32_t sound, float volume) override;
                         void        closeSound(int32_t sound) override;
@@ -78,6 +81,7 @@ namespace preso {
 
                         void dispatch(App &app);
                         void freeQuietSounds();
+                        void restoreTerminal();
                         // A buffer's content is no longer the slide's (a frame drawn straight in).
                         void staleAll();
 
@@ -99,6 +103,13 @@ namespace preso {
                         uint32_t  _shownFrame = 0;    ///< The display's frame the last present was for.
                         char      _data[256] = {};
                         int32_t   _pointerX = 0; ///< Where the pointer was last (a wheel's place).
+                        // The terminal it was started from: raw while its keys are read.
+                        bool      _terminal = false;
+                        void     *_savedTerminal = nullptr; ///< A struct termios.
+                        bool      _ticking = false;
+                        int64_t   _nextSecond = 0;
+                        int32_t   _stickX = 0; ///< A pad's left stick, as last told.
+                        int32_t   _stickY = 0;
                         int32_t   _pointerY = 0;
                         // Sounds: libbmdsgame's mixer, opened with the first; each slot's last voice (a
                         // sound closed while it plays is freed once it has stopped).

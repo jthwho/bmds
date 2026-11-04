@@ -74,6 +74,12 @@ namespace preso {
         };
 
         /** @brief What a presenter does (keys, a clicker, a pad: the platform's bindings). */
+        enum class InputMode : uint8_t {
+                Deck,     ///< Next, Previous...
+                Overview, ///< Left, Right, Up, Down, Choose, Close.
+                Script,   ///< Leave; every other key a key (an entered script region's).
+        };
+
         enum class Action : uint8_t {
                 None,
                 Next,     ///< The next step: a fragment, or the next slide.
@@ -94,7 +100,14 @@ namespace preso {
                 // Script regions (§7.10):
                 Into,  ///< Enter the slide's interactive region: its keys are the script's (I).
                 Leave, ///< Give the keys back (InputMode::Script's, Escape).
+                ClearInk, ///< The slide's ink wiped (C, a pad's North button).
         };
+
+        /**
+         * @brief What a key means with no Controls (the terminal's keys, a system without them):
+         *        @p usage a HID usage (page 7's), in @p mode. Action::None: a plain key.
+         */
+        Action defaultAction(uint32_t usage, InputMode mode);
 
         /**
          * @brief A rectangle of a frame made of pictures (Platform::presentPieces()): copied from
@@ -118,11 +131,7 @@ namespace preso {
         };
 
         /** @brief What the keys are for (on BMDS a Controls set each). */
-        enum class InputMode : uint8_t {
-                Deck,     ///< Next, Previous...
-                Overview, ///< Left, Right, Up, Down, Choose, Close.
-                Script,   ///< Leave; every other key a key (an entered script region's).
-        };
+
 
         struct Event {
                         enum class Type : uint8_t {
@@ -132,6 +141,7 @@ namespace preso {
                                 KeyUp,  ///< A key let go (InputMode::Script's): `key`.
                                 Pointer, ///< The pointer moved or a button changed: `x`, `y`, `buttons`.
                                 Wheel,   ///< `wheel` notches (away from the user positive), at `x`, `y`.
+                                Stick,   ///< A pad's left stick: `x`, `y` from -32767 to 32767 (0: centred).
                         };
 
                         Type     type = Type::Action;
@@ -157,6 +167,13 @@ namespace preso {
                          *        beginFrame() and endFrame()). @p ns: Platform::now().
                          */
                         virtual void frame(int64_t ns) { (void)ns; }
+                        /** @brief Bytes typed on the terminal (Platform::readTerminal()). */
+                        virtual void terminalInput(const char *data, uint32_t length) {
+                                (void)data;
+                                (void)length;
+                        }
+                        /** @brief About once a second while Platform::setTicking() is on. */
+                        virtual void second() {}
         };
 
         /**
@@ -314,6 +331,18 @@ namespace preso {
                         virtual void animate(bool on) { (void)on; }
                         /** @brief What the keys mean from now on. */
                         virtual void setInputMode(InputMode mode) { (void)mode; }
+                        // ---- The terminal it was started from (none: false)
+
+                        /**
+                         * @brief Reads the keys typed on standard input, if it is a terminal (raw, until
+                         *        the platform ends): App::terminalInput(). False if it isn't one.
+                         */
+                        virtual bool readTerminal() { return false; }
+                        /** @brief Whether standard output is a terminal (the notes redraw it in place). */
+                        virtual bool outputIsTerminal() { return false; }
+                        /** @brief Calls App::second() about once a second while @p on. */
+                        virtual void setTicking(bool on) { (void)on; }
+
                         /** @brief The system's pointer over the slides, or none (the default). */
                         virtual void setPointerVisible(bool visible) { (void)visible; }
 

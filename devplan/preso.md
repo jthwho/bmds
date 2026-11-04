@@ -6,7 +6,7 @@ SDK program on the card; the talk about BMDS given on BMDS).
 
 The program is `preso` (the user's name, 2026-10-30).
 
-Status: **steps 1 to 7 built** (2026-11-03, §14).
+Status: **steps 1 to 8 built** (2026-11-03, §14); the pad bindings wait for the user's pad.
 
 Revised 2026-11-03 with the user: AngelScript in decks for small animations and interactive
 pieces in the spirit of Manim, the bulk of a deck still Markdown (§7); both forms of script
@@ -255,6 +255,47 @@ look of a 640×480 screen, and a quarter of the drawing.
 - **Reloading:** the platform watches the deck's folder (`fs_watch` on BMDS). A change re-parses
   the deck and redraws, keeping the slide (by number, or by its title if slides moved). A deck
   that no longer parses keeps the old one and says why in the corner and the notes.
+
+### 6b. Step 8's design (2026-11-03)
+
+- **Notes** (`core/notes`): on each slide or step shown, the presenter writes to its standard
+  output a block for that moment:
+  - a rule with the slide's number of the deck's, its title, and the timer;
+  - its step of its steps, then its notes as written;
+  - the next slide's number and title, and its first lines as plain text.
+
+  On a terminal the block replaces the screen (cleared first), and the timer's line is written
+  again each second in place. Into a file or a pipe it is appended, without the timer's updates.
+- **The timer:** the talk's time from the first slide shown, and the slide's own. With `duration`
+  the pace: where the talk should be by now (the duration shared evenly over the slides), as
+  "1:10 behind", "0:45 ahead" or "on time" (within 15 seconds).
+- **Keys from the terminal** (`core/terminal`): the platform puts its standard input in raw mode
+  when it is a terminal and gives the presenter its bytes. A decoder turns them into the keys
+  they are (arrows, Home, End, PageUp and PageDown as their escape sequences, letters, digits,
+  Enter, Backspace), and the presenter maps those as the platform's keys are mapped:
+  - `n`, `j`, Space, Enter, Right, Down and PageDown are Next;
+  - `p`, `k`, Backspace, Left, Up and PageUp are Previous;
+  - `g` and Home are First, `G` and End Last;
+  - digits then Enter go to a slide;
+  - `b`, `.` and `w` blank; `o` and Tab the overview; `i` enters a region;
+  - `q` quits. Escape alone does nothing, so a stray key on the laptop can't end the talk.
+
+  The BMDS platform's fallback key map moves to the core, shared by both.
+- **The pointer and ink:**
+  - **The dot:** the mouse, or a pad's left stick, moves a dot of the accent colour, shown while it
+    moves and hidden two seconds after it stops.
+  - **Ink:** holding the mouse's button draws in the accent colour, as strokes kept for the slide.
+  - **Clearing:** leaving the slide clears its ink, and so does `c` (Clear ink: C on a keyboard,
+    Y on a pad).
+  - **Drawing them:** the dot and the ink are drawn over every redraw of the shown slide (a step, a
+    script region's frame), only the parts that change presented.
+  - **Script regions:** on a slide with an interactive region the system's pointer stays (§7.10),
+    and the dot isn't drawn.
+- **Ticking:** a timer refreshed on a terminal and a dot hidden after a while need the loop to
+  wake now and then. The platform calls `App::second()` about once a second while the app asks
+  for it (a terminal's notes, a dot shown), and not otherwise.
+- **Pads:** the bindings exist since step 2. Checking them needs the user's pad, so they are
+  listed for the user to try.
 
 ## 6a. Live demos
 
@@ -586,8 +627,9 @@ What an SDL3 platform layer (`programs/preso/sdl/`) needs, so the core is writte
    the API lock (§7.9, §14). Sound moved to step 7.
 7. [x] `angel run` blocks; interactive pieces (events, entering a region, the widgets); sound;
    `--trust`, and the question before `run:` demos (§7.10, §14).
-8. [ ] Notes and keys over the terminal, the timer and the pace, starting at a slide; pad
-   bindings checked with the user's pad; the pointer and ink.
+8. [x] Notes and keys over the terminal, the timer and the pace, starting at a slide; pad
+   bindings checked with the user's pad (still to do: the user's pad); the pointer and ink
+   (§6b, §14).
 9. [ ] Live demos, with hiding a surface (§6a, §9).
 10. [ ] `preso export` and `--posters`; kiosk mode; `dist/preso` with an example deck; the BMDS
     talk itself.
@@ -1247,3 +1289,63 @@ What an SDL3 platform layer (`programs/preso/sdl/`) needs, so the core is writte
   - the sound slide, with libbmdsgame's mixer thread running (whether it was heard isn't known
     from here);
   - the question, answered N.
+
+### Step 8 (2026-11-03): notes and keys over the terminal, the timer and pace, the pointer and ink
+
+- **Notes** (`core/notes`): each slide and step shown writes its block to standard output:
+  - a rule, `── 2/12  Title ──────── 4:12  slide 0:42  1:10 behind`;
+  - `step 2 of 4`;
+  - the slide's notes, or `(no notes)`;
+  - `Next: 3  Title` with up to three of its first lines, or `Next: the end`;
+  - a line when the deck has problems (`preso check` says what).
+
+  On a terminal (`Platform::outputIsTerminal()`) the screen is cleared for each block, and the
+  rule is rewritten in place each second (cursor saved, line 1, restored). Into a file the
+  blocks follow one another.
+- **The pace** (`paceSeconds`): with `duration`, slide N is due at duration × (N − 1) / slides.
+  Within 15 seconds is "on time". On the board, 2:16 into a five-minute talk on slide 3 of 5 read
+  "1:04 ahead".
+- **Keys from the terminal** (`core/terminal`):
+  - **Decoding** (`TerminalKeys::push`) is a byte at a time. Arrows, Home and End come in their
+    `ESC [`, `ESC O` and `~` forms, as do PageUp, PageDown and Delete; Shift+Tab is Tab. UTF-8
+    gives characters; letters and digits get their HID usages. Escape twice is Escape, since a
+    lone one can't be told from a sequence's start.
+  - **Mapping** (`terminalAction`): §6b's letters, then the shared `defaultAction` (the BMDS
+    platform's fallback map, moved to the core).
+  - **Escape** does nothing outside a region. Ctrl-C quits as `q` does: the BMDS platform turns
+    off ISIG with ICANON and ECHO, so the terminal is put back on the way out.
+  - **When:** the platform reads standard input only when it is a terminal. Started from the
+    desktop, nothing changes.
+- **Ticking:** `Platform::setTicking()` and `App::second()`. The BMDS loop's poll times out at
+  the next second while ticking (and isn't otherwise), so the board stays idle between slides
+  unless a terminal shows the timer or a dot is up.
+- **The dot and the ink:**
+  - The mouse moves a dot (11 pixels, the accent at 200 of 255), hidden 2 seconds after it
+    stops.
+  - The first button draws ink: strokes 4 pixels wide (2.5 at 640), redrawn as each segment
+    comes.
+  - Leaving the slide, or Clear ink (C, a pad's North; `c` on the terminal), wipes it.
+  - Every redraw of the shown slide (a step, a region's frame, its glow at rest) is followed by
+    `decorate()`, which draws the ink and the dot over it, only the parts changed presented.
+  - On a slide with an interactive region the system's arrow shows and the dot isn't drawn; the
+    ink still is, outside the region.
+  - **A pad's left stick** (`Event::Type::Stick`, from `BMDS_PAD_AXIS` while no action takes it)
+    moves the dot from the middle, across the slide in about 1.5 s at full tilt, frames carrying
+    it while it leans past a dead zone.
+- **Controls:** Clear ink (Id 17) joins the deck set. The script set's stepping keys moved to
+  Ids 32 and 33, past the actions.
+- **Starting at a slide** (`preso talk.md 12`) has been there since step 2.
+- **Not checked:** the pad bindings (Next on South, Right and R1; Previous on East, Left and L1;
+  Into on West; Clear ink on North; the overview on Start; black on Select; the stick for the
+  dot) need the user's pad.
+- **On the board:**
+  - **Over a real terminal:** a driver opened `ssh -tt`, started `preso talk.md`, and typed `n`,
+    the right arrow, `3` Enter and `q`. The notes, each step's block, the timer counting each
+    second and the pace all came through, and it quit with status 0.
+  - **The ink:** a stroke drawn with `win pointer`, step by step.
+  - **Merged moves:** a press and moves sent at once reached the program as one pointer state, so
+    only the last point inked: the system merges pointer motion it can't hand over in time. A
+    mouse's reports come over time, so a quick stroke can still lose its corners.
+- **Tests:** 5 more host cases (`tests/host/preso/notes.cpp`, 99 in all): decoding, the
+  terminal's key map, the notes and the pace, the presenter's notes and terminal keys, the dot,
+  the ink and the stick.

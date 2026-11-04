@@ -480,7 +480,10 @@ Plan: [`input.md`](input.md).
   deck's folder, locked in `tests/preso/api.lock`); step 7 (2026-11-03: `angel run` blocks run on
   the step after their code into a pane; interactive regions entered by a key or a click, with
   `event()`, `tick()`, the pointer and widgets (Slider, Button, Toggle); sounds through
-  libbmdsgame's mixer; `preso --trust`; the question before a deck's `run:` demos).
+  libbmdsgame's mixer; `preso --trust`; the question before a deck's `run:` demos); step 8
+  (2026-11-03: notes, a timer and the pace in the terminal Preso was started from, its keys moving
+  the deck over SSH; the pointer's dot, ink, a pad's stick; the pad bindings wait for the user's
+  pad).
 
 ## Phase 8 — Self-Hosting
 

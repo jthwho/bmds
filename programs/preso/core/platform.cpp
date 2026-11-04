@@ -92,6 +92,52 @@ namespace preso {
                 return;
         }
 
+        Action defaultAction(uint32_t usage, InputMode mode) {
+                // As Controls' defaults (the BMDS platform's declaration), by HID usage.
+                usage &= 0xFFFF;
+                if (mode == InputMode::Script) {
+                        switch (usage) {
+                                case 0x29: return Action::Leave;
+                                case 0x4E: return Action::Next;
+                                case 0x4B: return Action::Previous;
+                                default: return Action::None;
+                        }
+                }
+                if (mode == InputMode::Overview) {
+                        switch (usage) {
+                                case 0x50: return Action::Left;
+                                case 0x4F: return Action::Right;
+                                case 0x52: return Action::Up;
+                                case 0x51: return Action::Down;
+                                case 0x28:
+                                case 0x2C: return Action::Choose;
+                                case 0x2B:
+                                case 0x29: return Action::Close;
+                                default: return Action::None;
+                        }
+                }
+                switch (usage) {
+                        case 0x4F: // Right
+                        case 0x51: // Down
+                        case 0x2C: // Space
+                        case 0x4E: return Action::Next;
+                        case 0x50: // Left
+                        case 0x52: // Up
+                        case 0x2A: // Backspace
+                        case 0x4B: return Action::Previous;
+                        case 0x4A: return Action::First;
+                        case 0x4D: return Action::Last;
+                        case 0x29: return Action::Quit;
+                        case 0x05: // B
+                        case 0x37: return Action::Black;
+                        case 0x1A: return Action::White;
+                        case 0x2B: return Action::Overview;
+                        case 0x0C: return Action::Into;     // I
+                        case 0x06: return Action::ClearInk; // C
+                        default: return Action::None;
+                }
+        }
+
         bool Platform::fileExists(const char *path) {
                 FILE *f = fopen(path, "rb");
                 if (f == nullptr) return false;

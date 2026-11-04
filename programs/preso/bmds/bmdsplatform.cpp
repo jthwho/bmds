@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <termios.h>
+#include <unistd.h>
 #include <bmds/game.h>
 #include <bmds/sys.h>
 
@@ -62,67 +64,26 @@ namespace preso {
                         "Id=15\nLabel=Into the slide's piece\nGroup=Scripts\nSets=deck\nKeys=I\nPad=Pad.West\n"
                         "[Action leave]\n"
                         "Id=16\nLabel=Out of the piece\nGroup=Scripts\nSets=script\nKeys=Escape\nPad=Pad.East\n"
+                        "[Action clearink]\n"
+                        "Id=17\nLabel=Clear the ink\nGroup=Presenting\nSets=deck\nKeys=C\nPad=Pad.North\n"
                         "[Action stepnext]\n"
-                        "Id=17\nLabel=Next, from a piece\nGroup=Scripts\nSets=script\nKeys=PageDown\nPad=Pad.R1\n"
+                        "Id=32\nLabel=Next, from a piece\nGroup=Scripts\nSets=script\nKeys=PageDown\nPad=Pad.R1\n"
                         "[Action stepback]\n"
-                        "Id=18\nLabel=Previous, from a piece\nGroup=Scripts\nSets=script\nKeys=PageUp\nPad=Pad.L1\n";
+                        "Id=33\nLabel=Previous, from a piece\nGroup=Scripts\nSets=script\nKeys=PageUp\nPad=Pad.L1\n";
 
                 static_assert(uint32_t(Action::Next) == 1 && uint32_t(Action::Previous) == 2 &&
                                       uint32_t(Action::First) == 3 && uint32_t(Action::Last) == 4 &&
                                       uint32_t(Action::Quit) == 5 && uint32_t(Action::Black) == 6 &&
                                       uint32_t(Action::White) == 7 && uint32_t(Action::Overview) == 8 &&
                                       uint32_t(Action::Left) == 9 && uint32_t(Action::Close) == 14 &&
-                                      uint32_t(Action::Into) == 15 && uint32_t(Action::Leave) == 16,
+                                      uint32_t(Action::Into) == 15 && uint32_t(Action::Leave) == 16 &&
+                                      uint32_t(Action::ClearInk) == 17,
                               "Controls' Ids are the actions");
-
-                // Without Controls (an older system): the same keys, by their HID usages.
-                Action actionForKey(uint32_t usage, InputMode mode) {
-                        usage &= 0xFFFF;
-                        if (mode == InputMode::Script) {
-                                switch (usage) {
-                                        case 0x29: return Action::Leave;
-                                        case 0x4E: return Action::Next;
-                                        case 0x4B: return Action::Previous;
-                                        default: return Action::None;
-                                }
-                        }
-                        if (mode == InputMode::Overview) {
-                                switch (usage) {
-                                        case 0x50: return Action::Left;
-                                        case 0x4F: return Action::Right;
-                                        case 0x52: return Action::Up;
-                                        case 0x51: return Action::Down;
-                                        case 0x28:
-                                        case 0x2C: return Action::Choose;
-                                        case 0x2B:
-                                        case 0x29: return Action::Close;
-                                        default: return Action::None;
-                                }
-                        }
-                        switch (usage) {
-                                case 0x4F: // Right
-                                case 0x51: // Down
-                                case 0x2C: // Space
-                                case 0x4E: return Action::Next;
-                                case 0x50: // Left
-                                case 0x52: // Up
-                                case 0x2A: // Backspace
-                                case 0x4B: return Action::Previous;
-                                case 0x4A: return Action::First;
-                                case 0x4D: return Action::Last;
-                                case 0x29: return Action::Quit;
-                                case 0x05: // B
-                                case 0x37: return Action::Black;
-                                case 0x1A: return Action::White;
-                                case 0x2B: return Action::Overview;
-                                case 0x0C: return Action::Into; // I
-                                default: return Action::None;
-                        }
-                }
 
         } // namespace
 
         BmdsPlatform::~BmdsPlatform() {
+                restoreTerminal();
                 if (_audio != nullptr) {
                         bmds_game_audio_close(static_cast<bmds_game_audio_t *>(_audio));
                         for (Sound &s : _sounds) {
@@ -632,6 +593,43 @@ namespace preso {
                 return;
         }
 
+        // ---- The terminal it was started from (over SSH: the laptop's)
+
+        bool BmdsPlatform::readTerminal() {
+                if (_terminal || !isatty(0)) return false;
+                auto *saved = static_cast<struct termios *>(malloc(sizeof(struct termios)));
+                if (saved == nullptr || tcgetattr(0, saved) != 0) {
+                        free(saved);
+                        return false;
+                }
+                // Each key as it is typed, not echoed (the notes are on that screen).
+                struct termios raw = *saved;
+                // Ctrl-C too: a key that quits as `q` does, the terminal put back (not a signal).
+                raw.c_lflag &= ~tcflag_t(ICANON | ECHO | ISIG);
+                raw.c_cc[VMIN] = 1;
+                raw.c_cc[VTIME] = 0;
+                if (tcsetattr(0, TCSANOW, &raw) != 0) {
+                        free(saved);
+                        return false;
+                }
+                _savedTerminal = saved;
+                _terminal = true;
+                return true;
+        }
+
+        void BmdsPlatform::restoreTerminal() {
+                if (!_terminal) return;
+                (void)tcsetattr(0, TCSANOW, static_cast<struct termios *>(_savedTerminal));
+                free(_savedTerminal);
+                _savedTerminal = nullptr;
+                _terminal = false;
+                return;
+        }
+
+        bool BmdsPlatform::outputIsTerminal() {
+                return isatty(1) != 0;
+        }
+
         void BmdsPlatform::setPointerVisible(bool visible) {
                 if (_surface < 0) return;
                 uint32_t pointer = visible ? BMDS_POINTER_NORMAL : BMDS_POINTER_HIDDEN;
@@ -745,6 +743,17 @@ namespace preso {
                                 out.x = _pointerX = x;
                                 out.y = _pointerY = y;
                                 out.buttons = e.data[2];
+                        } else if (e.type == BMDS_EVENT_PAD && e.flags == BMDS_PAD_AXIS &&
+                                   (e.data[1] == BMDS_PAD_LEFT_X || e.data[1] == BMDS_PAD_LEFT_Y)) {
+                                // The left stick: where it now leans, both ways.
+                                if (e.data[1] == BMDS_PAD_LEFT_X) {
+                                        _stickX = int32_t(e.data[2]);
+                                } else {
+                                        _stickY = int32_t(e.data[2]);
+                                }
+                                out.type = Event::Type::Stick;
+                                out.x = _stickX;
+                                out.y = _stickY;
                         } else if (e.type == BMDS_EVENT_WHEEL) {
                                 out.type = Event::Type::Wheel;
                                 out.wheel = int32_t(e.data[0]);
@@ -757,7 +766,7 @@ namespace preso {
                                 out.key = e.data[0];
                         } else if (e.type == BMDS_EVENT_KEY) {
                                 if ((e.flags & (BMDS_KEY_DOWN | BMDS_KEY_REPEAT)) == 0) continue;
-                                Action a = _controls ? Action::None : actionForKey(e.data[0], _mode);
+                                Action a = _controls ? Action::None : defaultAction(e.data[0], _mode);
                                 if (a != Action::None) {
                                         out.type = Event::Type::Action;
                                         out.action = a;
@@ -785,24 +794,51 @@ namespace preso {
                 bool              changed = false;
                 _quit = false;
                 while (!_quit) {
-                        bmds_pollfd_t fds[1 + MaxWatches];
-                        fds[0] = bmds_pollfd_t{sizeof(bmds_pollfd_t), _surface, BMDS_POLL_IN, 0};
+                        // The surface, the terminal's keys, the folders watched.
+                        bmds_pollfd_t fds[2 + MaxWatches];
+                        uint32_t      n = 0;
+                        fds[n++] = bmds_pollfd_t{sizeof(bmds_pollfd_t), _surface, BMDS_POLL_IN, 0};
+                        int32_t terminal = -1;
+                        if (_terminal) {
+                                terminal = int32_t(n);
+                                fds[n++] = bmds_pollfd_t{sizeof(bmds_pollfd_t), 0, BMDS_POLL_IN, 0};
+                        }
+                        uint32_t watchesAt = n;
                         for (uint32_t i = 0; i < _watchCount; i++)
-                                fds[1 + i] = bmds_pollfd_t{sizeof(bmds_pollfd_t), _watches[i], BMDS_POLL_IN, 0};
+                                fds[n++] = bmds_pollfd_t{sizeof(bmds_pollfd_t), _watches[i], BMDS_POLL_IN, 0};
                         // Animating, nothing is waited for here: the frame waits for its buffer.
                         int32_t timeout = _animating ? 0 : changed ? Settle : -1;
-                        int32_t r = bmds_io_poll(fds, 1 + _watchCount, timeout, nullptr);
+                        int64_t ticked = now();
+                        if (_ticking && !_animating) {
+                                if (_nextSecond <= ticked) _nextSecond = ticked + 1000000000;
+                                int32_t untilSecond = int32_t((_nextSecond - ticked) / 1000000) + 1;
+                                if (timeout < 0 || untilSecond < timeout) timeout = untilSecond;
+                        }
+                        int32_t r = bmds_io_poll(fds, n, timeout, nullptr);
                         if (r < 0 && r != -BMDS_EINTR) return Error::Io;
+                        if (_ticking && now() >= _nextSecond) {
+                                _nextSecond = now() + 1000000000;
+                                app.second();
+                        }
                         if (r == 0 && changed && !_animating) {
                                 changed = false;
                                 app.filesChanged();
                                 continue;
                         }
                         for (uint32_t i = 0; i < _watchCount; i++) {
-                                if ((fds[1 + i].revents & BMDS_POLL_IN) == 0) continue;
+                                if ((fds[watchesAt + i].revents & BMDS_POLL_IN) == 0) continue;
                                 uint32_t what = 0;
                                 (void)bmds_read(_watches[i], &what, sizeof what);
                                 changed = true;
+                        }
+                        if (terminal >= 0 && (fds[terminal].revents & (BMDS_POLL_IN | BMDS_POLL_HUP)) != 0) {
+                                char    bytes[64];
+                                ssize_t got = read(0, bytes, sizeof bytes);
+                                if (got > 0) {
+                                        app.terminalInput(bytes, uint32_t(got));
+                                } else {
+                                        restoreTerminal(); // the connection gone: no more keys from it
+                                }
                         }
                         if ((fds[0].revents & BMDS_POLL_IN) != 0) dispatch(app);
                         if ((fds[0].revents & (BMDS_POLL_HUP | BMDS_POLL_ERR)) != 0) break;

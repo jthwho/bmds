@@ -19,7 +19,9 @@
 #include "fonts.h"
 #include "layout.h"
 #include "platform.h"
+#include "raster.h"
 #include "scripts.h"
+#include "terminal.h"
 #include "theme.h"
 #include "transitions.h"
 
@@ -51,6 +53,8 @@ namespace preso {
 
                         // ---- App
                         void event(const Event &event) override;
+                        void terminalInput(const char *data, uint32_t length) override;
+                        void second() override;
                         void filesChanged() override;
                         void frame(int64_t ns) override;
 
@@ -64,7 +68,10 @@ namespace preso {
                         /** @brief Whether its `run:` demos may run: trusted, or the question answered yes. */
                         bool demosAllowed() const { return _demosAllowed; }
                         /** @brief Whether a script region has the keys now. */
-                        bool     regionEntered() const { return _entered != nullptr; }
+                        bool regionEntered() const { return _entered != nullptr; }
+                        /** @brief The ink's strokes on the slide (the pointer held down). */
+                        uint32_t inkStrokes() const { return _strokeCount; }
+                        bool     dotShown() const { return _dotShown; }
                         uint32_t selected() const { return _selected; }
                         /** @brief The colour the screen is blanked to (Action::Black, White), or NoColor. */
                         Color         blank() const { return _blank; }
@@ -132,6 +139,17 @@ namespace preso {
                         void          answer(bool yes);
                         uint32_t      demoNames(char *out, size_t size);
                         void          watchFolders(const char *deckFolder);
+                        // Notes, the timer, the pointer and ink (§6b)
+                        void printNotes();
+                        void writeTimer();
+                        void updateTicking();
+                        void redrawArea(const Rect &area);
+                        void decorate(Canvas &canvas, const Rect &area);
+                        Rect dotBox() const;
+                        void moveDot(int32_t x, int32_t y);
+                        void ink(int32_t x, int32_t y, bool start);
+                        void clearInk(bool redraw);
+                        bool stickMoving() const;
 
                         Platform   &_platform;
                         const char *_path;
@@ -178,6 +196,27 @@ namespace preso {
                         int32_t       _slideSound = -1;  ///< `sound:`'s, loaded.
                         bool          _trusted = false;
                         bool          _demosAllowed = false;
+                        // Notes and the timer
+                        bool         _notesTerminal = false; ///< Standard output a terminal: redrawn in place.
+                        bool         _ticking = false;
+                        uint32_t     _notedSlide = 0; ///< What the notes last showed.
+                        uint32_t     _notedStep = 0;
+                        int64_t      _talkStart = -1;
+                        int64_t      _slideStart = 0;
+                        TerminalKeys _terminalKeys;
+                        // The pointer's dot and the ink
+                        bool      _dotShown = false;
+                        float     _dotX = 0;
+                        float     _dotY = 0;
+                        int64_t   _dotMoved = 0;
+                        int32_t   _stickX = 0;
+                        int32_t   _stickY = 0;
+                        Point    *_ink = nullptr; ///< The strokes' points, one after another.
+                        uint32_t  _inkCount = 0;
+                        uint32_t  _inkCapacity = 0;
+                        uint32_t *_strokes = nullptr; ///< Where each stroke starts in _ink.
+                        uint32_t  _strokeCount = 0;
+                        uint32_t  _strokeCapacity = 0;
                         char     _typed[8] = {}; ///< A slide's number, typed before Enter.
                         uint32_t _typedLength = 0;
                         // The overview: a grid of thumbnails, made one a frame and kept.

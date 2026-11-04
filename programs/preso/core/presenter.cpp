@@ -8,6 +8,8 @@
 
 #include "presenter.h"
 #include "effects.h"
+#include "notes.h"
+
 #include <new>
 #include <stdlib.h>
 
@@ -111,6 +113,8 @@ namespace preso {
 
         Presenter::~Presenter() {
                 if (_slideSound >= 0) _platform.closeSound(_slideSound);
+                free(_ink);
+                free(_strokes);
                 free(_pieces);
                 dropThumbnails();
                 drop(_loaded);
@@ -303,6 +307,7 @@ namespace preso {
                                 redrawRegions(true);
                                 prepareAhead();
                                 updateAnimation();
+                                printNotes();
                                 return;
                         }
                 } else if (!(same && _step == _shownStep)) {
@@ -378,10 +383,12 @@ namespace preso {
                         _platform.animate(false);
                 }
                 if (from != _shownSlide) arrived(from);
+                if (_inkCount > 0 || _dotShown) decorate(_shown, Rect{0, 0, _shown.width(), _shown.height()});
                 if (_screen) _platform.present(_shown);
                 prepareAhead();
                 updatePointer();
                 updateAnimation();
+                printNotes();
                 return;
         }
 
@@ -393,6 +400,8 @@ namespace preso {
                 // region.
                 leave();
                 _pointerRegion = nullptr;
+                clearInk(false);
+                _slideStart = _platform.now();
                 SlideLayout *before = from != 0 ? layoutOf(from) : nullptr;
                 for (const DrawOp *o = before != nullptr ? before->ops : nullptr; o != nullptr; o = o->next) {
                         if (o->type == OpType::Script && o->script != nullptr) o->script->setAudible(false);
@@ -485,7 +494,7 @@ namespace preso {
                                                     .intersected(op->clip);
                                 if (area.isEmpty()) continue;
                                 area = reached(*layout, area, _shown, false);
-                                drawSlide(*layout, _shownStep, _shown, _fonts, &_images, UINT32_MAX, &area);
+                                redrawArea(area);
                                 addDamage(damage, n, area);
                         }
                         if (n > 0) _platform.presentAreas(_shown, damage, n);
@@ -502,6 +511,14 @@ namespace preso {
                 _buttons = event.buttons;
                 if (op == nullptr || !op->script->isInteractive()) {
                         if (_buttons == 0) _pointerRegion = nullptr;
+                        // The presenter's own: the dot follows it, the first button draws ink.
+                        if (event.type == Event::Type::Wheel) return;
+                        if ((pressed & 1u) != 0) {
+                                ink(event.x, event.y, true);
+                        } else if ((_buttons & 1u) != 0) {
+                                ink(event.x, event.y, false);
+                        }
+                        moveDot(event.x, event.y);
                         return;
                 }
                 ScriptInput in;
@@ -663,6 +680,221 @@ namespace preso {
                 return;
         }
 
+        // ---- Notes, the timer (§6b)
+
+        void Presenter::printNotes() {
+                // The slide and step shown, once each: the notes for them.
+                if (_messages == nullptr || _shownSlide == 0) return;
+                if (_shownSlide == _notedSlide && _shownStep == _notedStep) return;
+                int64_t now = _platform.now();
+                if (_talkStart < 0) {
+                        _talkStart = now;
+                        _slideStart = now;
+                }
+                _notedSlide = _shownSlide;
+                _notedStep = _shownStep;
+                NotesTime time;
+                time.talk = now - _talkStart;
+                time.slide = now - _slideStart;
+                Buffer out;
+                if (_notesTerminal) out.append("\033[H\033[2J"); // the screen cleared: these notes on it
+                writeNotes(out, *_deck, _shownSlide, _shownStep, steps(_shownSlide), time, 78);
+                if (_deck->diagnosticCount() > 0) {
+                        out.appendf("\n(%u problems in the deck: preso check says what)\n",
+                                    unsigned(_deck->diagnosticCount()));
+                }
+                fwrite(out.view().data(), 1, out.length(), _messages);
+                fflush(_messages);
+                return;
+        }
+
+        void Presenter::writeTimer() {
+                // On a terminal, the notes' first line written again in place.
+                if (!_notesTerminal || _talkStart < 0 || _notedSlide == 0) return;
+                int64_t   now = _platform.now();
+                NotesTime time;
+                time.talk = now - _talkStart;
+                time.slide = now - _slideStart;
+                Buffer out;
+                out.append("\0337\033[1;1H\033[2K"); // the cursor kept, the first line cleared
+                writeRule(out, *_deck, _notedSlide, time, 78);
+                out.append("\0338");
+                fwrite(out.view().data(), 1, out.length(), _messages);
+                fflush(_messages);
+                return;
+        }
+
+        void Presenter::updateTicking() {
+                // A second's tick while something shows the time or will hide: nothing otherwise.
+                bool want = _notesTerminal || _dotShown;
+                if (want != _ticking) _platform.setTicking(want);
+                _ticking = want;
+                return;
+        }
+
+        void Presenter::second() {
+                writeTimer();
+                if (_dotShown && _platform.now() - _dotMoved > 2000000000 && !stickMoving()) {
+                        // Still two seconds: the dot goes.
+                        Rect was = dotBox();
+                        _dotShown = false;
+                        if (_screen && _mode == Mode::Slides && _blank == NoColor) {
+                                redrawArea(was);
+                                _platform.presentAreas(_shown, &was, 1);
+                        }
+                        updateTicking();
+                }
+                return;
+        }
+
+        void Presenter::terminalInput(const char *data, uint32_t length) {
+                // The laptop's keys over SSH: mapped as the screen's are (terminal.h).
+                for (uint32_t i = 0; i < length; i++) {
+                        Event key;
+                        if (!_terminalKeys.push(data[i], &key)) continue;
+                        if (_mode == Mode::Question) {
+                                if ((key.key & 0xFFFF) == 0x29) {
+                                        act(Action::Quit);
+                                } else {
+                                        this->key(key);
+                                }
+                                continue;
+                        }
+                        InputMode mode = _entered != nullptr       ? InputMode::Script
+                                         : _mode == Mode::Overview ? InputMode::Overview
+                                                                   : InputMode::Deck;
+                        Action    a = terminalAction(key, mode);
+                        if (a != Action::None) {
+                                act(a);
+                        } else {
+                                event(key);
+                        }
+                }
+                return;
+        }
+
+        // ---- The pointer's dot and the ink (§6b)
+
+        Rect Presenter::dotBox() const {
+                int32_t r = _shown.width() >= 1000 ? 12 : 7;
+                return Rect{int32_t(_dotX) - r - 1, int32_t(_dotY) - r - 1, 2 * r + 3, 2 * r + 3};
+        }
+
+        bool Presenter::stickMoving() const {
+                constexpr int32_t Dead = 6000; // a stick at rest isn't quite centred
+                return _stickX * _stickX + _stickY * _stickY > Dead * Dead;
+        }
+
+        void Presenter::redrawArea(const Rect &area) {
+                // The shown slide drawn again there, the dot and the ink over it.
+                SlideLayout *layout = _shownSlide != 0 ? layoutOf(_shownSlide) : nullptr;
+                if (layout == nullptr) return;
+                drawSlide(*layout, _shownStep, _shown, _fonts, &_images, UINT32_MAX, &area);
+                decorate(_shown, area);
+                return;
+        }
+
+        void Presenter::decorate(Canvas &canvas, const Rect &area) {
+                // The ink, then the dot (where the system's pointer isn't), in the accent colour.
+                const Theme &theme = _loaded->themes.base();
+                canvas.setClip(area);
+                float width = canvas.width() >= 1000 ? 4.0f : 2.5f;
+                for (uint32_t i = 0; i < _strokeCount; i++) {
+                        uint32_t first = _strokes[i];
+                        uint32_t end = i + 1 < _strokeCount ? _strokes[i + 1] : _inkCount;
+                        Path     path;
+                        path.addStroke(_ink + first, end - first, false, width);
+                        (void)fillPath(canvas, path, theme.accent, 255);
+                }
+                if (_dotShown && !_pointerShown) {
+                        Path  path;
+                        float r = canvas.width() >= 1000 ? 11.0f : 6.0f;
+                        path.addEllipse(_dotX, _dotY, r, r);
+                        (void)fillPath(canvas, path, theme.accent, 200);
+                }
+                canvas.clearClip();
+                return;
+        }
+
+        void Presenter::moveDot(int32_t x, int32_t y) {
+                // Where the system's pointer shows (an interactive slide), no dot.
+                x = x < 0 ? 0 : x >= _shown.width() ? _shown.width() - 1 : x;
+                y = y < 0 ? 0 : y >= _shown.height() ? _shown.height() - 1 : y;
+                _dotMoved = _platform.now();
+                if (_pointerShown) return;
+                Rect was = _dotShown ? dotBox() : Rect{};
+                _dotX = float(x);
+                _dotY = float(y);
+                _dotShown = true;
+                Rect now = dotBox();
+                if (_screen && _mode == Mode::Slides && _blank == NoColor && _typedLength == 0) {
+                        Rect     areas[2] = {was, now};
+                        uint32_t n = 0;
+                        for (const Rect &a : areas) {
+                                if (a.isEmpty()) continue;
+                                redrawArea(a);
+                                areas[n++] = a;
+                        }
+                        _platform.presentAreas(_shown, areas, n);
+                }
+                updateTicking();
+                return;
+        }
+
+        void Presenter::ink(int32_t x, int32_t y, bool start) {
+                // A point of the stroke being drawn (@p start: a new stroke), drawn as it goes.
+                if (_inkCount + 1 > _inkCapacity) {
+                        uint32_t capacity = _inkCapacity != 0 ? _inkCapacity * 2 : 1024;
+                        auto    *grown = static_cast<Point *>(realloc(_ink, capacity * sizeof(Point)));
+                        if (grown == nullptr) return;
+                        _ink = grown;
+                        _inkCapacity = capacity;
+                }
+                if (start || _strokeCount == 0) {
+                        if (_strokeCount + 1 > _strokeCapacity) {
+                                uint32_t capacity = _strokeCapacity != 0 ? _strokeCapacity * 2 : 64;
+                                auto *grown = static_cast<uint32_t *>(realloc(_strokes, capacity * sizeof(uint32_t)));
+                                if (grown == nullptr) return;
+                                _strokes = grown;
+                                _strokeCapacity = capacity;
+                        }
+                        _strokes[_strokeCount++] = _inkCount;
+                }
+                Point p{float(x), float(y)};
+                Point before = _inkCount > _strokes[_strokeCount - 1] ? _ink[_inkCount - 1] : p;
+                _ink[_inkCount++] = p;
+                if (!_screen || _mode != Mode::Slides || _blank != NoColor) return;
+                int32_t pad = 6;
+                int32_t x0 = int32_t(before.x < p.x ? before.x : p.x) - pad,
+                        y0 = int32_t(before.y < p.y ? before.y : p.y) - pad;
+                int32_t x1 = int32_t(before.x > p.x ? before.x : p.x) + pad,
+                        y1 = int32_t(before.y > p.y ? before.y : p.y) + pad;
+                Rect area = Rect{x0, y0, x1 - x0, y1 - y0}.intersected(Rect{0, 0, _shown.width(), _shown.height()});
+                redrawArea(area);
+                _platform.presentAreas(_shown, &area, 1);
+                return;
+        }
+
+        void Presenter::clearInk(bool redraw) {
+                if (_inkCount == 0) return;
+                // Where it was, drawn again without it.
+                float x0 = _ink[0].x, y0 = _ink[0].y, x1 = x0, y1 = y0;
+                for (uint32_t i = 1; i < _inkCount; i++) {
+                        x0 = _ink[i].x < x0 ? _ink[i].x : x0;
+                        y0 = _ink[i].y < y0 ? _ink[i].y : y0;
+                        x1 = _ink[i].x > x1 ? _ink[i].x : x1;
+                        y1 = _ink[i].y > y1 ? _ink[i].y : y1;
+                }
+                _inkCount = 0;
+                _strokeCount = 0;
+                if (!redraw || !_screen || _mode != Mode::Slides) return;
+                Rect area = Rect{int32_t(x0) - 6, int32_t(y0) - 6, int32_t(x1 - x0) + 13, int32_t(y1 - y0) + 13}
+                                    .intersected(Rect{0, 0, _shown.width(), _shown.height()});
+                redrawArea(area);
+                if (_blank == NoColor) _platform.presentAreas(_shown, &area, 1);
+                return;
+        }
+
         // ---- Script regions
 
         void Presenter::seekRegions(uint32_t slide, uint32_t step, bool played) {
@@ -703,7 +935,7 @@ namespace preso {
                 for (const DrawOp *o = layout != nullptr ? layout->ops : nullptr; o != nullptr; o = o->next) {
                         if (o->type != OpType::Script || o->script == nullptr || o->fragment > _shownStep) continue;
                         Rect area = reached(*layout, o->clip, _shown, false);
-                        drawSlide(*layout, _shownStep, _shown, _fonts, &_images, UINT32_MAX, &area);
+                        redrawArea(area);
                         addDamage(damage, n, area);
                 }
                 if (present && _screen && n > 0) _platform.presentAreas(_shown, damage, n);
@@ -724,8 +956,8 @@ namespace preso {
         void Presenter::updateAnimation() {
                 // Regions' clocks run while their slide is shown as it is: not blanked, not under an
                 // overlay, not in a transition or the overview.
-                bool want =
-                        _screen && _mode == Mode::Slides && _blank == NoColor && _typedLength == 0 && regionsMoving();
+                bool want = _screen && _mode == Mode::Slides && _blank == NoColor && _typedLength == 0 &&
+                            (regionsMoving() || stickMoving());
                 if (want && !_animating) {
                         _lastFrame = _platform.now();
                         _platform.animate(true);
@@ -740,6 +972,11 @@ namespace preso {
                 int64_t elapsed = ns - _lastFrame;
                 _lastFrame = ns;
                 if (elapsed < 0) elapsed = 0;
+                if (stickMoving()) {
+                        // Across the slide in about a second and a half at full tilt.
+                        float speed = float(_shown.width()) / 1.5f * float(elapsed) / 1e9f / 32767.0f;
+                        moveDot(int32_t(_dotX + float(_stickX) * speed), int32_t(_dotY + float(_stickY) * speed));
+                }
                 SlideLayout *layout = layoutOf(_shownSlide);
                 Rect         damage[MaxDamage];
                 uint32_t     n = 0;
@@ -758,6 +995,7 @@ namespace preso {
                                 if (area.isEmpty()) continue;
                                 area = reached(*layout, area, _shown, true);
                                 drawSlide(*layout, _shownStep, _shown, _fonts, &_images, UINT32_MAX, &area, true);
+                                decorate(_shown, area);
                                 if (layout->theme != nullptr && layout->theme->glow > 0)
                                         _unglowed = uniteRects(_unglowed, area);
                                 addDamage(damage, n, area);
@@ -768,11 +1006,11 @@ namespace preso {
                 } else {
                         _platform.waitFrame();
                 }
-                if (!regionsMoving()) {
+                if (!regionsMoving() && !stickMoving()) {
                         // Still: what moved drawn again with what its frames left out (a theme's glow).
                         if (layout != nullptr && !_unglowed.isEmpty()) {
                                 Rect area = reached(*layout, _unglowed, _shown, false);
-                                drawSlide(*layout, _shownStep, _shown, _fonts, &_images, UINT32_MAX, &area);
+                                redrawArea(area);
                                 _platform.presentAreas(_shown, &area, 1);
                         }
                         _unglowed = Rect{};
@@ -972,6 +1210,10 @@ namespace preso {
                 }
                 if (action == Action::Leave) {
                         leave();
+                        return;
+                }
+                if (action == Action::ClearInk) {
+                        clearInk(true);
                         return;
                 }
                 // Stepping (a clicker's keys work while a region has the others): the keys back first.
@@ -1327,6 +1569,10 @@ namespace preso {
                 } else {
                         watchFolders(folder);
                 }
+                // The terminal it was started from: its keys move the deck, its screen shows the notes.
+                _notesTerminal = _messages != nullptr && _platform.outputIsTerminal();
+                (void)_platform.readTerminal();
+                updateTicking();
                 // A deck that starts programs says so first, unless trusted (§7.7).
                 char names[200];
                 if (!_trusted && demoNames(names, sizeof names) > 0) {
@@ -1362,6 +1608,13 @@ namespace preso {
                         }
                         case Event::Type::Pointer:
                         case Event::Type::Wheel: pointer(event); break;
+                        case Event::Type::Stick:
+                                // A pad's stick moves the dot (frames carry it while it is pushed).
+                                _stickX = event.x;
+                                _stickY = event.y;
+                                if (stickMoving() && !_dotShown) moveDot(_shown.width() / 2, _shown.height() / 2);
+                                updateAnimation();
+                                break;
                 }
                 return;
         }
