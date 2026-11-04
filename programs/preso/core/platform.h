@@ -174,6 +174,8 @@ namespace preso {
                         }
                         /** @brief About once a second while Platform::setTicking() is on. */
                         virtual void second() {}
+                        /** @brief The demo Platform::startDemo() started has ended, with @p status. */
+                        virtual void demoEnded(int32_t status) { (void)status; }
         };
 
         /**
@@ -281,6 +283,11 @@ namespace preso {
                                 (void)sharp;
                                 return Error::NotSupported;
                         }
+                        /**
+                         * @brief Closes the screen openScreen() opened, its memory given back (while a
+                         *        demo has the screen, §6a); openScreen() opens it again.
+                         */
+                        virtual void closeScreen() {}
                         /** @brief Shows @p canvas (the screen's size and format). */
                         virtual void present(const Canvas &canvas) { (void)canvas; }
                         /**
@@ -342,6 +349,19 @@ namespace preso {
                         virtual bool outputIsTerminal() { return false; }
                         /** @brief Calls App::second() about once a second while @p on. */
                         virtual void setTicking(bool on) { (void)on; }
+
+                        // ---- Live demos (§6a; none: Error::NotSupported)
+
+                        /**
+                         * @brief Starts @p command through the shell, in folder @p folder: App::demoEnded()
+                         *        when it ends. The presenter closes the screen meanwhile (closeScreen()),
+                         *        its memory the demo's.
+                         */
+                        [[nodiscard]] virtual Error startDemo(const char *command, const char *folder) {
+                                (void)command;
+                                (void)folder;
+                                return Error::NotSupported;
+                        }
 
                         /** @brief The system's pointer over the slides, or none (the default). */
                         virtual void setPointerVisible(bool visible) { (void)visible; }

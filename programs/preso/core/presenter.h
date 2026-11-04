@@ -55,6 +55,7 @@ namespace preso {
                         void event(const Event &event) override;
                         void terminalInput(const char *data, uint32_t length) override;
                         void second() override;
+                        void demoEnded(int32_t status) override;
                         void filesChanged() override;
                         void frame(int64_t ns) override;
 
@@ -72,6 +73,10 @@ namespace preso {
                         /** @brief The ink's strokes on the slide (the pointer held down). */
                         uint32_t inkStrokes() const { return _strokeCount; }
                         bool     dotShown() const { return _dotShown; }
+                        /** @brief Whether a slide's demo (`run:`) is running now. */
+                        bool demoRunning() const { return _demo == Demo::Running; }
+                        /** @brief Whether the screen is closed while a demo runs. */
+                        bool     screenReleased() const { return _released; }
                         uint32_t selected() const { return _selected; }
                         /** @brief The colour the screen is blanked to (Action::Black, White), or NoColor. */
                         Color         blank() const { return _blank; }
@@ -196,6 +201,22 @@ namespace preso {
                         int32_t       _slideSound = -1;  ///< `sound:`'s, loaded.
                         bool          _trusted = false;
                         bool          _demosAllowed = false;
+                        // A slide's demo (§6a): what became of the shown slide's.
+                        enum class Demo : uint8_t {
+                                None,
+                                Running,
+                                Declined, ///< The question answered no.
+                                Failed,   ///< It couldn't be started.
+                                Ended,
+                                Starting, ///< Arrived at: started once the screen is given back.
+                        };
+                        Demo                _demo = Demo::None;
+                        int32_t             _demoStatus = 0;
+                        bool                _released = false; ///< The screen closed while the demo runs.
+                        [[nodiscard]] Error openScreen();
+                        void                releaseScreen();
+                        /** @brief Starts the shown slide's demo; false if it couldn't be (the screen kept). */
+                        bool startDemo();
                         // Notes and the timer
                         bool         _notesTerminal = false; ///< Standard output a terminal: redrawn in place.
                         bool         _ticking = false;

@@ -301,12 +301,20 @@ look of a 640×480 screen, and a quarter of the drawing.
 
 `<!-- run: COMMAND -->` on a slide: stepping onto it starts `COMMAND` (vfork and exec through the
 shell, so arguments and `terminal -e ...` work), and the deck gets out of the way. When the
-program ends, the deck comes back on the slide after. The slide's own content shows while the
-program starts, so a title card can introduce the demo.
+program ends, the deck comes back on the slide after. The slide's notes are on the terminal
+while it runs.
 
-To get out of the way the deck **hides its surface** while the demo runs and shows it again after
-(§9): minimizing would leave a button in the panel and a full-screen window behind the demo.
-On the PC, the same call is SDL's window hide and show.
+To get out of the way the deck **closes its screen** while the demo runs and opens it again after.
+Its pictures, the screen's buffers, scaled images and thumbnails go too: they are drawn again from
+the deck. That is 13 MB at 1280×720 (measured, §14), and a demo needs it. Lucky Duck alone takes 16
+MB, and the board has 24 MB free with the desktop, so the two don't fit side by side.
+- **From the start:** the screen goes as the demo starts, not once its window takes the focus. A
+  program may need the memory before it opens a window (Lucky Duck decodes its sprites first), so
+  the desktop shows while the demo loads.
+- **Hiding instead (rejected, step 9):** a hidden surface keeps its memory. A window manager call
+  that took a window off the screen and the panel was built and worked, but Lucky Duck still ran
+  out of memory, so it was taken out again. An unused call would be ABI kept forever.
+- **On the PC:** the window closed and opened again, or simply hidden (memory isn't short).
 
 ## 7. Scripts: animations and interactive pieces
 
@@ -565,8 +573,7 @@ Kept small, and only what other programs would use:
   name)`. Today only the GUI's `CodeEdit` reaches it. Preso's code blocks and `Code` objects use
   it; so would a Markdown viewer, `less`-like pagers, angel scripts. The PC port compiles
   `textsyntax.cpp` in instead (§2).
-- **Hiding a surface** for a while, and showing it again (§6a): a call on a surface, the window
-  manager taking it off the screen and the panel without destroying it.
+- ~~**Hiding a surface**~~: not needed. The deck closes its screen for a demo (§6a).
 - **`libangel`** (§7.1): not a kernel change, but a library in the SDK's tree that any program may
   link to embed scripting.
 - **Bold and italic for the bitmap font** in the font library, if drawing twice looks wrong.
@@ -596,7 +603,7 @@ Kept small, and only what other programs would use:
 
 What an SDL3 platform layer (`programs/preso/sdl/`) needs, so the core is written for it now:
 - a window or full screen (`SDL_CreateWindow`, a streaming texture the buffer is copied into,
-  presented on vsync); hide and show for demos;
+  presented on vsync); the window closed or hidden for demos (§6a);
 - input from SDL's events, and SDL's gamepads, with Preso's own bindings file where BMDS has
   Controls;
 - the font library, `stb_image`, the audio decoders and `textsyntax` compiled in (§2); SDL's
@@ -630,7 +637,7 @@ What an SDL3 platform layer (`programs/preso/sdl/`) needs, so the core is writte
 8. [x] Notes and keys over the terminal, the timer and the pace, starting at a slide; pad
    bindings checked with the user's pad (still to do: the user's pad); the pointer and ink
    (§6b, §14).
-9. [ ] Live demos, with hiding a surface (§6a, §9).
+9. [x] Live demos: the deck's screen closed while they run, opened again after (§6a, §14).
 10. [ ] `preso export` and `--posters`; kiosk mode; `dist/preso` with an example deck; the BMDS
     talk itself.
 
@@ -1349,3 +1356,52 @@ What an SDL3 platform layer (`programs/preso/sdl/`) needs, so the core is writte
 - **Tests:** 5 more host cases (`tests/host/preso/notes.cpp`, 99 in all): decoding, the
   terminal's key map, the notes and the pace, the presenter's notes and terminal keys, the dot,
   the ink and the stick.
+
+### Step 9 (2026-11-03): live demos
+
+- **Starting:** stepping forward onto a `run:` slide marks its demo. `finishTransition()` starts
+  it once the slide is the shown one, so after a transition into it. The command runs as
+  `sh -c "cd 'FOLDER' && COMMAND"` from the deck's folder, through `posix_spawnp`
+  (`Platform::startDemo()`). Going back onto the slide, or reaching it by number, doesn't start
+  it. It doesn't start in an untrusted deck whose question was answered no either.
+- **The screen given back** (§6a): `releaseScreen()` runs before the demo is started.
+  - It closes the screen (`Platform::closeScreen()`).
+  - It frees the two slide pictures, the scaled images and the thumbnails.
+  - On the board, free PSRAM went from 8.9 to 22.0 MB while a demo ran, and Preso itself fell
+    from 3.8 MB to 100 KB. Lucky Duck needs about 16 MB.
+  - If the demo can't be started, the screen opens again at once and the slide is drawn.
+- **While it runs:** actions are ignored except Quit (q, Ctrl-C on the terminal), which ends
+  the deck and leaves the demo running. A save that reloads the deck draws nothing until the
+  screen is back.
+- **Its end:** SIGCHLD writes a byte to a pipe the loop polls, and `waitpid` (WNOHANG) takes the
+  status. The presenter opens the screen again, then goes to the next slide, or draws the last
+  one again. Without a terminal, the status goes to standard error.
+- **The notes** say `Demo: COMMAND (...)`: running, ended, couldn't be started, declined, or
+  "runs stepping onto the slide".
+- **Two bugs the board showed:**
+  - **Signal handlers and the raw poll:** the loop called `bmds_io_poll` directly. The SDK runs
+    a program's signal handlers only on the way out of a libc call (`__bmds_syscall`). So
+    SIGCHLD made the raw poll return EINTR, but its handler never ran and the demo's end was
+    never seen. The loop now uses POSIX `poll()`, with the same descriptor numbers.
+  - **Inherited descriptors:** the surface was opened without close-on-exec, so the demo's
+    shell kept it. Closing it in Preso then freed nothing and the window stayed. The surface
+    (`bmds_fd_flags`) and the pipe (`pipe2`) are now close-on-exec, as the watches already
+    were.
+- **Hiding, built and removed:** a window manager `withdraw()` was built first. It took a
+  window off the screen, out of the panel and out of Alt+Tab, through `BMDS_SURFACE_HIDE`
+  (surface_control 8). It worked, but a hidden surface keeps its memory, and Lucky Duck still
+  ran out. With the deck closing its screen, nothing uses it, so it was taken out before it
+  shipped. The ABI lock gained only the missing check that `BMDS_SURFACE_IMAGE` is 6 and
+  `BMDS_SURFACE_BLIT` is 7.
+- **On the board:** a three-slide deck with `run: luckyduck`:
+  - Lucky Duck started maximized, the panel listing only it.
+  - Closing its window brought the deck back on the third slide, with the keys working.
+  - Going back onto the demo's slide didn't start it again.
+  - With `run: sleep 8`, the deck returned when it ended (status 0).
+- **Tests:** 3 more host cases (102 in all):
+  - the demo's command and folder;
+  - the screen released and opened again;
+  - actions waiting while it runs, and Next after it;
+  - not run again going back, and declined;
+  - a demo on the last slide;
+  - one that can't be started.

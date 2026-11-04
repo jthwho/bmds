@@ -296,6 +296,8 @@ namespace preso {
         }
 
         void Presenter::show(bool forward, bool play) {
+                // No pictures while a demo has the screen (the deck saved meanwhile): drawn as it opens again.
+                if (_released) return;
                 _arriving = play;
                 // Script regions first: what they show at the new step.
                 bool same = _shownSlide == _slide;
@@ -383,6 +385,11 @@ namespace preso {
                         _platform.animate(false);
                 }
                 if (from != _shownSlide) arrived(from);
+                if (_demo == Demo::Starting && startDemo()) {
+                        // Its demo running (§6a): the screen is its memory until it ends.
+                        printNotes();
+                        return;
+                }
                 if (_inkCount > 0 || _dotShown) decorate(_shown, Rect{0, 0, _shown.width(), _shown.height()});
                 if (_screen) _platform.present(_shown);
                 prepareAhead();
@@ -429,7 +436,33 @@ namespace preso {
                         const DrawOp *o = firstInteractive();
                         if (o != nullptr) enter(o);
                 }
+                // Its demo (§6a), stepping onto it: started by finishTransition(), the screen given back.
+                _demo = Demo::None;
+                if (s != nullptr && !s->run.isEmpty() && _arriving && _screen)
+                        _demo = _demosAllowed ? Demo::Starting : Demo::Declined;
                 return;
+        }
+
+        bool Presenter::startDemo() {
+                // The screen and the pictures given back first: a program may need the memory before it
+                // opens its window (Lucky Duck its sprites). Not started: the screen again.
+                const Slide *s = _deck->slide(_shownSlide);
+                char         command[512], folder[512];
+                snprintf(command, sizeof command, "%.*s", int(s->run.length()), s->run.data());
+                folderOf(_path, folder, sizeof folder);
+                releaseScreen();
+                if (_platform.startDemo(command, folder) == Error::Ok) {
+                        _demo = Demo::Running;
+                        return true;
+                }
+                _demo = Demo::Failed;
+                _released = false;
+                if (openScreen() != Error::Ok) {
+                        _platform.quit();
+                        return true;
+                }
+                draw(_shown, _shownSlide, _shownStep);
+                return false;
         }
 
         const DrawOp *Presenter::firstInteractive() {
@@ -699,6 +732,14 @@ namespace preso {
                 Buffer out;
                 if (_notesTerminal) out.append("\033[H\033[2J"); // the screen cleared: these notes on it
                 writeNotes(out, *_deck, _shownSlide, _shownStep, steps(_shownSlide), time, 78);
+                const Slide *shown = _deck->slide(_shownSlide);
+                if (shown != nullptr && !shown->run.isEmpty()) {
+                        static constexpr const char *States[] = {
+                                "runs stepping onto the slide", "running", "not run: the deck's demos were declined",
+                                "couldn't be started",          "ended",   "starting"};
+                        out.appendf("\nDemo: %.*s (%s)\n", int(shown->run.length()), shown->run.data(),
+                                    States[int(_demo)]);
+                }
                 if (_deck->diagnosticCount() > 0) {
                         out.appendf("\n(%u problems in the deck: preso check says what)\n",
                                     unsigned(_deck->diagnosticCount()));
@@ -744,6 +785,34 @@ namespace preso {
                         }
                         updateTicking();
                 }
+                return;
+        }
+
+        void Presenter::demoEnded(int32_t status) {
+                // The demo is over and the screen back: the slide after it.
+                if (_demo != Demo::Running) return;
+                _demo = Demo::Ended;
+                _demoStatus = status;
+                if (_messages != nullptr && !_notesTerminal) {
+                        fprintf(_messages, "preso: slide %u: its demo ended (status %d)\n", unsigned(_shownSlide),
+                                int(status));
+                        fflush(_messages);
+                }
+                if (_released) {
+                        // The screen again, the pictures drawn afresh: no transition from what was.
+                        _released = false;
+                        _shownSlide = 0;
+                        Error error = openScreen();
+                        if (error != Error::Ok) {
+                                if (_messages != nullptr)
+                                        fprintf(_messages, "preso: the screen didn't open again after the demo: %s\n",
+                                                errorName(error));
+                                _platform.quit();
+                                return;
+                        }
+                }
+                act(Action::Next);
+                if (_shownSlide == 0) show(false, false); // the last slide's demo: that slide again
                 return;
         }
 
@@ -1200,6 +1269,8 @@ namespace preso {
         }
 
         void Presenter::act(Action action) {
+                // A demo running has the screen: the deck waits for it (quitting aside).
+                if (_demo == Demo::Running && action != Action::Quit) return;
                 if (_mode == Mode::Question) {
                         if (action == Action::Quit || action == Action::Close || action == Action::Leave) answer(false);
                         return;
@@ -1537,20 +1608,18 @@ namespace preso {
                 return true;
         }
 
-        Error Presenter::run(uint32_t number) {
-                if (_deck == nullptr) return Error::Invalid;
+        Error Presenter::openScreen() {
+                // The two pictures, then the screen: at the start, and again after a demo had it.
                 const Layouter &layouter = *_loaded->layouter;
                 int32_t         w = layouter.width(), h = layouter.height();
                 PixelFormat     format = _platform.pixelFormat();
                 uint32_t        stride = uint32_t(w) * bytesPerPixel(format);
                 for (int i = 0; i < 2; i++) {
-                        _pixels[i] = _platform.allocatePixels(stride * uint32_t(h));
+                        if (_pixels[i] == nullptr) _pixels[i] = _platform.allocatePixels(stride * uint32_t(h));
                         if (_pixels[i] == nullptr) return Error::NoMemory;
                 }
                 _shown.attach(_pixels[0], stride, w, h, format);
                 _ahead.attach(_pixels[1], stride, w, h, format);
-                _slide = number >= 1 && number <= _deck->slideCount() ? number : 1;
-                _step = 0;
                 const char *title = _deck->settings().title.isEmpty() ? "Preso" : nullptr;
                 char        buffer[96];
                 if (title == nullptr) {
@@ -1561,6 +1630,36 @@ namespace preso {
                 Error error = _platform.openScreen(w, h, title, _loaded->themes.base().nearest);
                 if (error != Error::Ok) return error;
                 _screen = true;
+                return Error::Ok;
+        }
+
+        void Presenter::releaseScreen() {
+                // For a demo: what is drawn again from the deck is given back (the pictures, the
+                // screen's buffers, scaled images, thumbnails), the deck itself kept.
+                if (_mode == Mode::Overview) closeOverview(false);
+                if (_mode == Mode::Transition) finishTransition();
+                _screen = false;
+                updateAnimation();
+                dropThumbnails();
+                _images.clear();
+                _platform.closeScreen();
+                for (void *&pixels : _pixels) {
+                        _platform.freePixels(pixels);
+                        pixels = nullptr;
+                }
+                _shown = Canvas();
+                _ahead = Canvas();
+                _aheadValid = false;
+                _released = true;
+                return;
+        }
+
+        Error Presenter::run(uint32_t number) {
+                if (_deck == nullptr) return Error::Invalid;
+                _slide = number >= 1 && number <= _deck->slideCount() ? number : 1;
+                _step = 0;
+                Error error = openScreen();
+                if (error != Error::Ok) return error;
                 // The deck's folder, watched: it reloads as it is saved. Without watching, it doesn't.
                 char folder[512];
                 folderOf(_path, folder, sizeof folder);

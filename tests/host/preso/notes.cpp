@@ -62,12 +62,28 @@ namespace {
                                 free(screen);
                                 screen = static_cast<uint32_t *>(calloc(size_t(w) * size_t(h), 4));
                                 last.attach(screen, uint32_t(w) * 4, w, h, PixelFormat::Xrgb8888);
+                                opens++;
                                 return Error::Ok;
                         }
+                        void closeScreen() override {
+                                free(screen);
+                                screen = nullptr;
+                                last = Canvas();
+                        }
+                        uint32_t opens = 0;
                         void    present(const Canvas &c) override { last.copyFrom(c); }
                         void    presentAreas(const Canvas &c, const Rect *, uint32_t) override { last.copyFrom(c); }
                         void    animate(bool on) override { animating = on; }
                         void    setTicking(bool on) override { ticking = on; }
+                        // Demos: the command and folder asked for, started or refused as the test says.
+                        char  demo[256] = {};
+                        char  demoFolder[256] = {};
+                        bool  demoStarts = true;
+                        Error startDemo(const char *command, const char *folder) override {
+                                snprintf(demo, sizeof demo, "%s", command);
+                                snprintf(demoFolder, sizeof demoFolder, "%s", folder);
+                                return demoStarts ? Error::Ok : Error::NotFound;
+                        }
                         int64_t now() override { return clock; }
                         Error   watch(const char *) override { return Error::Ok; }
                         Error   run(preso::App &) override { return Error::Ok; }
@@ -259,4 +275,106 @@ TEST_CASE("Presenting: the pointer's dot comes and goes; ink is drawn and wiped"
         stick.x = 0;
         presenter.event(stick);
         CHECK(!platform.animating);
+}
+
+
+TEST_CASE("Presenting: a slide's demo runs as the deck reaches it, and the deck goes on after") {
+        NotesPlatform platform;
+        platform.text = "# Intro\n\n---\n\n<!-- run: luckyduck --deal -->\n\n# Cards\n\n---\n\n# After\n";
+        char  text[8192] = {};
+        FILE *out = fmemopen(text, sizeof text - 1, "w");
+        {
+                // Trusted: no question; Next onto the demo's slide starts it from the deck's folder.
+                Presenter presenter(platform, "talks/deck.md", out, nullptr, true);
+                REQUIRE(presenter.load() == Error::Ok);
+                REQUIRE(presenter.run(1) == Error::Ok);
+                presenter.act(Action::Next);
+                CHECK(strcmp(platform.demo, "luckyduck --deal") == 0);
+                CHECK(strcmp(platform.demoFolder, "talks") == 0);
+                CHECK(presenter.demoRunning());
+                fflush(out);
+                CHECK(strstr(text, "Demo: luckyduck --deal (running)") != nullptr);
+                // The screen and the pictures given back for it as it starts.
+                CHECK(presenter.screenReleased());
+                CHECK(platform.screen == nullptr);
+                // While it runs, the deck waits.
+                presenter.act(Action::Next);
+                CHECK(presenter.slideNumber() == 2);
+                // Its end: the screen again, at the slide after.
+                presenter.demoEnded(0);
+                CHECK(!presenter.demoRunning());
+                CHECK(!presenter.screenReleased());
+                CHECK(platform.opens == 2);
+                CHECK(platform.screen != nullptr);
+                CHECK(presenter.slideNumber() == 3);
+                // Back onto it: the demo isn't run again.
+                platform.demo[0] = '\0';
+                presenter.act(Action::Previous);
+                CHECK(presenter.slideNumber() == 2);
+                CHECK(platform.demo[0] == '\0');
+                fflush(out);
+                CHECK(strstr(text, "Demo: luckyduck --deal (runs stepping onto the slide)") != nullptr);
+        }
+        {
+                // Asked and declined: not run, and the notes say so.
+                Presenter presenter(platform, "deck.md", out);
+                REQUIRE(presenter.load() == Error::Ok);
+                REQUIRE(presenter.run(1) == Error::Ok);
+                presenter.event([] {
+                        Event e;
+                        e.type = Event::Type::Key;
+                        e.key = 0x70011; // n
+                        e.character = 'n';
+                        return e;
+                }());
+                CHECK(!presenter.asking());
+                presenter.act(Action::Next);
+                CHECK(presenter.slideNumber() == 2);
+                CHECK(!presenter.demoRunning());
+                CHECK(platform.demo[0] == '\0');
+                fflush(out);
+                CHECK(strstr(text, "(not run: the deck's demos were declined)") != nullptr);
+        }
+        fclose(out);
+}
+
+TEST_CASE("Presenting: a demo on the last slide brings that slide back as it ends") {
+        NotesPlatform platform;
+        platform.text = "# Intro\n\n---\n\n<!-- run: luckyduck -->\n\n# Last\n";
+        Presenter presenter(platform, "deck.md", nullptr, nullptr, true);
+        REQUIRE(presenter.load() == Error::Ok);
+        REQUIRE(presenter.run(1) == Error::Ok);
+        presenter.act(Action::Next);
+        REQUIRE(presenter.demoRunning());
+        REQUIRE(platform.screen == nullptr);
+        presenter.demoEnded(0);
+        CHECK(presenter.slideNumber() == 2);
+        REQUIRE(platform.screen != nullptr);
+        // Drawn again: the slide's background, not the cleared screen's zeros.
+        CHECK(platform.screen[0] != 0);
+}
+
+TEST_CASE("Presenting: a demo that can't be started leaves its slide shown") {
+        NotesPlatform platform;
+        platform.text = "# Intro\n\n---\n\n<!-- run: nosuchprogram -->\n\n# Missing\n";
+        platform.demoStarts = false;
+        char  text[8192] = {};
+        FILE *out = fmemopen(text, sizeof text - 1, "w");
+        {
+                Presenter presenter(platform, "deck.md", out, nullptr, true);
+                REQUIRE(presenter.load() == Error::Ok);
+                REQUIRE(presenter.run(1) == Error::Ok);
+                presenter.act(Action::Next);
+                CHECK(presenter.slideNumber() == 2);
+                CHECK(!presenter.demoRunning());
+                CHECK(!presenter.screenReleased());
+                REQUIRE(platform.screen != nullptr);
+                CHECK(platform.screen[0] != 0);
+                // The deck goes on as ever.
+                presenter.act(Action::Previous);
+                CHECK(presenter.slideNumber() == 1);
+                fflush(out);
+                CHECK(strstr(text, "Demo: nosuchprogram (couldn't be started)") != nullptr);
+        }
+        fclose(out);
 }

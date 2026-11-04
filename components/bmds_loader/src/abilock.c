@@ -799,6 +799,7 @@ _Static_assert(BMDS_SURFACE_PALETTE == 1 && BMDS_SURFACE_TITLE == 2 && BMDS_SURF
                "ABI: surface_control ops");
 _Static_assert(BMDS_POINTER_NORMAL == 0 && BMDS_POINTER_HIDDEN == 1 && BMDS_POINTER_RELATIVE == 2,
                "ABI: pointer modes");
+_Static_assert(BMDS_SURFACE_IMAGE == 6 && BMDS_SURFACE_BLIT == 7, "ABI: surface_control ops (appended 2026-10-16)");
 _Static_assert(BMDS_EVENT_KEY == 1 && BMDS_EVENT_POINTER == 2 && BMDS_EVENT_WHEEL == 3 && BMDS_EVENT_ACTIVE == 4 &&
                        BMDS_EVENT_PRESENTED == 5 && BMDS_EVENT_CLOSE == 6 && BMDS_EVENT_ACTION == 7 &&
                        BMDS_EVENT_PAD == 8,

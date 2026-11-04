@@ -10,10 +10,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 #include <bmds/game.h>
 #include <bmds/sys.h>
+
+extern char **environ; // a demo's environment: Preso's own
 
 namespace preso {
 
@@ -71,6 +79,8 @@ namespace preso {
                         "[Action stepback]\n"
                         "Id=33\nLabel=Previous, from a piece\nGroup=Scripts\nSets=script\nKeys=PageUp\nPad=Pad.L1\n";
 
+                int childWrite = -1; // SIGCHLD's handler's end of the pipe (a demo's end, §6a)
+
                 static_assert(uint32_t(Action::Next) == 1 && uint32_t(Action::Previous) == 2 &&
                                       uint32_t(Action::First) == 3 && uint32_t(Action::Last) == 4 &&
                                       uint32_t(Action::Quit) == 5 && uint32_t(Action::Black) == 6 &&
@@ -84,6 +94,12 @@ namespace preso {
 
         BmdsPlatform::~BmdsPlatform() {
                 restoreTerminal();
+                if (_childPipe[0] >= 0) {
+                        signal(SIGCHLD, SIG_DFL);
+                        childWrite = -1;
+                        close(_childPipe[0]);
+                        close(_childPipe[1]);
+                }
                 if (_audio != nullptr) {
                         bmds_game_audio_close(static_cast<bmds_game_audio_t *>(_audio));
                         for (Sound &s : _sounds) {
@@ -346,6 +362,8 @@ namespace preso {
                         fprintf(stderr, "preso: no screen: %s\n", strerror(-_surface));
                         return _surface == -BMDS_ENOMEM ? Error::NoMemory : Error::NotSupported;
                 }
+                // Not a demo's (§6a): kept by its shell, the screen wouldn't close for it.
+                (void)bmds_fd_flags(_surface, BMDS_FD_CLOEXEC);
                 _width = width;
                 _height = height;
                 _bufferCount = 2;
@@ -358,15 +376,35 @@ namespace preso {
                         _buffers[i] = b.pixels;
                         _strides[i] = b.stride;
                 }
-                // The presenter's actions; without them (an older system), keys by their usages.
-                int32_t r = bmds_controls(BMDS_CONTROLS_DECLARE, const_cast<char *>(Controls), sizeof Controls - 1);
-                if (r == 0) r = bmds_controls(BMDS_CONTROLS_SET, const_cast<char *>("deck"), 4);
-                _controls = r == 0;
-                if (!_controls && r != -BMDS_ENOSYS) fprintf(stderr, "preso: its controls: %s\n", strerror(-r));
+                // The presenter's actions; without them (an older system), keys by their usages. The
+                // process's: not asked for again when the screen opens again after a demo.
+                if (!_declared) {
+                        _declared = true;
+                        int32_t r =
+                                bmds_controls(BMDS_CONTROLS_DECLARE, const_cast<char *>(Controls), sizeof Controls - 1);
+                        if (r == 0) r = bmds_controls(BMDS_CONTROLS_SET, const_cast<char *>("deck"), 4);
+                        _controls = r == 0;
+                        if (!_controls && r != -BMDS_ENOSYS) fprintf(stderr, "preso: its controls: %s\n", strerror(-r));
+                }
                 // No arrow over the slides (the presenter's pointer is Preso's own: step 8).
                 uint32_t pointer = BMDS_POINTER_HIDDEN;
                 (void)bmds_surface_control(_surface, BMDS_SURFACE_POINTER, &pointer, sizeof pointer);
                 return Error::Ok;
+        }
+
+        void BmdsPlatform::closeScreen() {
+                // Its buffers given back with it (a demo has the screen: §6a).
+                if (_surface < 0) return;
+                bmds_close(_surface);
+                _surface = -1;
+                _bufferCount = 0;
+                _frame = -1;
+                _dmaPieces = false;
+                for (uint32_t i = 0; i < 3; i++) {
+                        _buffers[i] = nullptr;
+                        _stale[i] = Rect();
+                }
+                return;
         }
 
         void BmdsPlatform::present(const Canvas &canvas) {
@@ -593,6 +631,61 @@ namespace preso {
                 return;
         }
 
+        // ---- Live demos (devplan/preso.md §6a): a command through the shell, the deck out of its way
+
+        namespace {
+
+                void childEnded(int) {
+                        int  saved = errno;
+                        char b = 0;
+                        if (childWrite >= 0) (void)write(childWrite, &b, 1);
+                        errno = saved;
+                }
+
+        } // namespace
+
+        Error BmdsPlatform::startDemo(const char *command, const char *folder) {
+                if (_demoPid >= 0) return Error::Invalid; // one at a time
+                if (_childPipe[0] < 0) {
+                        // Children's ends heard without polling: a byte in a pipe the loop watches.
+                        if (pipe2(_childPipe, O_CLOEXEC | O_NONBLOCK) != 0) return Error::Io;
+                        childWrite = _childPipe[1];
+                        struct sigaction a = {};
+                        a.sa_handler = childEnded;
+                        a.sa_flags = SA_RESTART;
+                        sigemptyset(&a.sa_mask);
+                        sigaction(SIGCHLD, &a, nullptr);
+                }
+                // From the deck's folder: `cd 'FOLDER' && COMMAND`, the folder quoted.
+                char line[1200];
+                int  n = snprintf(line, sizeof line, "cd '");
+                for (const char *p = folder; *p != '\0' && n < int(sizeof line) - 8; p++) {
+                        n += *p == '\'' ? snprintf(line + n, sizeof line - size_t(n), "'\\''")
+                                        : snprintf(line + n, sizeof line - size_t(n), "%c", *p);
+                }
+                n += snprintf(line + n, sizeof line - size_t(n), "' && %s", command);
+                if (n >= int(sizeof line)) return Error::TooBig;
+                char *argv[] = {const_cast<char *>("sh"), const_cast<char *>("-c"), line, nullptr};
+                pid_t pid = -1;
+                if (posix_spawnp(&pid, "sh", nullptr, nullptr, argv, ::environ) != 0) return Error::NotFound;
+                _demoPid = int32_t(pid);
+                return Error::Ok;
+        }
+
+        void BmdsPlatform::demoFinished(App &app) {
+                // A byte from SIGCHLD's handler: whether it was the demo that ended.
+                char bytes[16];
+                while (read(_childPipe[0], bytes, sizeof bytes) > 0) {}
+                if (_demoPid < 0) return;
+                int   status = 0;
+                pid_t r = waitpid(pid_t(_demoPid), &status, WNOHANG);
+                if (r != pid_t(_demoPid)) return;
+                _demoPid = -1;
+                app.demoEnded(WIFEXITED(status) ? WEXITSTATUS(status)
+                                                : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0));
+                return;
+        }
+
         // ---- The terminal it was started from (over SSH: the laptop's)
 
         bool BmdsPlatform::readTerminal() {
@@ -795,17 +888,23 @@ namespace preso {
                 _quit = false;
                 while (!_quit) {
                         // The surface, the terminal's keys, the folders watched.
-                        bmds_pollfd_t fds[2 + MaxWatches];
+                        // POSIX poll, not bmds_io_poll: libc runs the signal handlers as a call
+                        // returns (SIGCHLD's, a demo's end), the raw call leaves them to its caller.
+                        struct pollfd fds[3 + MaxWatches];
                         uint32_t      n = 0;
-                        fds[n++] = bmds_pollfd_t{sizeof(bmds_pollfd_t), _surface, BMDS_POLL_IN, 0};
+                        fds[n++] = pollfd{_surface, POLLIN, 0};
                         int32_t terminal = -1;
                         if (_terminal) {
                                 terminal = int32_t(n);
-                                fds[n++] = bmds_pollfd_t{sizeof(bmds_pollfd_t), 0, BMDS_POLL_IN, 0};
+                                fds[n++] = pollfd{0, POLLIN, 0};
+                        }
+                        int32_t child = -1;
+                        if (_childPipe[0] >= 0) {
+                                child = int32_t(n);
+                                fds[n++] = pollfd{_childPipe[0], POLLIN, 0};
                         }
                         uint32_t watchesAt = n;
-                        for (uint32_t i = 0; i < _watchCount; i++)
-                                fds[n++] = bmds_pollfd_t{sizeof(bmds_pollfd_t), _watches[i], BMDS_POLL_IN, 0};
+                        for (uint32_t i = 0; i < _watchCount; i++) fds[n++] = pollfd{_watches[i], POLLIN, 0};
                         // Animating, nothing is waited for here: the frame waits for its buffer.
                         int32_t timeout = _animating ? 0 : changed ? Settle : -1;
                         int64_t ticked = now();
@@ -814,8 +913,8 @@ namespace preso {
                                 int32_t untilSecond = int32_t((_nextSecond - ticked) / 1000000) + 1;
                                 if (timeout < 0 || untilSecond < timeout) timeout = untilSecond;
                         }
-                        int32_t r = bmds_io_poll(fds, n, timeout, nullptr);
-                        if (r < 0 && r != -BMDS_EINTR) return Error::Io;
+                        int r = ::poll(fds, nfds_t(n), timeout);
+                        if (r < 0 && errno != EINTR) return Error::Io;
                         if (_ticking && now() >= _nextSecond) {
                                 _nextSecond = now() + 1000000000;
                                 app.second();
@@ -826,12 +925,13 @@ namespace preso {
                                 continue;
                         }
                         for (uint32_t i = 0; i < _watchCount; i++) {
-                                if ((fds[watchesAt + i].revents & BMDS_POLL_IN) == 0) continue;
+                                if ((fds[watchesAt + i].revents & POLLIN) == 0) continue;
                                 uint32_t what = 0;
                                 (void)bmds_read(_watches[i], &what, sizeof what);
                                 changed = true;
                         }
-                        if (terminal >= 0 && (fds[terminal].revents & (BMDS_POLL_IN | BMDS_POLL_HUP)) != 0) {
+                        if (child >= 0 && (fds[child].revents & POLLIN) != 0) demoFinished(app);
+                        if (terminal >= 0 && (fds[terminal].revents & (POLLIN | POLLHUP)) != 0) {
                                 char    bytes[64];
                                 ssize_t got = read(0, bytes, sizeof bytes);
                                 if (got > 0) {
@@ -840,8 +940,8 @@ namespace preso {
                                         restoreTerminal(); // the connection gone: no more keys from it
                                 }
                         }
-                        if ((fds[0].revents & BMDS_POLL_IN) != 0) dispatch(app);
-                        if ((fds[0].revents & (BMDS_POLL_HUP | BMDS_POLL_ERR)) != 0) break;
+                        if ((fds[0].revents & POLLIN) != 0) dispatch(app);
+                        if ((fds[0].revents & (POLLHUP | POLLERR)) != 0) break;
                         if (_animating && !_quit) app.frame(now());
                 }
                 return Error::Ok;
