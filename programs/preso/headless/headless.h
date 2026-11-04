@@ -36,6 +36,8 @@ namespace preso {
                         void        drawText(Canvas &canvas, int32_t font, int32_t x, int32_t y, StringView text,
                                              Color color) override;
 
+                        Error makeFolder(const char *path) override;
+
                         /** @brief Fonts open now (the tests check that none leak). */
                         uint32_t openFonts() const;
 

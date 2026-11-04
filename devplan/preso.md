@@ -565,6 +565,36 @@ What step 6 settles that the sections above leave open:
 - **A Markdown viewer later:** the same layout in a scrolling window opens `.md` files from the
   file browser (`mimeapps.list`), our own docs included. Not in this plan's steps.
 
+### 8a. Step 10's design (2026-11-03)
+
+- **`preso export [--trust] [--posters] DECK DIR`** draws every step of every slide to a PNG
+  in DIR, which it makes if needed:
+  - **Names:** `007.png` for a slide of one step, `007-1.png` to `007-4.png` for one of four.
+    They sort in order, and the last of a slide is the slide built up.
+  - **What is drawn:** what the screen shows once each step has played: script regions at the
+    end of their beat (`seek(beat, true)`, as Previous does). Demos don't run, sounds don't
+    play, ink and the dot aren't there.
+  - **Size:** the deck's (the theme's), with its pictures.
+  - **Writing:** `Platform::writePicture()`. On BMDS it is `image_encode`'s PNG. The headless
+    platform writes a plain uncompressed PNG, enough for the tests (its fonts are stand-ins).
+  - **`--posters`** also writes each script region's frame at its slide's last step, cut to its
+    rectangle, beside the script as `SCRIPT.png` (§7.2). Marp then shows a deck that names the
+    PNG with `script:SCRIPT` in the alt text, which Preso already reads.
+  - **Exit status:** as `check`'s: 0 clean, 1 reported problems, 2 couldn't.
+- **Kiosk mode:**
+  - **`preso --loop DECK`:** Next on the last step goes to the first slide.
+  - **`auto: 10s`:** each step of the slide goes on to the next by itself after that time. It
+    can be the front matter's for every slide, or `_auto` for one.
+  - **The clock** starts again with every step shown, so a key pressed in between gives the
+    full time again. It stops while the overview, a typed number, a blank screen, the question,
+    an entered region or a demo is up.
+  - **Timing:** `Platform::setAlarm(at)` calls `App::alarm()` at `now()` ≥ `at`. On BMDS it is
+    the loop's poll timeout, so nothing wakes in between.
+- **`dist/preso`'s examples:** `programs/preso/examples/` installs to `share/preso/examples/`:
+  - **`tour.md`:** what a deck can do, one feature a slide, in `paper`.
+  - **`bmds/bmds.md`:** the BMDS talk, in `vga`, with its diagrams drawn by scripts (no
+    screenshots kept in the repository) and Lucky Duck as its live demo.
+
 ## 9. Additions outside the program
 
 Kept small, and only what other programs would use:
@@ -638,8 +668,8 @@ What an SDL3 platform layer (`programs/preso/sdl/`) needs, so the core is writte
    bindings checked with the user's pad (still to do: the user's pad); the pointer and ink
    (§6b, §14).
 9. [x] Live demos: the deck's screen closed while they run, opened again after (§6a, §14).
-10. [ ] `preso export` and `--posters`; kiosk mode; `dist/preso` with an example deck; the BMDS
-    talk itself.
+10. [x] `preso export` and `--posters`; kiosk mode; `dist/preso` with an example deck; the BMDS
+    talk itself (§8a, §14).
 
 ## 14. As built
 
@@ -1405,3 +1435,46 @@ What an SDL3 platform layer (`programs/preso/sdl/`) needs, so the core is writte
   - not run again going back, and declined;
   - a demo on the last slide;
   - one that can't be started.
+
+### Step 10 (2026-11-03): export, posters, kiosk mode, the examples and the talk
+
+- **`preso export [--trust] [--posters] DECK DIR`** (`Presenter::exportSlides()`, §8a):
+  - It uses the presenter's own drawing: for each step, the regions are sought to the end of
+    their beat, then the slide is drawn into one picture.
+  - `Platform::makeFolder()` makes DIR, and `writePicture()` writes each PNG.
+  - On the board, PNGs come from `image_encode`, straight from the RGB565 picture. Elsewhere the
+    core writes an uncompressed PNG through stdio, with stored deflate blocks, its own CRC-32
+    and Adler-32: no compressor needed.
+  - **Posters** are cut from the slide's last picture at each region's rectangle, and written
+    as `SCRIPT.png` beside the script.
+  - **On the board:** the talk took 6.8 s for 47 pictures, with its two posters. The tour took
+    17.7 s for 26: its orbit script never ends, so each seek runs it until fast-forward gives up.
+- **Kiosk mode:**
+  - `--loop` (`Presenter::setLoop()`) makes Next on the last step go to the first slide;
+    Previous doesn't wrap.
+  - `auto` (parsed since step 1) works through `Platform::setAlarm()` and `App::alarm()`. On
+    BMDS the alarm is the loop's poll timeout.
+  - `act()` now wraps `actNow()`: every action gives the step the whole time again.
+    `finishTransition()` and other events re-arm the alarm without restarting it.
+  - The alarm is off while something holds the deck (§8a), and where there is no step after
+    the shown one.
+  - **On the board:** a three-slide deck with `auto: 2s` under `--loop` went round twice in
+    10 s, a slide every 2 s, and Escape quit it.
+- **The examples** are in `programs/preso/examples/`, and `dist/preso`'s build installs them to
+  `share/preso/examples/`:
+  - **`tour.md`** (13 slides, `paper`): the format, text, code, tables, a moving script, a
+    script in steps, a slider, an `angel run` block, transitions, and how to run a deck.
+  - **`bmds/bmds.md`** (15 slides, `vga`, `duration: 25m`): the board, the idea, the goals, the
+    layers (a script, one layer each Next), drivers, programs and the system call table, the
+    ABI lock, efficiency, the desktop, Lucky Duck as a live demo, angel, a quicksort drawn by a
+    script, self-hosting next. Each slide has speaker notes. It keeps no pictures in the
+    repository.
+  - `preso check` on the board reports nothing for either.
+  - The host's stand-in fonts made overflow reports that the board's fonts didn't: the board
+    is where a deck is checked.
+- **Tests:** 5 more host cases (107 in all):
+  - export's names, sizes and a failed write;
+  - a region at each beat, and its poster (`export.cpp`);
+  - the core's PNG, each chunk's CRC and the stored rows;
+  - `auto` with a key, a blank screen, a slide's own time, the end, and `--loop`;
+  - `--loop` without `auto` (`present.cpp`).

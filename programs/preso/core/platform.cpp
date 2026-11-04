@@ -15,6 +15,139 @@
 
 namespace preso {
 
+        namespace {
+
+                // A PNG's pieces: big-endian numbers and the chunks' CRC-32.
+                void putBig(uint8_t *out, uint32_t v) {
+                        out[0] = uint8_t(v >> 24);
+                        out[1] = uint8_t(v >> 16);
+                        out[2] = uint8_t(v >> 8);
+                        out[3] = uint8_t(v);
+                        return;
+                }
+
+                struct Crc {
+                                uint32_t table[256];
+                                Crc() {
+                                        for (uint32_t n = 0; n < 256; n++) {
+                                                uint32_t c = n;
+                                                for (int k = 0; k < 8; k++)
+                                                        c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+                                                table[n] = c;
+                                        }
+                                }
+                                uint32_t add(uint32_t crc, const uint8_t *data, size_t n) const {
+                                        for (size_t i = 0; i < n; i++) crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+                                        return crc;
+                                }
+                };
+
+                // A chunk written in pieces: its length first, then its type and data through the CRC.
+                class Chunk {
+                        public:
+                                Chunk(FILE *f, const Crc &crc, const char *type, uint32_t length) : _f(f), _crc(crc) {
+                                        uint8_t n[4];
+                                        putBig(n, length);
+                                        (void)fwrite(n, 1, 4, f);
+                                        put(reinterpret_cast<const uint8_t *>(type), 4);
+                                }
+                                void put(const uint8_t *data, size_t n) {
+                                        _sum = _crc.add(_sum, data, n);
+                                        (void)fwrite(data, 1, n, _f);
+                                        return;
+                                }
+                                void end() {
+                                        uint8_t n[4];
+                                        putBig(n, _sum ^ 0xFFFFFFFFu);
+                                        (void)fwrite(n, 1, 4, _f);
+                                        return;
+                                }
+
+                        private:
+                                FILE      *_f;
+                                const Crc &_crc;
+                                uint32_t   _sum = 0xFFFFFFFFu;
+                };
+
+        } // namespace
+
+        Error Platform::writePicture(const char *path, const Canvas &canvas, const Rect &area) {
+                // RGB, 8 bits, its pixel data in deflate's stored blocks: no compressor needed.
+                Rect r = area.intersected(Rect{0, 0, canvas.width(), canvas.height()});
+                if (r.isEmpty()) return Error::Invalid;
+                FILE *f = fopen(path, "wb");
+                if (f == nullptr) return Error::Io;
+                Crc           crc;
+                const uint8_t signature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+                (void)fwrite(signature, 1, 8, f);
+                uint8_t header[13] = {};
+                putBig(header, uint32_t(r.width));
+                putBig(header + 4, uint32_t(r.height));
+                header[8] = 8; // bits
+                header[9] = 2; // RGB
+                Chunk ihdr(f, crc, "IHDR", 13);
+                ihdr.put(header, 13);
+                ihdr.end();
+                const uint32_t rowBytes = 1 + 3 * uint32_t(r.width); // its filter (none), then RGB
+                const uint64_t raw = uint64_t(rowBytes) * uint32_t(r.height);
+                const uint64_t blocks = (raw + 65534) / 65535;
+                const uint64_t length = 2 + blocks * 5 + raw + 4;
+                if (length > 0x7FFFFFFFu) {
+                        fclose(f);
+                        return Error::TooBig;
+                }
+                uint8_t *row = static_cast<uint8_t *>(malloc(rowBytes));
+                if (row == nullptr) {
+                        fclose(f);
+                        return Error::NoMemory;
+                }
+                Chunk         idat(f, crc, "IDAT", uint32_t(length));
+                const uint8_t zlib[2] = {0x78, 0x01};
+                idat.put(zlib, 2);
+                uint32_t a = 1, b = 0;  // Adler-32
+                uint64_t left = raw;    // bytes still to go
+                uint32_t blockLeft = 0; // in the block being written
+                for (int32_t y = 0; y < r.height; y++) {
+                        row[0] = 0;
+                        for (int32_t x = 0; x < r.width; x++) {
+                                Color c = canvas.colorAt(r.x + x, r.y + y);
+                                row[1 + 3 * x] = uint8_t(c >> 16);
+                                row[2 + 3 * x] = uint8_t(c >> 8);
+                                row[3 + 3 * x] = uint8_t(c);
+                        }
+                        for (uint32_t i = 0; i < rowBytes; i++) {
+                                a = (a + row[i]) % 65521;
+                                b = (b + a) % 65521;
+                        }
+                        // The row into blocks of at most 65535 bytes, each with its header.
+                        uint32_t done = 0;
+                        while (done < rowBytes) {
+                                if (blockLeft == 0) {
+                                        uint32_t n = left > 65535 ? 65535 : uint32_t(left);
+                                        uint8_t  h[5] = {uint8_t(left <= 65535 ? 1 : 0), uint8_t(n), uint8_t(n >> 8),
+                                                         uint8_t(~n), uint8_t(~n >> 8)};
+                                        idat.put(h, 5);
+                                        blockLeft = n;
+                                }
+                                uint32_t n = rowBytes - done < blockLeft ? rowBytes - done : blockLeft;
+                                idat.put(row + done, n);
+                                done += n;
+                                blockLeft -= n;
+                                left -= n;
+                        }
+                }
+                uint8_t adler[4];
+                putBig(adler, (b << 16) | a);
+                idat.put(adler, 4);
+                idat.end();
+                free(row);
+                Chunk iend(f, crc, "IEND", 0);
+                iend.end();
+                bool ok = ferror(f) == 0;
+                if (fclose(f) != 0) ok = false;
+                return ok ? Error::Ok : Error::Io;
+        }
+
         Error Platform::readFile(const char *path, uint32_t maxLength, char **data, uint32_t *length) {
                 *data = nullptr;
                 *length = 0;

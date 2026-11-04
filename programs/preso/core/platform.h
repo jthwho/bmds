@@ -176,6 +176,8 @@ namespace preso {
                         virtual void second() {}
                         /** @brief The demo Platform::startDemo() started has ended, with @p status. */
                         virtual void demoEnded(int32_t status) { (void)status; }
+                        /** @brief The time Platform::setAlarm() asked for has come. */
+                        virtual void alarm() {}
         };
 
         /**
@@ -200,6 +202,17 @@ namespace preso {
                                                              uint32_t *length);
                         /** @brief Whether there is a file at @p path (by default through stdio). */
                         virtual bool fileExists(const char *path);
+                        /**
+                         * @brief Writes @p area of @p canvas to @p path as a PNG (`preso export`). By
+                         *        default an uncompressed one, through stdio.
+                         */
+                        [[nodiscard]] virtual Error writePicture(const char *path, const Canvas &canvas,
+                                                                 const Rect &area);
+                        /** @brief Makes folder @p path unless it is there (none: Error::NotSupported). */
+                        [[nodiscard]] virtual Error makeFolder(const char *path) {
+                                (void)path;
+                                return Error::NotSupported;
+                        }
 
                         // ---- Fonts: a font is a name ("IBM Plex Sans 32 bold"), open as a handle.
 
@@ -349,6 +362,8 @@ namespace preso {
                         virtual bool outputIsTerminal() { return false; }
                         /** @brief Calls App::second() about once a second while @p on. */
                         virtual void setTicking(bool on) { (void)on; }
+                        /** @brief Calls App::alarm() once when now() reaches @p at; 0: not at all. */
+                        virtual void setAlarm(int64_t at) { (void)at; }
 
                         // ---- Live demos (§6a; none: Error::NotSupported)
 

@@ -50,14 +50,27 @@ namespace preso {
                         [[nodiscard]] Error load();
                         /** @brief Opens the screen at slide @p number and runs until quit. */
                         [[nodiscard]] Error run(uint32_t number);
+                        /**
+                         * @brief Draws every step of every slide to a PNG in @p folder, made if needed
+                         *        (`preso export`, §8a); with @p posters each script region's frame at its
+                         *        slide's last step too, beside its script as `SCRIPT.png`. After load().
+                         *        @p written: how many files. @return The first error, the rest not tried.
+                         */
+                        [[nodiscard]] Error exportSlides(const char *folder, bool posters, uint32_t *written);
 
                         // ---- App
                         void event(const Event &event) override;
                         void terminalInput(const char *data, uint32_t length) override;
                         void second() override;
                         void demoEnded(int32_t status) override;
+                        void alarm() override;
                         void filesChanged() override;
                         void frame(int64_t ns) override;
+
+                        /** @brief Kiosk mode (`--loop`, §8a): Next on the last step goes to the first slide. */
+                        void setLoop(bool loop) { _loop = loop; }
+                        /** @brief The problems reported in the deck (`preso check`'s). */
+                        uint32_t problems() const { return _deck != nullptr ? _deck->diagnosticCount() : 0; }
 
                         // ---- What is shown (for the tests)
                         uint32_t slideNumber() const { return _slide; }
@@ -217,6 +230,14 @@ namespace preso {
                         void                releaseScreen();
                         /** @brief Starts the shown slide's demo; false if it couldn't be (the screen kept). */
                         bool startDemo();
+                        // Kiosk mode (§8a): looping, and `auto`'s clock for the step shown.
+                        bool     _loop = false;
+                        bool     _autoArmed = false;
+                        uint32_t _autoSlide = 0;
+                        uint32_t _autoStep = 0;
+                        void     actNow(Action action);
+                        void     updateAuto(bool restart = false);
+                        bool     autoFree() const;
                         // Notes and the timer
                         bool         _notesTerminal = false; ///< Standard output a terminal: redrawn in place.
                         bool         _ticking = false;

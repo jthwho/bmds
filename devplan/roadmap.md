@@ -484,7 +484,10 @@ Plan: [`input.md`](input.md).
   (2026-11-03: notes, a timer and the pace in the terminal Preso was started from, its keys moving
   the deck over SSH; the pointer's dot, ink, a pad's stick; the pad bindings wait for the user's
   pad); step 9 (2026-11-03: `run:` demos through the shell from the deck's folder, the deck's
-  screen and pictures closed while one runs so it has the memory, the slide after when it ends).
+  screen and pictures closed while one runs so it has the memory, the slide after when it ends);
+  step 10 (2026-11-03: `preso export` to PNGs and `--posters`; kiosk mode, `--loop` and `auto`;
+  the example decks in `dist/preso`, Preso's tour and the BMDS talk). All ten steps are done;
+  checking the pad bindings waits for the user's pad.
 
 ## Phase 8 — Self-Hosting
 

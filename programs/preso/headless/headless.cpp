@@ -7,8 +7,15 @@
  */
 
 #include "headless.h"
+#include <errno.h>
+#include <sys/stat.h>
 
 namespace preso {
+
+        Error HeadlessPlatform::makeFolder(const char *path) {
+                if (mkdir(path, 0755) == 0 || errno == EEXIST) return Error::Ok;
+                return errno == ENOENT ? Error::NotFound : Error::Io;
+        }
 
         int32_t HeadlessPlatform::openFont(const char *name) {
                 // The size: the name's last number ("IBM Plex Sans 30 bold").

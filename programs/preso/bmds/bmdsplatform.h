@@ -47,6 +47,9 @@ namespace preso {
                         Error decodeImage(const char *path, int32_t minWidth, int32_t minHeight,
                                           Picture *picture) override;
 
+                        Error writePicture(const char *path, const Canvas &canvas, const Rect &area) override;
+                        Error makeFolder(const char *path) override;
+
                         void       *allocatePixels(uint32_t bytes) override;
                         void        freePixels(void *pixels) override;
                         PixelFormat pixelFormat() const override { return PixelFormat::Rgb565; }
@@ -69,6 +72,7 @@ namespace preso {
                         bool        readTerminal() override;
                         bool        outputIsTerminal() override;
                         void        setTicking(bool on) override { _ticking = on; }
+                        void        setAlarm(int64_t at) override { _alarm = at; }
                         Error       startDemo(const char *command, const char *folder) override;
                         int32_t     openSound(const char *path) override;
                         void        playSound(int32_t sound, float volume) override;
@@ -112,6 +116,7 @@ namespace preso {
                         void     *_savedTerminal = nullptr; ///< A struct termios.
                         bool      _ticking = false;
                         int64_t   _nextSecond = 0;
+                        int64_t   _alarm = 0;  ///< setAlarm()'s time (now()'s), 0: none.
                         int32_t   _stickX = 0; ///< A pad's left stick, as last told.
                         int32_t   _stickY = 0;
                         int32_t   _pointerY = 0;

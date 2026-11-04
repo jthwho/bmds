@@ -75,6 +75,8 @@ namespace {
                         void    animate(bool on) override { animating = on; }
                         void    setInputMode(InputMode m) override { mode = m; }
                         int64_t now() override { return clock; }
+                        int64_t alarmAt = 0; ///< setAlarm()'s, 0: none.
+                        void    setAlarm(int64_t at) override { alarmAt = at; }
                         Error   watch(const char *) override { return Error::Ok; }
                         Error   run(preso::App &) override { return Error::Ok; }
         };
@@ -422,4 +424,69 @@ TEST_CASE("Presenter: frames into buffers taking turns change only the differenc
                 delete presenter;
                 delete platform;
         }
+}
+
+TEST_CASE("Kiosk: `auto` steps on by itself, a key gives the full time again, --loop goes round") {
+        FramePlatform platform;
+        Presenter     presenter(platform, "deck.md", nullptr);
+        platform.text =
+                "---\nauto: 10s\n---\n\n# One\n\n* a\n* b\n\n---\n\n<!-- _auto: 2s -->\n# Two\n\n---\n\n# Three\n";
+        // The platform's alarm goes off once: cleared as it does.
+        auto fire = [&](int64_t at) {
+                platform.clock = at;
+                platform.alarmAt = 0;
+                presenter.alarm();
+        };
+        REQUIRE(presenter.load() == Error::Ok);
+        REQUIRE(presenter.run(1) == Error::Ok);
+        // Armed for the first step's 10 seconds; its time comes: the next step.
+        CHECK(platform.alarmAt == 10000 * Ms);
+        fire(10000 * Ms);
+        CHECK(presenter.slideNumber() == 1);
+        CHECK(presenter.step() == 1);
+        CHECK(platform.alarmAt == 20000 * Ms);
+        // A key meanwhile: the step after it gets the whole time from then.
+        platform.clock = 15000 * Ms;
+        presenter.act(Action::Next);
+        CHECK(presenter.step() == 2);
+        CHECK(platform.alarmAt == 25000 * Ms);
+        // Black: held, no alarm; back: the full time again.
+        presenter.act(Action::Black);
+        CHECK(platform.alarmAt == 0);
+        platform.clock = 30000 * Ms;
+        presenter.act(Action::Black);
+        CHECK(platform.alarmAt == 40000 * Ms);
+        // The second slide's own 2 s; the third the deck's 10 s, but it is the end: without --loop,
+        // nothing more.
+        fire(40000 * Ms);
+        CHECK(presenter.slideNumber() == 2);
+        CHECK(platform.alarmAt == 42000 * Ms);
+        fire(42000 * Ms);
+        CHECK(presenter.slideNumber() == 3);
+        CHECK(platform.alarmAt == 0);
+        // --loop: round to the first slide, by itself.
+        presenter.setLoop(true);
+        presenter.act(Action::Leave); // any action: the end now has a step after it
+        CHECK(platform.alarmAt == 52000 * Ms);
+        fire(52000 * Ms);
+        CHECK(presenter.slideNumber() == 1);
+        CHECK(presenter.step() == 0);
+        // The overview holds it.
+        presenter.act(Action::Overview);
+        CHECK(platform.alarmAt == 0);
+}
+
+TEST_CASE("Kiosk: without `auto`, no alarm; --loop alone wraps Next") {
+        FramePlatform platform;
+        platform.text = "# One\n\n---\n\n# Two\n";
+        Presenter presenter(platform, "deck.md", nullptr);
+        REQUIRE(presenter.load() == Error::Ok);
+        presenter.setLoop(true);
+        REQUIRE(presenter.run(2) == Error::Ok);
+        CHECK(platform.alarmAt == 0);
+        presenter.act(Action::Next);
+        CHECK(presenter.slideNumber() == 1);
+        // Previous doesn't wrap.
+        presenter.act(Action::Previous);
+        CHECK(presenter.slideNumber() == 1);
 }

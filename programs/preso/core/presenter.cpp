@@ -241,6 +241,9 @@ namespace preso {
                                 } else if (slide < count) {
                                         slide++;
                                         step = 0;
+                                } else if (_loop) {
+                                        slide = 1; // kiosk mode: round again
+                                        step = 0;
                                 }
                                 break;
                         case Action::Previous:
@@ -396,6 +399,7 @@ namespace preso {
                 updatePointer();
                 updateAnimation();
                 printNotes();
+                updateAuto();
                 return;
         }
 
@@ -1269,6 +1273,53 @@ namespace preso {
         }
 
         void Presenter::act(Action action) {
+                // Someone's action gives the step `auto`'s whole time again (§8a).
+                actNow(action);
+                updateAuto(true);
+                return;
+        }
+
+        bool Presenter::autoFree() const {
+                // Nothing holding the deck: the overview, a number, a blank screen, the question, a
+                // region with the keys, a demo.
+                return _screen && _mode == Mode::Slides && _blank == NoColor && _typedLength == 0 &&
+                       _entered == nullptr && _demo != Demo::Running;
+        }
+
+        void Presenter::updateAuto(bool restart) {
+                // The shown step's `auto`, timed from when it was shown (@p restart: from now); off
+                // where there is no step after it (the end, without --loop).
+                const Slide *s = _deck != nullptr ? _deck->slide(_shownSlide) : nullptr;
+                uint32_t     ms = s != nullptr ? s->settings.autoMs : 0;
+                uint32_t     slide = 0, step = 0;
+                if (ms > 0) target(Action::Next, slide, step);
+                bool want = ms > 0 && autoFree() && _slide == _shownSlide && _step == _shownStep &&
+                            !(slide == _slide && step == _step);
+                if (!want) {
+                        if (_autoArmed) _platform.setAlarm(0);
+                        _autoArmed = false;
+                        return;
+                }
+                if (_autoArmed && !restart && _autoSlide == _shownSlide && _autoStep == _shownStep) return;
+                _autoArmed = true;
+                _autoSlide = _shownSlide;
+                _autoStep = _shownStep;
+                _platform.setAlarm(_platform.now() + int64_t(ms) * 1000000);
+                return;
+        }
+
+        void Presenter::alarm() {
+                // Its time: the next step, unless something holds the deck now (then later).
+                _autoArmed = false;
+                if (autoFree()) {
+                        act(Action::Next);
+                } else {
+                        updateAuto();
+                }
+                return;
+        }
+
+        void Presenter::actNow(Action action) {
                 // A demo running has the screen: the deck waits for it (quitting aside).
                 if (_demo == Demo::Running && action != Action::Quit) return;
                 if (_mode == Mode::Question) {
@@ -1654,6 +1705,63 @@ namespace preso {
                 return;
         }
 
+        Error Presenter::exportSlides(const char *folder, bool posters, uint32_t *written) {
+                *written = 0;
+                if (_deck == nullptr) return Error::Invalid;
+                Error error = _platform.makeFolder(folder);
+                if (error != Error::Ok && error != Error::NotSupported) return error; // none: it must be there
+                // One picture, drawn step by step as the screen would show each once it has played.
+                const Layouter &layouter = *_loaded->layouter;
+                int32_t         w = layouter.width(), h = layouter.height();
+                PixelFormat     format = _platform.pixelFormat();
+                uint32_t        stride = uint32_t(w) * bytesPerPixel(format);
+                if (_pixels[1] == nullptr) _pixels[1] = _platform.allocatePixels(stride * uint32_t(h));
+                if (_pixels[1] == nullptr) return Error::NoMemory;
+                _ahead.attach(_pixels[1], stride, w, h, format);
+                _aheadValid = false;
+                char deckFolder[512];
+                folderOf(_path, deckFolder, sizeof deckFolder);
+                char path[1024];
+                auto write = [&](const Rect &area) {
+                        error = _platform.writePicture(path, _ahead, area);
+                        if (error != Error::Ok) {
+                                if (_messages != nullptr) fprintf(_messages, "preso: %s: %s\n", path, errorName(error));
+                                return false;
+                        }
+                        ++*written;
+                        return true;
+                };
+                for (uint32_t slide = 1; slide <= _deck->slideCount(); slide++) {
+                        uint32_t n = steps(slide);
+                        for (uint32_t step = 0; step <= n; step++) {
+                                seekRegions(slide, step, true);
+                                draw(_ahead, slide, step);
+                                if (n == 0) {
+                                        snprintf(path, sizeof path, "%s/%03u.png", folder, unsigned(slide));
+                                } else {
+                                        snprintf(path, sizeof path, "%s/%03u-%u.png", folder, unsigned(slide),
+                                                 unsigned(step + 1));
+                                }
+                                if (!write(Rect{0, 0, w, h})) return error;
+                        }
+                        if (!posters) continue;
+                        // Its regions as its last step left them, already drawn: each cut out (§7.2).
+                        SlideLayout *layout = layoutOf(slide);
+                        for (const DrawOp *o = layout != nullptr ? layout->ops : nullptr; o != nullptr; o = o->next) {
+                                if (o->type != OpType::Script || o->script == nullptr || o->image == nullptr) continue;
+                                StringView script = o->image->script;
+                                if (script.startsWith("/")) {
+                                        snprintf(path, sizeof path, "%.*s.png", int(script.length()), script.data());
+                                } else {
+                                        snprintf(path, sizeof path, "%s/%.*s.png", deckFolder, int(script.length()),
+                                                 script.data());
+                                }
+                                if (!write(Rect{o->x, o->y, o->width, o->height})) return error;
+                        }
+                }
+                return Error::Ok;
+        }
+
         Error Presenter::run(uint32_t number) {
                 if (_deck == nullptr) return Error::Invalid;
                 _slide = number >= 1 && number <= _deck->slideCount() ? number : 1;
@@ -1715,6 +1823,7 @@ namespace preso {
                                 updateAnimation();
                                 break;
                 }
+                updateAuto(); // a region entered or left, a number typed: `auto` held or going again
                 return;
         }
 

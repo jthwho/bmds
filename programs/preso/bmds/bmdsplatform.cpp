@@ -15,6 +15,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
@@ -329,6 +330,35 @@ namespace preso {
         void BmdsPlatform::freePixels(void *pixels) {
                 bmds_mem_free(pixels);
                 return;
+        }
+
+        // ---- Pictures written (preso export)
+
+        Error BmdsPlatform::writePicture(const char *path, const Canvas &canvas, const Rect &area) {
+                // The system's PNG encoder, compressed, straight from the slide's RGB565.
+                Rect r = area.intersected(Rect{0, 0, canvas.width(), canvas.height()});
+                if (r.isEmpty()) return Error::Invalid;
+                if (canvas.format() != PixelFormat::Rgb565) return Platform::writePicture(path, canvas, area);
+                int32_t fd = bmds_open(path, BMDS_O_WRITE | BMDS_O_CREATE | BMDS_O_TRUNC | BMDS_O_CLOEXEC);
+                if (fd < 0) return errorOf(fd);
+                bmds_image_encode_t e;
+                memset(&e, 0, sizeof e);
+                e.size = sizeof e;
+                e.codec = BMDS_IMAGE_PNG;
+                e.format = BMDS_PIXEL_RGB565;
+                e.width = uint32_t(r.width);
+                e.height = uint32_t(r.height);
+                e.stride = canvas.stride();
+                e.pixels = canvas.pixels() + size_t(r.y) * canvas.stride() + size_t(r.x) * 2;
+                int32_t written = bmds_image_encode(fd, &e);
+                int32_t closed = bmds_close(fd);
+                if (written < 0) return errorOf(written);
+                return closed < 0 ? errorOf(closed) : Error::Ok;
+        }
+
+        Error BmdsPlatform::makeFolder(const char *path) {
+                if (mkdir(path, 0755) == 0 || errno == EEXIST) return Error::Ok;
+                return errno == ENOENT ? Error::NotFound : Error::Io;
         }
 
         // ---- The screen
@@ -913,11 +943,21 @@ namespace preso {
                                 int32_t untilSecond = int32_t((_nextSecond - ticked) / 1000000) + 1;
                                 if (timeout < 0 || untilSecond < timeout) timeout = untilSecond;
                         }
+                        if (_alarm != 0) {
+                                // `auto`'s time (kiosk mode): the poll waits no longer than that.
+                                int64_t until = _alarm > ticked ? (_alarm - ticked + 999999) / 1000000 : 0;
+                                int32_t ms = until > INT32_MAX ? INT32_MAX : int32_t(until);
+                                if (timeout < 0 || ms < timeout) timeout = ms;
+                        }
                         int r = ::poll(fds, nfds_t(n), timeout);
                         if (r < 0 && errno != EINTR) return Error::Io;
                         if (_ticking && now() >= _nextSecond) {
                                 _nextSecond = now() + 1000000000;
                                 app.second();
+                        }
+                        if (_alarm != 0 && now() >= _alarm) {
+                                _alarm = 0;
+                                app.alarm();
                         }
                         if (r == 0 && changed && !_animating) {
                                 changed = false;
