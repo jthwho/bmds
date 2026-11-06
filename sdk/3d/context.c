@@ -16,6 +16,8 @@
 
 #define DEFAULT_MAX_VERTICES 4096u
 #define MAX_POINT_SIZE 64u
+#define DEFAULT_MAX_TRIANGLES 2048u
+#define DEFAULT_MAX_DRAWS 64u
 
 /* ---- The context ------------------------------------------------------------------------------ */
 
@@ -25,7 +27,10 @@ int bmds_3d_create(const bmds_3d_config_t *config, bmds_3d_t **out) {
         if (config != NULL && config->size < sizeof(bmds_3d_config_t)) return -BMDS_EINVAL;
         const uint32_t max = config != NULL && config->max_vertices != 0 ? config->max_vertices : DEFAULT_MAX_VERTICES;
         const uint32_t mem_flags = config != NULL ? config->mem_flags : 0;
-        if (max > 65535u || (mem_flags & ~BMDS_MEM_FAST) != 0) return -BMDS_EINVAL;
+        const uint32_t tris =
+                config != NULL && config->max_triangles != 0 ? config->max_triangles : DEFAULT_MAX_TRIANGLES;
+        const uint32_t draws = config != NULL && config->max_draws != 0 ? config->max_draws : DEFAULT_MAX_DRAWS;
+        if (max > 65535u || tris > 65535u || draws > 65535u || (mem_flags & ~BMDS_MEM_FAST) != 0) return -BMDS_EINVAL;
         bmds_3d_t *ctx = (bmds_3d_t *)bmds_mem_alloc(sizeof(bmds_3d_t), 0, 0);
         if (ctx == NULL) return -BMDS_ENOMEM;
         memset(ctx, 0, sizeof(*ctx));
@@ -33,11 +38,24 @@ int bmds_3d_create(const bmds_3d_config_t *config, bmds_3d_t **out) {
         ctx->vertices = (bmds_3d_vertex_t *)bmds_mem_alloc(bytes, 0, mem_flags);
         /* Internal RAM if it fits, as the config says; else PSRAM. */
         if (ctx->vertices == NULL && mem_flags != 0) ctx->vertices = (bmds_3d_vertex_t *)bmds_mem_alloc(bytes, 0, 0);
-        if (ctx->vertices == NULL) {
-                bmds_mem_free(ctx);
+        /* The solids' queue, in PSRAM: written once a triangle, read once at the end. */
+        ctx->tris = (bmds_3d_tri_t *)bmds_mem_alloc(tris * (uint32_t)sizeof(bmds_3d_tri_t), 0, 0);
+        ctx->keys = (uint32_t *)bmds_mem_alloc(tris * 2 * (uint32_t)sizeof(uint32_t), 0, 0);
+        ctx->order = (uint16_t *)bmds_mem_alloc(tris * 2 * (uint32_t)sizeof(uint16_t), 0, 0);
+        ctx->records = (bmds_3d_record_t *)bmds_mem_alloc(draws * (uint32_t)sizeof(bmds_3d_record_t), 0, 0);
+        if (ctx->vertices == NULL || ctx->tris == NULL || ctx->keys == NULL || ctx->order == NULL ||
+            ctx->records == NULL) {
+                bmds_3d_destroy(ctx);
                 return -BMDS_ENOMEM;
         }
+        ctx->keys2 = ctx->keys + tris;
+        ctx->order2 = ctx->order + tris;
+        ctx->max_tris = tris;
+        ctx->max_records = draws;
         ctx->max_vertices = max;
+        ctx->ambient = 0.25f;
+        ctx->lights[0] = (bmds_3d_light_t){
+                sizeof(bmds_3d_light_t), BMDS_3D_LIGHT_DIRECTIONAL, BMDS_3D_LIGHT_VIEW, -0.4f, 0.6f, 1.0f, 0.8f};
         bmds_mat4_identity(&ctx->projection);
         bmds_mat4_identity(&ctx->view);
         bmds_mat4_identity(&ctx->model[0]);
@@ -52,11 +70,19 @@ int bmds_3d_create(const bmds_3d_config_t *config, bmds_3d_t **out) {
 void bmds_3d_destroy(bmds_3d_t *ctx) {
         if (ctx == NULL) return;
         bmds_mem_free(ctx->vertices);
+        bmds_mem_free(ctx->tris);
+        bmds_mem_free(ctx->keys);
+        bmds_mem_free(ctx->order);
+        bmds_mem_free(ctx->records);
         bmds_mem_free(ctx);
         return;
 }
 
 void bmds_3d_set_target(bmds_3d_t *ctx, bmds_canvas_t *canvas) {
+        if (ctx->tri_count != 0 && canvas != ctx->target) {
+                ++ctx->stats.flushes;
+                bmds_3d_flush(ctx); /* the queue is the old target's */
+        }
         ctx->target = canvas;
         ctx->viewport_whole = 1;
         return;
@@ -78,6 +104,31 @@ void bmds_3d_set_projection(bmds_3d_t *ctx, const bmds_mat4_t *m) {
 
 void bmds_3d_set_view(bmds_3d_t *ctx, const bmds_mat4_t *m) {
         ctx->view = *m;
+        return;
+}
+
+int bmds_3d_set_light(bmds_3d_t *ctx, uint32_t index, const bmds_3d_light_t *light) {
+        if (index >= BMDS_3D_LIGHTS) return -BMDS_EINVAL;
+        if (light == NULL) {
+                memset(&ctx->lights[index], 0, sizeof(ctx->lights[index]));
+                return 0;
+        }
+        if (light->size < sizeof(bmds_3d_light_t) || light->kind > BMDS_3D_LIGHT_POINT ||
+            (light->flags & ~BMDS_3D_LIGHT_VIEW) != 0)
+                return -BMDS_EINVAL;
+        ctx->lights[index] = *light;
+        ctx->lights[index].size = sizeof(bmds_3d_light_t);
+        return 0;
+}
+
+int bmds_3d_set_order(bmds_3d_t *ctx, uint32_t order) {
+        if (order > BMDS_3D_ORDER_TRIANGLES) return -BMDS_EINVAL;
+        ctx->sort_order = order;
+        return 0;
+}
+
+void bmds_3d_set_ambient(bmds_3d_t *ctx, float ambient) {
+        ctx->ambient = ambient;
         return;
 }
 
@@ -142,7 +193,7 @@ void bmds_3d_begin(bmds_3d_t *ctx) {
 }
 
 void bmds_3d_end(bmds_3d_t *ctx) {
-        (void)ctx;
+        bmds_3d_flush(ctx);
         return;
 }
 
@@ -203,10 +254,41 @@ void bmds_3d_transform_vertex(const bmds_mat4_t *mvp, const bmds_mat4_t *mv, con
         return;
 }
 
+bmds_3d_viewport_t bmds_3d_viewport(const bmds_3d_t *ctx) {
+        const bmds_canvas_t *c = ctx->target;
+        bmds_3d_viewport_t   vp;
+        vp.x = (float)(ctx->viewport_whole ? 0 : ctx->vx);
+        vp.y = (float)(ctx->viewport_whole ? 0 : ctx->vy);
+        vp.w = (float)(ctx->viewport_whole ? (c != NULL ? c->width : 0) : ctx->vw);
+        vp.h = (float)(ctx->viewport_whole ? (c != NULL ? c->height : 0) : ctx->vh);
+        return vp;
+}
+
+void bmds_3d_screen(const bmds_3d_viewport_t *vp, bmds_3d_vertex_t *v) {
+        const float w = v->cw, g = BMDS_3D_GUARD * w;
+        uint32_t    oc = 0;
+        if (!(v->cz >= -w)) oc |= BMDS_3D_OUT_NEAR; /* NaN: outside */
+        if (!(v->cz <= w)) oc |= BMDS_3D_OUT_FAR;
+        if (!(v->cx >= -g)) oc |= 0x4u;
+        if (!(v->cx <= g)) oc |= 0x8u;
+        if (!(v->cy >= -g)) oc |= 0x10u;
+        if (!(v->cy <= g)) oc |= 0x20u;
+        v->oc = oc;
+        if ((oc & BMDS_3D_OUT_NEAR) != 0 || !(w > 0.0f)) return;
+        const float inv = 1.0f / w;
+        v->sx = vp->x + (v->cx * inv + 1.0f) * 0.5f * vp->w;
+        v->sy = vp->y + (1.0f - v->cy * inv) * 0.5f * vp->h;
+        if (oc == 0) {
+                v->fx = bmds_3d_fixed(v->sx);
+                v->fy = bmds_3d_fixed(v->sy);
+        }
+        return;
+}
+
 int bmds_3d_check_material(const bmds_3d_material_t *m) {
         if (m == NULL || m->size < sizeof(bmds_3d_material_t)) return -BMDS_EINVAL;
         if (m->mode < BMDS_3D_POINTS || m->mode > BMDS_3D_GOURAUD) return -BMDS_EINVAL;
-        if ((m->flags & ~(BMDS_3D_CULL_BACK | BMDS_3D_DEPTH_CUE)) != 0) return -BMDS_EINVAL;
+        if ((m->flags & ~(BMDS_3D_CULL_BACK | BMDS_3D_DEPTH_CUE | BMDS_3D_UNLIT)) != 0) return -BMDS_EINVAL;
         if (m->point_size > MAX_POINT_SIZE) return -BMDS_EINVAL;
         return 0;
 }
@@ -318,11 +400,13 @@ int bmds_3d_draw(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3d_mater
         if (e == 0) e = bmds_3d_check_material(material);
         if (e < 0) return e;
         if (ctx->target == NULL) return -BMDS_EINVAL;
-        if (material->mode == BMDS_3D_FLAT || material->mode == BMDS_3D_GOURAUD) return -BMDS_ENOSYS;
         if (mesh->vertex_count > ctx->max_vertices) return -BMDS_ENOSPC;
+        const int     solid = material->mode == BMDS_3D_FLAT || material->mode == BMDS_3D_GOURAUD;
         bmds_3d_ink_t ink;
-        e = bmds_3d_ink(ctx, material, &ink);
-        if (e < 0) return e;
+        if (!solid) {
+                e = bmds_3d_ink(ctx, material, &ink);
+                if (e < 0) return e;
+        }
         bmds_3d_area_t area;
         if (!bmds_3d_area(ctx, &area)) return 0;
 
@@ -333,9 +417,13 @@ int bmds_3d_draw(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3d_mater
                 return 0;
         }
         ++ctx->stats.meshes;
-        for (uint32_t v = 0; v < mesh->vertex_count; ++v)
+        const bmds_3d_viewport_t vp = bmds_3d_viewport(ctx);
+        for (uint32_t v = 0; v < mesh->vertex_count; ++v) {
                 bmds_3d_transform_vertex(&mvp, &mv, mesh->positions + 3 * v, &ctx->vertices[v]);
+                bmds_3d_screen(&vp, &ctx->vertices[v]);
+        }
         ctx->stats.vertices += mesh->vertex_count;
+        if (solid) return bmds_3d_queue_solid(ctx, mesh, material, &mv);
 
         bmds_3d_bounds_t bounds = {0, 0, 0, 0};
         if (material->mode == BMDS_3D_WIRE) {
@@ -361,15 +449,19 @@ int bmds_3d_lines(bmds_3d_t *ctx, const float *points, uint32_t count, int strip
         if (!bmds_3d_area(ctx, &area) || count < 2) return 0;
         bmds_mat4_t mvp, mv;
         bmds_3d_matrices(ctx, &mvp, &mv);
-        bmds_3d_bounds_t bounds = {0, 0, 0, 0};
-        bmds_3d_vertex_t a, b;
+        bmds_3d_bounds_t         bounds = {0, 0, 0, 0};
+        bmds_3d_vertex_t         a, b;
+        const bmds_3d_viewport_t vp = bmds_3d_viewport(ctx);
         bmds_3d_transform_vertex(&mvp, &mv, points, &a);
+        bmds_3d_screen(&vp, &a);
         for (uint32_t i = 1; i < count; ++i) {
                 if (!strip && (i & 1u) == 0) {
                         bmds_3d_transform_vertex(&mvp, &mv, points + 3 * i, &a);
+                        bmds_3d_screen(&vp, &a);
                         continue;
                 }
                 bmds_3d_transform_vertex(&mvp, &mv, points + 3 * i, &b);
+                bmds_3d_screen(&vp, &b);
                 ctx->stats.lines += (uint32_t)bmds_3d_segment(ctx, &area, &ink, &a, &b, &bounds);
                 if (strip) a = b;
         }

@@ -50,13 +50,14 @@ if(NOT TARGET bmds_crt)
                                      ${BMDS_SDK_DIR}/game/convert.c ${BMDS_SDK_DIR}/game/image.c
                                      ${BMDS_SDK_DIR}/game/mix.c ${BMDS_SDK_DIR}/game/audio.c
                                      ${BMDS_SDK_DIR}/game/smf.c ${BMDS_SDK_DIR}/game/midiout.c
-                                     ${BMDS_SDK_DIR}/game/shapes.c)
+                                     ${BMDS_SDK_DIR}/game/shapes.c ${BMDS_SDK_DIR}/game/palette.c)
         set_target_properties(bmds_game PROPERTIES OUTPUT_NAME bmdsgame ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
         target_link_libraries(bmds_game PUBLIC bmds_headers)
         target_compile_options(bmds_game PRIVATE -O2 -Wall -Wextra -Werror)
         # libbmds3d.a (bmds/3d.h, devplan/3d.md): software 3D on libbmdsgame's canvases.
         add_library(bmds_3d STATIC ${BMDS_SDK_DIR}/3d/math.c ${BMDS_SDK_DIR}/3d/mesh.c
-                                   ${BMDS_SDK_DIR}/3d/context.c ${BMDS_SDK_DIR}/3d/wire.c)
+                                   ${BMDS_SDK_DIR}/3d/context.c ${BMDS_SDK_DIR}/3d/wire.c
+                                   ${BMDS_SDK_DIR}/3d/solid.c ${BMDS_SDK_DIR}/3d/raster.c)
         set_target_properties(bmds_3d PROPERTIES OUTPUT_NAME bmds3d ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
         target_link_libraries(bmds_3d PUBLIC bmds_headers)
         target_compile_options(bmds_3d PRIVATE -O2 -Wall -Wextra -Werror)

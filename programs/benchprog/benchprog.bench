@@ -62,6 +62,11 @@ Exec=benchprog wire
 Tags=quick
 Help=libbmds3d's wireframes (a cube, a torus, a sphere; hidden lines or all) and 2000 points, 640x360 L8 in PSRAM
 
+[Bench render.solids]
+Exec=benchprog solids
+Tags=quick
+Help=libbmds3d's solids: a 2304-triangle torus queued, sorted and drawn flat and Gouraud, 640x360 L8 in PSRAM
+
 [Bench kernel.pipe]
 Exec=benchprog pipe
 Tags=quick

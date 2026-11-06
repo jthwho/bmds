@@ -441,9 +441,11 @@ TEST_CASE("3d: a wire cube, its hidden edges gone") {
         CHECK(st.culled == 1);
         CHECK(st.lines == 0);
 
-        // Solids aren't built yet; too many vertices; a bad material.
+        // A lit solid on L8 needs a ramp; too many vertices; a bad material.
+        bmds_mat4_identity(&m);
+        bmds_3d_load(ctx, &m);
         auto flat = material(BMDS_3D_FLAT, 1);
-        CHECK(bmds_3d_draw(ctx, &cube, &flat) == -BMDS_ENOSYS);
+        CHECK(bmds_3d_draw(ctx, &cube, &flat) == -BMDS_EINVAL);
         shape.kind = BMDS_3D_SHAPE_SPHERE;
         bmds_3d_mesh_t sphere{};
         REQUIRE(bmds_3d_mesh_make(&shape, 0, &sphere) == 0);
@@ -483,4 +485,324 @@ TEST_CASE("3d: projecting and sorting points") {
         CHECK(order[1] == 3);
         CHECK(order[2] == 0);
         CHECK(order[3] == 2);
+}
+
+namespace {
+
+        // A caller's mesh from vectors.
+        struct Mesh {
+                        std::vector<float>    pos;
+                        std::vector<float>    normals;
+                        std::vector<uint16_t> tri;
+                        bmds_3d_mesh_t        m{};
+
+                        uint16_t add(float x, float y, float z = 0.0f) {
+                                pos.insert(pos.end(), {x, y, z});
+                                return uint16_t(pos.size() / 3 - 1);
+                        }
+                        void face(uint16_t a, uint16_t b, uint16_t c) { tri.insert(tri.end(), {a, b, c}); }
+                        const bmds_3d_mesh_t *mesh() {
+                                m = bmds_3d_mesh_t{};
+                                m.size = sizeof(m);
+                                m.vertex_count = uint32_t(pos.size() / 3);
+                                m.positions = pos.data();
+                                m.normals = normals.empty() ? nullptr : normals.data();
+                                m.triangle_count = uint32_t(tri.size() / 3);
+                                m.triangles = tri.data();
+                                return &m;
+                        }
+        };
+
+        // How many times each pixel is drawn when each triangle of @p mesh is drawn alone.
+        std::vector<int> coverage(Mesh &mesh, int32_t w, int32_t h) {
+                std::vector<int> count(size_t(w) * h, 0);
+                Picture          pic(w, h, BMDS_PIXEL_L8);
+                Scene            s(&pic.canvas);
+                const auto       ink = material(BMDS_3D_FLAT, 1, BMDS_3D_UNLIT);
+                for (size_t t = 0; t < mesh.tri.size(); t += 3) {
+                        Mesh one;
+                        one.pos = mesh.pos;
+                        one.tri = {mesh.tri[t], mesh.tri[t + 1], mesh.tri[t + 2]};
+                        std::fill(pic.pixels.begin(), pic.pixels.end(), 0);
+                        bmds_3d_begin(s.ctx);
+                        REQUIRE(bmds_3d_draw(s.ctx, one.mesh(), &ink) == 0);
+                        bmds_3d_end(s.ctx);
+                        for (size_t i = 0; i < count.size(); ++i) count[i] += pic.pixels[i];
+                }
+                return count;
+        }
+
+} // namespace
+
+TEST_CASE("3d: triangles sharing edges draw each pixel once (the fill rule)") {
+        SUBCASE("a fan round a point, at sub-pixel places") {
+                Mesh           fan;
+                const uint16_t c = fan.add(20.3f, 17.7f);
+                const int      n = 13;
+                for (int i = 0; i < n; ++i) {
+                        const float a = 2.0f * Pi * float(i) / float(n), r = 11.0f + 3.0f * float(i % 3);
+                        fan.add(20.3f + r * std::cos(a), 17.7f + r * std::sin(a));
+                }
+                for (int i = 0; i < n; ++i) fan.face(c, uint16_t(1 + i), uint16_t(1 + (i + 1) % n));
+                const auto count = coverage(fan, 48, 40);
+                int        covered = 0;
+                for (int v : count) {
+                        CHECK(v <= 1);
+                        covered += v;
+                }
+                CHECK(covered > 400);
+                CHECK(count[size_t(17) * 48 + 20] == 1);
+        }
+        SUBCASE("a jittered grid of quads: no gap, no overlap inside") {
+                Mesh                                  grid;
+                std::mt19937                          rng(3);
+                std::uniform_real_distribution<float> jitter(-1.3f, 1.3f);
+                const int                             n = 8;
+                for (int j = 0; j <= n; ++j)
+                        for (int i = 0; i <= n; ++i)
+                                grid.add(6.0f + 6.0f * float(i) + (i % n != 0 ? jitter(rng) : 0.0f),
+                                         5.0f + 5.0f * float(j) + (j % n != 0 ? jitter(rng) : 0.0f));
+                for (int j = 0; j < n; ++j)
+                        for (int i = 0; i < n; ++i) {
+                                const uint16_t v = uint16_t(j * (n + 1) + i);
+                                grid.face(v, uint16_t(v + 1), uint16_t(v + n + 2));
+                                grid.face(v, uint16_t(v + n + 2), uint16_t(v + n + 1));
+                        }
+                const auto count = coverage(grid, 64, 52);
+                for (int y = 0; y < 52; ++y)
+                        for (int x = 0; x < 64; ++x) {
+                                const int v = count[size_t(y) * 64 + x];
+                                CHECK(v <= 1);
+                                // The pixels whose centres are inside the grid's square: every one.
+                                if (x + 0.5f > 6.0f && x + 0.5f < 54.0f && y + 0.5f > 5.0f && y + 0.5f < 45.0f)
+                                        CHECK(v == 1);
+                        }
+        }
+}
+
+TEST_CASE("3d: flat solids lit, and the painter's order") {
+        const size_t before = FakeMemory::live();
+        {
+                Picture pic(32, 32, BMDS_PIXEL_L8);
+                Scene   s(&pic.canvas);
+                Mesh    quad; // facing the viewer (+z), counter-clockwise seen from it
+                quad.add(4, 28, 0), quad.add(28, 28, 0), quad.add(28, 4, 0), quad.add(4, 4, 0);
+                quad.face(0, 1, 2), quad.face(0, 2, 3);
+                auto lit = material(BMDS_3D_FLAT, 0, BMDS_3D_CULL_BACK);
+                lit.ramp_first = 32;
+                lit.ramp_count = 32;
+                bmds_3d_light_t sun{sizeof(sun), BMDS_3D_LIGHT_DIRECTIONAL, BMDS_3D_LIGHT_VIEW, 0, 0, 1, 1.0f};
+                REQUIRE(bmds_3d_set_light(s.ctx, 0, &sun) == 0);
+                bmds_3d_set_ambient(s.ctx, 0.0f);
+                bmds_3d_begin(s.ctx);
+                REQUIRE(bmds_3d_draw(s.ctx, quad.mesh(), &lit) == 0);
+                bmds_3d_end(s.ctx);
+                CHECK(pic.l8(16, 16) == 63);
+                CHECK(pic.l8(3, 16) == 0);
+                bmds_3d_stats_t st{};
+                st.size = sizeof(st);
+                bmds_3d_stats(s.ctx, &st);
+                CHECK(st.triangles == 2);
+                CHECK(st.drawn == 2);
+                CHECK(st.pixels == 24 * 24);
+
+                // The light behind it: only the ambient; half of it.
+                sun.z = -1;
+                REQUIRE(bmds_3d_set_light(s.ctx, 0, &sun) == 0);
+                bmds_3d_begin(s.ctx);
+                REQUIRE(bmds_3d_draw(s.ctx, quad.mesh(), &lit) == 0);
+                bmds_3d_end(s.ctx);
+                CHECK(pic.l8(16, 16) == 32);
+                REQUIRE(bmds_3d_set_light(s.ctx, 0, nullptr) == 0);
+                bmds_3d_set_ambient(s.ctx, 0.5f);
+                bmds_3d_begin(s.ctx);
+                REQUIRE(bmds_3d_draw(s.ctx, quad.mesh(), &lit) == 0);
+                bmds_3d_end(s.ctx);
+                CHECK(pic.l8(16, 16) == 48);
+
+                // Wound away from the viewer: culled.
+                Mesh back = quad;
+                back.tri = {0, 2, 1, 0, 3, 2};
+                std::fill(pic.pixels.begin(), pic.pixels.end(), 0);
+                bmds_3d_begin(s.ctx);
+                REQUIRE(bmds_3d_draw(s.ctx, back.mesh(), &lit) == 0);
+                bmds_3d_end(s.ctx);
+                bmds_3d_stats(s.ctx, &st);
+                CHECK(st.backfaces == 2);
+                CHECK(pic.lit().empty());
+
+                // Near drawn first, far second: near still on top after the sort.
+                Mesh nearQuad = quad, farQuad = quad;
+                for (size_t i = 2; i < nearQuad.pos.size(); i += 3) nearQuad.pos[i] = 1.0f;
+                for (size_t i = 0; i < farQuad.pos.size(); i += 3) farQuad.pos[i] += 6.0f, farQuad.pos[i + 2] = -1.0f;
+                const auto two = material(BMDS_3D_FLAT, 2, BMDS_3D_UNLIT),
+                           three = material(BMDS_3D_FLAT, 3, BMDS_3D_UNLIT);
+                bmds_3d_begin(s.ctx);
+                REQUIRE(bmds_3d_draw(s.ctx, nearQuad.mesh(), &two) == 0);
+                REQUIRE(bmds_3d_draw(s.ctx, farQuad.mesh(), &three) == 0);
+                bmds_3d_end(s.ctx);
+                CHECK(pic.l8(16, 16) == 2); // both cover it
+                CHECK(pic.l8(30, 16) == 3); // only the far one
+                CHECK(pic.canvas.damage_count >= 1);
+        }
+        CHECK(FakeMemory::live() == before);
+}
+
+TEST_CASE("3d: Gouraud spheres stay in their ramp, brightest facing the light, in every format") {
+        for (uint32_t format : {uint32_t(BMDS_PIXEL_L8), uint32_t(BMDS_PIXEL_RGB565), uint32_t(BMDS_PIXEL_BGR24)}) {
+                CAPTURE(format);
+                Picture    pic(64, 64, format);
+                bmds_3d_t *ctx = nullptr;
+                REQUIRE(bmds_3d_create(nullptr, &ctx) == 0);
+                bmds_3d_set_target(ctx, &pic.canvas);
+                bmds_mat4_t p, v;
+                bmds_mat4_perspective(&p, Pi / 3.0f, 1.0f, 0.5f, 50.0f);
+                bmds_mat4_look_at(&v, bmds_vec3(0, 0, 4), bmds_vec3(0, 0, 0), bmds_vec3(0, 1, 0));
+                bmds_3d_set_projection(ctx, &p);
+                bmds_3d_set_view(ctx, &v);
+                bmds_3d_light_t sun{sizeof(sun), BMDS_3D_LIGHT_DIRECTIONAL, BMDS_3D_LIGHT_VIEW, 0, 0, 1, 0.75f};
+                REQUIRE(bmds_3d_set_light(ctx, 0, &sun) == 0);
+                bmds_3d_shape_t shape{};
+                shape.size = sizeof(shape);
+                shape.kind = BMDS_3D_SHAPE_SPHERE;
+                shape.segments = 24;
+                shape.rings = 16;
+                bmds_3d_mesh_t sphere{};
+                REQUIRE(bmds_3d_mesh_make(&shape, 0, &sphere) == 0);
+                auto m = material(BMDS_3D_GOURAUD, 0, BMDS_3D_CULL_BACK);
+                m.ramp_first = 100;
+                m.ramp_count = 50;
+                m.rgb = 0xffffff;
+                bmds_3d_begin(ctx);
+                REQUIRE(bmds_3d_draw(ctx, &sphere, &m) == 0);
+                bmds_3d_end(ctx);
+                const uint32_t middle = pic.value(32, 32), edge = pic.value(32, 13);
+                if (format == BMDS_PIXEL_L8) {
+                        for (const auto &q : pic.lit()) {
+                                CHECK(pic.l8(q.first, q.second) >= 100);
+                                CHECK(pic.l8(q.first, q.second) <= 149);
+                        }
+                        CHECK(middle == 149); // 0.25 + 0.75 facing it
+                        CHECK(edge < middle);
+                } else {
+                        const uint32_t green = format == BMDS_PIXEL_RGB565 ? (middle >> 5 & 63) : (middle >> 8 & 255);
+                        const uint32_t greenEdge = format == BMDS_PIXEL_RGB565 ? (edge >> 5 & 63) : (edge >> 8 & 255);
+                        CHECK(green > greenEdge);
+                        CHECK(middle == (format == BMDS_PIXEL_RGB565 ? 0xffffu : 0xffffffu));
+                }
+                bmds_3d_mesh_free(&sphere);
+                bmds_3d_destroy(ctx);
+        }
+}
+
+TEST_CASE("3d: solids clipped: through the eye, huge, NaN, never outside the clip") {
+        for (uint32_t format : {uint32_t(BMDS_PIXEL_L8), uint32_t(BMDS_PIXEL_RGB565), uint32_t(BMDS_PIXEL_BGR24)}) {
+                CAPTURE(format);
+                Picture           pic(48, 48, format);
+                const bmds_rect_t clip = {8, 8, 32, 32};
+                bmds_canvas_set_clip(&pic.canvas, &clip);
+                bmds_3d_t *ctx = nullptr;
+                REQUIRE(bmds_3d_create(nullptr, &ctx) == 0);
+                bmds_3d_set_target(ctx, &pic.canvas);
+                bmds_mat4_t p;
+                bmds_mat4_perspective(&p, 1.2f, 1.0f, 0.5f, 50.0f);
+                bmds_3d_set_projection(ctx, &p);
+                std::mt19937                          rng(11);
+                std::uniform_real_distribution<float> big(-200.0f, 200.0f), z(-80.0f, 20.0f);
+                auto                                  m = material(BMDS_3D_GOURAUD, 0, 0);
+                m.ramp_first = 10;
+                m.ramp_count = 20;
+                m.rgb = 0x80ff40;
+                Mesh tri;
+                tri.add(0, 0, 0), tri.add(0, 0, 0), tri.add(0, 0, 0);
+                tri.face(0, 1, 2);
+                bmds_3d_begin(ctx);
+                for (int i = 0; i < 3000; ++i) {
+                        for (float &f : tri.pos) f = big(rng);
+                        for (size_t k = 2; k < 9; k += 3) tri.pos[k] = z(rng);
+                        if (i % 500 == 0) tri.pos[4] = NAN;
+                        REQUIRE(bmds_3d_draw(ctx, tri.mesh(), &m) == 0);
+                        if (i % 100 == 99) bmds_3d_end(ctx);
+                }
+                bmds_3d_end(ctx);
+                bmds_3d_stats_t st{};
+                st.size = sizeof(st);
+                bmds_3d_stats(ctx, &st);
+                CHECK(st.clipped > 0);
+                CHECK(st.drawn > 0);
+                CHECK(!pic.lit().empty());
+                for (const auto &q : pic.lit()) {
+                        CHECK(q.first >= 8);
+                        CHECK(q.first < 40);
+                        CHECK(q.second >= 8);
+                        CHECK(q.second < 40);
+                }
+                bmds_3d_destroy(ctx);
+        }
+}
+
+TEST_CASE("3d: a full queue is drawn and goes on") {
+        const size_t     before = FakeMemory::live();
+        Picture          pic(64, 64, BMDS_PIXEL_L8);
+        bmds_3d_t       *ctx = nullptr;
+        bmds_3d_config_t config{};
+        config.size = sizeof(config);
+        config.max_triangles = 16;
+        config.max_draws = 2;
+        REQUIRE(bmds_3d_create(&config, &ctx) == 0);
+        bmds_3d_set_target(ctx, &pic.canvas);
+        bmds_mat4_t p, v;
+        bmds_mat4_perspective(&p, Pi / 3.0f, 1.0f, 0.5f, 50.0f);
+        bmds_mat4_look_at(&v, bmds_vec3(0, 0, 5), bmds_vec3(0, 0, 0), bmds_vec3(0, 1, 0));
+        bmds_3d_set_projection(ctx, &p);
+        bmds_3d_set_view(ctx, &v);
+        bmds_3d_shape_t shape{};
+        shape.size = sizeof(shape);
+        shape.kind = BMDS_3D_SHAPE_TORUS;
+        bmds_3d_mesh_t torus{};
+        REQUIRE(bmds_3d_mesh_make(&shape, 0, &torus) == 0);
+        auto m = material(BMDS_3D_FLAT, 0, BMDS_3D_CULL_BACK);
+        m.ramp_first = 1;
+        m.ramp_count = 16;
+        bmds_3d_begin(ctx);
+        for (int i = 0; i < 3; ++i) REQUIRE(bmds_3d_draw(ctx, &torus, &m) == 0);
+        bmds_3d_end(ctx);
+        bmds_3d_stats_t st{};
+        st.size = sizeof(st);
+        bmds_3d_stats(ctx, &st);
+        CHECK(st.flushes > 10);
+        CHECK(st.drawn > 0);
+        CHECK(st.triangles + st.backfaces >= 3 * torus.triangle_count - 3 * 8); // a few wholly off the view at most
+        for (const auto &q : pic.lit()) CHECK(pic.l8(q.first, q.second) <= 16);
+        CHECK(!pic.lit().empty());
+        bmds_3d_light_t bad{sizeof(bad), 9, 0, 0, 0, 0, 0};
+        CHECK(bmds_3d_set_light(ctx, 0, &bad) == -BMDS_EINVAL);
+        CHECK(bmds_3d_set_light(ctx, BMDS_3D_LIGHTS, nullptr) == -BMDS_EINVAL);
+        bmds_3d_mesh_free(&torus);
+        bmds_3d_destroy(ctx);
+        CHECK(FakeMemory::live() == before);
+}
+
+TEST_CASE("3d: draws ordered whole by default, triangles mixed on request") {
+        Picture pic(32, 32, BMDS_PIXEL_L8);
+        Scene   s(&pic.canvas);
+        // A: a quad tilted in depth (near on the left, far on the right); its upper-left triangle's
+        // mean depth is nearer than B's, though at B's place A is far behind it.
+        Mesh a;
+        a.add(2, 30, 5), a.add(30, 30, -5), a.add(30, 2, -5), a.add(2, 2, 5);
+        a.face(0, 1, 2), a.face(0, 2, 3);
+        Mesh b;
+        b.add(20, 7, 1), b.add(24, 7, 1), b.add(24, 3, 1), b.add(20, 3, 1);
+        b.face(0, 1, 2), b.face(0, 2, 3);
+        const auto inkA = material(BMDS_3D_FLAT, 5, BMDS_3D_UNLIT), inkB = material(BMDS_3D_FLAT, 9, BMDS_3D_UNLIT);
+        for (uint32_t order : {uint32_t(BMDS_3D_ORDER_DRAWS), uint32_t(BMDS_3D_ORDER_TRIANGLES)}) {
+                CAPTURE(order);
+                REQUIRE(bmds_3d_set_order(s.ctx, order) == 0);
+                bmds_3d_begin(s.ctx);
+                REQUIRE(bmds_3d_draw(s.ctx, b.mesh(), &inkB) == 0);
+                REQUIRE(bmds_3d_draw(s.ctx, a.mesh(), &inkA) == 0);
+                bmds_3d_end(s.ctx);
+                CHECK(pic.l8(22, 5) == (order == BMDS_3D_ORDER_DRAWS ? 9 : 5));
+        }
+        CHECK(bmds_3d_set_order(s.ctx, 7) == -BMDS_EINVAL);
 }

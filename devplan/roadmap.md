@@ -259,7 +259,10 @@ Plan: [`input.md`](input.md).
   Step 1 done (§13, 2026-11-06): `bmds/3d.h` and `libbmds3d` (math, contexts, made meshes with edges,
   wireframe and points with hidden lines and depth shading, projecting and sorting), host-tested, the `wire`
   example and `render.wire` bench on the board. Found: a 640×360 L8 frame changed whole presented at under 40
-  a second (`demo.md` §8a; fixed, §8b). Next: step 2, solids.
+  a second (`demo.md` §8a; fixed, §8b). Step 2 done (§13, 2026-11-06): flat and Gouraud solids in every
+  format (an exact fill rule, lights, a guard band, a queue drawn far to near by draw then triangle),
+  `bmds/palette.h`, the `solids` example, `render.solids` (a 2,304-triangle torus: 9.5 ms flat, 11.7
+  Gouraud). Next: step 3, PIE and speed, more shapes.
 - [ ] The sequencer (`sequencer.md`, planned 2026-11-06 with the user): songs as patterns in the SDK
   (`bmds/seq.h`), played through scheduled MIDI and the game mixer, beat sync by heard time (frame times and
   a port's latency from the kernel), live control quantized to the grid, the synths' sound controllers

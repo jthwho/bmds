@@ -19,8 +19,12 @@
  *   materials (`bmds_3d_material_t`) say how they are drawn.
  *
  * Colours: an unshaded draw uses `pixel` (the canvas's value, bmds_canvas_pixel()). A shaded one
- * (`BMDS_3D_DEPTH_CUE`, and the lit modes later) uses, on L8, a ramp of palette entries from dark
- * (`ramp_first`) to bright (`ramp_first + ramp_count - 1`); on RGB565 and BGR24, `rgb` scaled.
+ * (lit solids, `BMDS_3D_DEPTH_CUE`) uses, on L8, a ramp of palette entries from dark (`ramp_first`)
+ * to bright (`ramp_first + ramp_count - 1`); on RGB565 and BGR24, `rgb` in 32 levels from black.
+ *
+ * Solids (`BMDS_3D_FLAT`, `BMDS_3D_GOURAUD`) are queued by bmds_3d_draw() and drawn far to near by
+ * bmds_3d_end() (the painter's algorithm: by draw, then by triangle, unless bmds_3d_set_order() says
+ * otherwise); points, lines and wire draw at once.
  *
  * Not thread-safe: a context is one thread's. Two contexts may draw on two bands of one canvas.
  */
@@ -225,12 +229,13 @@ void bmds_3d_mesh_bounds(bmds_3d_mesh_t *mesh);
 /** @brief `bmds_3d_material_t::mode`. */
 #define BMDS_3D_POINTS 1u  /**< Each vertex a point, `point_size` pixels square. */
 #define BMDS_3D_WIRE 2u    /**< The edges as lines. */
-#define BMDS_3D_FLAT 3u    /**< Filled, one shade a triangle (devplan/3d.md step 2). */
-#define BMDS_3D_GOURAUD 4u /**< Filled, shades between the vertices' (step 2). */
+#define BMDS_3D_FLAT 3u    /**< Filled, one shade a triangle, lit by its own facing. */
+#define BMDS_3D_GOURAUD 4u /**< Filled, shades between the vertices', lit by the mesh's normals. */
 
 /** @brief `bmds_3d_material_t::flags`. */
-#define BMDS_3D_CULL_BACK 0x1u /**< Wire: only edges of a front face (a convex object's hidden lines gone). */
+#define BMDS_3D_CULL_BACK 0x1u /**< Back faces not drawn (wire: only edges of a front face). */
 #define BMDS_3D_DEPTH_CUE 0x2u /**< Shaded by distance: bright at the fog's near, dark at its far. */
+#define BMDS_3D_UNLIT 0x4u     /**< Solids: no lights; `pixel`, or the ramp by distance with DEPTH_CUE. */
 
 /** @brief How a mesh is drawn. */
 typedef struct bmds_3d_material_t {
@@ -254,6 +259,8 @@ typedef struct bmds_3d_config_t {
                 uint32_t size;         /**< `sizeof(bmds_3d_config_t)`. */
                 uint32_t max_vertices; /**< The most vertices a mesh drawn has (0: 4096). */
                 uint32_t mem_flags;    /**< The scratch memory's (`BMDS_MEM_FAST`: internal RAM, if it fits). */
+                uint32_t max_triangles; /**< Solids' triangles queued before they are drawn (0: 2048). */
+                uint32_t max_draws;     /**< Solids' draws queued before they are drawn (0: 64). */
 } bmds_3d_config_t;
 
 /**
@@ -282,6 +289,45 @@ void bmds_3d_set_view(bmds_3d_t *ctx, const bmds_mat4_t *m);
 
 /** @brief Sets the fog's range for `BMDS_3D_DEPTH_CUE`: view distances, full brightness to dark. */
 void bmds_3d_set_fog(bmds_3d_t *ctx, float near_z, float far_z);
+
+/** @brief bmds_3d_set_order()'s orders for the solids queued. */
+#define BMDS_3D_ORDER_DRAWS                                                                                            \
+        0u                         /**< Each draw's triangles together, the draws far to near by their centres
+                                        (separate objects never show through each other): the default. */
+#define BMDS_3D_ORDER_TRIANGLES 1u /**< Every triangle by its own depth (objects that pass through each other). */
+
+/** @brief Sets how the solids queued are ordered (`BMDS_3D_ORDER_...`). @return 0, or `-BMDS_EINVAL`. */
+int bmds_3d_set_order(bmds_3d_t *ctx, uint32_t order);
+
+/** @brief Lights a context has. */
+#define BMDS_3D_LIGHTS 4u
+
+/** @brief `bmds_3d_light_t::kind`. */
+#define BMDS_3D_LIGHT_OFF 0u
+#define BMDS_3D_LIGHT_DIRECTIONAL 1u /**< From a direction: (x, y, z) points towards the light. */
+#define BMDS_3D_LIGHT_POINT 2u       /**< From a point: (x, y, z) is where it is (no falloff). */
+
+/** @brief `bmds_3d_light_t::flags`: (x, y, z) in view space, moving with the camera (else world space). */
+#define BMDS_3D_LIGHT_VIEW 0x1u
+
+/** @brief A light (bmds_3d_set_light()). */
+typedef struct bmds_3d_light_t {
+                uint32_t size;      /**< `sizeof(bmds_3d_light_t)`. */
+                uint32_t kind;      /**< `BMDS_3D_LIGHT_...`. */
+                uint32_t flags;     /**< `BMDS_3D_LIGHT_VIEW`, or 0. */
+                float    x, y, z;   /**< A direction or a position, as the kind says. */
+                float    intensity; /**< 0..1 usually; what a surface facing it gains. */
+} bmds_3d_light_t;
+
+/**
+ * @brief Sets light @p index (below `BMDS_3D_LIGHTS`); NULL turns it off. A new context has light 0
+ *        directional in view space, over the viewer's left shoulder (-0.4, 0.6, 1), at 0.8.
+ * @return 0, or `-BMDS_EINVAL`.
+ */
+int bmds_3d_set_light(bmds_3d_t *ctx, uint32_t index, const bmds_3d_light_t *light);
+
+/** @brief Sets the light every surface has, 0..1 (a new context's: 0.25). */
+void bmds_3d_set_ambient(bmds_3d_t *ctx, float ambient);
 
 /** @brief The model matrix stack's depth. */
 #define BMDS_3D_STACK 16u
@@ -315,13 +361,14 @@ const bmds_mat4_t *bmds_3d_model(const bmds_3d_t *ctx);
 /** @brief Starts a frame: the counters (bmds_3d_stats()) start again. */
 void bmds_3d_begin(bmds_3d_t *ctx);
 
-/** @brief Ends a frame: what was queued is drawn (solids, step 2). */
+/** @brief Ends a frame: the solids queued are drawn, far to near, on the target. */
 void bmds_3d_end(bmds_3d_t *ctx);
 
 /**
- * @brief Draws @p mesh through the model, view and projection matrices with @p material.
+ * @brief Draws @p mesh through the model, view and projection matrices with @p material: points,
+ *        lines and wire at once; solids queued for bmds_3d_end() (with the lights as they are now).
  * @return 0, or `-BMDS_EINVAL` (a bad mesh or material, no target), `-BMDS_ENOSPC` (more vertices
- *         than `max_vertices`), `-BMDS_ENOSYS` (a mode not built yet).
+ *         than `max_vertices`).
  */
 int bmds_3d_draw(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3d_material_t *material);
 
@@ -361,6 +408,11 @@ typedef struct bmds_3d_stats_t {
                 uint32_t lines;    /**< Drawn (some part on the screen). */
                 uint32_t points;   /**< Drawn. */
                 uint32_t pixels;   /**< Written. */
+                uint32_t triangles; /**< Solids' triangles queued (after clipping). */
+                uint32_t backfaces; /**< Solids' triangles not drawn, facing away. */
+                uint32_t clipped;   /**< Solids' triangles the view's planes cut. */
+                uint32_t drawn;     /**< Solids' triangles drawn (some pixel on the screen). */
+                uint32_t flushes;   /**< Times a full queue (or a new target) was drawn before bmds_3d_end(). */
 } bmds_3d_stats_t;
 
 /** @brief Copies @p ctx's counters into @p stats (as much as its `size` holds). */

@@ -907,10 +907,71 @@ static int run_wire(void) {
         return err;
 }
 
+/* ---- libbmds3d's solids (devplan/3d.md §12a): a torus queued and drawn, 640x360 L8 in PSRAM ---- */
+
+struct solids_run {
+                bmds_3d_t     *ctx;
+                bmds_3d_mesh_t torus;
+                uint32_t       mode;
+};
+
+static int solids_sample(void *arg, double *out) {
+        struct solids_run       *r = arg;
+        const bmds_3d_material_t m = {
+                .size = sizeof(m), .mode = r->mode, .flags = BMDS_3D_CULL_BACK, .ramp_first = 32, .ramp_count = 64};
+        const int64_t t0 = bmds_bench_now_ns();
+        for (int f = 0; f < WIRE_FRAMES; ++f) {
+                bmds_3d_begin(r->ctx);
+                bmds_mat4_t identity;
+                bmds_mat4_identity(&identity);
+                bmds_3d_load(r->ctx, &identity);
+                bmds_3d_rotate(r->ctx, bmds_vec3(1, 0.5f, 0), 0.05f * (float)f);
+                (void)bmds_3d_draw(r->ctx, &r->torus, &m);
+                bmds_3d_end(r->ctx);
+        }
+        *out = (double)(bmds_bench_now_ns() - t0) / 1e6 / WIRE_FRAMES;
+        return 0;
+}
+
+static int run_solids(void) {
+        struct solids_run r;
+        memset(&r, 0, sizeof(r));
+        uint8_t      *pixels = malloc(640 * 360);
+        bmds_canvas_t canvas;
+        if (pixels == NULL || bmds_canvas_init(&canvas, pixels, 640, 640, 360, BMDS_PIXEL_L8) != 0 ||
+            bmds_3d_create(NULL, &r.ctx) != 0) {
+                printf("solids: no memory\n");
+                return 1;
+        }
+        memset(pixels, 0, 640 * 360);
+        /* 48 x 24: 2304 triangles, about half facing the camera, ~70,000 pixels a frame. */
+        const bmds_3d_shape_t shape = {sizeof(shape), BMDS_3D_SHAPE_TORUS, 48, 24, 2.0f, 0.8f, 0};
+        int                   err = bmds_3d_mesh_make(&shape, 0, &r.torus);
+        bmds_mat4_t           p, v;
+        bmds_mat4_perspective(&p, 1.047f, 640.0f / 360.0f, 0.5f, 100.0f);
+        bmds_mat4_look_at(&v, bmds_vec3(0, 1, 6.5f), bmds_vec3(0, 0, 0), bmds_vec3(0, 1, 0));
+        bmds_3d_set_target(r.ctx, &canvas);
+        bmds_3d_set_projection(r.ctx, &p);
+        bmds_3d_set_view(r.ctx, &v);
+        static const char *const names[2] = {"torus_flat_ms", "torus_gouraud_ms"};
+        for (int k = 0; k < 2 && err == 0; ++k) {
+                r.mode = k == 0 ? BMDS_3D_FLAT : BMDS_3D_GOURAUD;
+                err = bmds_bench_measure(&bench, names[k], "ms", BMDS_BENCH_LOWER, solids_sample, &r);
+        }
+        bmds_3d_stats_t st = {.size = sizeof(st)};
+        bmds_3d_stats(r.ctx, &st);
+        printf("solids: %u triangles queued, %u drawn, %u pixels a frame\n", (unsigned)st.triangles, (unsigned)st.drawn,
+               (unsigned)st.pixels);
+        bmds_3d_mesh_free(&r.torus);
+        bmds_3d_destroy(r.ctx);
+        free(pixels);
+        return err;
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr, "usage: benchprog "
-                                "syscall|launch|sleep|pipe|loopback|synth|midi|images|surface|draw|render|wire "
+                                "syscall|launch|sleep|pipe|loopback|synth|midi|images|surface|draw|render|wire|solids "
                                 "[KEY=VALUE...]\n");
                 return 2;
         }
@@ -930,6 +991,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "draw") == 0) return run_draw();
         if (strcmp(what, "render") == 0) return run_render();
         if (strcmp(what, "wire") == 0) return run_wire();
+        if (strcmp(what, "solids") == 0) return run_solids();
         fprintf(stderr, "benchprog: %s: no such benchmark\n", what);
         return 2;
 }

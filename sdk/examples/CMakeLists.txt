@@ -25,6 +25,7 @@ bmds_add_program(guisurface SOURCES guisurface/guisurface.c DISPLAY)
 bmds_add_program(guipanel SOURCES guipanel/guipanel.c)
 bmds_add_program(fonts SOURCES fonts/fonts.c DISPLAY)
 bmds_add_program(wire SOURCES wire/wire.c DISPLAY)
+bmds_add_program(solids SOURCES solids/solids.c DISPLAY)
 
 # Application folders (devplan/apps.md): copied into a card's apps/, each a command in /apps.
 bmds_add_app(surfdemo PROGRAM surfdemo DESKTOP surfdemo/app.desktop)

@@ -10,6 +10,7 @@
  */
 
 #include <string.h>
+#include <bmds/palette.h>
 #include "game_internal.h"
 
 #define MAX_BUFFERS 3
@@ -64,6 +65,12 @@ void bmds_game_quit(bmds_game_t *game) {
 
 void bmds_game_redraw(bmds_game_t *game) {
         game->redraw = 1;
+}
+
+int bmds_game_palette(bmds_game_t *game, uint32_t first, uint32_t count, const uint32_t *rgb) {
+        if (rgb == NULL || first >= 256 || count > 256 - first) return -BMDS_EINVAL;
+        const bmds_surface_palette_t p = {sizeof(p), first, count, rgb};
+        return bmds_surface_control(game->fd, BMDS_SURFACE_PALETTE, (void *)&p, sizeof(p));
 }
 
 int32_t bmds_game_fd(const bmds_game_t *game) {

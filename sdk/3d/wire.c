@@ -27,7 +27,7 @@ static float shade_of(const bmds_3d_ink_t *ink, float view_z) {
         return i * (float)(ink->count - 1);
 }
 
-static void include(bmds_3d_bounds_t *b, int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+void bmds_3d_include(bmds_3d_bounds_t *b, int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
         if (b->x1 <= b->x0) {
                 b->x0 = x0, b->y0 = y0, b->x1 = x1, b->y1 = y1;
                 return;
@@ -104,9 +104,9 @@ static uint32_t raster(bmds_canvas_t *c, const bmds_3d_area_t *area, const bmds_
         const uint32_t *shades = ink->shades;
         const size_t    stride = c->stride;
         if (x_major)
-                include(bounds, i0, lo, i1 + 1, hi + 1);
+                bmds_3d_include(bounds, i0, lo, i1 + 1, hi + 1);
         else
-                include(bounds, lo, i0, hi + 1, i1 + 1);
+                bmds_3d_include(bounds, lo, i0, hi + 1, i1 + 1);
 
         if (c->format == BMDS_PIXEL_L8) {
                 if (x_major)
@@ -143,27 +143,27 @@ static void viewport(const bmds_3d_t *ctx, float *x, float *y, float *w, float *
 
 int bmds_3d_segment(bmds_3d_t *ctx, const bmds_3d_area_t *area, const bmds_3d_ink_t *ink, const bmds_3d_vertex_t *a,
                     const bmds_3d_vertex_t *b, bmds_3d_bounds_t *bounds) {
-        /* Near (z >= -w) and far (z <= w) in clip space. */
-        float t0 = 0.0f, t1 = 1.0f;
-        if (!cut(a->cw + a->cz, b->cw + b->cz, &t0, &t1)) return 0;
-        if (!cut(a->cw - a->cz, b->cw - b->cz, &t0, &t1)) return 0;
-        bmds_3d_vertex_t p[2];
-        for (int k = 0; k < 2; ++k) {
-                const float t = k == 0 ? t0 : t1;
-                p[k].cx = a->cx + (b->cx - a->cx) * t;
-                p[k].cy = a->cy + (b->cy - a->cy) * t;
-                p[k].cw = a->cw + (b->cw - a->cw) * t;
-                p[k].vz = a->vz + (b->vz - a->vz) * t;
-                if (!(p[k].cw > 0.0f)) return 0;
-        }
-        float vx, vy, vw, vh;
-        viewport(ctx, &vx, &vy, &vw, &vh);
         end_t e[2];
-        for (int k = 0; k < 2; ++k) {
-                const float inv = 1.0f / p[k].cw;
-                e[k].x = vx + (p[k].cx * inv + 1.0f) * 0.5f * vw;
-                e[k].y = vy + (1.0f - p[k].cy * inv) * 0.5f * vh;
-                e[k].s = shade_of(ink, p[k].vz);
+        if (((a->oc | b->oc) & BMDS_3D_OUT_DEPTH) == 0 && a->cw > 0.0f && b->cw > 0.0f) {
+                /* Both ends between near and far: projected already (bmds_3d_screen()). */
+                e[0].x = a->sx, e[0].y = a->sy, e[0].s = shade_of(ink, a->vz);
+                e[1].x = b->sx, e[1].y = b->sy, e[1].s = shade_of(ink, b->vz);
+        } else {
+                /* Near (z >= -w) and far (z <= w) in clip space. */
+                float t0 = 0.0f, t1 = 1.0f;
+                if (!cut(a->cw + a->cz, b->cw + b->cz, &t0, &t1)) return 0;
+                if (!cut(a->cw - a->cz, b->cw - b->cz, &t0, &t1)) return 0;
+                const bmds_3d_viewport_t vp = bmds_3d_viewport(ctx);
+                for (int k = 0; k < 2; ++k) {
+                        const float t = k == 0 ? t0 : t1;
+                        const float cx = a->cx + (b->cx - a->cx) * t, cy = a->cy + (b->cy - a->cy) * t;
+                        const float cw = a->cw + (b->cw - a->cw) * t, vz = a->vz + (b->vz - a->vz) * t;
+                        if (!(cw > 0.0f)) return 0;
+                        const float inv = 1.0f / cw;
+                        e[k].x = vp.x + (cx * inv + 1.0f) * 0.5f * vp.w;
+                        e[k].y = vp.y + (1.0f - cy * inv) * 0.5f * vp.h;
+                        e[k].s = shade_of(ink, vz);
+                }
         }
         /* The area, its far edges just inside (pixels there are its last). */
         const float x1 = area->x1 - 1e-3f, y1 = area->y1 - 1e-3f;
@@ -216,7 +216,7 @@ int bmds_3d_point(bmds_3d_t *ctx, const bmds_3d_area_t *area, const bmds_3d_ink_
                         }
                 }
         }
-        include(bounds, x0, y0, x1, y1);
+        bmds_3d_include(bounds, x0, y0, x1, y1);
         ctx->stats.pixels += (uint32_t)((x1 - x0) * (y1 - y0));
         return 1;
 }

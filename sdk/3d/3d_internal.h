@@ -16,11 +16,51 @@
 /** @brief The shades a shaded RGB draw steps through (an L8 one: its ramp's length). */
 #define BMDS_3D_RGB_SHADES 32u
 
-/** @brief A transformed vertex: clip space, and view space (for culling and fog). */
+/** @brief A transformed vertex: clip space, view space (for culling, light and fog), its shade. */
 typedef struct bmds_3d_vertex_t {
-                float cx, cy, cz, cw;
-                float vx, vy, vz;
+                float    cx, cy, cz, cw;
+                float    vx, vy, vz;
+                float    s;      /* solids: the shade, 0..the draw's top */
+                float    sx, sy; /* on the screen (when in front: cw > 0) */
+                int32_t  fx, fy; /* the same in 28.4 (when inside the guard band: oc 0) */
+                uint32_t oc;     /* the planes it is outside (BMDS_3D_OUT_...) */
 } bmds_3d_vertex_t;
+
+/** @brief `bmds_3d_vertex_t::oc`'s planes: near, far, and the guard band's sides. */
+#define BMDS_3D_OUT_NEAR 0x1u
+#define BMDS_3D_OUT_FAR 0x2u
+#define BMDS_3D_OUT_DEPTH (BMDS_3D_OUT_NEAR | BMDS_3D_OUT_FAR)
+
+/** @brief The side planes widened: |x|, |y| up to this × w stay in 28.4 without overflow. */
+#define BMDS_3D_GUARD 4.0f
+
+/** @brief The viewport as floats, for projecting. */
+typedef struct bmds_3d_viewport_t {
+                float x, y, w, h;
+} bmds_3d_viewport_t;
+
+/** @brief A solid's triangle queued: on the screen in 28.4 fixed point, shades in 8.8. */
+typedef struct bmds_3d_tri_t {
+                int32_t  x[3], y[3];
+                int16_t  s[3];
+                uint16_t draw; /* its record in the context's draws */
+} bmds_3d_tri_t;
+
+/** @brief What a queued draw's triangles are drawn with. */
+typedef struct bmds_3d_record_t {
+                uint32_t first;                      /* L8: the value of shade 0 (the ramp's first, or the pixel) */
+                uint32_t top;                        /* the highest shade (0: one, unshaded) */
+                uint8_t  smooth;                     /* Gouraud: shades between the vertices' */
+                uint32_t key;                        /* the draw's depth key (its centre), for BMDS_3D_ORDER_DRAWS */
+                uint32_t shades[BMDS_3D_RGB_SHADES]; /* RGB565, BGR24: each shade's pixel */
+} bmds_3d_record_t;
+
+/** @brief A light in view space, for the draw at hand. */
+typedef struct bmds_3d_view_light_t {
+                uint32_t kind;
+                float    x, y, z; /* a unit direction towards the light, or a position */
+                float    intensity;
+} bmds_3d_view_light_t;
 
 /** @brief The rectangle drawing stays in: the viewport within the canvas's clip, as floats and ints. */
 typedef struct bmds_3d_area_t {
@@ -51,6 +91,17 @@ struct bmds_3d_t {
                 uint32_t          max_vertices;
                 bmds_3d_vertex_t *vertices;
                 bmds_3d_stats_t   stats;
+                /* Lights. */
+                bmds_3d_light_t lights[BMDS_3D_LIGHTS];
+                float           ambient;
+                /* The solids' queue (bmds_3d_end() draws it). */
+                bmds_3d_tri_t    *tris;
+                uint32_t         *keys, *keys2; /* the sort's: depth keys, and its scratch */
+                uint16_t         *order, *order2;
+                uint32_t          max_tris, tri_count;
+                bmds_3d_record_t *records;
+                uint32_t          max_records, record_count;
+                uint32_t          sort_order; /* BMDS_3D_ORDER_... */
 };
 
 /** @brief The rectangle @p ctx draws in; 0 when there is none (no target, an empty viewport). */
@@ -58,6 +109,18 @@ int bmds_3d_area(const bmds_3d_t *ctx, bmds_3d_area_t *area);
 
 /** @brief Sets @p mvp and @p mv for the model matrix's current top. */
 void bmds_3d_matrices(const bmds_3d_t *ctx, bmds_mat4_t *mvp, bmds_mat4_t *mv);
+
+/** @brief @p ctx's viewport as floats (the whole target's when it follows it). */
+bmds_3d_viewport_t bmds_3d_viewport(const bmds_3d_t *ctx);
+
+/** @brief Sets @p v's outcode and, where it can, its screen position (after bmds_3d_transform_vertex()). */
+void bmds_3d_screen(const bmds_3d_viewport_t *vp, bmds_3d_vertex_t *v);
+
+/** @brief Rounds @p pixels to 28.4 fixed point. */
+static inline int32_t bmds_3d_fixed(float pixels) {
+        const float v = pixels * 16.0f;
+        return (int32_t)(v >= 0.0f ? v + 0.5f : v - 0.5f);
+}
 
 /** @brief Transforms one point by @p mvp and @p mv into @p out. */
 void bmds_3d_transform_vertex(const bmds_mat4_t *mvp, const bmds_mat4_t *mv, const float *p, bmds_3d_vertex_t *out);
@@ -75,6 +138,20 @@ int bmds_3d_segment(bmds_3d_t *ctx, const bmds_3d_area_t *area, const bmds_3d_in
 /** @brief Draws the point @p v, @p size pixels square. @return 1 if drawn. */
 int bmds_3d_point(bmds_3d_t *ctx, const bmds_3d_area_t *area, const bmds_3d_ink_t *ink, const bmds_3d_vertex_t *v,
                   int32_t size, bmds_3d_bounds_t *bounds);
+
+/** @brief Queues @p mesh's triangles as a solid (its vertices transformed already). @return 0 or an error. */
+int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3d_material_t *material,
+                        const bmds_mat4_t *mv);
+
+/** @brief Draws what is queued, far to near, and empties the queue. */
+void bmds_3d_flush(bmds_3d_t *ctx);
+
+/** @brief Draws @p tri with @p record inside @p area of @p canvas. @return the pixels written. */
+uint32_t bmds_3d_triangle(bmds_canvas_t *canvas, const bmds_3d_area_t *area, const bmds_3d_record_t *record,
+                          const bmds_3d_tri_t *tri, bmds_3d_bounds_t *bounds);
+
+/** @brief Adds the rectangle (x0, y0)-(x1, y1) to @p bounds. */
+void bmds_3d_include(bmds_3d_bounds_t *bounds, int32_t x0, int32_t y0, int32_t x1, int32_t y1);
 
 /** @brief Adds @p bounds to @p ctx's target's damage. */
 void bmds_3d_damage(bmds_3d_t *ctx, const bmds_3d_bounds_t *bounds);
