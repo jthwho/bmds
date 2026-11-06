@@ -64,18 +64,6 @@ namespace preso {
 
                 constexpr uint32_t MaxDamage = 16;
 
-                // What changing @p area changes of the slide: as far round it as the theme's effects
-                // reach (a glow), on their grid of four.
-                Rect reached(const SlideLayout &layout, const Rect &area, const Canvas &canvas, bool moving) {
-                        // Moving, the glow is left out (drawSlide()), and so is its reach.
-                        int32_t reach = layout.theme != nullptr && !moving ? effectReach(*layout.theme) : 0;
-                        if (reach == 0) return area;
-                        int32_t x0 = (area.x - reach) & ~3, y0 = (area.y - reach) & ~3;
-                        int32_t x1 = (area.x + area.width + reach + 3) & ~3,
-                                y1 = (area.y + area.height + reach + 3) & ~3;
-                        return Rect{x0, y0, x1 - x0, y1 - y0}.intersected(Rect{0, 0, canvas.width(), canvas.height()});
-                }
-
                 // @p r added to @p areas (@p n of them, MaxDamage at most): joined to one it overlaps,
                 // or the last joined when there is no room.
                 void addDamage(Rect *areas, uint32_t &n, const Rect &r) {
@@ -530,7 +518,6 @@ namespace preso {
                                                  changed[i].height}
                                                     .intersected(op->clip);
                                 if (area.isEmpty()) continue;
-                                area = reached(*layout, area, _shown, false);
                                 redrawArea(area);
                                 addDamage(damage, n, area);
                         }
@@ -1007,7 +994,7 @@ namespace preso {
                 uint32_t     n = 0;
                 for (const DrawOp *o = layout != nullptr ? layout->ops : nullptr; o != nullptr; o = o->next) {
                         if (o->type != OpType::Script || o->script == nullptr || o->fragment > _shownStep) continue;
-                        Rect area = reached(*layout, o->clip, _shown, false);
+                        Rect area = o->clip;
                         redrawArea(area);
                         addDamage(damage, n, area);
                 }
@@ -1066,11 +1053,8 @@ namespace preso {
                                                  changed[i].height}
                                                     .intersected(o->clip);
                                 if (area.isEmpty()) continue;
-                                area = reached(*layout, area, _shown, true);
-                                drawSlide(*layout, _shownStep, _shown, _fonts, &_images, UINT32_MAX, &area, true);
+                                drawSlide(*layout, _shownStep, _shown, _fonts, &_images, UINT32_MAX, &area);
                                 decorate(_shown, area);
-                                if (layout->theme != nullptr && layout->theme->glow > 0)
-                                        _unglowed = uniteRects(_unglowed, area);
                                 addDamage(damage, n, area);
                         }
                 }
@@ -1079,16 +1063,7 @@ namespace preso {
                 } else {
                         _platform.waitFrame();
                 }
-                if (!regionsMoving() && !stickMoving()) {
-                        // Still: what moved drawn again with what its frames left out (a theme's glow).
-                        if (layout != nullptr && !_unglowed.isEmpty()) {
-                                Rect area = reached(*layout, _unglowed, _shown, false);
-                                redrawArea(area);
-                                _platform.presentAreas(_shown, &area, 1);
-                        }
-                        _unglowed = Rect{};
-                        updateAnimation();
-                }
+                if (!regionsMoving() && !stickMoving()) updateAnimation();
                 return;
         }
 

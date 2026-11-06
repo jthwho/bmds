@@ -121,6 +121,7 @@ class FolderWindow final : public GuiWindow {
                         ChooseSortDeleted,
                         ChooseProperties, // the selection's, else the folder's (devplan/filebrowser.md §4k)
                         ChooseFormat,     // the card selected or shown, else Format chooses (format.md §5)
+                        ChooseOpenWith = 100, // + an index: Open With's application (filebrowser.md §4l)
                 };
 
                 FolderWindow(GuiApplication &app, const Config &config, FolderWindowHost &host);
@@ -181,6 +182,16 @@ class FolderWindow final : public GuiWindow {
 
                 /** @brief Returns true if one item is selected and it is an application's folder (`NAME.app`). */
                 bool applicationSelected() const;
+
+                /**
+                 * @brief Returns true if one item is selected and it is a file Open With
+                 *        applies to (not a folder, a launcher or a built-in program), its path
+                 *        into @p path.
+                 */
+                bool fileSelected(String &path) const;
+
+                /** @brief Returns the folder actions the window shares with the desktop. */
+                FolderActions &folderActions() { return _host.folderActions(); }
 
                 /**
                  * @brief Returns the card Format would format (`sd0`: the one card folder
@@ -331,6 +342,7 @@ class FolderMenus {
                 Menu            _new;     // File's and the background's New
                 Menu            _arrange; // View's and the background's Arrange Icons
                 Menu            _views;   // the background's View: Large Icons, Details
+                Menu            _openWith; // File's and the item's Open With (filebrowser.md §4l)
                 Menu            _item;
                 Menu            _background;
 };

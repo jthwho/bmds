@@ -220,7 +220,7 @@ namespace {
                         f.iconId = IconId::ApplicationXExecutable;
                         f.line("Type:", "Built-in program");
                 } else {
-                        auto [mime, ierr] = Vfs::identify(path, Vfs::IdentifyName | Vfs::IdentifyContent, Root);
+                        auto [mime, ierr] = Vfs::identify(path, 0, Root); // by its name, else its contents
                         const StringView m = ierr.isOk() && !mime.isEmpty() ? mime : FileFormat::Binary;
                         std::snprintf(f.type, sizeof(f.type), "%.*s", int(m.size()), m.data());
                         typeText(name, m, text, sizeof(text));

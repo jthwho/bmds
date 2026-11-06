@@ -11,9 +11,35 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 namespace preso {
+
+        // Here, not with the transitions: a platform's pieces need nothing else of them.
+        void applyPieces(Canvas &out, const Canvas &from, const Canvas &to, const Piece *pieces, uint32_t count) {
+                uint32_t bpp = bytesPerPixel(out.format());
+                out.clearClip();
+                for (uint32_t i = 0; i < count; i++) {
+                        const Piece &p = pieces[i];
+                        Rect         r = Rect{p.x, p.y, p.width, p.height}.intersected(out.clip());
+                        if (r.isEmpty()) continue;
+                        if (p.source == Piece::Fill) {
+                                out.fill(r, p.color);
+                                continue;
+                        }
+                        const Canvas &src = p.source == Piece::From ? from : to;
+                        int32_t       sx = p.fromX + (r.x - p.x), sy = p.fromY + (r.y - p.y);
+                        if (sx < 0 || sy < 0 || sx + r.width > src.width() || sy + r.height > src.height()) continue;
+                        for (int32_t y = 0; y < r.height; y++) {
+                                memcpy((out.pixels() + size_t(r.y + y) * out.stride()) + size_t(r.x) * bpp,
+                                       (src.pixels() + size_t(sy + y) * src.stride()) + size_t(sx) * bpp,
+                                       size_t(r.width) * bpp);
+                        }
+                }
+                return;
+        }
+
 
         namespace {
 

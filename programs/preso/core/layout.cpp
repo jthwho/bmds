@@ -190,22 +190,7 @@ namespace preso {
                                         p.image = &image;
                                         p.space = space;
                                         p.font = font;
-                                        // Its own size, or what `w:` and `h:` say (the other kept in proportion).
-                                        int32_t nw = 0, nh = 0;
-                                        naturalSize(image, &nw, &nh);
-                                        int32_t w = image.width, h = image.height;
-                                        if (w == 0 && h == 0) {
-                                                w = int32_t(int64_t(nw) * image.scale / 100);
-                                                h = int32_t(int64_t(nh) * image.scale / 100);
-                                        } else if (h == 0) {
-                                                h = int32_t(int64_t(w) * nh / nw);
-                                        } else if (w == 0) {
-                                                w = int32_t(int64_t(h) * nw / nh);
-                                        }
-                                        if (w < 1) w = 1;
-                                        if (h < 1) h = 1;
-                                        p.width = w;
-                                        p.height = h;
+                                        askedSize(image, &p.width, &p.height);
                                         addPiece(p);
                                         space = false;
                                         break;
@@ -427,6 +412,25 @@ namespace preso {
                 return false;
         }
 
+        void Layouter::askedSize(const Image &image, int32_t *w, int32_t *h) {
+                // Its own size, or what `w:` and `h:` say (the other kept in proportion).
+                int32_t nw = 0, nh = 0;
+                naturalSize(image, &nw, &nh);
+                *w = image.width;
+                *h = image.height;
+                if (*w == 0 && *h == 0) {
+                        *w = int32_t(int64_t(nw) * image.scale / 100);
+                        *h = int32_t(int64_t(nh) * image.scale / 100);
+                } else if (*h == 0) {
+                        *h = int32_t(int64_t(*w) * nh / nw);
+                } else if (*w == 0) {
+                        *w = int32_t(int64_t(*h) * nw / nh);
+                }
+                if (*w < 1) *w = 1;
+                if (*h < 1) *h = 1;
+                return;
+        }
+
         void Layouter::placeholder(Flow &flow, const Image &image, int32_t x, int32_t y, int32_t w, int32_t h) {
                 // A marked box, its file named in it: a picture missing, or a script region (step 6).
                 DrawOp *frame = op(flow, OpType::Frame);
@@ -482,8 +486,15 @@ namespace preso {
         }
 
         void Layouter::scriptBox(Flow &flow, const Image &image, int32_t x, int32_t y, int32_t w, int32_t h) {
-                // A region its script draws in; without scripts (or memory), a box naming it.
+                // A region its script draws in; without scripts (or memory), a box naming it. Shrunk
+                // to fit, its scene is still the size asked for, drawn smaller (devplan/preso.md §8f).
                 ScriptPlace place;
+                int32_t     aw = 0, ah = 0;
+                askedSize(image, &aw, &ah);
+                if (aw > w) {
+                        place.sceneWidth = aw;
+                        place.sceneHeight = ah;
+                }
                 if (!scriptOp(flow, place, &image, Rect{x, y, w, h})) placeholder(flow, image, x, y, w, h);
                 return;
         }
@@ -1284,7 +1295,7 @@ namespace preso {
         }
 
         void drawSlide(const SlideLayout &layout, uint32_t step, Canvas &canvas, FontCache &fonts, ImageCache *images,
-                       uint32_t maxCharacters, const Rect *area, bool moving) {
+                       uint32_t maxCharacters, const Rect *area) {
                 uint32_t       budget = maxCharacters;
                 const Theme   *theme = layout.theme;
                 const Palette *palette = theme != nullptr && theme->palette.count > 0 ? &theme->palette : nullptr;
@@ -1292,39 +1303,13 @@ namespace preso {
                 Rect slide{0, 0, canvas.width(), canvas.height()};
                 Rect base = area != nullptr ? area->intersected(slide) : slide;
                 if (base.isEmpty()) return;
-                // An area under effects is drawn on the slide's grid of four (scanlines on the same
-                // rows, the glow's quarter samples on the same pixels), and with the glow as far
-                // round it as the glow reaches, so the area glows as the whole slide would; what is
-                // drawn outside the area is then put back as it was (it hasn't changed).
-                Rect     want = base;
-                uint8_t *saved = nullptr;
-                bool     glow = theme != nullptr && theme->glow > 0 && !moving;
-                bool     effects = theme != nullptr && maxCharacters == UINT32_MAX && (glow || theme->scanlines > 0);
+                // An area under scanlines is drawn from an even row to an even row, so its rows are
+                // the slide's.
+                bool effects = theme != nullptr && maxCharacters == UINT32_MAX && theme->scanlines > 0;
                 if (area != nullptr && effects) {
-                        int32_t margin = glow ? effectReach(*theme) : 0;
-                        int32_t x0 = (base.x - margin) & ~3, y0 = (base.y - margin) & ~3;
-                        int32_t x1 = (base.x + base.width + margin + 3) & ~3,
-                                y1 = (base.y + base.height + margin + 3) & ~3;
-                        Rect grown = Rect{x0, y0, x1 - x0, y1 - y0}.intersected(slide);
-                        if (glow) {
-                                uint32_t bpp = bytesPerPixel(canvas.format());
-                                saved = static_cast<uint8_t *>(
-                                        malloc(size_t(grown.width) * size_t(grown.height) * bpp));
-                                if (saved != nullptr) {
-                                        for (int32_t y = 0; y < grown.height; y++) {
-                                                memcpy(saved + size_t(y) * size_t(grown.width) * bpp,
-                                                       canvas.pixels() + size_t(grown.y + y) * canvas.stride() +
-                                                               size_t(grown.x) * bpp,
-                                                       size_t(grown.width) * bpp);
-                                        }
-                                        want = grown;
-                                }
-                        } else {
-                                want = grown;
-                        }
+                        int32_t y0 = base.y & ~1, y1 = (base.y + base.height + 1) & ~1;
+                        base = Rect{base.x, y0, base.width, y1 - y0}.intersected(slide);
                 }
-                Rect inner = base; // what must come out right
-                base = want;
                 canvas.setClip(base);
                 canvas.fill(base, layout.background);
                 for (const DrawOp *o = layout.ops; o != nullptr; o = o->next) {
@@ -1421,30 +1406,12 @@ namespace preso {
                         applyEffects(canvas, *theme);
                         return;
                 }
-                // The area drawn (on the grid), as a canvas of its own.
+                // The area drawn, as a canvas of its own.
                 uint32_t bpp = bytesPerPixel(canvas.format());
                 Canvas   part;
                 part.attach(canvas.pixels() + size_t(base.y) * canvas.stride() + size_t(base.x) * bpp, canvas.stride(),
                             base.width, base.height, canvas.format());
-                applyEffects(part, *theme, glow);
-                if (saved != nullptr) {
-                        // Round the area, the pixels as they were.
-                        for (int32_t y = 0; y < base.height; y++) {
-                                const uint8_t *from = saved + size_t(y) * size_t(base.width) * bpp;
-                                uint8_t       *to =
-                                        canvas.pixels() + size_t(base.y + y) * canvas.stride() + size_t(base.x) * bpp;
-                                int32_t sy = base.y + y;
-                                if (sy < inner.y || sy >= inner.y + inner.height) {
-                                        memcpy(to, from, size_t(base.width) * bpp);
-                                        continue;
-                                }
-                                int32_t left = inner.x - base.x, right = base.x + base.width - (inner.x + inner.width);
-                                memcpy(to, from, size_t(left) * bpp);
-                                memcpy(to + size_t(base.width - right) * bpp, from + size_t(base.width - right) * bpp,
-                                       size_t(right) * bpp);
-                        }
-                        free(saved);
-                }
+                applyEffects(part, *theme);
                 return;
         }
 

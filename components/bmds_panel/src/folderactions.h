@@ -28,6 +28,9 @@
 
 BMDS_NAMESPACE_BEGIN
 
+struct Icon;
+struct PanelEntry;
+
 /**
  * @brief What the folder actions need of the panel: folders opened in
  *        windows, and views told of changes.
@@ -126,6 +129,28 @@ class FolderActions {
                  *        names, else by the first whose `MimeType=` has it.
                  */
                 void openFile(StringView path, StringView type);
+
+                /** @brief The most applications Open With ▸ lists. */
+                static constexpr size_t MaxOpenWith = 8;
+
+                /**
+                 * @brief Finds the applications that open file @p path for Open With ▸
+                 *        (`devplan/filebrowser.md` §4l): those `mimeapps.list` names for its
+                 *        type, its media's and (text) `text/plain`'s, then every launcher entry
+                 *        whose `MimeType=` has one; the first is the one Open starts. Kept, with
+                 *        @p path, until the next call.
+                 * @return How many (`MaxOpenWith` at most; 0 for a folder or a device).
+                 */
+                size_t findOpenWith(StringView path);
+
+                /** @brief Returns Open With's application @p index (`findOpenWith()`), or null. */
+                const DesktopEntry *openWithEntry(size_t index) const;
+
+                /** @brief Returns Open With's application @p index's icon, @p side pixels, or null. */
+                const Icon *openWithIcon(size_t index, uint16_t side);
+
+                /** @brief Starts Open With's application @p index on the file it was found for. */
+                void openWithChosen(size_t index);
 
                 /** @brief Puts @p paths on the clipboard, copied (`CopiedFiles`' types). */
                 void copy(StringView paths);
@@ -245,6 +270,9 @@ class FolderActions {
                 uint16_t                       _dropX = 0; // a right drag's menu, screen coordinates
                 uint16_t                       _dropY = 0;
                 Menu                          *_askMenu = nullptr; // Move Here, Copy Here... (PSRAM)
+                PanelEntry                    *_openWith = nullptr; // Open With's, MaxOpenWith (PSRAM)
+                size_t                         _openWithCount = 0;
+                String                         _openWithPath{MemSpace::Psram}; // the file they're for
 };
 
 BMDS_NAMESPACE_END

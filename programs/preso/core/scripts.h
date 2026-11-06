@@ -115,8 +115,11 @@ namespace preso {
                         const Theme *theme = nullptr; ///< The slide's.
                         int32_t      width = 0;
                         int32_t      height = 0;
+                        int32_t      sceneWidth = 0;  ///< Shrunk to fit: the size asked for (0: width).
+                        int32_t      sceneHeight = 0; ///< Shrunk to fit: the size asked for (0: height).
                         uint32_t     index = 0;       ///< Its number on the slide (0 up): its random numbers'.
                         StringView   source;          ///< A block's script, written in the slide (image: nullptr).
+                        StringView   file;            ///< A script of its own file (angel's stage): errors name it.
                         uint32_t     firstLine = 0;   ///< A block's: the deck's line of its script's line 1.
                         bool         gated = false;   ///< Its first beat runs it (a block's: the step after its code).
                         bool         console = false; ///< Printed lines fill it, in the code font (a block's pane).

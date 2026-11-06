@@ -113,6 +113,7 @@ namespace preso {
                         uint16_t stepOf(Flow &flow);
                         bool     scriptOp(Flow &flow, ScriptPlace &place, const Image *image, const Rect &r);
                         bool    naturalSize(const Image &image, int32_t *w, int32_t *h);
+                        void     askedSize(const Image &image, int32_t *w, int32_t *h);
                         void    backgrounds(Flow &flow, const Slide &slide);
                         void    heading(Flow &flow, const Block &b);
                         void    frame(Flow &flow, const Rect &r, Frame frame, Color color);
@@ -141,13 +142,10 @@ namespace preso {
          *        pictures from @p images (nullptr: their boxes) in its theme's palette, its theme's
          *        effects over it. With @p maxCharacters, only that many of its text's characters (the
          *        `type` transition), and no effects (they come with the whole of it). With @p area,
-         *        only that part of it (a script region's frame), effects included: an area that
-         *        changed must be grown by effectReach() first (a glow reaches round what changed).
-         *        With @p moving (a frame of something moving), the area's glow is left out: on the
-         *        board it costs a tenth of a second for a region's part, and is drawn when it stops.
+         *        only that part of it (a script region's frame), effects included.
          */
         void drawSlide(const SlideLayout &layout, uint32_t step, Canvas &canvas, FontCache &fonts, ImageCache *images,
-                       uint32_t maxCharacters = UINT32_MAX, const Rect *area = nullptr, bool moving = false);
+                       uint32_t maxCharacters = UINT32_MAX, const Rect *area = nullptr);
 
         /** @brief The characters of @p layout's text at step @p step (what `type` types). */
         uint32_t countCharacters(const SlideLayout &layout, uint32_t step);

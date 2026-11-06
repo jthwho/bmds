@@ -2404,6 +2404,25 @@ namespace angel {
                 return;
         }
 
+        void *makeEvent(int type, const char *key, const char *text, int x, int y, int button, int wheel, bool repeat) {
+                RawEvent e{};
+                e.type = type;
+                snprintf(e.key, sizeof(e.key), "%s", key);
+                snprintf(e.text, sizeof(e.text), "%s", text);
+                e.x = x;
+                e.y = y;
+                e.button = button;
+                e.wheel = wheel;
+                e.repeat = repeat;
+                e.pad = -1;
+                return new (std::nothrow) Event(e);
+        }
+
+        void releaseEvent(void *event) {
+                if (event != nullptr) static_cast<Event *>(event)->release();
+                return;
+        }
+
         void *canvasMake(int width, int height) {
                 if (width < 1 || height < 1 || width > MaxSize || height > MaxSize) {
                         raise("A canvas is drawn on at 1 to %d pixels each way, not %d x %d", MaxSize, width, height);

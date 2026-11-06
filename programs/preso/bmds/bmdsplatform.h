@@ -56,7 +56,10 @@ namespace preso {
 
                         Error       openScreen(int32_t width, int32_t height, const char *title, bool sharp) override;
                         void        closeScreen() override;
+                        void        setTitle(const char *title) override;
+                        void        setWindowed(bool windowed) override { _windowed = windowed; }
                         const char *dataFolder() override;
+                        Error loadIcon(const char *name, int32_t side, uint32_t **pixels, int32_t *actual) override;
                         void        present(const Canvas &canvas) override;
                         void        presentAreas(const Canvas &canvas, const Rect *areas, uint32_t count) override;
                         bool        beginPieces(const Canvas &from, const Canvas &to) override;
@@ -134,6 +137,7 @@ namespace preso {
                         };
                         Sound     _sounds[MaxSounds];
                         bool      _quit = false;
+                        bool      _windowed = false; ///< openScreen() makes a window (angel's stage).
         };
 
 } // namespace preso

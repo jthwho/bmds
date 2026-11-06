@@ -161,8 +161,8 @@ up (§4k). As built and measured: §9.
 - **Items** from `panel.conf` (G12, G13), in a horizontal `BoxLayout`:
   - **`launcher`:** a button (`Label`, default "Apps"; an icon later) opening the menu of entries,
     sorted by name; `Categories` make submenus once there are more than `Submenus` entries
-    (default 12; the main categories: `System`, `Utility`, `Development`, `Graphics`,
-    `AudioVideo`, `Game`, `Other`). `Applications` names the search path. The desktop's menu is the same menu.
+    (default 12; the main categories: `System`, `Utility`, `Development`, `Office` (Preso,
+    2026-11-03), `Graphics`, `AudioVideo`, `Game`, `Other`). `Applications` names the search path. The desktop's menu is the same menu.
   - **`windows`:** a button per normal window (stretching, at most `MaxWidth` pixels, default
     200), in the order they opened: the title (an icon later), checked when focused, the title
     in brackets when minimized. A click raises it, or minimizes it if it has the focus; a right

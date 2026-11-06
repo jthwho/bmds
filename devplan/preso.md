@@ -205,14 +205,15 @@ H1.Font=unscii 96
 
 **Built-in themes** (each one drawn in our own style, nothing copied):
 - `vga`: blue and white text mode, unscii, box-drawing frames, the EGA palette;
-- `amber` and `green`: phosphor on black, a soft glow, scanlines;
+- `amber` and `green`: phosphor on black, scanlines (a glow too until step 16: §14);
 - `classic`: the toolkit's grey 3D look, a title bar on every slide, IBM Plex;
 - `bbs`: ANSI art colours, block-shade dividers;
 - `paper`: plain, light and readable, for when retro isn't wanted.
 
-**Effects** are drawn after the slide: `scanlines` (darkened alternate rows), `glow` (a blurred
-copy of the text added under it), `dither` (images mapped to `Palette` by ordered dithering,
-which gives the period look and costs nothing per frame once done).
+**Effects** are drawn after the slide: `scanlines` (darkened alternate rows), `dither` (images
+mapped to `Palette` by ordered dithering, which gives the period look and costs nothing per frame
+once done). (A `glow` was taken out in step 16: it made text harder to read and lagged behind
+what moved.)
 
 **`Scale=nearest`** draws the slide at its own small size and scales it up by whole pixels: the
 look of a 640×480 screen, and a quarter of the drawing.
@@ -499,8 +500,7 @@ What step 6 settles that the sections above leave open:
     faded.
   - Each frame redraws only the region's part that changed: what the objects covered before,
     and what they cover now. That part of the slide is redrawn under them, clipped, the theme's
-    effects included, and given to the platform as the damage. (As built, a moving frame leaves
-    a theme's glow out, and the region gets it when it comes to rest: §14.)
+    effects included, and given to the platform as the damage.
 - **Timing:**
   - A region's clock runs only while its slide is shown and still. A transition shows its
     first frame.
@@ -595,6 +595,242 @@ What step 6 settles that the sections above leave open:
   - **`bmds/bmds.md`:** the BMDS talk, in `vga`, with its diagrams drawn by scripts (no
     screenshots kept in the repository) and Lucky Duck as its live demo.
 
+### 8b. Step 11's design (2026-11-03, the user's request): from the desktop
+
+Preso so far starts only from a shell. The user asked for it in the launcher, opening a deck
+through the file dialog; Markdown coloured in Edit, fenced code in its own language; and a `.md`
+file opened from Files with either Edit or Preso.
+
+- **In the standard set:** `bmds-standard` depends on `preso`.
+- **The launcher:** `dist/preso` installs `share/applications/preso.desktop` (`Exec=preso %f`,
+  `MimeType=text/markdown;`, Office). Its icon is built into the program (`bmds/icon.py`, a
+  screen on an easel, through `bmds-icon-notes`), so it shows in any theme.
+- **The start window:** `preso` with no deck opens a small window on the GUI service (libbmdsgui,
+  the SDK's C calls; `bmds/startwindow.cpp`, BMDS only):
+  - **Open a Deck...** (the default button) shows the toolkit's `FileDialog` (decks `*.md`,
+    then all files), in the folder of the last deck opened, else `$HOME`.
+  - **Preso's Tour** and **The BMDS Talk** present the examples installed beside the program
+    (`../share/preso/examples` from the program's folder: argv[0], looked up in `PATH`
+    when it has no `/`); the buttons are left out if the
+    files aren't there.
+  - **Quit**, or closing the window.
+  - A deck is presented as `preso DECK` presents it (not trusted: its `run:` demos ask, §7.7). The
+    window stays while the deck is up (full screen covers it) and is there again when the deck
+    ends.
+  - **A deck that won't load** is told in a message box with its first problems, which go to a
+    memory stream (`open_memstream`) instead of stdout.
+- **Started on a file without a terminal** (`preso %f` from Files): a deck that won't load is
+  told in a message box the same way when standard error isn't a terminal. With a terminal,
+  nothing changes.
+- **Edit** (`editor.md` §5a): Markdown's fenced code is coloured in the language its info string
+  names, as the SDK's `syntax_find` resolves it (`Syntax::forName()`, moved into `bmds_core`), so
+  ```` ```angelscript ```` and ```` ```angel run ```` are AngelScript.
+- **Files** (`filebrowser.md` FB9, §4l): Open With ▸ on one file's menus (a window's File menu
+  and item menu, the desktop icon's), listing `mimeapps.list`'s applications for its type, its
+  media's and (for text) `text/plain`'s, then every launcher entry whose `MimeType=` has one.
+  A `.md` file gets Edit, Preso and vi. Files opened files by their contents only (a flags bug,
+  §4l), so `.md` was `text/plain`: now by the name first.
+- **Open stays Edit** for `.md`: most Markdown files are notes and READMEs, not decks. Preso is
+  one item down in Open With.
+
+### 8c. Step 12's design (2026-11-04, the user's request and names): scenes in angel
+
+The user asked for the scene's objects (`Shape` and the rest) in AngelScript in general, so a
+script moves between `angel` and a deck without changes. Today the tour's `build.as`, run from
+Edit, stops at `Identifier 'Shape' is not a data type`: the scene API is only Preso's.
+
+- **One API, two hosts.** Every name in the deck profile means the same in angel's full API, so
+  the deck profile is a subset of angel's. A deck's script runs under `angel`, and an angel
+  script that uses only that subset runs in a deck (one that uses files, the system or the
+  network needs `--trust` there, as now; one that uses windows or the GUI never runs in a deck).
+- **The clashes.** Eight deck names are angel's already, and angel's API is released (v0.1.0)
+  while the deck profile isn't, so the deck's side gives way. This is the last time it is free.
+  - **Shared:** `Font` (angel's, plus `sized(int)`), `Event` and `EventType` (the deck's are
+    angel's names already: one registration), `Sound` (angel's declarations; a deck's host plays
+    them through the platform).
+  - **Renamed: the scene is self-contained** (the user's scheme and go-ahead, 2026-11-04). Objects are only
+    ever drawn by a scene (they can't be drawn on angel's `Image` or `Screen`), so everything of
+    the scene is named for it, and what it adds to angel's global names is the `Scene...` types,
+    `Ease` and the global `scene`.
+
+    | Deck now | Renamed |
+    |---|---|
+    | `Shape` (every kind's handle) | `SceneObject` |
+    | `Rect`, `Circle`, `Line`, `Arrow`, `Polygon` | `SceneRect`, `SceneCircle`, `SceneLine`, `SceneArrow`, `ScenePolygon` |
+    | `Text`, `Code`, `Group`, `Bars`, `Grid`, `Image` | `SceneText`, `SceneCode`, `SceneGroup`, `SceneBars`, `SceneGrid`, `SceneImage` |
+    | `Button`, `Slider`, `Toggle` | `SceneButton`, `SceneSlider`, `SceneToggle` |
+    | `Animation` | `SceneAnimation` |
+    | `Canvas`, `Region` and `region` | `Scene`, and the global `scene` |
+    | `Theme` and `theme` | `SceneTheme`, and `scene.theme` |
+    | `add`, `remove`, `play`, `wait`, `pause`, `start` | `scene.add()` and so on |
+    | `move`, `shift`, `fadeIn`, `fadeOut`, `grow`, `shrink`, `write`, `transform`, `colorTo`, `fillTo`, `scaleTo`, `rotateTo`, `tween` | methods of `SceneObject`: `r.fadeIn()`, `a.transform(b)` |
+
+    - **`Scene`** is the scene itself: `scene.width` and `scene.height` (a deck's region,
+      angel's stage), `theme`, the verbs, and the drawing methods, which draw only while `draw()`
+      runs (called elsewhere they throw `draw on the scene only in draw()`). `draw(Scene@ s,
+      float t)` gets the same object.
+    - **Why the verbs and animations move:** as globals, `play`, `add`, `move`, `start`,
+      `write` and `wait` would sit beside every angel script's own functions (`system.as` has an
+      `add`, `serpents.as` a `start`) and beside angel's `play(string)`.
+- **The stage.** Under `angel`, the first `add()`, `play()`, `wait()` or `pause()`, or a
+  `draw()`, `event()` or `tick()` function, opens a window that plays the scene: Preso's region
+  runtime (`script/region`, `scene`, `animation`) on a `Screen`-like surface.
+  - `scene.width` and `scene.height` are the stage's; 1280 x 720 scaled to fit the screen by
+    default, `stage(width, height)` before the first scene call to change it.
+  - `scene.theme` is a deck theme's: `paper` by default, `angel --theme NAME`.
+  - Beats: Space, Right, PageDown or a click play the next; Left or PageUp go back a beat by
+    fast-forward, as in a deck. The title says `beat 2 of 5`. After the last beat the stage stays
+    until it is closed, as a `Screen` does.
+  - Interactive scripts have the keys while the stage has the focus (no entering: the window is
+    the region). Printed lines go to angel's output as now, not into the stage.
+- **Files** are relative to the script's own folder in both hosts. A deck's region resolves them
+  against the deck's folder today; regions change to their script's (the same for the deck's
+  own folder, and `angel run` blocks are in the deck).
+- **Where the code lives:** `programs/preso/script` and the core pieces it draws with (`raster`,
+  `theme`, `canvas`, `fonts`, `images`, `effects`, about 115 KB of text on the board) become part
+  of libangel's reach, so `angel` (in the ROM) grows by about that much. Their 25 KB of static
+  state is allocated when a stage or deck first needs it, not in angel's `.bss`.
+- **Locks:** `tests/preso/api.lock` is rewritten once for the renames (unreleased), then
+  append-only. Angel's `tests/scripts/api.lock` is appended: the scene's declarations,
+  `Font::sized`, `stage()`.
+- **The examples** (`tour/build.as`, `tour/slider.as`, `bmds/anim/layers.as`) and the tour's
+  slide about scripts are updated for the names, and each is run under `angel` in the host tests
+  (fast-forward, to its end) as well as in its deck.
+
+### 8d. Step 13's design (2026-11-04, the user's request): more of the scene
+
+The user saw a glitch where an arrow's line meets its head, and asked for heads at either end and
+of other kinds, more shapes, and the scene's API filled out generally. The names follow §8c's
+(everything of the scene is `Scene...`; what changes over time is an animation, a method of the
+object). Both locks are appended (the deck profile is unreleased but kept append-only from §8c).
+
+- **The glitch:** the raster adds each outline's signed coverage (`core/raster`). The shaft's
+  stroke and the head's triangle turned opposite ways, so where they overlap they cancelled and a
+  notch showed. `Path::addSolid()` adds a polygon turned as strokes are, so overlaps add up (and
+  are cut at full coverage); every head and cap uses it.
+- **Lines and arrows:** `SceneLine` and `SceneArrow` share their properties (an arrow is a line
+  with a head at its end by default):
+  - `head` and `tail` (the start's), an `ArrowHead`: `None`, `Triangle` (the default), `Stealth`
+    (swept back), `Open` (a V of two lines), `Circle`, `Square`, `Diamond`, `Bar` (across).
+  - `headSize` (0: from the line's width, as now).
+  - `bend`: degrees of an arc from start to end (0: straight; positive bends clockwise), the
+    heads along the arc's ends.
+  - `between(SceneObject@ a, SceneObject@ b, float gap = 4)`: its ends put on a's and b's boxes,
+    facing each other (once, as it is called); itself, to go on with.
+  - `startX`, `startY`, `endX`, `endY` in the scene's pixels.
+- **Dashes, every outline:** `dash` (a dash's length; 0: solid) and `dashGap` (0: as the dash).
+- **New shapes:**
+  - `SceneEllipse(width, height)`.
+  - `SceneRect`'s `cornerRadius` (rounded).
+  - `SceneArc(radius, start, sweep)`: part of a circle's outline, angles in degrees clockwise
+    from 3 o'clock; with its own `head` and `tail`. `SceneSector(radius, start, sweep)`: a pie
+    slice, `innerRadius` for a ring's slice. Both tween `start`, `sweep` and `radius`.
+  - `SceneRegular(sides, radius)` and `SceneStar(points, radius, innerRadius)`.
+  - `SceneCurve(points, closed = false)`: a smooth curve through x, y pairs (Catmull-Rom),
+    `smooth = false` for straight segments; `write()` draws it along.
+  - `SceneNumber(value, decimals = 0)`: text that is a number, `value` tweened (`countTo()`).
+  - `SceneAxes(width, height, xMin, xMax, yMin, yMax)`: axes with ticks every `xStep`/`yStep`
+    and their numbers; `toX(x)`, `toY(y)` (scene pixels), and `plot(PlotFunction@ f, ...)`, a
+    `SceneCurve` of `funcdef float PlotFunction(float x)` sampled over the x range.
+- **Every object:**
+  - `copy()`: a new object of its kind, not in the scene (`transform()`'s target, a stamp).
+  - `left`, `right`, `top`, `bottom`, `width`, `height`: its box in the scene's pixels.
+  - `nextTo(SceneObject@ other, Side side, float gap = 16)`, `Side`: `Left`, `Right`,
+    `Above`, `Below`; itself.
+- **SceneGroup:** `arrange(Side side, float gap = 16)` lays its objects in a row or column,
+  centred on it.
+- **Animations, new:** `fadeTo(opacity)`, `rotateBy(degrees)`, `scaleBy(factor)`,
+  `indicate()` (a pulse of size and the highlight colour, and back), `wiggle()`, `countTo(value)`,
+  `bendTo(degrees)`, `sweepTo(degrees)`. `Ease` gains `ThereAndBack` and `Elastic`. `tween()`
+  gains `cornerRadius`, `start`, `sweep`, `innerRadius`, `bend`, `value`, `dash`, `headSize`.
+- **The scene:** `toFront(object)`, `toBack(object)`, `has(object)`, `removeAll()`, and
+  `play(array<SceneAnimation@>, seconds, lag)`: each one `lag` seconds after the one before.
+- **Later:** moving along a path, braces, tables, LaTeX.
+- **Tests:** the arrow's join covered fully; every new shape drawn and its box; copies, `nextTo`,
+  `arrange`, `between`, numbers counting, plots; the tour gains a slide of shapes
+  (`tour/shapes.as`), run under angel too.
+
+### 8e. Step 14's design (2026-11-04, the user's go-ahead on eight suggestions): richer scenes
+
+The user agreed to eight additions and asked for a demo deck that shows the whole scripting API.
+Names as §8c's and §8d's; both locks appended.
+
+- **Built from what there is.** The new objects are composites: native code makes them of the
+  shapes there are (rectangles, text, arrows, sectors, curves) as children, drawn and measured as
+  a group's are, so they move, scale, fade and copy as anything does. An animation can carry
+  others with it (`Animation::also`): one `SceneAnimation@` moves a swap's two values, a chart's
+  bars, a code change's lines.
+- **A pass before each frame** (`Scene::settle()`, before drawing and before what changed is
+  measured, in fast-forward too): labels follow what they're attached to, a graph's edges follow
+  its nodes, and updaters run.
+- **1. `SceneArray(values, cellSize = 64)`** (any array: numbers or strings, as print() shows them):
+  a row of cells, their indices under them (`indices = false` hides them).
+  `cell(i)`, `value(i)`, `count`; animations `highlight(i)`, `highlight(i, color)`,
+  `unhighlight(i)`, `swap(i, j)` (the values change places along arcs), `set(i, value)`,
+  `pointTo(name, i)` (a labelled arrow under a cell, made the first time, moved after).
+  **`SceneTable(rows, columns, cellWidth = 120, cellHeight = 48)`**: `set(row, column, value)`
+  (immediate), `cell(row, column)`, `text(row, column)`, `header = true` (the first row bold, on
+  the fill); animations `highlight(row, column)`, `highlightRow(r)`, `highlightColumn(c)`,
+  `unhighlightAll()`, `write()` (filled a cell at a time).
+- **2. `SceneGraph()`**: `addNode(label)` → its number; `addEdge(a, b, directed = true)`;
+  `node(i)` (a `SceneGroup`: a circle and its label, to move or animate; edges follow);
+  `layoutRow()`, `layoutCircle(radius)`, `layoutTree(root, levelGap = 90, siblingGap = 70)`,
+  `layoutGrid(columns)`; animations `visit(i)` (the node fills in the highlight), `unvisit(i)`,
+  `highlightEdge(a, b)`, `highlightPath(array<int>)`.
+- **3. `SceneCode`:** `highlight(lines)` (an `array<int>` of 1-based lines; the others dimmed;
+  empty: none) and `transformTo(newCode)`: lines the old and new code share (matched in order,
+  longest common subsequence) slide to their new places, lines gone fade out, new ones fade in;
+  then it is the new code. `dim` (how much other lines are dimmed, 0.6) and `lineCount`.
+- **4. `SceneBrace(target, side, label = "")`**: a curly brace along a side of an object's box
+  with a label beyond it (once, where the object is). **`SceneCallout(text, target, side)`**: text
+  in a rounded box with a pointer to the object. **`SceneLabel(text, target, side, gap = 8)`**:
+  text kept beside an object as it moves.
+- **5. Updaters:** `funcdef void Updater(SceneObject@ self)`; `obj.follow(updater)` is called
+  for it before each frame (and as fast-forward passes each yield, so Previous replays it);
+  `obj.unfollow()`. **`obj.moveAlong(path)`**: an animation along another object's outline or
+  path (a curve, an arc, a line, a circle...), from its start; `moveAlong(path, true)` turns it
+  to face the way it goes.
+- **6. Charts:** `SceneBarChart(values, labels, width, height)`, `ScenePieChart(values, labels,
+  radius)`, `SceneLineChart(values, labels, width, height)`; colours from the theme's
+  `Script.Chart1`...`Chart8` (defaults: the accent, the highlight and six more); `build()` (bars
+  grow from their base, slices sweep round, the line is drawn), `setValue(i, v)` (animated),
+  `value(i)`.
+- **7. The camera:** `scene.zoomTo(object, margin = 40)`, `scene.panTo(x, y)`,
+  `scene.zoomBy(factor)`, `scene.resetCamera()` (animations); `scene.cameraX`, `cameraY`,
+  `zoom`. Everything is drawn through it (a moving camera redraws the region); the pointer is
+  mapped back through it, so widgets still work zoomed.
+- **8. Smaller:** `SceneIcon(name, size = 64)`: an icon of the system's theme (on BMDS the
+  card's theme's PNGs, else the ROM's `bmds.icons`; elsewhere a placeholder box); `SceneMark(Mark::Check
+  or Mark::Cross, size)` (drawn with `write()`); `SceneConfetti()`: `burst()` (pieces from the
+  top, falling and turning, deterministic: the scene's random seed).
+- **The demo deck:** `examples/showcase/showcase.md` (dist/preso installs it; the start window
+  gains a third button), a slide for each part of the API, each script runnable alone under angel.
+  The host tests run every one under angel and `preso check` it.
+
+### 8f. Step 15's design (2026-11-05, the user's request): the showcase in every theme
+
+The showcase was written on `paper` (1280×720). In `vga` and `bbs` (640×360, `Scale=nearest`) its
+regions, `w:1100`, are shrunk to the line's 576 pixels as a picture would be, but the scripts'
+objects are sized in pixels (a card 76 wide, a circle of 42): they crowd, overlap and run out of
+their regions, and four slides' content runs past the bottom margin.
+
+- **A region shrunk to fit is a picture of the size asked for.** The layout gives the region the
+  size its `w:`/`h:` asked for (`ScriptPlace::sceneWidth`, `sceneHeight`); when the box was shrunk
+  to fit, the scene keeps that size (`scene.width` is 1100) and is drawn scaled by `fit` (the
+  shrunk width over the asked one), the outermost part of `AngelRegion::view()`. The pointer is
+  mapped back through it as through the camera. A region not shrunk has `fit` 1: nothing changes.
+- **The theme's fonts stay the theme's size.** In a fitted scene a theme's font
+  (`scene.theme.font()`, an object's default font, a composite's labels) is the theme's size over
+  `fit` in the scene's units, so its text is the size of the slide's text. A size a script gives
+  (`Font("unscii 16")`) is in the scene's units and is scaled with it.
+- **Text is drawn at the size it shows.** A text's mask is made at its font's size times `fit`
+  and drawn scaled back, so a pixel font stays sharp (made at the scene's size and shrunk, unscii
+  is a blur). `draw()`'s drawing methods are in the scene's units too.
+- **The showcase:** its regions' heights cut so that every theme's slide holds them; a sorted
+  cell coloured from the theme (`Script.Accent`), not a fixed green.
+- **Then on the board,** each theme in turn: the showcase stepped through, looked at, and its
+  frames timed.
+
 ## 9. Additions outside the program
 
 Kept small, and only what other programs would use:
@@ -670,6 +906,19 @@ What an SDL3 platform layer (`programs/preso/sdl/`) needs, so the core is writte
 9. [x] Live demos: the deck's screen closed while they run, opened again after (§6a, §14).
 10. [x] `preso export` and `--posters`; kiosk mode; `dist/preso` with an example deck; the BMDS
     talk itself (§8a, §14).
+11. [x] From the desktop: in the standard set, the launcher, the start window and the file
+    dialog; Markdown's fenced code coloured in its language in Edit; Open With in Files (§8b).
+12. [x] Scenes in angel: the scene's names, the scene registered in angel, the stage window;
+    scripts' files relative to themselves (§8c, §14).
+13. [x] More of the scene: the arrow's glitch, heads and dashes, more shapes, copies and layout,
+    more animations (§8d, §14).
+14. [x] Richer scenes: arrays and tables, graphs, code highlights and changes, braces, callouts and
+    labels, updaters and paths, charts, the camera, icons, marks, confetti; the showcase deck (§8e,
+    §14).
+15. [x] The showcase in every theme: a region shrunk to fit draws its scene scaled, theme fonts
+    at the theme's size, text made at the size it shows; timed on the board (§8f, §14).
+16. [x] The glow taken out (the user's call, 2026-11-05): harder to read, and it lagged behind
+    what moved (§14).
 
 ## 14. As built
 
@@ -1478,3 +1727,252 @@ What an SDL3 platform layer (`programs/preso/sdl/`) needs, so the core is writte
   - the core's PNG, each chunk's CRC and the stored rows;
   - `auto` with a key, a blank screen, a slide's own time, the end, and `--loop`;
   - `--loop` without `auto` (`present.cpp`).
+
+### Step 11 (2026-11-03): from the desktop
+
+Built as §8b planned, tested on the board, with these additions and findings:
+- **Launching:** `share/applications/preso.desktop` (`Exec=preso %f`, `MimeType=text/markdown;`,
+  `Office;Presentation;`). The launcher had no Office category, so Preso fell under Other: the
+  panel's main categories gained `Office` (`gui.md`). The icon is `bmds/icon.py` (a slide with a
+  title band and bars, on an easel) through `bmds-icon-notes`, linked as `icons.o`.
+- **The start window** (`bmds/startwindow.cpp`): `preso` with no arguments opens it (it printed
+  the usage before). Open a Deck... (focused, so Enter opens the dialog), Preso's Tour and The BMDS
+  Talk (the examples from `PATH`'s `preso`, `../share/preso/examples`), Quit. The window is
+  destroyed while a deck is up and made again after; Escape in the deck brings it back. A deck
+  that won't present is told in an error box owned by the window, with the problems the
+  presenter wrote to a memory stream.
+- **Without a terminal** (`isatty(2)` false: Files' Open With, the launcher with a file): a deck
+  that won't present is told in a message box (`tellInWindow()`), else on stderr as before.
+  Seen with a missing deck: "no-such-deck.md couldn't be opened. preso: ...: not found".
+- **`bmds-standard` 2:** its version went up with the new dependency; v0.1.0's index has `1-1`,
+  which a board would never replace for the same version.
+- **Edit** (`editor.md` §5a): fences coloured in their language (`angel run` is AngelScript), and
+  HTML comments (a deck's notes and directives) coloured as comments, across lines (own state
+  16). `Syntax::forName()` in `bmds_core` is now what `syntax_find` uses.
+- **Files** (`filebrowser.md` §4l): Open With ▸ on a window's File and item menus and on desktop
+  icons. On the board, `tour.md` listed Text Editor (vi: the board's own `mimeapps.list` says vi
+  for text), Preso (its `MimeType=`) and Edit (`text/plain`'s); choosing Preso presented it.
+- **Tested on the board:** the launcher's Office ▸ Preso opens the start window; the dialog opened
+  in `/home` with the Decks filter; the tour typed in and presented; Escape back to the window;
+  Quit; the message box; Open With; Edit's colours on `tour.md`. Host tests: 11 suites pass
+  (Markdown fences, comments and `forName()` added to `syntaxscan.cpp`).
+
+### Step 12 (2026-11-04): scenes in angel
+
+- **The names** are §8c's table. The deck profile's `Font`, `Event`, `Sound` and `Callback` are
+  declared as angel's are (`Sound::play(float volume = 1, float pan = 0)`, a deck ignoring the
+  pan), and `tests/preso/subset.py` (`preso_api_in_angel`) checks that every line of
+  `preso --api` is in `angel --api`: it is. `tests/preso/api.lock` was rewritten once (832
+  lines); angel's lock gained 649 lines, appended (`ABI:`), and `Font::sized(int)`.
+- **One runtime, two hosts** (`script/runtime.h`): a region runs under a `SceneHost`, set as the
+  engine's user data so the API finds it from any call (`asGetActiveContext()`):
+  - `AngelScripts`, a deck's (`script/deckscripts.cpp`, with a region's loading from its slide);
+  - `Stage`, angel's (`script/stage.cpp`).
+
+  The host says where files are named from and whether only the deck's, how long a script may
+  run without yielding (angel: no limit), where `print()` goes (angel: its output), and makes its
+  own `Font` and `Event` objects for the scene (angel's are the system's fonts and a `Screen`'s
+  events, made by `angel::fontNamed()` and `angel::makeEvent()`).
+- **The stage** (`Stage`, angel's `main.cpp`):
+  - Angel runs a script as before. Its first scene call (`scene.add`, `remove`, `play`, `wait`,
+    `pause`, `start`) aborts that run, and so does nothing else: a `draw(Scene@, float)` left
+    when the statements end, or one with no statements, starts the stage too.
+  - The stage runs the module again from its start as a region (`AngelRegion::adopt()`): to its
+    end in fast-forward to count its beats, then from its first beat. What angel printed before
+    the call isn't printed again (quiet until the region's first scene call), and fast-forward
+    prints nothing.
+  - **The window** is 960 × 540 (`Stage::Width`, `Height`) with the window manager's frame, in
+    `paper`; `BmdsPlatform::setWindowed()` opens a window instead of the full screen, keeps the
+    system's pointer and declares no Controls (keys by their usages). Not built: §8c's
+    `stage(width, height)` and `--theme`.
+  - **Keys:** Space, Right, PageDown or a click play the next beat; Left or PageUp go back one by
+    fast-forward; Escape or closing the window ends it. A script with `event()`, `tick()` or
+    widgets has the keys and the pointer (entered from the start); Escape still ends it. The
+    title says `build.as - beat 2 of 3 - angel`.
+  - **No screen** (the host, a shell with no desktop): each beat played to its end at once, as if
+    Next came at every pause, so the host's tests run scenes (`tests/scripts/scene.as`, the
+    guide's lesson 19, and every example deck's script by `preso_scripts_under_angel`).
+  - Errors are angel's diagnostics: `s2.as:5:1: error: Index out of bounds`.
+- **Files** a script names are from its own folder in both hosts (a region's `_folder`, from
+  its image's script path). In a deck still only inside the deck's folder.
+- **Size:** the scene reached from angel is about 113 KB of text (the scene, the API, the
+  regions, the raster, paper, the BMDS platform); angel's text went from 1,143 KB to 1,251 KB.
+  Kept out of angel's reach, so it doesn't link them: the deck (`deckscripts.cpp` apart from
+  `region.cpp`), reading themes (`core/themeset.cpp` apart from `theme.cpp`, which keeps paper),
+  and the transitions (`applyPieces()` moved to `platform.cpp`); md4c and the parser had come in
+  by those three. The scene's 25 KB of statics (outlines, morphs, polygon points) are allocated
+  when first drawn: angel's `.bss` is 15 KB, as before.
+- **The guide** gained lesson 19, `19-a-scene.as`: a bubble sort of three cards, a swap a step.
+- **Tests:** 107 Preso cases (their scripts converted to the names), the corpus's `scene.as`,
+  lesson 19's output, the subset and under-angel checks, both locks.
+- **On the board** (angel copied beside the ROM's): `tour/build.as` stepped forward and back on
+  the stage, `slider.as` by the arrows and a drag, `orbit.as` moving until closed, lesson 19 to
+  its end printing once, and the tour's slide 7 with the same `build.as` in Preso.
+
+### Step 13 (2026-11-04): more of the scene
+
+- **The glitch** was as §8d says: the head's triangle was added clockwise and the line's stroke
+  anticlockwise, so their overlap summed to nothing (the raster adds signed coverage). Every
+  head is now added with `Path::addSolid()` (a polygon turned as strokes are) or as strokes, and
+  the line stops short of a pointed head (`headInset()`). The host test draws each kind of head at
+  both ends of a 4-pixel line and checks the line's two middle rows are covered wholly end to
+  end; the raster's own test shows the old way cancelling.
+- **Lines, arrows, arcs and open curves** are one drawing (`drawOpen()` in `script/scene.cpp`):
+  their path (a bent line is the arc through both ends that turns `bend` degrees), cut to what
+  `write()` has shown, dashed, and their heads at its ends along its last piece, all in one fill.
+  `SceneArrow()` and `SceneLine()` with no arguments make one to place with `between()`.
+- **The rest of §8d** as designed, but:
+  - every object has `left`, `right`, `top` and `bottom` (its box as drawn, line widths and heads
+    included), not `width` and `height`, which some kinds have as their size already;
+  - `Ease` gained `Wiggle` too (`wiggle()`'s: either way and back), and an animation whose ease
+    comes back (`ThereAndBack`, `Wiggle`) ends where it began;
+  - `scaleBy()` multiplies the scale the object has when the animation is made.
+- **Closed shapes** with dashes, rounded corners or of the new kinds are drawn by their outline
+  (the ring of a plain rectangle or circle stays the fast way); `outline()` makes the new ones
+  (rounded rectangles' corners as quarter circles, sectors' inner arcs back), and they morph with
+  `transform()` as polygons do. Up to 512 outline points (curves through many points).
+- **Axes** draw their lines with heads, ticks every step (a round step if none: 1, 2 or 5 times a
+  power of ten, about a fifth of the range) and their numbers in the theme's small font.
+  `plot()` calls the script's function from the running context (`PushState()`), and makes a
+  `SceneCurve` of straight pieces where the axes are then.
+- **Locks:** both gained the same 785 lines; `preso --api` is still a subset of `angel --api`.
+- **The tour:** `build.as` joins its boxes with `between()` and rounds their corners; a new
+  slide, Shapes (`tour/shapes.as`), adds arrows with every head, five shapes and a plot with a
+  number counting, a row a step.
+- **Tests:** 3 more host cases (the raster's solid polygons, the heads' joins, every new kind
+  drawn inside its box), and `tests/scripts/shapes.as` (copies, `nextTo`, `between`, ends moved,
+  `arrange`, counting, axes and a plot, the scene's order, `indicate`, `wiggle`, a lagged play).
+- **On the board:** the tour's Shapes slide stepped through in Preso with the joins checked
+  close up, and the same script on angel's stage (a copy of angel beside the ROM's).
+- **Found:** the ROM's build watched angel's own sources only, so a change to Preso's scene code
+  (which angel compiles since step 12) left the ROM's angel stale. It now watches
+  `programs/preso/{core,script,bmds}` and md4c too (`components/bmds_storage/CMakeLists.txt`).
+
+### Step 14 (2026-11-04): richer scenes, and the showcase
+
+- **Composites** (`isComposite()`): arrays, tables, graphs, braces, callouts, labels and the three
+  charts are made of the shapes there are, as children, drawn and measured as a group's. A graph's
+  children are its edges (drawn under) then its nodes, each a group of a circle and its label; its
+  edges' records (from, to, directed) are `Shape::edges`.
+- **An animation carries others** (`Animation::with`, `join()`): begun, applied on its progress and
+  ended with it, each with its own ease. A swap is the order's change (`Then::SwapChildren`) with
+  four parts (two moves across, two arcs up and down there and back); a chart's `build()` and a
+  code change are dozens.
+- **Before each frame** (`AngelRegion::settle()`, from `draw()` and before what changed is measured):
+  updaters (`follow()`), run on the handlers' context, then `Scene::settle()`: labels beside their
+  anchors, graphs' edges on their nodes (where a ray between the nodes' middles leaves each node's
+  circle).
+- **Boxes in the scene's pixels:** a shape keeps a weak link to the group it is in
+  (`Shape::parent`, cleared as the group goes), so `left`, `nextTo`, `between`, a callout's or a
+  brace's target and a label's anchor can be a part of a composite (`a.cell(5)`) and still mean
+  the scene's pixels (`parentsOf()`).
+- **Arrays:** `SceneArray` takes `array<int>` (the one that takes a list like `{3, 1, 4}`) or any
+  array (`?&in`: strings, floats). Two array overloads can't both take lists: AngelScript finds a
+  list fits any array type, and `string` assigns from `int`, so `int` and `string` overloads were
+  ambiguous. Charts take `array<float>` only, for the same reason. Not built from §8e: a table's
+  cell-by-cell `write()` (a lagged play of its texts' `fadeIn()` does it).
+- **Code:** `highlight()` animates `dim` and sets the lines in focus (`Then::Focus`; a bit a line,
+  64 lines); the lines out of focus are drawn over with the code's box colour. `transformTo()`
+  matches lines by the longest common subsequence and moves a copy of each line as an object of its
+  own (`Then::NewCode` shows only the box, its text the new code, until the end); a line's
+  colouring is its own (a comment over several lines loses its colour while it moves).
+- **The camera** is a `Shape` of its own (`ShapeKind::Camera`) the animations move: its `x`, `y` the
+  scene's point at the region's middle, `scale` its zoom. Every drawing and box goes through
+  `AngelRegion::view()`, a camera that moved redraws the region, and the pointer is mapped back
+  through it (a host test clicks a slider zoomed twice, and fails with the mapping taken out).
+- **Icons:** `Platform::loadIcon()`; on BMDS the ROM's pack (`/rom/share/icons/bmds.icons`, read a
+  piece at a time with `pread`: the header, the table, the names, one icon's pixels), the size
+  nearest asked for, scaled with `scalePicture()`. Not the card's PNG themes yet; elsewhere a
+  placeholder box.
+- **Confetti:** 80 pieces, each from a hash of the object's seed and its number (the same each time,
+  for Previous), falling, swaying and turning with `reveal`; `burst()` takes it out at its end.
+- **The showcase** (`examples/showcase/showcase.md`, 14 slides, 13 scripts): shapes, animations,
+  arrays (a bubble sort), tables (Fibonacci), graphs (a tree walked, a path, a circle), code,
+  notes, updaters and paths, charts, plots, the camera, a playground with widgets, and a finale of
+  icons, marks and confetti. The start window's third button opens it; every script runs under
+  angel too (`preso_scripts_under_angel`).
+- **Locks:** both gained the same 817 lines.
+- **Size:** angel's text went from 1,251 KB to 1,329 KB (78 KB), its `.bss` unchanged; the ROM image
+  is 8.29 MB.
+- **Tests:** `tests/scripts/composites.as` (each composite's state after its animations, a label
+  under a box that moved, a callout's pointer, an updater, a path, the camera, confetti gone) and
+  the camera's pointer in the host tests; the showcase checked by `preso check`, exported and
+  looked at slide by slide.
+- **Found:** gcc for the board saw `maybe-uninitialized` in the pie's arrays that the host's
+  didn't. The board's build failed on it, and the install that followed it in the same command
+  put step 13's package back on the board; fixed, and installs now go only after a build that
+  succeeded.
+- **On the board:** the showcase's arrays (a pass of the sort), code (changed, lines in focus),
+  camera (panned and zoomed) and finale (the ROM's icons, marks, confetti mid-fall) in Preso;
+  the graphs script on angel's stage; the start window's three examples.
+
+### Step 15 (2026-11-05): the showcase in every theme
+
+- **Looked at:** the showcase exported in all six themes on the host, then stepped through on the
+  board in each with a screenshot of every slide's last step, its frames timed (a build of Preso
+  with timers, run from the scratch folder, not installed).
+- **Fitted regions (§8f):** in `vga` and `bbs` the `w:1100` regions are shrunk to 576 pixels and
+  the scripts' objects were drawn full size: crowded, overlapping, past their regions. Now the
+  layout tells the region the size asked for (`ScriptPlace::sceneWidth`, `sceneHeight`; the
+  layout's `askedSize()`), `scene.width` stays 1100, and `AngelRegion::view()` scales by
+  `SceneContext::fit` before the camera; the pointer is mapped back through it. A theme's font is
+  `sceneFont()`ed (its size over `fit`) so its text is the slide's size; text, code, icons and
+  pictures are made at the size they show (`rasterFont()`, `shownTextSize()`) and drawn scaled
+  back, which `wholeMove()` now takes as a copy (within 2e-6 of 1, a float's rounding); `draw()`'s
+  drawing methods are in the scene's units. The deck's regions are 440 high at most: the four
+  that ran past `vga`'s bottom margin fit.
+- **Readable labels:** a highlight's fill colours its label too (`fillAnimation(..., label)`):
+  the theme's text if it contrasts 4.5 to 1 (WCAG's for text), else black or white. Arrays,
+  tables and graph nodes; the sorted cells use `Script.Accent`, not a fixed green.
+- **The glow** filled dark text on a bright fill in (a highlighted node's letter all but gone in
+  `amber`): the blur's bleed is now times 1 - (blur / brightest)², so a halo round a stroke is as
+  it was (a test: 12 either way beside a line) and a dark stroke in a pale block stays under 80
+  (188 before).
+- **Faster:**
+  - **Code being written** made its whole picture again every frame, twice: now made once and
+    shown a band a line (`drawPicture(..., source)`), as text is.
+  - **Faded pictures** moved by whole pixels are mixed a pixel each, not resampled.
+  - **A row of more than 32 edge spans** (a grid's: 28 lines across) was walked a pixel at a
+    time: `MaxSpans` is 128, spans many and out of order are `qsort`ed, and a grid adds its lines
+    left to right.
+  - **Scaled and turned masks and pictures** step their sample in 16.16 fixed point along a row
+    (`Sampler`; a test compares it with the transform worked out a pixel, over 256 pixels).
+  - **`BmdsPlatform::waitFrame()`** waited for the frame after the last present's; after a pause
+    that frame was long gone and each wait returned at once, an animation's empty frames spinning
+    until the count caught up. It waits for the frame after the display's now.
+- **Measured on the board** (the slowest step of each slide, frames a second), before → after:
+
+  | Slide | paper | vga | amber | green | classic | bbs |
+  |---|---|---|---|---|---|---|
+  | shapes, animations, arrays, notes | 45–51 | 58–61 | 43–51 | 44–48 | 49–53 | 53–61 |
+  | tables, graphs, updaters | 29–33 | 60–61 | 24–29 | 27–29 | 29–36 | 51–61 |
+  | code | 8 → 16–19 | 24 → 58 | 5 → 15 | 5 → 16 | 8 → 20 | 18 → 57 |
+  | charts | 18–20 | 37 | 15–17 | 17 | 18 | 32 |
+  | plots | 24–28 | 55 | 21–22 | 23 | 25 | 46 |
+  | camera | 8 → 10 | 21 | 7 → 9 | 8 | 8 | 18 |
+  | finale (confetti) | 13–17 | 40 | 11–13 | 13 | 14 | 33 |
+
+  `vga` and `bbs` draw 640×360 (`Scale=nearest`), a quarter of the pixels. What stays slow
+  redraws most of a 1280×720 region every frame (the camera moving, confetti over all of it, a
+  chart's bars growing): a camera frame of 446,000 pixels is about 40 ms filling the slide's
+  background under it, 45-54 ms drawing the scene and 20 ms presenting. The fill alone is the
+  CPU writing PSRAM at the ~25 MB/s the platform notes give (each line read in before it is
+  written); faster would mean not drawing such frames through a PSRAM canvas at all.
+- **Found:** the first board run's paper numbers were spoiled by an earlier Preso still open (it
+  took the first keys and wrote into the log); the paper rows are from the runs after.
+- **Tests:** a region shrunk to fit (its size, a theme text's size against a region not shrunk,
+  a click through the fit, failing with `sceneFont()` taken out); code half written; a picture's
+  part and fade; the sampler; the glow's dark text.
+- **Size:** angel's text 1,332.7 KB (about 4 KB more); the ROM image 8.29 MB.
+
+### Step 16 (2026-11-05): the glow taken out
+
+- **Why (the user's call):** amber's and green's glow made text harder to read, even after step
+  15 kept dark text dark, and it looked wrong in motion: moving frames left it out to keep their
+  rate, and it came back when a region stopped, so it seemed to stick and come and go.
+- **What went:** `applyGlow()`, `effectReach()`, the theme's `glow` and `glowRadius` and their
+  keys (`Glow`, `GlowRadius`, `glow` in `Effects`: unreleased, so nothing is kept for them),
+  `drawSlide()`'s `moving` and its saving and putting back of the pixels round an area, and the
+  Presenter's `_unglowed` redraw at rest. An area is now drawn from an even row to an even row,
+  for the scanlines. Amber and green keep their scanlines and palettes.
+- **Tests:** the glow's two removed; the area and at-rest tests run under amber's scanlines.

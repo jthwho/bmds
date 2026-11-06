@@ -171,7 +171,7 @@ TEST_CASE("Syntax: Markdown, diffs and Makefiles") {
         CHECK(styled(*md, "1. a [link](http://x) here", state) == "1.:keyword [link]:keyword (http://x):constant");
         CHECK(styled(*md, "> quoted", state) == "> quoted:comment");
         CHECK(styled(*md, "a * b * c", state) == ""); // spaces after the marks: not emphasis
-        CHECK(styled(*md, "```c", state) == "```c:preproc");
+        CHECK(styled(*md, "```text", state) == "```text:preproc"); // a language nothing knows: plain code
         CHECK(styled(*md, "int x; # not a heading", state) == "int x; # not a heading:string");
         CHECK(styled(*md, "```", state) == "```:preproc");
         CHECK(state == SyntaxState::Normal);
@@ -187,6 +187,58 @@ TEST_CASE("Syntax: Markdown, diffs and Makefiles") {
         CHECK(styled("make", "CFLAGS := -O2") == "CFLAGS:type");
         CHECK(styled("make", "ifeq ($(X),1)") == "ifeq:keyword $(:constant 1:number");
         CHECK(styled("make", "\techo \"$@\" > out") == "echo:type \"$@\":string");
+}
+
+TEST_CASE("Syntax: Markdown's fenced code in its own language") {
+        const Syntax *md = Syntax::find("markdown");
+        uint16_t      state = SyntaxState::Normal;
+        // Preso's `angel run` block: AngelScript, a block comment carried across lines.
+        CHECK(styled(*md, "```angel run", state) == "```angel run:preproc");
+        CHECK(styled(*md, "int n = 7; /* a", state) == "int:type 7:number /* a:comment");
+        CHECK(styled(*md, "b */ println(n);", state) == "b */:comment println:function");
+        CHECK(styled(*md, "```", state) == "```:preproc");
+        CHECK(state == SyntaxState::Normal);
+        CHECK(styled(*md, "# a heading again", state) == "# a heading again:heading");
+        // A longer fence holds a shorter one; tildes aren't closed by backticks.
+        CHECK(styled(*md, "````markdown", state) == "````markdown:preproc");
+        CHECK(styled(*md, "```", state) == "```:string"); // Markdown in Markdown: plain code
+        CHECK(styled(*md, "````", state) == "````:preproc");
+        CHECK(styled(*md, "~~~ C++ {.numbered}", state) == "~~~ C++ {.numbered}:preproc");
+        CHECK(styled(*md, "```", state) == "");
+        CHECK(styled(*md, "return 0;", state) == "return:keyword 0:number");
+        CHECK(styled(*md, "~~~  ", state) == "~~~  :preproc");
+        CHECK(state == SyntaxState::Normal);
+        // Inline code that opens with three backticks isn't a fence.
+        (void)styled(*md, "```x``` inline", state);
+        CHECK(state == SyntaxState::Normal);
+}
+
+TEST_CASE("Syntax: Markdown's HTML comments (a deck's notes)") {
+        const Syntax *md = Syntax::find("markdown");
+        uint16_t      state = SyntaxState::Normal;
+        CHECK(styled(*md, "<!-- interactive: true -->", state) == "<!-- interactive: true -->:comment");
+        CHECK(styled(*md, "text <!-- a note --> `code`", state) == "<!-- a note -->:comment `code`:string");
+        CHECK(styled(*md, "<!-- notes over", state) == "<!-- notes over:comment");
+        CHECK(styled(*md, "# not a heading in a comment", state) == "# not a heading in a comment:comment");
+        CHECK(styled(*md, "lines --> *after*", state) == "lines -->:comment *after*:emphasis");
+        CHECK(state == SyntaxState::Normal);
+}
+
+TEST_CASE("Syntax: languages by a code block's name") {
+        const auto id = [](const char *name) {
+                const Syntax *s = Syntax::forName(name);
+                return std::string(s != nullptr ? s->id : "");
+        };
+        CHECK(id("angelscript") == "angelscript");
+        CHECK(id("AngelScript") == "angelscript");
+        CHECK(id("angel") == "angelscript");
+        CHECK(id("as") == "angelscript");
+        CHECK(id("c++") == "cpp");
+        CHECK(id("bash") == "shell");
+        CHECK(id("Makefile") == "make");
+        CHECK(id("talk.md") == "markdown");
+        CHECK(id("text") == "");
+        CHECK(id("") == "");
 }
 
 TEST_CASE("Syntax: the span limit is kept") {

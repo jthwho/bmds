@@ -81,7 +81,7 @@ int main(void)
 
 ![script w:900 h:380](tour/build.as)
 
-<!-- Each pause() in the script is a step: Next plays the next part, Previous goes back. -->
+<!-- Each scene.pause() in the script is a step: Next plays the next part, Previous goes back. The same script runs alone: `angel tour/build.as` plays it in a window. -->
 
 ---
 
@@ -91,6 +91,15 @@ int main(void)
 ![script w:900 h:380](tour/slider.as)
 
 <!-- An interactive region: Tab enters it (or a click), Escape leaves. -->
+
+---
+
+# Shapes
+
+![script w:1000 h:440](tour/shapes.as)
+
+<!-- Arrows with heads of every kind, shapes, then a plot and a number: each Next a row. The
+scene's whole API is in angel too: angel tour/shapes.as plays this alone. -->
 
 ---
 

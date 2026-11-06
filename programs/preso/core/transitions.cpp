@@ -256,28 +256,6 @@ namespace preso {
                 return out.count;
         }
 
-        void applyPieces(Canvas &out, const Canvas &from, const Canvas &to, const Piece *pieces, uint32_t count) {
-                uint32_t bpp = bytesPerPixel(out.format());
-                out.clearClip();
-                for (uint32_t i = 0; i < count; i++) {
-                        const Piece &p = pieces[i];
-                        Rect         r = Rect{p.x, p.y, p.width, p.height}.intersected(out.clip());
-                        if (r.isEmpty()) continue;
-                        if (p.source == Piece::Fill) {
-                                out.fill(r, p.color);
-                                continue;
-                        }
-                        const Canvas &src = p.source == Piece::From ? from : to;
-                        int32_t       sx = p.fromX + (r.x - p.x), sy = p.fromY + (r.y - p.y);
-                        if (sx < 0 || sy < 0 || sx + r.width > src.width() || sy + r.height > src.height()) continue;
-                        for (int32_t y = 0; y < r.height; y++) {
-                                memcpy(rowOf(out, r.y + y) + size_t(r.x) * bpp, rowOf(src, sy + y) + size_t(sx) * bpp,
-                                       size_t(r.width) * bpp);
-                        }
-                }
-                return;
-        }
-
         void composeTransition(const Transition &t, uint32_t progress, const Canvas &from, const Canvas &to,
                                Canvas &out) {
                 if (from.width() != out.width() || to.width() != out.width() || from.height() != out.height() ||

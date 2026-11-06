@@ -2,11 +2,11 @@
 # Nothing is built; its depends are the set. Removing it and then `pkg autoremove` takes the set
 # away, except what was asked for on its own.
 name = "bmds-standard"
-version = "1"
+version = "2"
 meta = true
 title = "BMDS standard set"
-description = "The standard set: Unix tools, SSH and SFTP, time zones, icons, the synth's sounds, AngelScript, and games"
+description = "The standard set: Unix tools, SSH and SFTP, time zones, icons, the synth's sounds, AngelScript, games, and Preso"
 category = "System"
 license = "MIT"
 depends = ["busybox", "dropbear", "sftp-server", "tzdata", "icons", "soundfont-timgm6mb", "angel", "blocks",
-           "luckyduck", "doom"]
+           "luckyduck", "doom", "preso"]

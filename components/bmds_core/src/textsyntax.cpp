@@ -443,56 +443,39 @@ namespace {
 
         // ---- Languages a table doesn't fit
 
-        constexpr uint16_t FenceState = SyntaxState::FirstOwnState;
+        // Markdown's fenced code (devplan/editor.md §5a): in its fence, a line's state is
+        // FenceBit | tilde << 14 | (length - 3, at most 3) << 12 | (language + 1) << 8 | the
+        // language's own state (0: plain code). Fences are the only states with the top bit.
+        constexpr uint16_t FenceBit = 0x8000;
+        constexpr uint16_t FenceTilde = 0x4000;
+        constexpr uint16_t InnerStates = 0xFF;
+        constexpr uint16_t HtmlCommentState = SyntaxState::FirstOwnState; // in a `<!-- -->` (Preso's notes)
 
-        // Markdown: headings, quotes, list marks, fenced and inline code, emphasis, links.
-        uint16_t markdownScan(const Syntax &, StringView line, uint16_t state, StyleSpan *out, size_t max,
-                              size_t &count) {
-                count = 0;
-                Spans        spans{out, max, count};
+        size_t        languageIndex(const Syntax *syntax); // in All, defined with it
+        const Syntax *languageAt(size_t index);
+
+        // The fence starting at @p i (``` or ~~~, three or more), its length; 0 if none.
+        size_t fenceAt(StringView line, size_t i) {
+                if (i >= line.size() || (line[i] != '`' && line[i] != '~')) return 0;
+                size_t j = i;
+                while (j < line.size() && line[j] == line[i]) ++j;
+                return j - i >= 3 ? j - i : 0;
+        }
+
+        // A Markdown line's inline part from @p i: code, emphasis, links, comments.
+        uint16_t inlineScan(StringView line, size_t i, Spans &spans) {
                 const size_t n = line.size();
-                size_t       i = 0;
-                while (i < n && isSpace(line[i])) ++i;
-                const bool fence = startsAt(line, i, "```") || startsAt(line, i, "~~~");
-                if (state == FenceState) {
-                        spans.add(0, n, fence ? SyntaxStyle::Preprocessor : SyntaxStyle::String);
-                        return fence ? SyntaxState::Normal : FenceState;
-                }
-                if (fence) {
-                        spans.add(0, n, SyntaxStyle::Preprocessor);
-                        return FenceState;
-                }
-                if (i < n && line[i] == '#') {
-                        spans.add(0, n, SyntaxStyle::Heading);
-                        return SyntaxState::Normal;
-                }
-                if (i < n && line[i] == '>') {
-                        spans.add(0, n, SyntaxStyle::Comment);
-                        return SyntaxState::Normal;
-                }
-                if (i + 2 < n && (line.mid(i, 3) == "---" || line.mid(i, 3) == "***" || line.mid(i, 3) == "___")) {
-                        size_t j = i;
-                        while (j < n && (line[j] == line[i] || isSpace(line[j]))) ++j;
-                        if (j == n) {
-                                spans.add(i, n, SyntaxStyle::Operator);
-                                return SyntaxState::Normal;
-                        }
-                }
-                // A list's mark: -, * or + and a space; or digits, a dot and a space.
-                if (i + 1 < n && (line[i] == '-' || line[i] == '*' || line[i] == '+') && line[i + 1] == ' ') {
-                        spans.add(i, i + 1, SyntaxStyle::Keyword);
-                        i += 2;
-                } else {
-                        size_t j = i;
-                        while (j < n && isDigit(line[j])) ++j;
-                        if (j > i && j + 1 < n && (line[j] == '.' || line[j] == ')') && line[j + 1] == ' ') {
-                                spans.add(i, j + 1, SyntaxStyle::Keyword);
-                                i = j + 2;
-                        }
-                }
                 while (i < n) {
                         const char c = line[i];
-                        if (c == '`') {
+                        if (c == '<' && startsAt(line, i, "<!--")) {
+                                const size_t close = line.indexOf(StringView("-->"), i + 4);
+                                if (close == StringView::NPos) {
+                                        spans.add(i, n, SyntaxStyle::Comment);
+                                        return HtmlCommentState;
+                                }
+                                spans.add(i, close + 3, SyntaxStyle::Comment);
+                                i = close + 3;
+                        } else if (c == '`') {
                                 const size_t close = line.indexOf('`', i + 1);
                                 const size_t end = close == StringView::NPos ? n : close + 1;
                                 spans.add(i, end, SyntaxStyle::String);
@@ -528,6 +511,87 @@ namespace {
                         }
                 }
                 return SyntaxState::Normal;
+        }
+
+        // Markdown: headings, quotes, list marks, fenced code (in its language) and inline code,
+        // emphasis, links, HTML comments (a deck's notes and directives) across lines.
+        uint16_t markdownScan(const Syntax &self, StringView line, uint16_t state, StyleSpan *out, size_t max,
+                              size_t &count) {
+                count = 0;
+                Spans        spans{out, max, count};
+                const size_t n = line.size();
+                size_t       i = 0;
+                while (i < n && isSpace(line[i])) ++i;
+                const size_t fence = i <= 3 ? fenceAt(line, i) : 0;
+                if ((state & FenceBit) != 0) {
+                        // Closed by the same character, at least as long, and nothing after but spaces.
+                        const char   mark = (state & FenceTilde) != 0 ? '~' : '`';
+                        const size_t opened = 3 + ((state >> 12) & 3);
+                        size_t       end = i + fence;
+                        while (end < n && isSpace(line[end])) ++end;
+                        if (fence >= opened && line[i] == mark && end == n) {
+                                spans.add(0, n, SyntaxStyle::Preprocessor);
+                                return SyntaxState::Normal;
+                        }
+                        const Syntax *inner = languageAt(((state >> 8) & 0xF) - 1);
+                        if (inner == nullptr) {
+                                spans.add(0, n, SyntaxStyle::String);
+                                return state;
+                        }
+                        const uint16_t next = inner->scan(line, state & InnerStates, out, max, count);
+                        return uint16_t((state & ~InnerStates) | (next <= InnerStates ? next : 0));
+                }
+                if (state == HtmlCommentState) {
+                        const size_t close = line.indexOf(StringView("-->"));
+                        if (close == StringView::NPos) {
+                                spans.add(0, n, SyntaxStyle::Comment);
+                                return HtmlCommentState;
+                        }
+                        spans.add(0, close + 3, SyntaxStyle::Comment);
+                        return inlineScan(line, close + 3, spans);
+                }
+                // A backtick fence's info string has no backticks (CommonMark).
+                if (fence != 0 && (line[i] == '~' || line.indexOf('`', i + fence) == StringView::NPos)) {
+                        spans.add(0, n, SyntaxStyle::Preprocessor);
+                        // The info string's first word names the language (`angel run`: angel).
+                        size_t from = i + fence;
+                        while (from < n && isSpace(line[from])) ++from;
+                        size_t to = from;
+                        while (to < n && !isSpace(line[to]) && line[to] != '{' && line[to] != ',') ++to;
+                        const Syntax *inner = Syntax::forName(line.mid(from, to - from));
+                        const size_t  index = inner != nullptr && inner != &self ? languageIndex(inner) + 1 : 0;
+                        return uint16_t(FenceBit | (line[i] == '~' ? FenceTilde : 0) |
+                                        (fence - 3 < 3 ? fence - 3 : 3) << 12 | index << 8);
+                }
+                if (i < n && line[i] == '#') {
+                        spans.add(0, n, SyntaxStyle::Heading);
+                        return SyntaxState::Normal;
+                }
+                if (i < n && line[i] == '>') {
+                        spans.add(0, n, SyntaxStyle::Comment);
+                        return SyntaxState::Normal;
+                }
+                if (i + 2 < n && (line.mid(i, 3) == "---" || line.mid(i, 3) == "***" || line.mid(i, 3) == "___")) {
+                        size_t j = i;
+                        while (j < n && (line[j] == line[i] || isSpace(line[j]))) ++j;
+                        if (j == n) {
+                                spans.add(i, n, SyntaxStyle::Operator);
+                                return SyntaxState::Normal;
+                        }
+                }
+                // A list's mark: -, * or + and a space; or digits, a dot and a space.
+                if (i + 1 < n && (line[i] == '-' || line[i] == '*' || line[i] == '+') && line[i + 1] == ' ') {
+                        spans.add(i, i + 1, SyntaxStyle::Keyword);
+                        i += 2;
+                } else {
+                        size_t j = i;
+                        while (j < n && isDigit(line[j])) ++j;
+                        if (j > i && j + 1 < n && (line[j] == '.' || line[j] == ')') && line[j + 1] == ' ') {
+                                spans.add(i, j + 1, SyntaxStyle::Keyword);
+                                i = j + 2;
+                        }
+                }
+                return inlineScan(line, i, spans);
         }
 
         // A diff: the files' lines, hunks, lines added and removed.
@@ -710,6 +774,30 @@ namespace {
         }
 
         constexpr const Syntax *All[] = {&AngelScript, &C, &Cpp, &Shell, &Ini, &Json, &Make, &Markdown, &Diff};
+        static_assert(sizeof(All) / sizeof(All[0]) < 15, "a fence's state has 4 bits for its language");
+
+        size_t languageIndex(const Syntax *syntax) {
+                for (size_t i = 0; i < sizeof(All) / sizeof(All[0]); ++i)
+                        if (All[i] == syntax) return i;
+                return size_t(-1);
+        }
+
+        const Syntax *languageAt(size_t index) {
+                return index < sizeof(All) / sizeof(All[0]) ? All[index] : nullptr;
+        }
+
+        // Names code blocks use that no id, extension or interpreter gives.
+        struct Alias {
+                        const char *name;
+                        const char *id;
+        };
+        constexpr Alias Aliases[] = {{"c++", "cpp"},
+                                     {"console", "shell"},
+                                     {"shellscript", "shell"},
+                                     {"makefile", "make"},
+                                     {"patch", "diff"}};
+
+        constexpr size_t MaxName = 64; // longer: no language's
 
         bool matches(StringView name, const char *pattern) {
                 const StringView p(pattern);
@@ -752,6 +840,29 @@ const Syntax *Syntax::find(StringView id) {
         for (const Syntax *s : All)
                 if (StringView(s->id) == id) return s;
         return nullptr;
+}
+
+const Syntax *Syntax::forName(StringView name) {
+        if (name.isEmpty() || name.size() > MaxName) return nullptr;
+        if (const Syntax *s = find(name)) return s;
+        for (const Syntax *s : All)
+                if (name.equalsIgnoreCase(StringView(s->name))) return s;
+        for (const Alias &a : Aliases)
+                if (name.equalsIgnoreCase(StringView(a.name))) return find(StringView(a.id));
+        char buffer[MaxName + 3];
+        // An extension (`as`, `py`): a file of that name's.
+        if (name.indexOf('.') == StringView::NPos && name.indexOf('/') == StringView::NPos) {
+                buffer[0] = 'x';
+                buffer[1] = '.';
+                std::memcpy(buffer + 2, name.data(), name.size());
+                if (const Syntax *s = forFile(StringView(buffer, name.size() + 2), StringView())) return s;
+        }
+        // A file name (`Makefile`, `talk.md`), then an interpreter (`bash`, `angel`).
+        if (const Syntax *s = forFile(name, StringView())) return s;
+        buffer[0] = '#';
+        buffer[1] = '!';
+        std::memcpy(buffer + 2, name.data(), name.size());
+        return forFile(StringView(), StringView(buffer, name.size() + 2));
 }
 
 const Syntax *Syntax::forFile(StringView path, StringView firstLine) {

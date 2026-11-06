@@ -13,7 +13,8 @@ PRESO_HEADERS := $(wildcard $(SRC)/core/*.h $(SRC)/script/*.h $(SRC)/bmds/*.h $(
 AS_OBJECTS := $(patsubst %.cpp,as_%.o,$(notdir $(AS_SOURCES)))
 LIBANGEL_OBJECTS := $(patsubst %.cpp,angel_%.o,$(notdir $(LIBANGEL_SOURCES)))
 OBJECTS := md4c.o $(patsubst $(SRC)/core/%.cpp,preso_core_%.o,$(CORE_SOURCES)) \
-	$(patsubst $(SRC)/script/%.cpp,preso_script_%.o,$(SCRIPT_SOURCES)) preso_bmds_bmdsplatform.o preso_main.o
+	$(patsubst $(SRC)/script/%.cpp,preso_script_%.o,$(SCRIPT_SOURCES)) preso_bmds_bmdsplatform.o \
+	preso_bmds_startwindow.o preso_main.o icons.o
 FLAGS := -O2 -I$(MD4C) -I$(SRC) -I$(ANGEL) -I$(AS)/include $(AS_DEFINES) -DPRESO_BMDS -DPRESO_VERSION=\"$(VERSION)\"
 WARNINGS := -Wall -Wextra -Werror -Wshadow
 
@@ -53,3 +54,11 @@ preso_bmds_%.o: $(SRC)/bmds/%.cpp $(PRESO_HEADERS)
 
 preso_main.o: $(SRC)/main.cpp $(PRESO_HEADERS)
 	$(CXX) $(FLAGS) $(WARNINGS) -c $< -o $@
+
+# Its icons, built into the program (devplan/gui.md §4j), so the launcher shows them in any theme.
+icons.S: $(SRC)/bmds/icon.py
+	python3 $(SRC)/bmds/icon.py .
+	python3 $(ROOT)/sdk/tools/bmds-icon-notes -o $@ preso icon-16.png icon-32.png
+
+icons.o: icons.S
+	$(CC) -c $< -o $@

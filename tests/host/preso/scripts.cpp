@@ -12,6 +12,8 @@
 
 #include <doctest.h>
 
+#include <math.h>
+#include <memory>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -188,9 +190,9 @@ TEST_CASE("Raster: shapes are filled with each pixel's coverage") {
 TEST_CASE("Scripts: beats are steps, before the fragments after them") {
         static const ScriptPlatform::File files[] = {
                 {"deck.md", "# One\n\n* first\n\n![script w:400 h:300](a.as)\n\n* second\n* third\n"},
-                {"a.as",
-                 "auto r = Rect(100, 50).at(200, 150);\nadd(r);\npause();\nplay(move(r, 50, 50), 1);\npause();\n"
-                 "play(fadeOut(r));\n"},
+                {"a.as", "auto r = SceneRect(100, 50).at(200, "
+                         "150);\nscene.add(r);\nscene.pause();\nscene.play(r.move(50, 50), 1);\nscene.pause();\n"
+                         "scene.play(r.fadeOut());\n"},
         };
         ScriptPlatform platform;
         platform.files = files;
@@ -206,8 +208,8 @@ TEST_CASE("Scripts: errors say where, and the region shows them") {
                 {"deck.md", "# A\n\n![script w:400 h:200](bad.as)\n\n---\n\n![script](none.as)\n\n---\n\n"
                             "![script](../out.as)\n\n---\n\n![script](throws.as)\n\n---\n\n![script](image.as)\n"},
                 {"bad.as", "int x = 5\nprint(x);\n"},
-                {"throws.as", "wait(1);\nint[] a = {1};\nprint(a[3]);\n"},
-                {"image.as", "auto i = Image(\"../secret.png\");\n"},
+                {"throws.as", "scene.wait(1);\nint[] a = {1};\nprint(a[3]);\n"},
+                {"image.as", "auto i = SceneImage(\"../secret.png\");\n"},
         };
         ScriptPlatform platform;
         platform.files = files;
@@ -225,14 +227,15 @@ TEST_CASE("Scripts: a loop that never yields is stopped; one that waits runs on"
         static const ScriptPlatform::File files[] = {
                 {"deck.md", "# Loops\n\n![script w:400 h:200](spin.as)\n![script w:400 h:200](ticks.as)\n"},
                 {"spin.as", "int n = 0;\nwhile (true) n++;\n"},
-                {"ticks.as", "auto c = Circle(20).at(50, 50);\nadd(c);\nwhile (true) play(shift(c, 1, 0), 0.5);\n"},
+                {"ticks.as",
+                 "auto c = SceneCircle(20).at(50, 50);\nscene.add(c);\nwhile (true) scene.play(c.shift(1, 0), 0.5);\n"},
         };
         ScriptPlatform platform;
         platform.files = files;
         platform.fileCount = 3;
         platform.realClock = true;
         Checked c = check(platform, "deck.md");
-        CHECK(strstr(c.text, "spin.as:2: ran 100 ms without play(), wait() or pause()") != nullptr);
+        CHECK(strstr(c.text, "spin.as:2: ran 100 ms without scene.play(), wait() or pause()") != nullptr);
         CHECK(strstr(c.text, "ticks.as") == nullptr);
 }
 
@@ -240,9 +243,10 @@ TEST_CASE("Scripts: drawn smooth, deterministic, and stepped by the presenter") 
         // A filled square that moves right over a beat; then a pause, then it turns red.
         static const ScriptPlatform::File files[] = {
                 {"deck.md", "# Moves\n\n![script w:400 h:200](move.as)\n\n---\n\n# Next\n"},
-                {"move.as", "auto r = Rect(40, 40).at(40, 100);\nr.fill = 0x0000FF;\nr.lineWidth = 0;\nadd(r);\n"
-                            "play(move(r, 240, 100).ease(Ease::Linear), 1);\npause();\n"
-                            "play(fillTo(r, 0xFF0000), 0.5);\nprintln(millis());\n"},
+                {"move.as",
+                 "auto r = SceneRect(40, 40).at(40, 100);\nr.fill = 0x0000FF;\nr.lineWidth = 0;\nscene.add(r);\n"
+                 "scene.play(r.move(240, 100).ease(Ease::Linear), 1);\nscene.pause();\n"
+                 "scene.play(r.fillTo(0xFF0000), 0.5);\nprintln(millis());\n"},
         };
         ScriptPlatform platform;
         platform.files = files;
@@ -311,8 +315,9 @@ TEST_CASE("Scripts: drawn smooth, deterministic, and stepped by the presenter") 
 TEST_CASE("Scripts: random numbers are the same each time a region runs") {
         static const ScriptPlatform::File files[] = {
                 {"deck.md", "# R\n\n![script w:200 h:100](r.as)\n![script w:200 h:100](r.as)\n"},
-                {"r.as", "auto r = Rect(10, 10).at(random(10, 190), 50);\nr.fill = 0;\nadd(r);\npause();\n"
-                         "play(shift(r, 0, random(-30, 30)), 1);\n"},
+                {"r.as",
+                 "auto r = SceneRect(10, 10).at(random(10, 190), 50);\nr.fill = 0;\nscene.add(r);\nscene.pause();\n"
+                 "scene.play(r.shift(0, random(-30, 30)), 1);\n"},
         };
         ScriptPlatform platform;
         platform.files = files;
@@ -368,9 +373,9 @@ TEST_CASE("Scripts: random numbers are the same each time a region runs") {
 }
 
 TEST_CASE("Scripts: a part of a slide drawn again is as the whole slide drawn (effects too)") {
-        // Amber's glow reaches round what is drawn; its scanlines are every other row.
+        // Amber's scanlines are every other row: an area from an odd row has them where the slide does.
         static const ScriptPlatform::File files[] = {
-                {"deck.md", "---\ntheme: amber\n---\n\n# Glowing\n\nText under and beside the part drawn again,\n"
+                {"deck.md", "---\ntheme: amber\n---\n\n# Scanlines\n\nText under and beside the part drawn again,\n"
                             "on rows of their own.\n"},
         };
         ScriptPlatform platform;
@@ -383,7 +388,7 @@ TEST_CASE("Scripts: a part of a slide drawn again is as the whole slide drawn (e
         REQUIRE(deck.parse(source, length) == Error::Ok);
         preso::ThemeSet themes;
         REQUIRE(themes.load(platform, deck.settings().theme, "deck.md", nullptr, deck) == Error::Ok);
-        REQUIRE(themes.base().glow > 0);
+        REQUIRE(themes.base().scanlines > 0);
         preso::FontCache    fonts(platform);
         preso::ImageCache   images(platform, "deck.md");
         preso::Layouter     layouter(deck, themes, fonts, platform, &images);
@@ -435,9 +440,9 @@ TEST_CASE("Raster: RGB565 is filled and mixed as XRGB8888 is, near enough") {
 TEST_CASE("Scripts: a frame redraws what moved, not what stayed") {
         static const ScriptPlatform::File files[] = {
                 {"deck.md", "# Parts\n\n![script w:1000 h:400](parts.as)\n"},
-                {"parts.as", "auto still = Rect(800, 40).at(500, 30);\nstill.fill = 0x00FF00;\nadd(still);\n"
-                             "auto dot = Circle(10).at(50, 300);\nadd(dot);\n"
-                             "play(move(dot, 950, 300).ease(Ease::Linear), 1);\n"},
+                {"parts.as", "auto still = SceneRect(800, 40).at(500, 30);\nstill.fill = 0x00FF00;\nscene.add(still);\n"
+                             "auto dot = SceneCircle(10).at(50, 300);\nscene.add(dot);\n"
+                             "scene.play(dot.move(950, 300).ease(Ease::Linear), 1);\n"},
         };
         ScriptPlatform platform;
         platform.files = files;
@@ -453,13 +458,15 @@ TEST_CASE("Scripts: a frame redraws what moved, not what stayed") {
         CHECK(platform.lastArea.width < 200);
 }
 
-TEST_CASE("Scripts: under a glow, a region at rest is as the slide drawn afresh") {
-        // Moving frames leave the glow out; the region at rest gets it back, exactly.
+TEST_CASE("Scripts: under scanlines, a region at rest is as the slide drawn afresh") {
+        // What its frames drew, and the slide drawn whole again, are the same, exactly.
         static const ScriptPlatform::File files[] = {
-                {"deck.md", "---\ntheme: amber\n---\n\n# Glow\n\n![script w:600 h:300](glow.as)\n\nText beside it.\n\n"
-                            "---\n\n# After\n"},
-                {"glow.as", "auto r = Rect(60, 60).at(50, 150);\nr.fill = theme.color(\"Script.Highlight\");\nadd(r);\n"
-                            "play(move(r, 400, 150), 0.5);\n"},
+                {"deck.md",
+                 "---\ntheme: amber\n---\n\n# Moved\n\n![script w:600 h:300](moved.as)\n\nText beside it.\n\n"
+                 "---\n\n# After\n"},
+                {"moved.as", "auto r = SceneRect(60, 60).at(50, 150);\nr.fill = "
+                             "scene.theme.color(\"Script.Highlight\");\nscene.add(r);\n"
+                             "scene.play(r.move(400, 150), 0.5);\n"},
         };
         ScriptPlatform platform;
         platform.files = files;
@@ -532,9 +539,10 @@ namespace {
 
 TEST_CASE("Scripts: an angel run block runs on the step after its code, its output in its pane") {
         static const ScriptPlatform::File files[] = {
-                {"deck.md", "# Squares\n\n```angel run\nfor (int i = 1; i <= 3; i++)\n        println(i * i);\n"
-                            "pause();\nprintln(\"done\");\n```\n\n---\n\n# Broken\n\n```angel run below\nint x = 1;\n"
-                            "print(y);\n```\n"},
+                {"deck.md",
+                 "# Squares\n\n```angel run\nfor (int i = 1; i <= 3; i++)\n        println(i * i);\n"
+                 "scene.pause();\nprintln(\"done\");\n```\n\n---\n\n# Broken\n\n```angel run below\nint x = 1;\n"
+                 "print(y);\n```\n"},
         };
         ScriptPlatform platform;
         platform.files = files;
@@ -578,10 +586,11 @@ TEST_CASE("Scripts: an interactive region takes keys when entered, and gives the
         // A square that moves right on each Right key, and a tick that counts.
         static const ScriptPlatform::File files[] = {
                 {"deck.md", "# Keys\n\n![script w:400 h:200](keys.as)\n\n---\n\n# After\n"},
-                {"keys.as", "auto r = Rect(20, 20).at(30, 100);\nr.fill = 0x00FF00;\nr.lineWidth = 0;\nadd(r);\n"
-                            "int ticks = 0;\nvoid event(Event@ e) {\n        if (e.type == EventType::KeyDown && e.key "
-                            "== \"Right\")"
-                            "\n                r.x += 50;\n}\nvoid tick(float dt) { ticks++; }\n"},
+                {"keys.as",
+                 "auto r = SceneRect(20, 20).at(30, 100);\nr.fill = 0x00FF00;\nr.lineWidth = 0;\nscene.add(r);\n"
+                 "int ticks = 0;\nvoid event(Event@ e) {\n        if (e.type == EventType::KeyDown && e.key "
+                 "== \"Right\")"
+                 "\n                r.x += 50;\n}\nvoid tick(float dt) { ticks++; }\n"},
         };
         ScriptPlatform platform;
         platform.files = files;
@@ -620,11 +629,12 @@ TEST_CASE("Scripts: widgets change by the pointer and by keys, and call back") {
         // A slider whose callback moves a square; a toggle that shows it; a button that counts.
         static const ScriptPlatform::File files[] = {
                 {"deck.md", "<!-- interactive -->\n\n# Widgets\n\n![script w:600 h:300](w.as)\n"},
-                {"w.as", "auto s = Slider(0, 100, 0, 300).at(200, 50);\nadd(s);\n"
-                         "auto t = Toggle(\"Show\", true).at(200, 120);\nadd(t);\n"
-                         "auto r = Rect(20, 20).at(50, 250);\nr.fill = 0x00FF00;\nr.lineWidth = 0;\nadd(r);\n"
-                         "s.onChange(function() { r.x = 50 + s.value * 4; });\n"
-                         "t.onChange(function() { r.visible = t.on; });\n"},
+                {"w.as",
+                 "auto s = SceneSlider(0, 100, 0, 300).at(200, 50);\nscene.add(s);\n"
+                 "auto t = SceneToggle(\"Show\", true).at(200, 120);\nscene.add(t);\n"
+                 "auto r = SceneRect(20, 20).at(50, 250);\nr.fill = 0x00FF00;\nr.lineWidth = 0;\nscene.add(r);\n"
+                 "s.onChange(function() { r.x = 50 + s.value * 4; });\n"
+                 "t.onChange(function() { r.visible = t.on; });\n"},
         };
         ScriptPlatform platform;
         platform.files = files;
@@ -654,7 +664,7 @@ TEST_CASE("Scripts: widgets change by the pointer and by keys, and call back") {
 TEST_CASE("Scripts: sounds are heard when their slide is shown, never in fast-forward") {
         static const ScriptPlatform::File files[] = {
                 {"deck.md", "# One\n\n---\n\n<!-- sound: ding.wav -->\n\n# Two\n\n![script w:200 h:100](s.as)\n"},
-                {"s.as", "auto d = Sound(\"ding.wav\");\nd.play();\npause();\nd.play();\n"},
+                {"s.as", "auto d = Sound(\"ding.wav\");\nd.play();\nscene.pause();\nd.play();\n"},
                 {"ding.wav", "RIFF"},
         };
         ScriptPlatform platform;
@@ -744,4 +754,369 @@ TEST_CASE("Scripts: reading the deck again lets go of the region that had the ke
         presenter.event(keyDown(0x04, 'a'));
         presenter.act(Action::Leave);
         CHECK(!presenter.regionEntered());
+}
+
+TEST_CASE("Raster: a solid polygon adds to a stroke it overlaps; one turned the other way cancels") {
+        uint32_t pixels[64 * 16];
+        Canvas   c;
+        c.attach(pixels, 64 * 4, 64, 16, PixelFormat::Xrgb8888);
+        preso::Point line[2] = {{4, 8}, {60, 8}};
+        // A triangle over the line's middle, turned as shapes are (clockwise on the screen).
+        preso::Point tri[3] = {{30, 2}, {40, 8}, {30, 14}};
+        for (int solid = 0; solid < 2; solid++) {
+                c.fill(Rect{0, 0, 64, 16}, 0x000000);
+                preso::Path path;
+                path.addStroke(line, 2, false, 4);
+                if (solid != 0) {
+                        path.addSolid(tri, 3);
+                } else {
+                        path.addPolygon(tri, 3);
+                }
+                (void)preso::fillPath(c, path, 0xFFFFFF, 255);
+                if (solid != 0) {
+                        CHECK(c.colorAt(33, 7) == 0xFFFFFF);
+                        CHECK(c.colorAt(33, 8) == 0xFFFFFF);
+                } else {
+                        CHECK(c.colorAt(33, 7) != 0xFFFFFF); // the step 12 glitch: they cancel
+                }
+        }
+}
+
+namespace {
+
+        // A shape drawn alone, white on black, on a 400 × 200 canvas: the canvas.
+        struct Drawn {
+                        uint32_t                pixels[400 * 200];
+                        Canvas                  canvas;
+                        preso::HeadlessPlatform platform;
+                        preso::FontCache        fonts{platform};
+                        preso::SceneContext     context;
+                        Drawn() {
+                                canvas.attach(pixels, 400 * 4, 400, 200, PixelFormat::Xrgb8888);
+                                canvas.fill(Rect{0, 0, 400, 200}, 0x000000);
+                                context.platform = &platform;
+                                context.fonts = &fonts;
+                                context.theme = &preso::Theme::paper();
+                        }
+                        // Pixels not black, and whether every one is inside @p box.
+                        uint32_t lit(const Rect &box, bool *inside) const {
+                                uint32_t n = 0;
+                                *inside = true;
+                                for (int32_t y = 0; y < 200; y++) {
+                                        for (int32_t x = 0; x < 400; x++) {
+                                                if (canvas.colorAt(x, y) == 0) continue;
+                                                n++;
+                                                if (x < box.x || y < box.y || x >= box.x + box.width ||
+                                                    y >= box.y + box.height)
+                                                        *inside = false;
+                                        }
+                                }
+                                return n;
+                        }
+        };
+
+        preso::Shape *shape(preso::ShapeKind kind) {
+                preso::Shape *s = preso::Shape::make(kind);
+                s->x = 200;
+                s->y = 100;
+                s->color = 0xFFFFFF;
+                s->fill = 0x808080;
+                return s;
+        }
+
+} // namespace
+
+TEST_CASE("Scenes: an arrow's line meets its head with no seam, whatever its heads") {
+        using preso::ArrowHead;
+        const ArrowHead heads[] = {ArrowHead::Triangle, ArrowHead::Stealth, ArrowHead::Open, ArrowHead::Circle,
+                                   ArrowHead::Square,   ArrowHead::Diamond, ArrowHead::Bar};
+        for (ArrowHead head : heads) {
+                auto          d = std::make_unique<Drawn>();
+                preso::Shape *s = shape(preso::ShapeKind::Arrow);
+                s->ends[0] = preso::Point{-150, 0};
+                s->ends[1] = preso::Point{150, 0};
+                s->lineWidth = 4;
+                s->head = head;
+                s->tail = head;
+                preso::Affine none;
+                preso::drawShape(d->canvas, d->context, *s, none, 1);
+                // The line's middle rows, from end to end: covered wholly, the heads' overlap too.
+                for (int32_t x = 60; x < 340; x++) {
+                        INFO("head " << int(head) << " x " << x);
+                        CHECK(d->canvas.colorAt(x, 99) == 0xFFFFFF);
+                        CHECK(d->canvas.colorAt(x, 100) == 0xFFFFFF);
+                }
+                bool     inside = false;
+                uint32_t n = d->lit(preso::shapeBounds(d->context, *s, none), &inside);
+                CHECK(n > 0);
+                CHECK(inside);
+                s->release();
+        }
+}
+
+TEST_CASE("Scenes: every new kind draws, and only inside its box") {
+        using preso::ShapeKind;
+        struct Case {
+                        ShapeKind kind;
+                        float     dash;
+        };
+        const Case cases[] = {{ShapeKind::Ellipse, 0}, {ShapeKind::Ellipse, 8}, {ShapeKind::Arc, 0},
+                              {ShapeKind::Sector, 0},  {ShapeKind::Regular, 0}, {ShapeKind::Star, 0},
+                              {ShapeKind::Curve, 0},   {ShapeKind::Curve, 6},   {ShapeKind::Rect, 0},
+                              {ShapeKind::Rect, 10},   {ShapeKind::Line, 0},    {ShapeKind::Axes, 0}};
+        for (const Case &k : cases) {
+                auto          d = std::make_unique<Drawn>();
+                preso::Shape *s = shape(k.kind);
+                s->dash = k.dash;
+                s->width = 160;
+                s->height = 80;
+                s->radius = 60;
+                s->sides = 5;
+                s->innerRadius = 25;
+                s->start = -90;
+                s->sweep = 200;
+                s->cornerRadius = 16;
+                s->fillOpacity = 1;
+                s->ends[0] = preso::Point{-120, -40};
+                s->ends[1] = preso::Point{120, 40};
+                s->bend = 60;
+                s->head = k.kind == ShapeKind::Arc || k.kind == ShapeKind::Line || k.kind == ShapeKind::Curve
+                                  ? preso::ArrowHead::Triangle
+                                  : preso::ArrowHead::None;
+                s->xMin = -2;
+                s->xMax = 2;
+                s->yMin = -1;
+                s->yMax = 1;
+                const preso::Point curve[4] = {{-100, 0}, {-30, -60}, {30, 60}, {100, 0}};
+                REQUIRE(s->setPoints(curve, 4));
+                preso::Affine none;
+                preso::drawShape(d->canvas, d->context, *s, none, 1);
+                bool     inside = false;
+                uint32_t n = d->lit(preso::shapeBounds(d->context, *s, none), &inside);
+                INFO("kind " << int(k.kind) << " dash " << k.dash);
+                CHECK(n > 200);
+                CHECK(inside);
+                s->release();
+        }
+}
+
+TEST_CASE("Raster: a picture's part, and faded by whole pixels as when resampled") {
+        uint32_t           picture[8 * 8];
+        preso::ScaledImage image;
+        for (uint32_t &p : picture) p = 0xFFFFFF;
+        image.width = image.height = 8;
+        image.stride = 8 * 4;
+        image.format = PixelFormat::Xrgb8888;
+        image.pixels = reinterpret_cast<uint8_t *>(picture);
+        uint32_t pixels[32 * 32], resampled[32 * 32];
+        Canvas   canvas, other;
+        canvas.attach(pixels, 32 * 4, 32, 32, PixelFormat::Xrgb8888);
+        other.attach(resampled, 32 * 4, 32, 32, PixelFormat::Xrgb8888);
+        // Its part (2, 2, 3, 3) moved by (4, 4): there and nowhere else.
+        canvas.fill(Rect{0, 0, 32, 32}, 0);
+        const Rect part{2, 2, 3, 3};
+        preso::drawPicture(canvas, image, preso::Affine::translation(4, 4), 255, &part);
+        for (int32_t y = 0; y < 32; y++) {
+                for (int32_t x = 0; x < 32; x++) {
+                        bool in = x >= 6 && x < 9 && y >= 6 && y < 9;
+                        INFO("x " << x << " y " << y);
+                        CHECK(canvas.colorAt(x, y) == (in ? 0xFFFFFFu : 0u));
+                }
+        }
+        // Faded, moved by whole pixels: as the resampling path draws it (a scale a hair from 1 takes
+        // that path).
+        canvas.fill(Rect{0, 0, 32, 32}, 0);
+        other.fill(Rect{0, 0, 32, 32}, 0);
+        preso::drawPicture(canvas, image, preso::Affine::translation(4, 4), 128);
+        preso::drawPicture(other, image, preso::Affine::translation(4, 4).after(preso::Affine::scaling(1.00001f, 1)),
+                           128);
+        for (int32_t y = 0; y < 32; y++) {
+                for (int32_t x = 0; x < 32; x++) {
+                        int32_t a = int32_t(canvas.colorAt(x, y) & 0xFF), b = int32_t(other.colorAt(x, y) & 0xFF);
+                        INFO("x " << x << " y " << y);
+                        CHECK(abs(a - b) <= 2);
+                }
+        }
+        CHECK((canvas.colorAt(8, 8) & 0xFF) > 100);
+}
+
+TEST_CASE("Raster: a mask turned and scaled samples where the exact transform says, across a row") {
+        // Stepped a pixel at a time in fixed point; compared with the transform worked out for each
+        // pixel (as it was), over a canvas wide enough for drift to show.
+        uint8_t mask[16 * 16];
+        for (int32_t y = 0; y < 16; y++) {
+                for (int32_t x = 0; x < 16; x++) mask[y * 16 + x] = uint8_t(x * 8 + y * 7);
+        }
+        static uint32_t pixels[256 * 160];
+        Canvas          canvas;
+        canvas.attach(pixels, 256 * 4, 256, 160, PixelFormat::Xrgb8888);
+        canvas.fill(Rect{0, 0, 256, 160}, 0);
+        preso::Affine t = preso::Affine::translation(30, 20)
+                                  .after(preso::Affine::rotation(0.3f))
+                                  .after(preso::Affine::scaling(13.7f, 7.3f));
+        preso::drawMask(canvas, mask, 16, 16, 16, t, 0xFFFFFF, 255);
+        preso::Affine inverse;
+        REQUIRE(t.inverted(&inverse));
+        auto at = [&](int32_t x, int32_t y) -> int32_t {
+                return x < 0 || y < 0 || x >= 16 || y >= 16 ? 0 : mask[y * 16 + x];
+        };
+        // Where it draws: the mask's box through the transform (its fringe past that isn't drawn).
+        Rect     drawn = preso::transformedBounds(t, 0, 0, 16, 16).intersected(Rect{0, 0, 256, 160});
+        uint32_t compared = 0, exact = 0;
+        for (int32_t y = drawn.y; y < drawn.y + drawn.height; y++) {
+                for (int32_t x = drawn.x; x < drawn.x + drawn.width; x++) {
+                        preso::Point p = inverse.apply(preso::Point{float(x) + 0.5f, float(y) + 0.5f});
+                        float        sx = p.x - 0.5f, sy = p.y - 0.5f;
+                        if (sx <= -1 || sy <= -1 || sx >= 16 || sy >= 16) continue;
+                        // As the transform a pixel worked it out: fractions in 256ths.
+                        int32_t ix = int32_t(floorf(sx)), iy = int32_t(floorf(sy));
+                        int32_t fx = int32_t((sx - float(ix)) * 256), fy = int32_t((sy - float(iy)) * 256);
+                        int32_t top = at(ix, iy) * (256 - fx) + at(ix + 1, iy) * fx;
+                        int32_t bottom = at(ix, iy + 1) * (256 - fx) + at(ix + 1, iy + 1) * fx;
+                        int32_t want = (top * (256 - fy) + bottom * fy) >> 16;
+                        // White over black, mixed as the rasterizer mixes.
+                        int32_t mixed = want >= 255 ? 255 : (255 * want + 128) >> 8;
+                        int32_t got = int32_t(canvas.colorAt(x, y) & 0xFF);
+                        INFO("x " << x << " y " << y << " want " << want);
+                        CHECK(abs(got - mixed) <= 1);
+                        exact += got == mixed;
+                        compared++;
+                }
+        }
+        CHECK(compared > 10000);
+        CHECK(exact * 100 > compared * 95); // the rest a 256th apart in a fraction
+}
+
+TEST_CASE("Scenes: code written halfway shows its first line as it is when whole, the next not yet") {
+        // Made once and shown a line at a time (not made again for every character).
+        struct XrgbPlatform : preso::HeadlessPlatform {
+                        PixelFormat pixelFormat() const override { return PixelFormat::Xrgb8888; }
+        };
+        XrgbPlatform xrgb; // the code's picture in the canvas's format
+        auto         whole = std::make_unique<Drawn>(), half = std::make_unique<Drawn>();
+        whole->context.platform = half->context.platform = &xrgb;
+        preso::Shape *s = shape(preso::ShapeKind::Code);
+        REQUIRE(s->setText("ab = 1;\ncd = 2;", 15));
+        s->fillOpacity = 0;
+        s->lineWidth = 0;
+        s->reveal = 1;
+        preso::Affine none;
+        preso::drawShape(whole->canvas, whole->context, *s, none, 1);
+        s->reveal = 0.5f; // 7 of the 14 characters: the first line
+        preso::drawShape(half->canvas, half->context, *s, none, 1);
+        // The two lines meet at the box's middle (100).
+        uint32_t above = 0, below = 0;
+        for (int32_t y = 0; y < 200; y++) {
+                for (int32_t x = 0; x < 400; x++) {
+                        Color c = whole->canvas.colorAt(x, y);
+                        if (y < 100) {
+                                above += c != 0;
+                                INFO("x " << x << " y " << y);
+                                CHECK(half->canvas.colorAt(x, y) == c);
+                        } else {
+                                below += c != 0;
+                                CHECK(half->canvas.colorAt(x, y) == 0);
+                        }
+                }
+        }
+        CHECK(above > 20);
+        CHECK(below > 20);
+        s->release();
+}
+
+TEST_CASE("Scenes: the pointer is mapped back through the camera") {
+        // Zoomed twice on the region's middle: a click 120 pixels right of the middle is 60 in the
+        // scene. The slider's value says which (72% mapped; 94% if not), and colours the square.
+        static const ScriptPlatform::File files[] = {
+                {"deck.md", "<!-- interactive -->\n\n# Zoomed\n\n![script w:600 h:300](z.as)\n"},
+                {"z.as",
+                 "scene.zoom = 2;\n"
+                 "auto s = SceneSlider(0, 100, 0, 300).at(300, 150);\nscene.add(s);\n"
+                 "auto r = SceneRect(20, 20).at(300, 200);\nr.fill = 0x00FF00;\nr.lineWidth = 0;\nscene.add(r);\n"
+                 "s.onChange(function() { r.fill = s.value < 85 ? 0x00FF00 : 0xFF0000; });\n"},
+        };
+        ScriptPlatform platform;
+        platform.files = files;
+        platform.fileCount = 2;
+        Presenter presenter(platform, "deck.md", nullptr, preso::makeAngelScripts);
+        REQUIRE(presenter.load() == Error::Ok);
+        REQUIRE(presenter.run(1) == Error::Ok);
+        preso::Point square = find(platform.last, 0x00FF00);
+        REQUIRE(square.x > 0);
+        // The square, 40 pixels zoomed, has its top left at the region's (280, 230).
+        int32_t rx = int32_t(square.x) - 280, ry = int32_t(square.y) - 230;
+        presenter.event(pointerAt(rx + 420, ry + 150, 1));
+        presenter.event(pointerAt(rx + 420, ry + 150, 0));
+        CHECK(find(platform.last, 0x00FF00).x > 0);
+        CHECK(find(platform.last, 0xFF0000).x < 0);
+}
+
+namespace {
+
+        // Where @p color is on @p c: its box (x1 < x0 if nowhere).
+        Rect extentOf(const Canvas &c, Color color) {
+                int32_t x0 = 1 << 30, y0 = 1 << 30, x1 = -1, y1 = -1;
+                for (int32_t y = 0; y < c.height(); y++) {
+                        for (int32_t x = 0; x < c.width(); x++) {
+                                if (c.colorAt(x, y) != color) continue;
+                                x0 = x < x0 ? x : x0;
+                                y0 = y < y0 ? y : y0;
+                                x1 = x > x1 ? x : x1;
+                                y1 = y > y1 ? y : y1;
+                        }
+                }
+                return Rect{x0, y0, x1 - x0 + 1, y1 - y0 + 1};
+        }
+
+} // namespace
+
+TEST_CASE("Scenes: a region shrunk to fit draws its scene smaller, its text the theme's size") {
+        // Asked for 2400 wide, the region is the slide's line: the scene is still 2400 by 600 (a red
+        // rect covering it shows where), drawn smaller. The theme's text stays the size it is in a
+        // region not shrunk, and a click is mapped back through the fit: at the scene's 1800 the
+        // slider is 80 (cyan), not the 30 or so the region's pixel would be.
+        static const char *const script =
+                "auto back = SceneRect(scene.width, scene.height).at(scene.width / 2, scene.height / 2);\n"
+                "back.fill = 0xFF0000;\nback.lineWidth = 0;\nscene.add(back);\n"
+                "auto t = SceneText(\"Hi\");\nt.color = 0x0000FF;\nt.at(300, 100);\nscene.add(t);\n"
+                "auto s = SceneSlider(0, 100, 0, scene.width * 5 / 6).at(scene.width / 2, scene.height * 5 / 6);\n"
+                "scene.add(s);\n"
+                "auto r = SceneRect(100, 100).at(scene.width * 3 / 4, 150);\nr.fill = 0x00FF00;\nr.lineWidth = 0;\n"
+                "scene.add(r);\n"
+                "s.onChange(function() { r.fill = s.value > 60 ? 0x00FFFF : 0x00FF00; });\n";
+        static const ScriptPlatform::File files[] = {
+                {"deck.md", "<!-- interactive -->\n\n# Shrunk\n\n![script w:2400 h:600](f.as)\n"},
+                {"plain.md", "# Not\n\n![script w:600 h:300](f.as)\n"},
+                {"f.as", script},
+        };
+        ScriptPlatform plain;
+        plain.files = files;
+        plain.fileCount = 3;
+        Presenter unshrunk(plain, "plain.md", nullptr, preso::makeAngelScripts);
+        REQUIRE(unshrunk.load() == Error::Ok);
+        REQUIRE(unshrunk.run(1) == Error::Ok);
+        Rect text = extentOf(plain.last, 0x0000FF);
+        REQUIRE(text.width > 0);
+
+        ScriptPlatform platform;
+        platform.files = files;
+        platform.fileCount = 3;
+        Presenter presenter(platform, "deck.md", nullptr, preso::makeAngelScripts);
+        REQUIRE(presenter.load() == Error::Ok);
+        REQUIRE(presenter.run(1) == Error::Ok);
+        Rect back = extentOf(platform.last, 0xFF0000);
+        REQUIRE(back.width > 0);
+        CHECK(back.width < 1280);
+        CHECK(abs(back.height - back.width / 4) <= 3); // its proportions kept
+        float fit = float(back.width) / 2400;
+        Rect  square = extentOf(platform.last, 0x00FF00);
+        CHECK(abs(square.width - int32_t(100 * fit + 0.5f)) <= 2);
+        Rect shrunkText = extentOf(platform.last, 0x0000FF);
+        CHECK(abs(shrunkText.height - text.height) <= 1);
+        CHECK(abs(shrunkText.width - text.width) <= 2);
+        // The slider's track runs from the scene's 200 to 2200: its 1800 is 80.
+        int32_t px = back.x + int32_t(1800 * fit), py = back.y + int32_t(500 * fit);
+        presenter.event(pointerAt(px, py, 1));
+        presenter.event(pointerAt(px, py, 0));
+        CHECK(find(platform.last, 0x00FFFF).x > 0);
 }

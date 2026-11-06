@@ -731,6 +731,16 @@ bool FolderWindow::applicationSelected() const {
         return Apps::isFolderName(_items.folder().name(size_t(r)));
 }
 
+bool FolderWindow::fileSelected(String &path) const {
+        const ItemView &v = view();
+        const int       r = v.selection().nextSelected(0);
+        if (r < 0 || v.selection().selectedCount() != 1) return false;
+        const FolderModel::Entry &e = _items.folder().entry(size_t(r));
+        if (e.type != FileType::File || e.builtin || _items.folder().name(size_t(r)).endsWith(".desktop")) return false;
+        itemPath(size_t(r), path);
+        return !path.isEmpty();
+}
+
 namespace {
 
         // The card path @p p is on (/sd0, /sd0/p0/...: a whole block device that isn't the flash, the
@@ -1093,7 +1103,10 @@ void FolderWindow::choose(int choice) {
                                      "Shift and a double click opens a folder in a window of its own.",
                                      false);
                         break;
-                default: break;
+                default:
+                        if (choice >= ChooseOpenWith && choice < ChooseOpenWith + int(FolderActions::MaxOpenWith))
+                                actions.openWithChosen(size_t(choice - ChooseOpenWith));
+                        break;
         }
         return;
 }
@@ -1203,8 +1216,9 @@ void FolderWindow::updateTools() {
 
 FolderMenus::FolderMenus(GuiApplication &app)
     : _app(app), _file(app), _edit(app), _view(app), _go(app), _help(app), _new(app), _arrange(app), _views(app),
-      _item(app), _background(app) {
-        for (Menu *m : {&_file, &_edit, &_view, &_go, &_help, &_new, &_arrange, &_views, &_item, &_background})
+      _openWith(app), _item(app), _background(app) {
+        for (Menu *m :
+             {&_file, &_edit, &_view, &_go, &_help, &_new, &_arrange, &_views, &_openWith, &_item, &_background})
                 m->setTriggered(triggered, this);
 }
 
@@ -1294,6 +1308,17 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
         _views.clear();
         (void)_views.addItem("Lar&ge Icons", W::ChooseIcons, checked(!w.showsDetails()));
         (void)_views.addItem("&Details", W::ChooseDetails, checked(w.showsDetails()));
+        // Open With: the applications for the one file selected (filebrowser.md §4l).
+        size_t openWith = 0;
+        if (!trash && (&menu == &_file || &menu == &_item)) {
+                _openWith.clear();
+                String         file(MemSpace::Psram);
+                FolderActions &actions = w.folderActions();
+                if (w.fileSelected(file)) openWith = actions.findOpenWith(file.view());
+                for (size_t i = 0; i < openWith; ++i)
+                        (void)_openWith.addItem(StringView(actions.openWithEntry(i)->name), W::ChooseOpenWith + int(i),
+                                                0, StringView(), actions.openWithIcon(i, 16));
+        }
         menu.clear();
         if (trash && &menu == &_file) {
                 (void)menu.addItem("&Restore", W::ChooseRestore, needOne, StringView(), icon(IconId::EditUndo));
@@ -1329,6 +1354,7 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
                                    icon(IconId::DocumentProperties));
         } else if (&menu == &_file) {
                 (void)menu.addItem("&Open", W::ChooseOpen, needOne, "Enter", icon(IconId::DocumentOpen));
+                if (openWith > 0) (void)menu.addSubmenu("Open Wit&h", _openWith);
                 if (w.applicationSelected())
                         (void)menu.addItem("Show Co&ntents", W::ChooseShowContents, 0, StringView(),
                                            icon(IconId::Folder));
@@ -1374,6 +1400,7 @@ void FolderMenus::fill(Menu &menu, FolderWindow &w) {
                 (void)menu.addItem("&Desktop", W::ChooseDesktop, 0, StringView(), icon(IconId::UserDesktop));
         } else if (&menu == &_item) {
                 (void)menu.addItem("&Open", W::ChooseOpen, 0, StringView(), icon(IconId::DocumentOpen));
+                if (openWith > 0) (void)menu.addSubmenu("Open Wit&h", _openWith);
                 if (w.applicationSelected())
                         (void)menu.addItem("Show Co&ntents", W::ChooseShowContents, 0, StringView(),
                                            icon(IconId::Folder));

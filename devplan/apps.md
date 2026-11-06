@@ -228,7 +228,8 @@ in the default `PATH`, the data directory's place. No system calls: `bmds/app.h`
   typed) went into the folder; a `.pdf` in `/tmp` (no line for it in `mimeapps.list`) opened as
   `/apps/surf -d -t 4 /tmp/t.pdf`.
 - **Not yet:** the application's own icon in the file browser and on the desktop (the generic
-  one now; the launcher already shows a program's icon notes); an Open With submenu.
+  one now; the launcher already shows a program's icon notes). (The Open With submenu came
+  2026-11-03, `filebrowser.md` §4l.)
 
 ## 14. As built: step 5, building folders (2026-10-14)
 

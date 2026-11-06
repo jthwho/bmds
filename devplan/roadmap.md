@@ -486,8 +486,21 @@ Plan: [`input.md`](input.md).
   pad); step 9 (2026-11-03: `run:` demos through the shell from the deck's folder, the deck's
   screen and pictures closed while one runs so it has the memory, the slide after when it ends);
   step 10 (2026-11-03: `preso export` to PNGs and `--posters`; kiosk mode, `--loop` and `auto`;
-  the example decks in `dist/preso`, Preso's tour and the BMDS talk). All ten steps are done;
-  checking the pad bindings waits for the user's pad.
+  the example decks in `dist/preso`, Preso's tour and the BMDS talk); step 11 (2026-11-03: in
+  `bmds-standard`, the launcher (an Office category) and a start window with the file dialog;
+  Edit colours Markdown's fenced code in its language and its HTML comments; Open With ▸ in Files
+  and on the desktop, files typed by name first); step 12 (2026-11-04: the scene in angel too,
+  every name of it `Scene...`, verbs on `scene`, animations methods of objects; angel's stage, a
+  window that plays a scene script with Space and Left; scripts' files from their own folder;
+  the guide's lesson 19); step 13 (2026-11-04: the arrow's seam fixed; heads of eight kinds at
+  either end, bends and dashes; ellipses, arcs, sectors, regular polygons, stars, curves, numbers,
+  axes and plots; copies, boxes, `nextTo`, `arrange`, `between`; more animations); step 14
+  (2026-11-04: arrays, tables, graphs, code highlights and changes, braces, callouts, labels,
+  updaters, paths, charts, the camera, icons, marks, confetti; the showcase deck); step 15
+  (2026-11-05: the showcase in every theme: a region shrunk to fit draws its scene scaled, theme
+  text at the theme's size; labels coloured to read on fills; faster code, grids and zoomed
+  text; timed on the board); step 16 (2026-11-05: amber's and green's glow taken out). Checking
+  the pad bindings waits for the user's pad.
 
 ## Phase 8 — Self-Hosting
 

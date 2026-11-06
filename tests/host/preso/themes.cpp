@@ -199,7 +199,6 @@ TEST_CASE("Themes: green extends amber: its effects and fonts, its own colours")
         CHECK(t.background == 0x001200);
         CHECK(t.body.color == 0x33FF33);
         CHECK(t.body.font.size == 32);
-        CHECK(t.glow > 0);
         CHECK(t.scanlines > 0);
         CHECK(t.palette.count == 8);
         CHECK(themes.forClasses("title").heading[0].text.font.size == 96); // amber's class, inherited
@@ -328,7 +327,7 @@ TEST_CASE("Layout: a theme's decorations: frames, bands, title bars, dividers, s
         CHECK(textOp(ct, "Big")->font.size == 60);
 }
 
-TEST_CASE("Effects: scanlines darken every other row; a glow spreads from what is bright") {
+TEST_CASE("Effects: scanlines darken every other row") {
         static uint32_t pixels[64 * 64];
         Canvas          c;
         c.attach(pixels, 64 * 4, 64, 64, PixelFormat::Xrgb8888);
@@ -336,17 +335,6 @@ TEST_CASE("Effects: scanlines darken every other row; a glow spreads from what i
         preso::applyScanlines(c, 128);
         CHECK(c.colorAt(5, 0) == 0x808080);
         CHECK(((c.colorAt(5, 1) >> 8) & 0xFF) < 0x50);
-        // A bright block (a glyph's size) on black: beside it lit, far from it not, its own colour
-        // never passed (the glow keeps the text's hue).
-        c.fill(preso::Rect{0, 0, 64, 64}, 0x000000);
-        c.fill(preso::Rect{24, 24, 12, 12}, 0xFFB000);
-        REQUIRE(preso::applyGlow(c, 0x000000, 255, 6));
-        Color beside = c.colorAt(21, 30);
-        CHECK(((beside >> 16) & 0xFF) > 0x10);
-        CHECK(((beside >> 16) & 0xFF) <= 0xFF);
-        CHECK((beside & 0xFF) == 0); // no blue where the text has none
-        CHECK(c.colorAt(2, 2) == 0x000000);
-        CHECK(c.colorAt(30, 30) == 0xFFB000);
 }
 
 TEST_CASE("Presenter: a sharp theme opens a sharp screen at its size") {

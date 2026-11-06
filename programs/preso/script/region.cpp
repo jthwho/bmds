@@ -13,6 +13,7 @@
  * a beat when Next comes during it.
  */
 
+#include <math.h>
 #include <new>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,7 +25,6 @@ namespace preso {
 
         namespace {
 
-                constexpr uint32_t MaxScript = 256u << 10;
                 constexpr uint32_t MaxOutput = 2048;
                 constexpr Color    ErrorColor = 0xC01C28;
 
@@ -72,16 +72,6 @@ namespace preso {
                         return;
                 }
 
-                void messageCallback(const asSMessageInfo *info, void *scripts) {
-                        static_cast<AngelScripts *>(scripts)->message(info);
-                        return;
-                }
-
-                uint32_t mix(uint32_t h, uint32_t v) {
-                        h ^= v + 0x9e3779b9u + (h << 6) + (h >> 2);
-                        return h;
-                }
-
         } // namespace
 
         AngelRegion *runningRegion() {
@@ -90,12 +80,27 @@ namespace preso {
 
         // ---- AngelRegion
 
-        AngelRegion::AngelRegion(AngelScripts &owner, const ScriptPlace &place, uint32_t seed)
+        AngelRegion::AngelRegion(SceneHost &owner, const ScriptPlace &place, uint32_t seed)
             : _owner(owner), _place(place), _seed(seed) {
                 _context.platform = &owner.platform();
                 _context.fonts = &owner.fonts();
                 _context.images = owner.images();
                 _context.theme = place.theme;
+                // Shrunk to fit: its scene drawn smaller, the same in both ways (the layout keeps
+                // its proportions).
+                if (place.sceneWidth > place.width && place.sceneWidth > 0)
+                        _context.fit = float(place.width) / float(place.sceneWidth);
+                _camera = Shape::make(ShapeKind::Camera);
+                resetCamera();
+                // Its files are named from its script's folder (a block's: the deck's).
+                if (place.image != nullptr) {
+                        StringView script = place.image->script;
+                        int32_t    slash = -1;
+                        for (uint32_t i = 0; i < script.length(); i++) {
+                                if (script[i] == '/') slash = int32_t(i);
+                        }
+                        if (slash > 0) snprintf(_folder, sizeof _folder, "%.*s", int(slash), script.data());
+                }
         }
 
         AngelRegion::~AngelRegion() {
@@ -106,8 +111,8 @@ namespace preso {
                         _ctx->Release();
                 }
                 if (_drawCtx != nullptr) _drawCtx->Release();
-                if (_canvasObject != nullptr) releaseCanvasObject(_canvasObject);
-                if (_module != nullptr) _module->Discard();
+                if (_camera != nullptr) _camera->release();
+                if (_module != nullptr && _ownsModule) _module->Discard();
                 free(_output);
                 free(_drawn);
         }
@@ -118,6 +123,10 @@ namespace preso {
                         StringView script = _place.image->script;
                         snprintf(out, size, "%.*s:%d", int(script.length() < 120 ? script.length() : 120),
                                  script.data(), line);
+                } else if (!_place.file.isEmpty()) {
+                        StringView file = _place.file;
+                        snprintf(out, size, "%.*s:%d", int(file.length() < 120 ? file.length() : 120), file.data(),
+                                 line);
                 } else {
                         snprintf(out, size, "line %u", unsigned(_place.firstLine + uint32_t(line > 0 ? line - 1 : 0)));
                 }
@@ -128,14 +137,13 @@ namespace preso {
                 if (_state == State::Failed) return;
                 _state = State::Failed;
                 snprintf(_error, sizeof _error, "%s", message);
-                // Said once, where the deck names it (the terminal's messages, `preso check`): a
-                // file's region at its image, a block at its line.
+                // Said once, where the host says such things (a deck's messages, `preso check`;
+                // angel's standard error): a file's region at its image, a block at its line.
                 uint32_t at = _place.image != nullptr ? _place.image->line
                                                       : _place.firstLine + uint32_t(line > 0 ? line - 1 : 0);
-                if (!_reported && _place.slide != nullptr) {
+                if (!_reported) {
                         _reported = true;
-                        _owner.deck().report(Severity::Error, at, "slide %u: %s", unsigned(_place.slide->number),
-                                             _error);
+                        _owner.report(_place, at, _error);
                 }
                 return;
         }
@@ -158,54 +166,12 @@ namespace preso {
                 return;
         }
 
-        void AngelRegion::load() {
-                // A file's script from the deck's folder, or a block's from the slide.
-                char     message[256], at[140];
-                char    *code = nullptr;
-                uint32_t length = 0;
-                if (_place.image != nullptr) {
-                        StringView  script = _place.image->script;
-                        char        path[512];
-                        const char *why = nullptr;
-                        if (!_owner.resolve(script, path, sizeof path, &why)) {
-                                snprintf(message, sizeof message, "script `%.*s` %s", int(script.length()),
-                                         script.data(), why);
-                                fail(message);
-                                return;
-                        }
-                        Error error = _owner.platform().readFile(path, MaxScript, &code, &length);
-                        if (error != Error::Ok) {
-                                snprintf(message, sizeof message, "script `%.*s` %s", int(script.length()),
-                                         script.data(), error == Error::NotFound ? "isn't there" : errorName(error));
-                                fail(message);
-                                return;
-                        }
-                } else {
-                        length = _place.source.length();
-                        code = static_cast<char *>(malloc(length + 1));
-                        if (code == nullptr) {
-                                fail("out of memory for the block's script");
-                                return;
-                        }
-                        memcpy(code, _place.source.data(), length);
-                        code[length] = '\0';
-                }
+        int AngelRegion::build(const char *code, uint32_t length) {
                 asIScriptEngine *engine = _owner.engine();
-                if (engine == nullptr) {
-                        free(code);
-                        fail("the script engine couldn't be made (out of memory?)");
-                        return;
-                }
+                if (engine == nullptr) return -1;
                 char name[24];
                 snprintf(name, sizeof name, "r%p", static_cast<void *>(this));
                 _module = engine->GetModule(name, asGM_ALWAYS_CREATE);
-                // Its first line may be `#!`, as angel's: blanked, the lines kept.
-                if (length >= 2 && code[0] == '#' && code[1] == '!') {
-                        for (uint32_t i = 0; i < length && code[i] != '\n'; i++) code[i] = ' ';
-                }
-                char errors[200] = {};
-                int  errorLine = 0;
-                _owner.collectMessages(errors, sizeof errors, &errorLine);
                 int built = _module == nullptr ? -1 : _module->AddScriptSection("script", code, length);
                 if (built >= 0) {
                         // Globals outside top-level statements are initialized as it is built: as
@@ -213,28 +179,24 @@ namespace preso {
                         Running scope(this);
                         built = _module->Build();
                 }
-                _owner.collectMessages(nullptr, 0, nullptr);
-                // A script that names what only `--trust` gives: said so.
-                bool trusted = built < 0 && !_owner.isTrusted() && _owner.buildsTrusted(code, length);
-                free(code);
-                if (built < 0) {
-                        // An initializer that threw: what it threw, not "Failed to initialize".
-                        char inner[200];
-                        int  line = 0;
-                        if (strstr(errors, "Failed to initialize") != nullptr &&
-                            _owner.takeInitException(inner, sizeof inner, &line)) {
-                                snprintf(errors, sizeof errors, "%s", inner);
-                                errorLine = line;
-                        }
-                        where(errorLine, at, sizeof at);
-                        snprintf(message, sizeof message, "%.120s: %s%.110s", at, trusted ? "needs --trust: " : "",
-                                 errors[0] != '\0' ? errors : "the script couldn't be built");
-                        fail(message, errorLine);
-                        return;
-                }
+                return built;
+        }
+
+        void AngelRegion::adopt(asIScriptModule *module) {
+                _module = module;
+                _ownsModule = false;
+                begin();
+                // The host ran it as far as its first scene call already, printing as it went.
+                _quiet = _owner.passesOutput();
+                return;
+        }
+
+        void AngelRegion::begin() {
+                char message[256], at[140];
                 _entry = _module->GetFunctionByName("$top");
                 if (_entry == nullptr) _entry = _module->GetFunctionByDecl("void main()");
-                _drawFunction = _module->GetFunctionByDecl("void draw(Canvas@, float)");
+                if (_entry == nullptr) _entry = _module->GetFunctionByDecl("int main()");
+                _drawFunction = _module->GetFunctionByDecl("void draw(Scene@, float)");
                 _eventFunction = _module->GetFunctionByDecl("void event(Event@)");
                 _tickFunction = _module->GetFunctionByDecl("void tick(float)");
                 // Only handlers (or draw()) is a script too: nothing to run first.
@@ -246,12 +208,12 @@ namespace preso {
                         fail(message);
                         return;
                 }
-                _ctx = engine->CreateContext();
+                _ctx = _owner.engine()->CreateContext();
                 if (_ctx == nullptr) {
                         fail("out of memory for the script's context");
                         return;
                 }
-                _ctx->SetLineCallback(asFUNCTION(lineCallback), this, asCALL_CDECL);
+                if (runaway() > 0) _ctx->SetLineCallback(asFUNCTION(lineCallback), this, asCALL_CDECL);
                 // Run to its end once: its beats, and what is wrong in it.
                 _target = UINT32_MAX;
                 _toEnd = true;
@@ -281,6 +243,7 @@ namespace preso {
                 _changeCount = 0;
                 _queuedCount = 0;
                 _dragging = _pressing = nullptr;
+                resetCamera();
                 angel::seedRandom(_random, _seed);
                 asEContextState state = _ctx->GetState();
                 if (state == asEXECUTION_SUSPENDED || state == asEXECUTION_ACTIVE) _ctx->Abort();
@@ -302,7 +265,7 @@ namespace preso {
         }
 
         int64_t AngelRegion::runaway() const {
-                return _owner.isTrusted() ? TrustedRunawayNs : RunawayNs;
+                return _owner.runawayNs();
         }
 
         void AngelRegion::line(asIScriptContext *ctx) {
@@ -353,7 +316,8 @@ namespace preso {
                                         char message[256], at[140];
                                         where(_ctx->GetLineNumber(), at, sizeof at);
                                         snprintf(message, sizeof message,
-                                                 "%.120s: ran %d ms without play(), wait() or pause(): stopped (a loop "
+                                                 "%.120s: ran %d ms without scene.play(), wait() or pause(): stopped "
+                                                 "(a loop "
                                                  "that never ends?)",
                                                  at, int(runaway() / 1000000));
                                         fail(message, _ctx->GetLineNumber());
@@ -367,8 +331,10 @@ namespace preso {
         }
 
         void AngelRegion::play(Animation *const *animations, uint32_t count, float seconds) {
+                _quiet = false; // past where the host's own run stopped
                 if (_inDraw) {
-                        angel::raise("play() is for the script's statements, not draw() or a handler (start() an "
+                        angel::raise("scene.play() is for the script's statements, not draw() or a handler "
+                                     "(scene.start() an "
                                      "animation there)");
                         return;
                 }
@@ -392,7 +358,7 @@ namespace preso {
                         }
                 }
                 if (count > MaxPlaying) {
-                        angel::raise("play() takes %u animations at most", unsigned(MaxPlaying));
+                        angel::raise("scene.play() takes %u animations at most", unsigned(MaxPlaying));
                         return;
                 }
                 endPlay();
@@ -412,8 +378,10 @@ namespace preso {
         }
 
         void AngelRegion::wait(float seconds) {
+                _quiet = false; // past where the host's own run stopped
                 if (_inDraw) {
-                        angel::raise("wait() is for the script's statements, not draw() or a handler (start() an "
+                        angel::raise("scene.wait() is for the script's statements, not draw() or a handler "
+                                     "(scene.start() an "
                                      "animation there)");
                         return;
                 }
@@ -433,8 +401,10 @@ namespace preso {
         }
 
         void AngelRegion::pause() {
+                _quiet = false; // past where the host's own run stopped
                 if (_inDraw) {
-                        angel::raise("pause() is for the script's statements, not draw() or a handler (start() an "
+                        angel::raise("scene.pause() is for the script's statements, not draw() or a handler "
+                                     "(scene.start() an "
                                      "animation there)");
                         return;
                 }
@@ -452,16 +422,44 @@ namespace preso {
         }
 
         void AngelRegion::add(Shape *shape) {
+                _quiet = false; // past where the host's own run stopped
                 (void)_scene.add(shape);
                 return;
         }
 
         void AngelRegion::remove(Shape *shape) {
+                _quiet = false; // past where the host's own run stopped
                 _scene.remove(shape);
                 return;
         }
 
+        bool AngelRegion::resolve(StringView path, char *out, size_t size, char *cached, size_t cachedSize,
+                                  const char **why) const {
+                // From its script's folder; absolute as it is (where the host allows it).
+                char named[512];
+                int  n = path.length() > 0 && path[0] == '/'
+                                 ? snprintf(named, sizeof named, "%.*s", int(path.length()), path.data())
+                         : strcmp(_folder, ".") == 0
+                                 ? snprintf(named, sizeof named, "%.*s", int(path.length()), path.data())
+                                 : snprintf(named, sizeof named, "%s/%.*s", _folder, int(path.length()), path.data());
+                if (n < 0 || size_t(n) >= sizeof named) {
+                        *why = "has too long a name";
+                        return false;
+                }
+                if (_owner.isSandboxed() && path.length() > 0 && path[0] == '/') {
+                        *why = "isn't in the deck's folder (a deck's files are named from it)";
+                        return false;
+                }
+                if (cached != nullptr) snprintf(cached, cachedSize, "%s", named);
+                return _owner.resolve(StringView(named), out, size, why);
+        }
+
         void AngelRegion::write(const char *data, size_t length) {
+                // Angel's: its output, once (fast-forward and what the host ran already print nothing).
+                if (_owner.passesOutput()) {
+                        if (!_fastForward && !_quiet) (void)fwrite(data, 1, length, stdout);
+                        return;
+                }
                 if (_output == nullptr) {
                         _output = static_cast<char *>(malloc(MaxOutput));
                         if (_output == nullptr) return;
@@ -591,7 +589,7 @@ namespace preso {
                 if (_drawCtx == nullptr) {
                         _drawCtx = engine->CreateContext();
                         if (_drawCtx == nullptr) return false;
-                        _drawCtx->SetLineCallback(asFUNCTION(lineCallback), this, asCALL_CDECL);
+                        if (runaway() > 0) _drawCtx->SetLineCallback(asFUNCTION(lineCallback), this, asCALL_CDECL);
                 }
                 if (_drawCtx->Prepare(function) < 0) return false;
                 if (withObject) {
@@ -634,6 +632,7 @@ namespace preso {
         }
 
         void AngelRegion::start(Animation *animation, float seconds) {
+                _quiet = false; // past where the host's own run stopped
                 if (!(seconds >= 0)) seconds = 0;
                 float length = (animation->duration >= 0 ? animation->duration : seconds) + animation->delay;
                 if (_fastForward || length <= 0) {
@@ -821,8 +820,18 @@ namespace preso {
                 }
         }
 
-        uint32_t AngelRegion::input(const ScriptInput &in, Rect *areas) {
+        uint32_t AngelRegion::input(const ScriptInput &given, Rect *areas) {
                 if (_state == State::Failed) return 0;
+                // The pointer in the scene's pixels: back through the camera.
+                ScriptInput in = given;
+                if (in.type != ScriptInput::Type::KeyDown && in.type != ScriptInput::Type::KeyUp) {
+                        Affine back;
+                        if (view(0, 0).inverted(&back)) {
+                                Point p = back.apply(Point{float(in.x), float(in.y)});
+                                in.x = int32_t(lroundf(p.x));
+                                in.y = int32_t(lroundf(p.y));
+                        }
+                }
                 bool key = in.type == ScriptInput::Type::KeyDown || in.type == ScriptInput::Type::KeyUp;
                 if (key && !_entered) return 0;
                 _movedSince = true;
@@ -863,10 +872,10 @@ namespace preso {
                 }
                 // Then the script's event(), with what the widgets didn't take.
                 if (!used && _eventFunction != nullptr) {
-                        void *event = makeEventObject(in);
+                        void *event = _owner.makeEvent(in);
                         if (event != nullptr) {
                                 (void)handler(_eventFunction, event, 0, true);
-                                releaseEventObject(event);
+                                _owner.releaseEvent(event);
                         }
                 } else if (_changeCount > 0) {
                         // Widgets changed outside a handler: their callbacks.
@@ -883,6 +892,52 @@ namespace preso {
                         }
                 }
                 return changes(areas);
+        }
+
+        Affine AngelRegion::view(int32_t x, int32_t y) const {
+                // The region's place, its fit, then the camera: its point (x, y) at the region's
+                // middle, zoomed.
+                const Shape &c = *_camera;
+                float        cx = float(_place.width) / 2, cy = float(_place.height) / 2;
+                return Affine::translation(float(x) + cx, float(y) + cy)
+                        .after(Affine::scaling(_context.fit, _context.fit))
+                        .after(Affine::rotation(c.rotation))
+                        .after(Affine::scaling(c.scale, c.scale))
+                        .after(Affine::translation(-c.x, -c.y));
+        }
+
+        void AngelRegion::resetCamera() {
+                if (_camera == nullptr) return;
+                _camera->x = float(sceneWidth()) / 2;
+                _camera->y = float(sceneHeight()) / 2;
+                _camera->scale = 1;
+                _camera->rotation = 0;
+                return;
+        }
+
+        namespace {
+
+                // Every object with an updater, children too, to @p f.
+                template <typename F> void eachUpdated(Shape &s, F f) {
+                        if (s.updater != nullptr) f(s);
+                        if (!isComposite(s.kind)) return;
+                        for (uint32_t i = 0; i < s.childCount; i++) eachUpdated(*s.children[i], f);
+                }
+
+        } // namespace
+
+        void AngelRegion::settle() {
+                // Updaters first (they may move what labels and edges follow), then those.
+                if (_state != State::Failed && !_inDraw) {
+                        for (uint32_t i = 0; i < _scene.count() && _state != State::Failed; i++) {
+                                eachUpdated(*_scene.at(i), [&](Shape &s) {
+                                        if (_state == State::Failed) return;
+                                        (void)handler(static_cast<asIScriptFunction *>(s.updater), &s, 0, true);
+                                });
+                        }
+                }
+                _scene.settle(_context);
+                return;
         }
 
         bool AngelRegion::drawnWhole() const {
@@ -913,7 +968,8 @@ namespace preso {
 
         uint32_t AngelRegion::changes(Rect *areas) {
                 Rect whole{0, 0, _place.width, _place.height};
-                if (drawnWhole()) {
+                settle();
+                if (drawnWhole() || shapeSignature(*_camera) != _cameraDrawn) {
                         areas[0] = whole;
                         return 1;
                 }
@@ -921,7 +977,7 @@ namespace preso {
                 // where it was.
                 uint32_t n = 0;
                 bool     seen[64] = {};
-                Affine   none;
+                Affine   none = view(0, 0);
                 for (uint32_t i = 0; i < _scene.count(); i++) {
                         Shape   *shape = _scene.at(i);
                         uint32_t signature = shapeSignature(*shape);
@@ -969,7 +1025,8 @@ namespace preso {
                         _drawnCapacity = count;
                 }
                 Rect   whole{0, 0, _place.width, _place.height};
-                Affine none;
+                Affine none = view(0, 0);
+                _cameraDrawn = shapeSignature(*_camera);
                 for (uint32_t i = 0; i < count; i++) {
                         Shape *shape = _scene.at(i);
                         _drawn[i] = Drawn{shape, shapeSignature(*shape),
@@ -984,23 +1041,26 @@ namespace preso {
                         drawError(canvas, x, y);
                         return;
                 }
+                settle();
+                if (_state == State::Failed) {
+                        drawError(canvas, x, y);
+                        return;
+                }
                 if (_drawFunction != nullptr) {
                         // Its own drawing, under its objects.
                         asIScriptEngine *engine = _owner.engine();
                         if (_drawCtx == nullptr && engine != nullptr) {
                                 _drawCtx = engine->CreateContext();
-                                if (_drawCtx != nullptr)
+                                if (_drawCtx != nullptr && runaway() > 0)
                                         _drawCtx->SetLineCallback(asFUNCTION(lineCallback), this, asCALL_CDECL);
                         }
-                        if (_canvasObject == nullptr) _canvasObject = makeCanvasObject();
-                        void *canvasObject = _canvasObject;
-                        if (_drawCtx != nullptr && canvasObject != nullptr && _drawCtx->Prepare(_drawFunction) >= 0) {
+                        if (_drawCtx != nullptr && _drawCtx->Prepare(_drawFunction) >= 0) {
                                 Running scope(this);
                                 _drawCanvas = &canvas;
                                 _drawX = x;
                                 _drawY = y;
                                 _inDraw = true;
-                                _drawCtx->SetArgObject(0, canvasObject);
+                                _drawCtx->SetArgObject(0, sceneObject());
                                 _drawCtx->SetArgFloat(1, float(_clock));
                                 _runStart = _owner.platform().now();
                                 _lines = 0;
@@ -1012,7 +1072,11 @@ namespace preso {
                                         const char *what = _drawCtx->GetExceptionString();
                                         failFrom(_drawCtx, what != nullptr ? what : "an exception in draw()");
                                 } else if (r == asEXECUTION_ABORTED) {
-                                        fail("draw() ran 100 ms: stopped");
+                                        char message[200], at[140];
+                                        where(_drawCtx->GetLineNumber(), at, sizeof at);
+                                        snprintf(message, sizeof message, "%s: draw() ran %d ms: stopped", at,
+                                                 int(runaway() / 1000000));
+                                        fail(message, _drawCtx->GetLineNumber());
                                 }
                                 if (_state == State::Failed) {
                                         drawError(canvas, x, y);
@@ -1020,7 +1084,7 @@ namespace preso {
                                 }
                         }
                 }
-                _scene.draw(canvas, _context, x, y);
+                _scene.draw(canvas, _context, view(x, y));
                 if (_place.console) {
                         drawConsole(canvas, x, y);
                 } else {
@@ -1110,158 +1174,10 @@ namespace preso {
                 return;
         }
 
-        // ---- AngelScripts
+        // ---- SceneHost
 
-        AngelScripts::AngelScripts(const ScriptSetup &setup) : _setup(setup) {
-                folderOf(setup.deckPath, _folder, sizeof _folder);
-                // The deck's seed: its file's name (not where it is: the same deck, the same numbers).
-                const char *name = setup.deckPath;
-                for (const char *p = setup.deckPath; *p != '\0'; p++) {
-                        if (*p == '/') name = p + 1;
-                }
-                uint32_t h = 2166136261u;
-                for (const char *p = name; *p != '\0'; p++) h = (h ^ uint8_t(*p)) * 16777619u;
-                _deckSeed = h;
-        }
-
-        AngelScripts::~AngelScripts() {
-                for (uint32_t i = 0; i < _count; i++) {
-                        _regions[i]->~AngelRegion();
-                        free(_regions[i]);
-                }
-                free(_regions);
-                if (_trustedEngine != nullptr) _trustedEngine->ShutDownAndRelease();
-                if (_engine != nullptr) {
-                        // Objects the canvas object held, then the engine.
-                        _engine->ShutDownAndRelease();
-                        angel::forgetHelp();
-                }
-        }
-
-        asIScriptEngine *AngelScripts::engine() {
-                if (_engine != nullptr || _engineFailed) return _engine;
-                _engine = angel::createEngine(messageCallback, this, true);
-                if (_engine == nullptr) {
-                        _engineFailed = true;
-                        return nullptr;
-                }
-                registerAll(_engine, _setup.trusted);
-                return _engine;
-        }
-
-        void AngelScripts::registerAll(asIScriptEngine *engine, bool trusted) {
-                angel::registerString(engine);
-                angel::registerLanguage(engine);
-                angel::registerColors(engine);
-                registerDeckApi(engine);
-                if (trusted) {
-                        // angel's system without its windows, drawing, sound or GUI, whose names are
-                        // the deck's; nor its processes, which answer through angel's GUI loop.
-                        angel::registerFiles(engine);
-                        angel::registerSystem(engine);
-                        angel::registerNetwork(engine);
-                }
-                return;
-        }
-
-        bool AngelScripts::buildsTrusted(const char *code, uint32_t length) {
-                if (_trustedEngine == nullptr) {
-                        _trustedEngine = angel::createEngine(nullptr, nullptr, true);
-                        if (_trustedEngine == nullptr) return false;
-                        registerAll(_trustedEngine, true);
-                }
-                asIScriptModule *module = _trustedEngine->GetModule("trusted", asGM_ALWAYS_CREATE);
-                bool             built = module != nullptr && module->AddScriptSection("script", code, length) >= 0 &&
-                             module->Build() >= 0;
-                if (module != nullptr) module->Discard();
-                return built;
-        }
-
-        void AngelScripts::collectMessages(char *into, size_t size, int *row) {
-                _messages = into;
-                _messagesSize = size;
-                _messageRow = row;
-                return;
-        }
-
-        void AngelScripts::message(const asSMessageInfo *info) {
-                // A global's initializer that threw: "Exception 'WHAT' in 'FUNCTION'", kept.
-                if (info->type == asMSGTYPE_INFORMATION && strncmp(info->message, "Exception '", 11) == 0) {
-                        const char *what = info->message + 11;
-                        const char *end = strstr(what, "' in '");
-                        int         n = end != nullptr ? int(end - what) : int(strlen(what));
-                        snprintf(_initException, sizeof _initException, "%.*s", n, what);
-                        _initExceptionLine = info->row;
-                        return;
-                }
-                // The first error is the one shown (as compilers' others often follow from it).
-                if (_messages == nullptr || info->type != asMSGTYPE_ERROR || _messages[0] != '\0') return;
-                snprintf(_messages, _messagesSize, "%s", info->message);
-                if (_messageRow != nullptr) *_messageRow = info->row;
-                return;
-        }
-
-        bool AngelScripts::takeInitException(char *out, size_t size, int *line) {
-                if (_initException[0] == '\0') return false;
-                snprintf(out, size, "%s", _initException);
-                *line = _initExceptionLine;
-                _initException[0] = '\0';
-                return true;
-        }
-
-        bool AngelScripts::resolve(StringView path, char *out, size_t size, const char **why) const {
-                // Inside the deck's folder only (devplan/preso.md §7.7): a deck someone sends can't
-                // read anything else.
-                if (path.isEmpty()) {
-                        *why = "has no name";
-                        return false;
-                }
-                if (path[0] == '/' || path.indexOf('\\') >= 0 || path.indexOf(':') >= 0) {
-                        *why = "isn't in the deck's folder (a deck's files are named from it)";
-                        return false;
-                }
-                bool     outside = false;
-                uint32_t start = 0;
-                for (uint32_t i = 0; i <= path.length(); i++) {
-                        if (i == path.length() || path[i] == '/') {
-                                if (path.mid(start, i - start).equals("..")) outside = true;
-                                start = i + 1;
-                        }
-                }
-                if (outside) {
-                        *why = "isn't in the deck's folder (`..` leaves it)";
-                        return false;
-                }
-                int n = strcmp(_folder, ".") == 0
-                                ? snprintf(out, size, "%.*s", int(path.length()), path.data())
-                                : snprintf(out, size, "%s/%.*s", _folder, int(path.length()), path.data());
-                if (n < 0 || size_t(n) >= size) {
-                        *why = "has too long a name";
-                        return false;
-                }
-                return true;
-        }
-
-        ScriptRegion *AngelScripts::open(const ScriptPlace &place) {
-                if (_count == _capacity) {
-                        uint32_t capacity = _capacity != 0 ? _capacity * 2 : 8;
-                        auto *grown = static_cast<AngelRegion **>(realloc(_regions, capacity * sizeof(AngelRegion *)));
-                        if (grown == nullptr) return nullptr;
-                        _regions = grown;
-                        _capacity = capacity;
-                }
-                void *p = malloc(sizeof(AngelRegion));
-                if (p == nullptr) return nullptr;
-                uint32_t seed = mix(mix(_deckSeed, place.slide != nullptr ? place.slide->number : 0), place.index);
-                auto    *region = new (p) AngelRegion(*this, place, seed);
-                _regions[_count++] = region;
-                region->load();
-                return region;
-        }
-
-        Scripts *makeAngelScripts(const ScriptSetup &setup) {
-                void *p = malloc(sizeof(AngelScripts));
-                return p != nullptr ? new (p) AngelScripts(setup) : nullptr;
+        SceneHost *SceneHost::of(asIScriptEngine *engine) {
+                return engine != nullptr ? static_cast<SceneHost *>(engine->GetUserData(UserData)) : nullptr;
         }
 
 } // namespace preso

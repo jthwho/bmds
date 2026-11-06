@@ -10,7 +10,9 @@ case "${ANGEL_FLOAT_LITERALS:-float}" in
         *) echo "ANGEL_FLOAT_LITERALS must be float or double" >&2; exit 1 ;;
 esac
 cp "$PKGDIR/Makefile" Makefile
-$BMDS_MAKE AS="$AS" SRC="$SRC" CXX="$CXX" DEFINES="$DEFINES" angel
+$BMDS_MAKE AS="$AS" SRC="$SRC" PRESO="$ROOT/programs/preso" MD4C="$ROOT/thirdparty/md4c" CC="$CC" CXX="$CXX" \
+        AR="$AR" DEFINES="$DEFINES" angel
 mkdir -p "$DESTDIR/bin" "$DESTDIR/share/licenses/angel"
 cp angel "$DESTDIR/bin/angel"
 cp "$AS/LICENSE" "$DESTDIR/share/licenses/angel/angelscript.LICENSE"
+cp "$ROOT/thirdparty/md4c/LICENSE.md" "$DESTDIR/share/licenses/angel/md4c.LICENSE.md"

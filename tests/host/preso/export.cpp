@@ -151,12 +151,12 @@ TEST_CASE("Export: script regions at each beat's end, and their posters beside t
         // Its rectangle is red after the first beat, blue after the second.
         static const ExportPlatform::File files[] = {
                 {"talk/deck.md", "# Region\n\n![script w:200 h:100](anim/fill.as)\n"},
-                {"talk/anim/fill.as", "Rect@ r = Rect(200, 100).at(100, 50);\n"
+                {"talk/anim/fill.as", "SceneRect@ r = SceneRect(200, 100).at(100, 50);\n"
                                       "r.fill = Color::Red;\n"
                                       "r.fillOpacity = 1;\n"
-                                      "add(r);\n"
-                                      "pause();\n"
-                                      "play(fillTo(r, Color::Blue));\n"},
+                                      "scene.add(r);\n"
+                                      "scene.pause();\n"
+                                      "scene.play(r.fillTo(Color::Blue));\n"},
         };
         ExportPlatform platform;
         platform.files = files;

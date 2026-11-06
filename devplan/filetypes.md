@@ -164,8 +164,9 @@ file is the last argument. `%%` is `%`; `%i %c %k` are dropped as now.
 
 - **`MimeType=` in entries:** the fallback is built (2026-10-14, `apps.md` §13): for the type, then
   `text/plain` for a text-like one, an application whose `MimeType=` has it (or its `MEDIA/*`)
-  opens it when `mimeapps.list` names none, before `application/octet-stream`. Still open: an
-  "Open With" submenu.
+  opens it when `mimeapps.list` names none, before `application/octet-stream`. The "Open With"
+  submenu came 2026-11-03 (`filebrowser.md` §4l), with Open and Properties typing by name first
+  (they had passed both flags, which `Vfs::identify()` takes as "by the contents only").
 - **User additions to the type table** (an extension file in `/boot/config`), read once at boot.
 - **A file manager** and an `open` command, then the opener as a library.
 

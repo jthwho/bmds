@@ -81,6 +81,7 @@ FolderActions::~FolderActions() {
                 _askMenu->~Menu();
                 Memory::free(_askMenu);
         }
+        Memory::free(_openWith);
 }
 
 void FolderActions::say(const char *a, const char *b, const char *c, const char *d) {
@@ -246,7 +247,7 @@ void FolderActions::open(StringView path) {
                         return;
                 }
         }
-        auto [type, ierr] = Vfs::identify(path, Vfs::IdentifyName | Vfs::IdentifyContent, vc);
+        auto [type, ierr] = Vfs::identify(path, 0, vc); // by its name, else its contents
         openFile(path, ierr.isOk() ? type : FileFormat::Binary);
         return;
 }
@@ -339,6 +340,82 @@ bool FolderActions::openByMimeType(StringView path, StringView type) {
         }
         Memory::free(entries);
         return opened;
+}
+
+// ---- Open With (devplan/filebrowser.md §4l)
+
+size_t FolderActions::findOpenWith(StringView path) {
+        _openWithCount = 0;
+        const Vfs::Context vc{_context.cwd, nullptr};
+        auto [type, ierr] = Vfs::identify(path, 0, vc);
+        if (ierr.isError() || type == FileFormat::Directory || type == FileFormat::Device) return 0;
+        if (_openWithPath.assign(path).isError()) return 0;
+        if (_openWith == nullptr) {
+                _openWith = static_cast<PanelEntry *>(Memory::alloc(MemSpace::Psram, sizeof(PanelEntry) * MaxOpenWith));
+                if (_openWith == nullptr) return 0;
+                for (size_t i = 0; i < MaxOpenWith; ++i) ::new (&_openWith[i]) PanelEntry();
+        }
+        constexpr size_t MaxBytes = 4096;
+        auto *entries = static_cast<PanelEntry *>(Memory::alloc(MemSpace::Psram, sizeof(PanelEntry) * MaxCandidates));
+        char *text = static_cast<char *>(Memory::alloc(MemSpace::Psram, MaxBytes));
+        if (entries != nullptr && text != nullptr) {
+                for (size_t i = 0; i < MaxCandidates; ++i) ::new (&entries[i]) PanelEntry();
+                size_t     count = 0;
+                StringView dirs(_applications);
+                for (StringView d = IniReader::nextListItem(dirs); !d.isEmpty(); d = IniReader::nextListItem(dirs))
+                        (void)readEntryDirectory(d, vc, entries, count, MaxCandidates, nullptr, nullptr);
+                const size_t got = readFile(StringView(_mimeApps), vc, text, MaxBytes);
+                // Each once, in the order found; a hidden entry hides its name (readEntryDirectory).
+                const auto add = [this](const PanelEntry &e) {
+                        if (e.entry.hidden || e.entry.exec[0] == '\0' || _openWithCount == MaxOpenWith) return;
+                        for (size_t i = 0; i < _openWithCount; ++i)
+                                if (StringView(_openWith[i].file) == StringView(e.file)) return;
+                        _openWith[_openWithCount++] = e;
+                };
+                const StringView types[] = {type, FileFormat::isText(type) && type != FileFormat::PlainText
+                                                          ? FileFormat::PlainText
+                                                          : StringView()};
+                for (const StringView &t : types) {
+                        if (t.isEmpty()) continue;
+                        StringView   ids[8];
+                        const size_t n = MimeApps::lookup(StringView(text, got), t, Span<StringView>(ids));
+                        for (size_t i = 0; i < n; ++i)
+                                for (size_t k = 0; k < count; ++k)
+                                        if (StringView(entries[k].file) == ids[i]) {
+                                                add(entries[k]);
+                                                break;
+                                        }
+                }
+                for (const StringView &t : types) {
+                        if (t.isEmpty()) continue;
+                        for (size_t k = 0; k < count; ++k)
+                                if (DesktopEntry::hasMimeType(StringView(entries[k].entry.mimeTypes), t))
+                                        add(entries[k]);
+                }
+        }
+        Memory::free(text);
+        Memory::free(entries);
+        return _openWithCount;
+}
+
+const DesktopEntry *FolderActions::openWithEntry(size_t index) const {
+        return index < _openWithCount ? &_openWith[index].entry : nullptr;
+}
+
+const Icon *FolderActions::openWithIcon(size_t index, uint16_t side) {
+        if (index >= _openWithCount) return nullptr;
+        const DesktopEntry &e = _openWith[index].entry;
+        char                buffer[DesktopEntry::MaxExec + 1];
+        StringView          args[DesktopEntry::MaxArgs];
+        String              program;
+        auto [n, err] = DesktopEntry::splitExec(StringView(e.exec), buffer, sizeof(buffer), Span<StringView>(args));
+        if (err.isOk() && n > 0) (void)programPath(args[0], program);
+        return _app.icons().forProgram(StringView(e.icon), program.view(), side);
+}
+
+void FolderActions::openWithChosen(size_t index) {
+        if (index < _openWithCount) launch(_openWith[index].entry, _openWithPath.view());
+        return;
 }
 
 // ---- The clipboard (devplan/clipboard.md §4f, devplan/filebrowser.md §4j)

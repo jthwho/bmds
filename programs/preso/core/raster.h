@@ -63,6 +63,12 @@ namespace preso {
                         void addEllipse(float cx, float cy, float rx, float ry);
                         void addPolygon(const Point *points, uint32_t count);
                         /**
+                         * @brief A polygon turned as strokes are, whichever way @p points go: where it
+                         *        overlaps a stroke of the same path the two add up (cut at full coverage)
+                         *        rather than cancel (an arrow's head on its line).
+                         */
+                        void addSolid(const Point *points, uint32_t count);
+                        /**
                          * @brief The outline of a line @p width wide along @p count points (closed:
                          *        back to the first), with round joins and ends.
                          */
@@ -119,8 +125,9 @@ namespace preso {
         void drawMask(Canvas &canvas, const uint8_t *mask, int32_t width, int32_t height, uint32_t stride,
                       const Affine &transform, Color color, uint8_t alpha, const Rect *source = nullptr);
 
-        /** @brief A scaled picture drawn through @p transform, @p alpha of it. */
-        void drawPicture(Canvas &canvas, const ScaledImage &image, const Affine &transform, uint8_t alpha);
+        /** @brief A scaled picture (or its part @p source) drawn through @p transform, @p alpha of it. */
+        void drawPicture(Canvas &canvas, const ScaledImage &image, const Affine &transform, uint8_t alpha,
+                         const Rect *source = nullptr);
 
         /** @brief @p rect's box through @p transform: its bounds, whole pixels round them. */
         Rect transformedBounds(const Affine &transform, float x, float y, float width, float height);

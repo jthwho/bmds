@@ -13,10 +13,18 @@
 
 namespace preso {
 
+        bool returns(Ease ease) {
+                return ease == Ease::ThereAndBack || ease == Ease::Wiggle;
+        }
+
         float eased(Ease ease, float t) {
                 if (t <= 0) return 0;
-                if (t >= 1) return 1;
+                if (t >= 1) return returns(ease) ? 0 : 1;
                 switch (ease) {
+                        case Ease::ThereAndBack: return sinf(3.14159265f * t);
+                        case Ease::Elastic:
+                                return powf(2, -10 * t) * sinf((t * 10 - 0.75f) * (2 * 3.14159265f / 3)) + 1;
+                        case Ease::Wiggle: return sinf(6 * 3.14159265f * t) * sinf(3.14159265f * t);
                         case Ease::Linear: return t;
                         case Ease::In: return t * t * t;
                         case Ease::Out: {
@@ -63,6 +71,14 @@ namespace preso {
                         {"height", Property::Height},
                         {"radius", Property::Radius},
                         {"reveal", Property::Reveal},
+                        {"cornerRadius", Property::CornerRadius},
+                        {"start", Property::Start},
+                        {"sweep", Property::Sweep},
+                        {"innerRadius", Property::InnerRadius},
+                        {"bend", Property::Bend},
+                        {"value", Property::Value},
+                        {"dash", Property::Dash},
+                        {"headSize", Property::HeadSize},
                 };
                 for (const Named &n : names) {
                         if (name.equals(n.name)) {
@@ -84,6 +100,16 @@ namespace preso {
         Animation::~Animation() {
                 target->release();
                 if (other != nullptr) other->release();
+                if (with != nullptr) with->release();
+        }
+
+        bool Animation::join(Animation *a) {
+                if (a == nullptr || a == this) return false;
+                a->addRef();
+                Animation **at = &with;
+                while (*at != nullptr) at = &(*at)->with;
+                *at = a;
+                return true;
         }
 
         void Animation::release() {
@@ -129,6 +155,16 @@ namespace preso {
                         case Property::Morph: return s.morph;
                         case Property::BarValue: return c.index < s.barCount ? s.bars[c.index].value : 0;
                         case Property::BarOffset: return c.index < s.barCount ? s.bars[c.index].offset : 0;
+                        case Property::CornerRadius: return s.cornerRadius;
+                        case Property::Start: return s.start;
+                        case Property::Sweep: return s.sweep;
+                        case Property::InnerRadius: return s.innerRadius;
+                        case Property::Bend: return s.bend;
+                        case Property::Value: return s.value;
+                        case Property::Dash: return s.dash;
+                        case Property::HeadSize: return s.headSize;
+                        case Property::Along: return 0;
+                        case Property::Dim: return s.dim;
                         case Property::StrokeColor:
                         case Property::FillColor:
                         case Property::BarColor: return 0;
@@ -162,6 +198,25 @@ namespace preso {
                         case Property::BarColor:
                                 if (c.index < s.barCount) s.bars[c.index].color = color;
                                 break;
+                        case Property::CornerRadius: s.cornerRadius = v; break;
+                        case Property::Start: s.start = v; break;
+                        case Property::Sweep: s.sweep = v; break;
+                        case Property::InnerRadius: s.innerRadius = v; break;
+                        case Property::Bend: s.bend = v; break;
+                        case Property::Value: (void)s.setNumber(v); break;
+                        case Property::Dash: s.dash = v; break;
+                        case Property::HeadSize: s.headSize = v; break;
+                        case Property::Dim: s.dim = v; break;
+                        case Property::Along: {
+                                Point        at, way;
+                                SceneContext none;
+                                if (other != nullptr && pointAlong(none, *other, Affine(), v, &at, &way)) {
+                                        s.x = at.x;
+                                        s.y = at.y;
+                                        if (c.index != 0) s.rotation = atan2f(way.y, way.x) * 180 / 3.14159265f;
+                                }
+                                break;
+                        }
                 }
                 return;
         }
@@ -190,8 +245,14 @@ namespace preso {
                         other->addRef();
                         target->morphTo = other;
                 }
+                if (then == Then::Focus && mask != 0) target->focus = mask;
+                if (then == Then::NewCode && other != nullptr) {
+                        (void)target->setText(other->text, other->textLength);
+                        target->reveal = 0;
+                }
                 if (adds) (void)scene.add(target);
                 apply(0);
+                if (with != nullptr) with->begin(scene);
                 return;
         }
 
@@ -206,6 +267,7 @@ namespace preso {
                                 set(c, c.from + (c.to - c.from) * e, 0);
                         }
                 }
+                if (with != nullptr && with->_begun) with->apply(t);
                 return;
         }
 
@@ -213,10 +275,16 @@ namespace preso {
                 if (_ended) return;
                 if (!_begun) begin(scene);
                 _ended = true;
-                // Its last values exactly (an easing's end may not be 1 to the last bit).
+                // Its last values exactly (an easing's end may not be 1 to the last bit); one that
+                // comes back, its first.
+                bool back = returns(ease);
                 for (uint32_t i = 0; i < _count; i++) {
                         const Change &c = _changes[i];
-                        set(c, c.to, c.toColor);
+                        if (back) {
+                                set(c, c.from, c.fromColor);
+                        } else {
+                                set(c, c.to, c.toColor);
+                        }
                 }
                 switch (then) {
                         case Then::Nothing: break;
@@ -231,6 +299,9 @@ namespace preso {
                                 target->morphTo = nullptr;
                                 target->morph = 0;
                                 break;
+                        case Then::SwapChildren: target->swapChildren(index, index2); break;
+                        case Then::Focus: target->focus = mask; break;
+                        case Then::NewCode: target->reveal = 1; break;
                         case Then::SwapBars: {
                                 Shape &s = *target;
                                 if (index < s.barCount && index2 < s.barCount) {
@@ -243,6 +314,7 @@ namespace preso {
                                 break;
                         }
                 }
+                if (with != nullptr) with->end(scene);
                 return;
         }
 

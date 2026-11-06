@@ -376,6 +376,78 @@ namespace preso {
                 return _data;
         }
 
+        namespace {
+
+                // The ROM's icon theme (devplan/rom.md §3f, `BMIC`): read a piece at a time, not mapped:
+                // its header, its table and its names, then the pixels of the one icon asked for.
+                constexpr const char *IconPack = "/rom/share/icons/bmds.icons";
+
+                uint32_t le32(const uint8_t *p) {
+                        return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
+                }
+                uint16_t le16(const uint8_t *p) {
+                        return uint16_t(p[0] | p[1] << 8);
+                }
+
+                bool readAt(int fd, uint32_t at, void *out, size_t size) {
+                        return pread(fd, out, size, off_t(at)) == ssize_t(size);
+                }
+
+        } // namespace
+
+        Error BmdsPlatform::loadIcon(const char *name, int32_t side, uint32_t **pixels, int32_t *actual) {
+                int fd = open(IconPack, O_RDONLY | O_CLOEXEC);
+                if (fd < 0) return Error::NotFound;
+                uint8_t  h[48];
+                Error    e = Error::NotFound;
+                uint8_t *rows = nullptr;
+                char    *names = nullptr;
+                if (readAt(fd, 0, h, sizeof h) && memcmp(h, "BMIC", 4) == 0 && le16(h + 4) == 1) {
+                        uint32_t count = le32(h + 12), table = le32(h + 24), namesAt = le32(h + 32),
+                                 namesBytes = le32(h + 36);
+                        uint16_t sides[4] = {le16(h + 16), le16(h + 18), le16(h + 20), le16(h + 22)};
+                        rows = static_cast<uint8_t *>(malloc(size_t(count) * 24 + 1));
+                        names = static_cast<char *>(malloc(namesBytes + 1));
+                        if (count <= 65535 && rows != nullptr && names != nullptr &&
+                            readAt(fd, table, rows, size_t(count) * 24) && readAt(fd, namesAt, names, namesBytes)) {
+                                size_t want = strlen(name);
+                                for (uint32_t id = 0; id < count; id++) {
+                                        const uint8_t *r = rows + size_t(id) * 24;
+                                        uint32_t       at = le32(r), length = le16(r + 4);
+                                        if (at + length > namesBytes || length != want ||
+                                            memcmp(names + at, name, want) != 0)
+                                                continue;
+                                        // The size asked for, else the nearest bigger, else the biggest.
+                                        int32_t best = -1;
+                                        for (int32_t k = 0; k < 4; k++) {
+                                                if (sides[k] == 0 || le32(r + 8 + 4 * k) == 0) continue;
+                                                if (best < 0 || (sides[best] < side && sides[k] > sides[best]) ||
+                                                    (sides[k] >= side && sides[k] < sides[best]))
+                                                        best = k;
+                                        }
+                                        if (best < 0) break;
+                                        size_t    bytes = size_t(sides[best]) * sides[best] * 4;
+                                        uint32_t *p = static_cast<uint32_t *>(malloc(bytes));
+                                        if (p == nullptr) {
+                                                e = Error::NoMemory;
+                                        } else if (readAt(fd, le32(r + 8 + 4 * best), p, bytes)) {
+                                                *pixels = p;
+                                                *actual = sides[best];
+                                                e = Error::Ok;
+                                        } else {
+                                                free(p);
+                                                e = Error::Io;
+                                        }
+                                        break;
+                                }
+                        }
+                }
+                free(rows);
+                free(names);
+                close(fd);
+                return e;
+        }
+
         Error BmdsPlatform::openScreen(int32_t width, int32_t height, const char *title, bool sharp) {
                 bmds_surface_config_t c;
                 memset(&c, 0, sizeof c);
@@ -385,7 +457,7 @@ namespace preso {
                 c.format = BMDS_PIXEL_RGB565;
                 c.buffers = 2;
                 // Sharp: whole multiples only, so a 640×360 theme's pixels stay square and crisp.
-                c.flags = BMDS_SURFACE_FULL_SCREEN | (sharp ? BMDS_SURFACE_WHOLE : 0u);
+                c.flags = _windowed ? 0u : BMDS_SURFACE_FULL_SCREEN | (sharp ? BMDS_SURFACE_WHOLE : 0u);
                 c.title = title;
                 _surface = bmds_surface_open(&c);
                 if (_surface < 0) {
@@ -408,7 +480,7 @@ namespace preso {
                 }
                 // The presenter's actions; without them (an older system), keys by their usages. The
                 // process's: not asked for again when the screen opens again after a demo.
-                if (!_declared) {
+                if (!_declared && !_windowed) {
                         _declared = true;
                         int32_t r =
                                 bmds_controls(BMDS_CONTROLS_DECLARE, const_cast<char *>(Controls), sizeof Controls - 1);
@@ -416,10 +488,20 @@ namespace preso {
                         _controls = r == 0;
                         if (!_controls && r != -BMDS_ENOSYS) fprintf(stderr, "preso: its controls: %s\n", strerror(-r));
                 }
-                // No arrow over the slides (the presenter's pointer is Preso's own: step 8).
-                uint32_t pointer = BMDS_POINTER_HIDDEN;
-                (void)bmds_surface_control(_surface, BMDS_SURFACE_POINTER, &pointer, sizeof pointer);
+                // No arrow over the slides (the presenter's pointer is Preso's own: step 8); a
+                // window keeps the system's.
+                if (!_windowed) {
+                        uint32_t pointer = BMDS_POINTER_HIDDEN;
+                        (void)bmds_surface_control(_surface, BMDS_SURFACE_POINTER, &pointer, sizeof pointer);
+                }
                 return Error::Ok;
+        }
+
+        void BmdsPlatform::setTitle(const char *title) {
+                if (_surface < 0) return;
+                (void)bmds_surface_control(_surface, BMDS_SURFACE_TITLE, const_cast<char *>(title),
+                                           uint32_t(strlen(title)));
+                return;
         }
 
         void BmdsPlatform::closeScreen() {
@@ -821,9 +903,18 @@ namespace preso {
         }
 
         void BmdsPlatform::waitFrame() {
+                // The frame after the one the display is on, or after the last present's if that is
+                // still to come. (The last present's alone may be long past: after a pause each wait
+                // returned at once, an animation's empty frames spinning, until the count caught up.)
                 if (_surface < 0) return;
-                bmds_surface_wait_t w = {sizeof w, _shownFrame + 1, 100};
-                if (bmds_surface_control(_surface, BMDS_SURFACE_WAIT, &w, sizeof w) == 0) _shownFrame++;
+                bmds_surface_info_t info = {};
+                info.size = sizeof info;
+                uint32_t after = _shownFrame;
+                if (bmds_surface_control(_surface, BMDS_SURFACE_INFO, &info, sizeof info) == 0 &&
+                    int32_t(info.frames - _shownFrame) > 0)
+                        after = info.frames;
+                bmds_surface_wait_t w = {sizeof w, after + 1, 100};
+                if (bmds_surface_control(_surface, BMDS_SURFACE_WAIT, &w, sizeof w) == 0) _shownFrame = after + 1;
                 return;
         }
 

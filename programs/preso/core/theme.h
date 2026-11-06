@@ -132,9 +132,7 @@ namespace preso {
                         uint32_t    scriptColorCount = 0;
 
                         // ---- Effects, drawn over the finished slide.
-                        uint8_t scanlines = 0;  ///< Every other row darkened by this (of 255).
-                        uint8_t glow = 0;       ///< The slide's bright parts blurred and added, this much (of 255).
-                        uint8_t glowRadius = 6; ///< In the slide's pixels.
+                        uint8_t scanlines = 0; ///< Every other row darkened by this (of 255).
 
                         /** @brief Paper as built in, without its class rules (the start of every theme). */
                         static const Theme &paper();

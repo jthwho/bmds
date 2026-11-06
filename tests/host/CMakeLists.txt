@@ -335,7 +335,8 @@ add_executable(angel ${BMDS_ROOT}/programs/angel/main.cpp ${BMDS_ROOT}/programs/
         ${BMDS_ROOT}/sdk/game/text.c ${BMDS_ROOT}/sdk/gui/gui.c
         angelsys.cpp fakefonts.cpp ${CMAKE_CURRENT_LIST_DIR}/hostmemory.cpp)
 target_include_directories(angel PRIVATE ${BMDS_ROOT}/sdk/include)
-target_link_libraries(angel PRIVATE bmds_libangel bmds_fonts pthread m)
+# Its stage (devplan/preso.md §8c): Preso's scene runtime, on the headless platform here.
+target_link_libraries(angel PRIVATE preso_script bmds_libangel bmds_fonts pthread m)
 # The font calls' fake (fakefonts.cpp): the real library over IBM Plex.
 target_compile_definitions(angel PRIVATE BMDS_FONTS_DIR="${BMDS_ROOT}/thirdparty/plex/fonts")
 bmds_target_options(angel)
@@ -379,6 +380,11 @@ add_test(NAME preso_core COMMAND preso_tests)
 if(Python3_Interpreter_FOUND)
         add_test(NAME preso_api_lock COMMAND ${Python3_EXECUTABLE} ${BMDS_ROOT}/tests/scripts/apilock.py
                  $<TARGET_FILE:preso> ${BMDS_ROOT}/tests/preso/api.lock)
+        # ...and a subset of angel's, so a deck's scripts run under angel unchanged (§8c).
+        add_test(NAME preso_api_in_angel COMMAND ${Python3_EXECUTABLE} ${BMDS_ROOT}/tests/preso/subset.py
+                 $<TARGET_FILE:angel> $<TARGET_FILE:preso>)
+        add_test(NAME preso_scripts_under_angel COMMAND ${Python3_EXECUTABLE} ${BMDS_ROOT}/tests/preso/underangel.py
+                 $<TARGET_FILE:angel> ${BMDS_ROOT})
 endif()
 
 # The corpus's expectations, checked against real bash (when there is one).

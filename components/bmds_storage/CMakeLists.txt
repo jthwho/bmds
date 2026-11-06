@@ -119,6 +119,9 @@ elseif(NOT BOOTLOADER_BUILD)
              ${BMDS_ROOT_DIR}/dist/sshfs/* ${BMDS_ROOT_DIR}/programs/sshfs/*
              ${BMDS_ROOT_DIR}/dist/ssh-copy-id/* ${BMDS_ROOT_DIR}/programs/ssh-copy-id/*
              ${BMDS_ROOT_DIR}/dist/angel/* ${BMDS_ROOT_DIR}/programs/angel/*
+             # angel's stage: Preso's scene code (devplan/preso.md §8c) and md4c
+             ${BMDS_ROOT_DIR}/programs/preso/core/* ${BMDS_ROOT_DIR}/programs/preso/script/*
+             ${BMDS_ROOT_DIR}/programs/preso/bmds/* ${BMDS_ROOT_DIR}/thirdparty/md4c/*
              ${BMDS_ROOT_DIR}/thirdparty/angelscript/source/* ${BMDS_ROOT_DIR}/thirdparty/angelscript/include/*
              ${BMDS_ROOT_DIR}/thirdparty/angelscript/add_on/*
              ${BMDS_ROOT_DIR}/sdk/crt/* ${BMDS_ROOT_DIR}/sdk/include/* ${BMDS_ROOT_DIR}/sdk/cmake/*

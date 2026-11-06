@@ -159,6 +159,25 @@ namespace angel {
                         gen->SetReturnAddress(open(spec, what.data()));
                 }
 
+                void fontSized(asIScriptGeneric *gen) {
+                        const Font *f = self(gen);
+                        const int   size = int(gen->GetArgDWord(0));
+                        Text        what;
+                        what.appendf("%s %d", f->family, size);
+                        if (size < 1) {
+                                raise("No font '%s': its size must be 4 to 255 pixels", what.data());
+                                gen->SetReturnAddress(nullptr);
+                                return;
+                        }
+                        bmds_font_spec_t spec;
+                        memset(&spec, 0, sizeof(spec));
+                        spec.size = sizeof(spec);
+                        spec.family = f->family;
+                        spec.pixel_size = uint32_t(size);
+                        spec.style = f->info.style & uint32_t(BMDS_FONT_BOLD | BMDS_FONT_ITALIC);
+                        gen->SetReturnAddress(open(spec, what.data()));
+                }
+
                 void fontAddRef(asIScriptGeneric *gen) {
                         self(gen)->addRef();
                 }
@@ -278,6 +297,18 @@ namespace angel {
                 return;
         }
 
+        const char *fontName(const void *font) {
+                return static_cast<const Font *>(font)->info.name;
+        }
+
+        void *fontNamed(const char *name) {
+                bmds_font_spec_t spec;
+                memset(&spec, 0, sizeof(spec));
+                spec.size = sizeof(spec);
+                spec.name = name;
+                return open(spec, name);
+        }
+
         void registerFonts(asIScriptEngine *engine) {
                 check(engine->RegisterEnum("FontStyle"), "FontStyle");
                 check(engine->RegisterEnumValue("FontStyle", "Regular", 0), "FontStyle::Regular");
@@ -307,6 +338,8 @@ namespace angel {
                 method(engine, F, "string get_style() const property", fontStyle,
                        "Its face's style name (\"Bold Italic\").");
                 method(engine, F, "int get_size() const property", fontSize, "Its size in pixels.");
+                method(engine, F, "Font@ sized(int pixels) const", fontSized,
+                       "The same family and style at another size in pixels.");
                 method(engine, F, "int get_ascent() const property", fontAscent,
                        "Pixels from a line's top to its baseline.");
                 method(engine, F, "int get_descent() const property", fontDescent, "Pixels below the baseline.");

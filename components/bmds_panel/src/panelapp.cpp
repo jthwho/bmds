@@ -159,7 +159,7 @@ namespace {
         constexpr size_t      MaxEntries = 48;
         constexpr uint32_t    WatchDelayMs = 200; // changes from elsewhere, taken together after
         constexpr size_t      MaxItems = 8;
-        constexpr size_t      MaxCategories = 7;
+        constexpr size_t      MaxCategories = 8;
         // A row of buttons in a raised bar: the bevel, a pixel, the buttons, a pixel, the bevel.
         constexpr uint16_t MarginX = 4; // the sides: a 4-pixel column
         constexpr uint16_t MarginY = 3;
@@ -171,7 +171,7 @@ namespace {
 
         // The main categories (freedesktop.org's), in the launcher's order; the rest are Other.
         constexpr const char *Categories[MaxCategories - 1] = {
-                "System", "Utility", "Development", "Graphics", "AudioVideo", "Game",
+                "System", "Utility", "Development", "Office", "Graphics", "AudioVideo", "Game",
         };
 
         using Entry = PanelEntry;
@@ -184,6 +184,9 @@ namespace {
                 ChooseNewText = -4,
                 ChooseNewFile = -5,
         };
+
+        // A desktop icon's menu: Open With's applications are this and up (filebrowser.md §4l).
+        constexpr int OpenWithChoice = 100;
 
         // The panel's own menu's choices (devplan/gui.md §4t).
         enum PanelChoice : int {
@@ -510,6 +513,7 @@ namespace {
                         Menu                          *_iconMenu = nullptr;    // an icon's: Open, Cut, Copy, Delete
                         Menu    *_desktopMenu = nullptr; // the desktop's: Applications, New, Paste
                         Menu    *_newMenu = nullptr;     // its New submenu
+                        Menu    *_openWithMenu = nullptr; // an icon's Open With (filebrowser.md §4l)
                         uint16_t _menuX = 0;             // where it was opened
                         uint16_t _menuY = 0;
                         PopupEdit                     *_nameEdit = nullptr;    // an icon's name being edited
@@ -695,6 +699,10 @@ namespace {
                 if (_newMenu != nullptr) {
                         _newMenu->~Menu();
                         Memory::free(_newMenu);
+                }
+                if (_openWithMenu != nullptr) {
+                        _openWithMenu->~Menu();
+                        Memory::free(_openWithMenu);
                 }
                 if (_nameEdit != nullptr) {
                         _nameEdit->~PopupEdit();
@@ -1119,13 +1127,28 @@ namespace {
                         self->_iconMenu = ::new (mem) Menu(self->_app);
                         self->_iconMenu->setTriggered(iconChosen, self);
                 }
-                // Made at each showing: the trash's adds Empty Trash (6).
+                if (self->_openWithMenu == nullptr) {
+                        void *mem = Memory::alloc(MemSpace::Psram, sizeof(Menu));
+                        if (mem == nullptr) return;
+                        self->_openWithMenu = ::new (mem) Menu(self->_app);
+                }
+                // Made at each showing: the trash's adds Empty Trash (6), a file's Open With
+                // (OpenWithChoice and up: its applications, filebrowser.md §4l).
                 Menu          &m = *self->_iconMenu;
                 IconTheme     &icons = self->_app.icons();
                 const uint16_t side = GuiStyle::IconSize;
                 const Entry   &e = self->_desktopEntries[item];
+                size_t         openWith = 0;
+                self->_openWithMenu->clear();
+                if (!e.isLauncher() && StringView(e.type) != FileFormat::Directory && e.path[0] != '\0')
+                        openWith = self->_actions.findOpenWith(StringView(e.path));
+                for (size_t i = 0; i < openWith; ++i)
+                        (void)self->_openWithMenu->addItem(StringView(self->_actions.openWithEntry(i)->name),
+                                                           OpenWithChoice + int(i), 0, StringView(),
+                                                           self->_actions.openWithIcon(i, side));
                 m.clear();
                 (void)m.addItem("&Open", 0, 0, StringView(), icons.find(IconId::DocumentOpen, side));
+                if (openWith > 0) (void)m.addSubmenu("Open Wit&h", *self->_openWithMenu);
                 if (StringView(e.type) == FileFormat::Directory && FolderActions::isTrash(StringView(e.path)))
                         (void)m.addItem("&Empty Trash", 6, 0, StringView(), icons.find(IconId::UserTrash, side));
                 (void)m.addItem("Cu&t", 4, 0, StringView(), icons.find(IconId::EditCut, side));
@@ -1152,6 +1175,10 @@ namespace {
                 }
                 if (choice == 6) {
                         self->_actions.emptyTrash();
+                        return;
+                }
+                if (choice >= OpenWithChoice && choice < OpenWithChoice + int(FolderActions::MaxOpenWith)) {
+                        self->_actions.openWithChosen(size_t(choice - OpenWithChoice));
                         return;
                 }
                 // Open, Cut, Copy and Delete act on every icon selected (the one asked for is).
@@ -2084,7 +2111,7 @@ namespace {
         void PanelApp::applySettings() {
                 _settingsPending = false;
                 // Menus open on the old settings close: their items are made again.
-                for (Menu *m : {_menu, _desktopMenu, _iconMenu, _newMenu, _panelMenu})
+                for (Menu *m : {_menu, _desktopMenu, _iconMenu, _newMenu, _openWithMenu, _panelMenu})
                         if (m != nullptr && m->isShown()) m->dismiss();
                 _launcher = nullptr;
                 const bool bottom = setting(bmdsConf_panelEdge) == "bottom";

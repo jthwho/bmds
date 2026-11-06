@@ -1,0 +1,19 @@
+array: 2 5 8, 3 cells
+set: x
+words: be
+table: 2 x 3, (1, 2) = 3.5, header true
+tree: root at 0, -100; leaf 3 at 40, 100
+graph: 4 nodes, 3 edges
+row: -150 .. 150
+path: 5 animations
+code: 3 lines, dim 0.6
+transformed: 4 lines, objects in the scene the code
+label: text 'hello', under the box: yes
+callout: 'look' above the cell, its pointer to it: yes
+along: 200, 100
+bars: 3 values, the second 2.5
+pie: the third 4
+camera: at 500, 200 zoom in
+reset: zoom 1
+confetti gone: true
+time: 5900

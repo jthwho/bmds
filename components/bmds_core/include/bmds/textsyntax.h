@@ -122,6 +122,14 @@ struct Syntax {
                 static const Syntax *find(StringView id);
 
                 /**
+                 * @brief Returns the language a code block's name means (`devplan/editor.md` §5a):
+                 *        an id, a menu name (any case), an alias (`c++`, `console`), an extension
+                 *        (`as`), a file name (`Makefile`), else an interpreter (`angel`, `bash`);
+                 *        null if none (plain text).
+                 */
+                static const Syntax *forName(StringView name);
+
+                /**
                  * @brief Returns the language for a file named @p path (its last component matched
                  *        against each language's patterns), else the one its first line's `#!`
                  *        names, else null (plain text).

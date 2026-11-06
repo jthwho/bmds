@@ -116,6 +116,27 @@ terminal's: unscii, wide glyphs as two cells).
   of the same fields), so a language can be added without new firmware. The built-in tables are
   that structure, so the file reader only fills it.
 
+### 5a. Embedded languages: Markdown's fenced code (2026-11-03, the user's request)
+
+A fence (```` ``` ```` or `~~~`, up to three spaces in) names its language in its info string's
+first word; the lines inside are coloured by that language, the fence lines as `Preprocessor`.
+The name is looked up as the SDK's `syntax_find` looks it up: an id, a menu name, an alias
+(`c++`, `console`), an extension (`as`), a file name, an interpreter (`angel`, `bash`). That
+lookup moves from the loader into `bmds_core` as `Syntax::forName()`, so both use one.
+
+- **The line state carries both:** a fence's state is `0x8000 | tilde << 14 | (length - 3,
+  capped at 3) << 12 | (language + 1) << 8 | the inner language's state`. The inner state fits a
+  byte: the shared states and the table languages' are below 16. Markdown inside Markdown, and a
+  name nothing knows, colour as plain code (`String`, as before).
+- **A fence closes** only with the same character, at least as long, and nothing after but
+  spaces (CommonMark's rule), so ```` ```` ```` blocks can hold ```` ``` ````.
+- **Preso** gets the same colours: its code blocks already name the language through
+  `syntax_find`, and a deck's source opens in Edit coloured throughout.
+- **HTML comments** (`<!-- -->`, a deck's notes and directives) are `Comment`, across lines (the
+  scanner's own state 16).
+- **As built (2026-11-03):** as above; tested in `tests/host/syntaxscan.cpp` and on the board
+  (`tour.md`'s `angel run` block in AngelScript's colours, its comments green).
+
 ## 6. `CodeEdit` (bmds_gui)
 
 - **The gutter:** line numbers, a mark for a diagnostic (and a breakpoint, step 8 of

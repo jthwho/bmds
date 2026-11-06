@@ -8,16 +8,16 @@ string[] names = {
         "System calls: a C table, append-only",
         "Programs from the SD card",
 };
-float h = region.height / names.length();
+float h = scene.height / names.length();
 for (uint i = 0; i < names.length(); i++) {
-        float y = region.height - h * (i + 0.5);
-        Rect@ r = Rect(region.width - 8, h - 4).at(region.width / 2, y);
-        r.color = theme.color("Script.Line");
-        r.fill = i + 1 == names.length() ? theme.color("Script.Highlight") : theme.color("Script.Fill");
+        float y = scene.height - h * (i + 0.5);
+        SceneRect@ r = SceneRect(scene.width - 8, h - 4).at(scene.width / 2, y);
+        r.color = scene.theme.color("Script.Line");
+        r.fill = i + 1 == names.length() ? scene.theme.color("Script.Highlight") : scene.theme.color("Script.Fill");
         r.fillOpacity = 1;
-        Text@ t = Text(names[i]).at(region.width / 2, y);
-        if (i > 0) pause();
-        add(r);
-        add(t);
-        play(fadeIn(r), fadeIn(t), 0.3);
+        SceneText@ t = SceneText(names[i]).at(scene.width / 2, y);
+        if (i > 0) scene.pause();
+        scene.add(r);
+        scene.add(t);
+        scene.play(r.fadeIn(), t.fadeIn(), 0.3);
 }

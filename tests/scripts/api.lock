@@ -1770,3 +1770,2262 @@ void FontDialog::set_font(const string&in)
 void FontDialog::set_owner(Window@)
 void FontDialog::set_sample(const string&in)
 void FontDialog::set_title(const string&in)
+# 2026-11-04: Preso step 12 (devplan/preso.md §8c): the scene in angel (Scene, the global scene,
+# SceneObject and its kinds, SceneAnimation, SceneTheme, Ease, readText()), and Font::sized().
+Ease::Bounce = 4
+Ease::In = 1
+Ease::InOut = 3
+Ease::Linear = 0
+Ease::Out = 2
+Font@ Font::sized(int) const
+Font@ SceneTheme::font(const string&in) const
+Scene scene
+SceneAnimation@ SceneAnimation::delay(float)
+SceneAnimation@ SceneAnimation::duration(float)
+SceneAnimation@ SceneAnimation::ease(Ease)
+SceneAnimation@ SceneArrow::colorTo(uint)
+SceneAnimation@ SceneArrow::fadeIn()
+SceneAnimation@ SceneArrow::fadeOut()
+SceneAnimation@ SceneArrow::fillTo(uint)
+SceneAnimation@ SceneArrow::grow()
+SceneAnimation@ SceneArrow::move(float, float)
+SceneAnimation@ SceneArrow::rotateTo(float)
+SceneAnimation@ SceneArrow::scaleTo(float)
+SceneAnimation@ SceneArrow::shift(float, float)
+SceneAnimation@ SceneArrow::shrink()
+SceneAnimation@ SceneArrow::transform(SceneObject@)
+SceneAnimation@ SceneArrow::tween(const string&in, float)
+SceneAnimation@ SceneArrow::write()
+SceneAnimation@ SceneBars::colorTo(uint)
+SceneAnimation@ SceneBars::fadeIn()
+SceneAnimation@ SceneBars::fadeOut()
+SceneAnimation@ SceneBars::fillTo(uint)
+SceneAnimation@ SceneBars::grow()
+SceneAnimation@ SceneBars::highlight(int)
+SceneAnimation@ SceneBars::highlight(int, uint)
+SceneAnimation@ SceneBars::move(float, float)
+SceneAnimation@ SceneBars::rotateTo(float)
+SceneAnimation@ SceneBars::scaleTo(float)
+SceneAnimation@ SceneBars::set(int, float)
+SceneAnimation@ SceneBars::shift(float, float)
+SceneAnimation@ SceneBars::shrink()
+SceneAnimation@ SceneBars::swap(int, int)
+SceneAnimation@ SceneBars::transform(SceneObject@)
+SceneAnimation@ SceneBars::tween(const string&in, float)
+SceneAnimation@ SceneBars::unhighlight(int)
+SceneAnimation@ SceneBars::write()
+SceneAnimation@ SceneButton::colorTo(uint)
+SceneAnimation@ SceneButton::fadeIn()
+SceneAnimation@ SceneButton::fadeOut()
+SceneAnimation@ SceneButton::fillTo(uint)
+SceneAnimation@ SceneButton::grow()
+SceneAnimation@ SceneButton::move(float, float)
+SceneAnimation@ SceneButton::rotateTo(float)
+SceneAnimation@ SceneButton::scaleTo(float)
+SceneAnimation@ SceneButton::shift(float, float)
+SceneAnimation@ SceneButton::shrink()
+SceneAnimation@ SceneButton::transform(SceneObject@)
+SceneAnimation@ SceneButton::tween(const string&in, float)
+SceneAnimation@ SceneButton::write()
+SceneAnimation@ SceneCircle::colorTo(uint)
+SceneAnimation@ SceneCircle::fadeIn()
+SceneAnimation@ SceneCircle::fadeOut()
+SceneAnimation@ SceneCircle::fillTo(uint)
+SceneAnimation@ SceneCircle::grow()
+SceneAnimation@ SceneCircle::move(float, float)
+SceneAnimation@ SceneCircle::rotateTo(float)
+SceneAnimation@ SceneCircle::scaleTo(float)
+SceneAnimation@ SceneCircle::shift(float, float)
+SceneAnimation@ SceneCircle::shrink()
+SceneAnimation@ SceneCircle::transform(SceneObject@)
+SceneAnimation@ SceneCircle::tween(const string&in, float)
+SceneAnimation@ SceneCircle::write()
+SceneAnimation@ SceneCode::colorTo(uint)
+SceneAnimation@ SceneCode::fadeIn()
+SceneAnimation@ SceneCode::fadeOut()
+SceneAnimation@ SceneCode::fillTo(uint)
+SceneAnimation@ SceneCode::grow()
+SceneAnimation@ SceneCode::move(float, float)
+SceneAnimation@ SceneCode::rotateTo(float)
+SceneAnimation@ SceneCode::scaleTo(float)
+SceneAnimation@ SceneCode::shift(float, float)
+SceneAnimation@ SceneCode::shrink()
+SceneAnimation@ SceneCode::transform(SceneObject@)
+SceneAnimation@ SceneCode::tween(const string&in, float)
+SceneAnimation@ SceneCode::write()
+SceneAnimation@ SceneGrid::colorTo(uint)
+SceneAnimation@ SceneGrid::fadeIn()
+SceneAnimation@ SceneGrid::fadeOut()
+SceneAnimation@ SceneGrid::fillTo(uint)
+SceneAnimation@ SceneGrid::grow()
+SceneAnimation@ SceneGrid::move(float, float)
+SceneAnimation@ SceneGrid::rotateTo(float)
+SceneAnimation@ SceneGrid::scaleTo(float)
+SceneAnimation@ SceneGrid::shift(float, float)
+SceneAnimation@ SceneGrid::shrink()
+SceneAnimation@ SceneGrid::transform(SceneObject@)
+SceneAnimation@ SceneGrid::tween(const string&in, float)
+SceneAnimation@ SceneGrid::write()
+SceneAnimation@ SceneGroup::colorTo(uint)
+SceneAnimation@ SceneGroup::fadeIn()
+SceneAnimation@ SceneGroup::fadeOut()
+SceneAnimation@ SceneGroup::fillTo(uint)
+SceneAnimation@ SceneGroup::grow()
+SceneAnimation@ SceneGroup::move(float, float)
+SceneAnimation@ SceneGroup::rotateTo(float)
+SceneAnimation@ SceneGroup::scaleTo(float)
+SceneAnimation@ SceneGroup::shift(float, float)
+SceneAnimation@ SceneGroup::shrink()
+SceneAnimation@ SceneGroup::transform(SceneObject@)
+SceneAnimation@ SceneGroup::tween(const string&in, float)
+SceneAnimation@ SceneGroup::write()
+SceneAnimation@ SceneImage::colorTo(uint)
+SceneAnimation@ SceneImage::fadeIn()
+SceneAnimation@ SceneImage::fadeOut()
+SceneAnimation@ SceneImage::fillTo(uint)
+SceneAnimation@ SceneImage::grow()
+SceneAnimation@ SceneImage::move(float, float)
+SceneAnimation@ SceneImage::rotateTo(float)
+SceneAnimation@ SceneImage::scaleTo(float)
+SceneAnimation@ SceneImage::shift(float, float)
+SceneAnimation@ SceneImage::shrink()
+SceneAnimation@ SceneImage::transform(SceneObject@)
+SceneAnimation@ SceneImage::tween(const string&in, float)
+SceneAnimation@ SceneImage::write()
+SceneAnimation@ SceneLine::colorTo(uint)
+SceneAnimation@ SceneLine::fadeIn()
+SceneAnimation@ SceneLine::fadeOut()
+SceneAnimation@ SceneLine::fillTo(uint)
+SceneAnimation@ SceneLine::grow()
+SceneAnimation@ SceneLine::move(float, float)
+SceneAnimation@ SceneLine::rotateTo(float)
+SceneAnimation@ SceneLine::scaleTo(float)
+SceneAnimation@ SceneLine::shift(float, float)
+SceneAnimation@ SceneLine::shrink()
+SceneAnimation@ SceneLine::transform(SceneObject@)
+SceneAnimation@ SceneLine::tween(const string&in, float)
+SceneAnimation@ SceneLine::write()
+SceneAnimation@ SceneObject::colorTo(uint)
+SceneAnimation@ SceneObject::fadeIn()
+SceneAnimation@ SceneObject::fadeOut()
+SceneAnimation@ SceneObject::fillTo(uint)
+SceneAnimation@ SceneObject::grow()
+SceneAnimation@ SceneObject::move(float, float)
+SceneAnimation@ SceneObject::rotateTo(float)
+SceneAnimation@ SceneObject::scaleTo(float)
+SceneAnimation@ SceneObject::shift(float, float)
+SceneAnimation@ SceneObject::shrink()
+SceneAnimation@ SceneObject::transform(SceneObject@)
+SceneAnimation@ SceneObject::tween(const string&in, float)
+SceneAnimation@ SceneObject::write()
+SceneAnimation@ ScenePolygon::colorTo(uint)
+SceneAnimation@ ScenePolygon::fadeIn()
+SceneAnimation@ ScenePolygon::fadeOut()
+SceneAnimation@ ScenePolygon::fillTo(uint)
+SceneAnimation@ ScenePolygon::grow()
+SceneAnimation@ ScenePolygon::move(float, float)
+SceneAnimation@ ScenePolygon::rotateTo(float)
+SceneAnimation@ ScenePolygon::scaleTo(float)
+SceneAnimation@ ScenePolygon::shift(float, float)
+SceneAnimation@ ScenePolygon::shrink()
+SceneAnimation@ ScenePolygon::transform(SceneObject@)
+SceneAnimation@ ScenePolygon::tween(const string&in, float)
+SceneAnimation@ ScenePolygon::write()
+SceneAnimation@ SceneRect::colorTo(uint)
+SceneAnimation@ SceneRect::fadeIn()
+SceneAnimation@ SceneRect::fadeOut()
+SceneAnimation@ SceneRect::fillTo(uint)
+SceneAnimation@ SceneRect::grow()
+SceneAnimation@ SceneRect::move(float, float)
+SceneAnimation@ SceneRect::rotateTo(float)
+SceneAnimation@ SceneRect::scaleTo(float)
+SceneAnimation@ SceneRect::shift(float, float)
+SceneAnimation@ SceneRect::shrink()
+SceneAnimation@ SceneRect::transform(SceneObject@)
+SceneAnimation@ SceneRect::tween(const string&in, float)
+SceneAnimation@ SceneRect::write()
+SceneAnimation@ SceneSlider::colorTo(uint)
+SceneAnimation@ SceneSlider::fadeIn()
+SceneAnimation@ SceneSlider::fadeOut()
+SceneAnimation@ SceneSlider::fillTo(uint)
+SceneAnimation@ SceneSlider::grow()
+SceneAnimation@ SceneSlider::move(float, float)
+SceneAnimation@ SceneSlider::rotateTo(float)
+SceneAnimation@ SceneSlider::scaleTo(float)
+SceneAnimation@ SceneSlider::shift(float, float)
+SceneAnimation@ SceneSlider::shrink()
+SceneAnimation@ SceneSlider::transform(SceneObject@)
+SceneAnimation@ SceneSlider::tween(const string&in, float)
+SceneAnimation@ SceneSlider::write()
+SceneAnimation@ SceneText::colorTo(uint)
+SceneAnimation@ SceneText::fadeIn()
+SceneAnimation@ SceneText::fadeOut()
+SceneAnimation@ SceneText::fillTo(uint)
+SceneAnimation@ SceneText::grow()
+SceneAnimation@ SceneText::move(float, float)
+SceneAnimation@ SceneText::rotateTo(float)
+SceneAnimation@ SceneText::scaleTo(float)
+SceneAnimation@ SceneText::shift(float, float)
+SceneAnimation@ SceneText::shrink()
+SceneAnimation@ SceneText::transform(SceneObject@)
+SceneAnimation@ SceneText::tween(const string&in, float)
+SceneAnimation@ SceneText::write()
+SceneAnimation@ SceneToggle::colorTo(uint)
+SceneAnimation@ SceneToggle::fadeIn()
+SceneAnimation@ SceneToggle::fadeOut()
+SceneAnimation@ SceneToggle::fillTo(uint)
+SceneAnimation@ SceneToggle::grow()
+SceneAnimation@ SceneToggle::move(float, float)
+SceneAnimation@ SceneToggle::rotateTo(float)
+SceneAnimation@ SceneToggle::scaleTo(float)
+SceneAnimation@ SceneToggle::shift(float, float)
+SceneAnimation@ SceneToggle::shrink()
+SceneAnimation@ SceneToggle::transform(SceneObject@)
+SceneAnimation@ SceneToggle::tween(const string&in, float)
+SceneAnimation@ SceneToggle::write()
+SceneArrow@ SceneArrow(float, float, float, float)
+SceneArrow@ SceneArrow::at(float, float)
+SceneArrow@ SceneObject::opCast()
+SceneBars@ SceneBars(const float[]&in, float = 600, float = 300)
+SceneBars@ SceneBars::at(float, float)
+SceneBars@ SceneObject::opCast()
+SceneButton@ SceneButton(const string&in)
+SceneButton@ SceneButton::at(float, float)
+SceneButton@ SceneObject::opCast()
+SceneCircle@ SceneCircle(float)
+SceneCircle@ SceneCircle::at(float, float)
+SceneCircle@ SceneObject::opCast()
+SceneCode@ SceneCode(const string&in, const string&in = "")
+SceneCode@ SceneCode::at(float, float)
+SceneCode@ SceneObject::opCast()
+SceneGrid@ SceneGrid(float, float, float)
+SceneGrid@ SceneGrid::at(float, float)
+SceneGrid@ SceneObject::opCast()
+SceneGroup@ SceneGroup()
+SceneGroup@ SceneGroup::at(float, float)
+SceneGroup@ SceneObject::opCast()
+SceneImage@ SceneImage(const string&in)
+SceneImage@ SceneImage(const string&in, float, float)
+SceneImage@ SceneImage::at(float, float)
+SceneImage@ SceneObject::opCast()
+SceneLine@ SceneLine(float, float, float, float)
+SceneLine@ SceneLine::at(float, float)
+SceneLine@ SceneObject::opCast()
+SceneObject@ SceneArrow::opImplCast()
+SceneObject@ SceneBars::opImplCast()
+SceneObject@ SceneButton::opImplCast()
+SceneObject@ SceneCircle::opImplCast()
+SceneObject@ SceneCode::opImplCast()
+SceneObject@ SceneGrid::opImplCast()
+SceneObject@ SceneGroup::opImplCast()
+SceneObject@ SceneImage::opImplCast()
+SceneObject@ SceneLine::opImplCast()
+SceneObject@ SceneObject::at(float, float)
+SceneObject@ ScenePolygon::opImplCast()
+SceneObject@ SceneRect::opImplCast()
+SceneObject@ SceneSlider::opImplCast()
+SceneObject@ SceneText::opImplCast()
+SceneObject@ SceneToggle::opImplCast()
+ScenePolygon@ SceneObject::opCast()
+ScenePolygon@ ScenePolygon(const float[]&in)
+ScenePolygon@ ScenePolygon::at(float, float)
+SceneRect@ SceneObject::opCast()
+SceneRect@ SceneRect(float, float)
+SceneRect@ SceneRect::at(float, float)
+SceneSlider@ SceneObject::opCast()
+SceneSlider@ SceneSlider(float = 0, float = 1, float = 0, float = 300)
+SceneSlider@ SceneSlider::at(float, float)
+SceneText@ SceneObject::opCast()
+SceneText@ SceneText(const ?&in, Font@ = null)
+SceneText@ SceneText::at(float, float)
+SceneTheme@ Scene::get_theme() const
+SceneToggle@ SceneObject::opCast()
+SceneToggle@ SceneToggle(const string&in, bool = false)
+SceneToggle@ SceneToggle::at(float, float)
+bool SceneArrow::get_visible() const
+bool SceneBars::get_visible() const
+bool SceneButton::get_visible() const
+bool SceneCircle::get_visible() const
+bool SceneCode::get_visible() const
+bool SceneGrid::get_visible() const
+bool SceneGroup::get_visible() const
+bool SceneImage::get_visible() const
+bool SceneLine::get_visible() const
+bool SceneObject::get_visible() const
+bool ScenePolygon::get_visible() const
+bool SceneRect::get_visible() const
+bool SceneSlider::get_visible() const
+bool SceneText::get_visible() const
+bool SceneToggle::get_on() const
+bool SceneToggle::get_visible() const
+class Scene
+class SceneAnimation
+class SceneArrow
+class SceneBars
+class SceneButton
+class SceneCircle
+class SceneCode
+class SceneGrid
+class SceneGroup
+class SceneImage
+class SceneLine
+class SceneObject
+class ScenePolygon
+class SceneRect
+class SceneSlider
+class SceneText
+class SceneTheme
+class SceneToggle
+enum Ease
+float SceneArrow::get_fillOpacity() const
+float SceneArrow::get_lineWidth() const
+float SceneArrow::get_opacity() const
+float SceneArrow::get_rotation() const
+float SceneArrow::get_scale() const
+float SceneArrow::get_x() const
+float SceneArrow::get_y() const
+float SceneBars::get_fillOpacity() const
+float SceneBars::get_lineWidth() const
+float SceneBars::get_opacity() const
+float SceneBars::get_rotation() const
+float SceneBars::get_scale() const
+float SceneBars::get_x() const
+float SceneBars::get_y() const
+float SceneBars::value(int) const
+float SceneButton::get_fillOpacity() const
+float SceneButton::get_lineWidth() const
+float SceneButton::get_opacity() const
+float SceneButton::get_rotation() const
+float SceneButton::get_scale() const
+float SceneButton::get_x() const
+float SceneButton::get_y() const
+float SceneCircle::get_fillOpacity() const
+float SceneCircle::get_lineWidth() const
+float SceneCircle::get_opacity() const
+float SceneCircle::get_radius() const
+float SceneCircle::get_rotation() const
+float SceneCircle::get_scale() const
+float SceneCircle::get_x() const
+float SceneCircle::get_y() const
+float SceneCode::get_fillOpacity() const
+float SceneCode::get_lineWidth() const
+float SceneCode::get_opacity() const
+float SceneCode::get_rotation() const
+float SceneCode::get_scale() const
+float SceneCode::get_x() const
+float SceneCode::get_y() const
+float SceneGrid::get_fillOpacity() const
+float SceneGrid::get_lineWidth() const
+float SceneGrid::get_opacity() const
+float SceneGrid::get_rotation() const
+float SceneGrid::get_scale() const
+float SceneGrid::get_x() const
+float SceneGrid::get_y() const
+float SceneGroup::get_fillOpacity() const
+float SceneGroup::get_lineWidth() const
+float SceneGroup::get_opacity() const
+float SceneGroup::get_rotation() const
+float SceneGroup::get_scale() const
+float SceneGroup::get_x() const
+float SceneGroup::get_y() const
+float SceneImage::get_fillOpacity() const
+float SceneImage::get_height() const
+float SceneImage::get_lineWidth() const
+float SceneImage::get_opacity() const
+float SceneImage::get_rotation() const
+float SceneImage::get_scale() const
+float SceneImage::get_width() const
+float SceneImage::get_x() const
+float SceneImage::get_y() const
+float SceneLine::get_fillOpacity() const
+float SceneLine::get_lineWidth() const
+float SceneLine::get_opacity() const
+float SceneLine::get_rotation() const
+float SceneLine::get_scale() const
+float SceneLine::get_x() const
+float SceneLine::get_y() const
+float SceneObject::get_fillOpacity() const
+float SceneObject::get_lineWidth() const
+float SceneObject::get_opacity() const
+float SceneObject::get_rotation() const
+float SceneObject::get_scale() const
+float SceneObject::get_x() const
+float SceneObject::get_y() const
+float ScenePolygon::get_fillOpacity() const
+float ScenePolygon::get_lineWidth() const
+float ScenePolygon::get_opacity() const
+float ScenePolygon::get_rotation() const
+float ScenePolygon::get_scale() const
+float ScenePolygon::get_x() const
+float ScenePolygon::get_y() const
+float SceneRect::get_fillOpacity() const
+float SceneRect::get_height() const
+float SceneRect::get_lineWidth() const
+float SceneRect::get_opacity() const
+float SceneRect::get_rotation() const
+float SceneRect::get_scale() const
+float SceneRect::get_width() const
+float SceneRect::get_x() const
+float SceneRect::get_y() const
+float SceneSlider::get_fillOpacity() const
+float SceneSlider::get_lineWidth() const
+float SceneSlider::get_maximum() const
+float SceneSlider::get_minimum() const
+float SceneSlider::get_opacity() const
+float SceneSlider::get_rotation() const
+float SceneSlider::get_scale() const
+float SceneSlider::get_value() const
+float SceneSlider::get_x() const
+float SceneSlider::get_y() const
+float SceneText::get_fillOpacity() const
+float SceneText::get_height() const
+float SceneText::get_lineWidth() const
+float SceneText::get_opacity() const
+float SceneText::get_rotation() const
+float SceneText::get_scale() const
+float SceneText::get_width() const
+float SceneText::get_x() const
+float SceneText::get_y() const
+float SceneToggle::get_fillOpacity() const
+float SceneToggle::get_lineWidth() const
+float SceneToggle::get_opacity() const
+float SceneToggle::get_rotation() const
+float SceneToggle::get_scale() const
+float SceneToggle::get_x() const
+float SceneToggle::get_y() const
+int Scene::get_height() const
+int Scene::get_width() const
+int Scene::text(float, float, const ?&in, uint, Font@ = null)
+string SceneButton::get_label() const
+string SceneText::get_text() const
+string SceneToggle::get_label() const
+string readText(const string&in)
+uint SceneArrow::get_color() const
+uint SceneArrow::get_fill() const
+uint SceneBars::get_color() const
+uint SceneBars::get_count() const
+uint SceneBars::get_fill() const
+uint SceneButton::get_color() const
+uint SceneButton::get_fill() const
+uint SceneCircle::get_color() const
+uint SceneCircle::get_fill() const
+uint SceneCode::get_color() const
+uint SceneCode::get_fill() const
+uint SceneGrid::get_color() const
+uint SceneGrid::get_fill() const
+uint SceneGroup::get_color() const
+uint SceneGroup::get_count() const
+uint SceneGroup::get_fill() const
+uint SceneImage::get_color() const
+uint SceneImage::get_fill() const
+uint SceneLine::get_color() const
+uint SceneLine::get_fill() const
+uint SceneObject::get_color() const
+uint SceneObject::get_fill() const
+uint ScenePolygon::get_color() const
+uint ScenePolygon::get_fill() const
+uint SceneRect::get_color() const
+uint SceneRect::get_fill() const
+uint SceneSlider::get_color() const
+uint SceneSlider::get_fill() const
+uint SceneText::get_color() const
+uint SceneText::get_fill() const
+uint SceneTheme::color(const string&in) const
+uint SceneToggle::get_color() const
+uint SceneToggle::get_fill() const
+void Scene::add(SceneObject@)
+void Scene::circle(float, float, float, uint, float = 2)
+void Scene::clear(uint = Color::Black)
+void Scene::ellipse(float, float, float, float, uint, float = 2)
+void Scene::fillCircle(float, float, float, uint, float = 1)
+void Scene::fillEllipse(float, float, float, float, uint, float = 1)
+void Scene::fillPolygon(const float[]&in, uint, float = 1)
+void Scene::fillRect(float, float, float, float, uint, float = 1)
+void Scene::line(float, float, float, float, uint, float = 2)
+void Scene::pause()
+void Scene::play(SceneAnimation@, SceneAnimation@, SceneAnimation@, SceneAnimation@, SceneAnimation@, SceneAnimation@, float = 1)
+void Scene::play(SceneAnimation@, SceneAnimation@, SceneAnimation@, SceneAnimation@, SceneAnimation@, float = 1)
+void Scene::play(SceneAnimation@, SceneAnimation@, SceneAnimation@, SceneAnimation@, float = 1)
+void Scene::play(SceneAnimation@, SceneAnimation@, SceneAnimation@, float = 1)
+void Scene::play(SceneAnimation@, SceneAnimation@, float = 1)
+void Scene::play(SceneAnimation@, float = 1)
+void Scene::play(const SceneAnimation@[]&in, float = 1)
+void Scene::plot(float, float, uint)
+void Scene::polygon(const float[]&in, uint, float = 2)
+void Scene::rect(float, float, float, float, uint, float = 2)
+void Scene::remove(SceneObject@)
+void Scene::start(SceneAnimation@, float = 1)
+void Scene::wait(float = 1)
+void SceneArrow::set_color(uint)
+void SceneArrow::set_fill(uint)
+void SceneArrow::set_fillOpacity(float)
+void SceneArrow::set_lineWidth(float)
+void SceneArrow::set_opacity(float)
+void SceneArrow::set_rotation(float)
+void SceneArrow::set_scale(float)
+void SceneArrow::set_visible(bool)
+void SceneArrow::set_x(float)
+void SceneArrow::set_y(float)
+void SceneBars::set_color(uint)
+void SceneBars::set_fill(uint)
+void SceneBars::set_fillOpacity(float)
+void SceneBars::set_lineWidth(float)
+void SceneBars::set_opacity(float)
+void SceneBars::set_rotation(float)
+void SceneBars::set_scale(float)
+void SceneBars::set_visible(bool)
+void SceneBars::set_x(float)
+void SceneBars::set_y(float)
+void SceneButton::onChange(Callback@)
+void SceneButton::set_color(uint)
+void SceneButton::set_fill(uint)
+void SceneButton::set_fillOpacity(float)
+void SceneButton::set_label(const string&in)
+void SceneButton::set_lineWidth(float)
+void SceneButton::set_opacity(float)
+void SceneButton::set_rotation(float)
+void SceneButton::set_scale(float)
+void SceneButton::set_visible(bool)
+void SceneButton::set_x(float)
+void SceneButton::set_y(float)
+void SceneCircle::set_color(uint)
+void SceneCircle::set_fill(uint)
+void SceneCircle::set_fillOpacity(float)
+void SceneCircle::set_lineWidth(float)
+void SceneCircle::set_opacity(float)
+void SceneCircle::set_radius(float)
+void SceneCircle::set_rotation(float)
+void SceneCircle::set_scale(float)
+void SceneCircle::set_visible(bool)
+void SceneCircle::set_x(float)
+void SceneCircle::set_y(float)
+void SceneCode::set_color(uint)
+void SceneCode::set_fill(uint)
+void SceneCode::set_fillOpacity(float)
+void SceneCode::set_lineWidth(float)
+void SceneCode::set_opacity(float)
+void SceneCode::set_rotation(float)
+void SceneCode::set_scale(float)
+void SceneCode::set_visible(bool)
+void SceneCode::set_x(float)
+void SceneCode::set_y(float)
+void SceneGrid::set_color(uint)
+void SceneGrid::set_fill(uint)
+void SceneGrid::set_fillOpacity(float)
+void SceneGrid::set_lineWidth(float)
+void SceneGrid::set_opacity(float)
+void SceneGrid::set_rotation(float)
+void SceneGrid::set_scale(float)
+void SceneGrid::set_visible(bool)
+void SceneGrid::set_x(float)
+void SceneGrid::set_y(float)
+void SceneGroup::add(SceneObject@)
+void SceneGroup::remove(SceneObject@)
+void SceneGroup::set_color(uint)
+void SceneGroup::set_fill(uint)
+void SceneGroup::set_fillOpacity(float)
+void SceneGroup::set_lineWidth(float)
+void SceneGroup::set_opacity(float)
+void SceneGroup::set_rotation(float)
+void SceneGroup::set_scale(float)
+void SceneGroup::set_visible(bool)
+void SceneGroup::set_x(float)
+void SceneGroup::set_y(float)
+void SceneImage::set_color(uint)
+void SceneImage::set_fill(uint)
+void SceneImage::set_fillOpacity(float)
+void SceneImage::set_height(float)
+void SceneImage::set_lineWidth(float)
+void SceneImage::set_opacity(float)
+void SceneImage::set_rotation(float)
+void SceneImage::set_scale(float)
+void SceneImage::set_visible(bool)
+void SceneImage::set_width(float)
+void SceneImage::set_x(float)
+void SceneImage::set_y(float)
+void SceneLine::set_color(uint)
+void SceneLine::set_fill(uint)
+void SceneLine::set_fillOpacity(float)
+void SceneLine::set_lineWidth(float)
+void SceneLine::set_opacity(float)
+void SceneLine::set_rotation(float)
+void SceneLine::set_scale(float)
+void SceneLine::set_visible(bool)
+void SceneLine::set_x(float)
+void SceneLine::set_y(float)
+void SceneObject::set_color(uint)
+void SceneObject::set_fill(uint)
+void SceneObject::set_fillOpacity(float)
+void SceneObject::set_lineWidth(float)
+void SceneObject::set_opacity(float)
+void SceneObject::set_rotation(float)
+void SceneObject::set_scale(float)
+void SceneObject::set_visible(bool)
+void SceneObject::set_x(float)
+void SceneObject::set_y(float)
+void ScenePolygon::set_color(uint)
+void ScenePolygon::set_fill(uint)
+void ScenePolygon::set_fillOpacity(float)
+void ScenePolygon::set_lineWidth(float)
+void ScenePolygon::set_opacity(float)
+void ScenePolygon::set_rotation(float)
+void ScenePolygon::set_scale(float)
+void ScenePolygon::set_visible(bool)
+void ScenePolygon::set_x(float)
+void ScenePolygon::set_y(float)
+void SceneRect::set_color(uint)
+void SceneRect::set_fill(uint)
+void SceneRect::set_fillOpacity(float)
+void SceneRect::set_height(float)
+void SceneRect::set_lineWidth(float)
+void SceneRect::set_opacity(float)
+void SceneRect::set_rotation(float)
+void SceneRect::set_scale(float)
+void SceneRect::set_visible(bool)
+void SceneRect::set_width(float)
+void SceneRect::set_x(float)
+void SceneRect::set_y(float)
+void SceneSlider::onChange(Callback@)
+void SceneSlider::set_color(uint)
+void SceneSlider::set_fill(uint)
+void SceneSlider::set_fillOpacity(float)
+void SceneSlider::set_lineWidth(float)
+void SceneSlider::set_opacity(float)
+void SceneSlider::set_rotation(float)
+void SceneSlider::set_scale(float)
+void SceneSlider::set_value(float)
+void SceneSlider::set_visible(bool)
+void SceneSlider::set_x(float)
+void SceneSlider::set_y(float)
+void SceneText::set_color(uint)
+void SceneText::set_fill(uint)
+void SceneText::set_fillOpacity(float)
+void SceneText::set_lineWidth(float)
+void SceneText::set_opacity(float)
+void SceneText::set_rotation(float)
+void SceneText::set_scale(float)
+void SceneText::set_text(const string&in)
+void SceneText::set_visible(bool)
+void SceneText::set_x(float)
+void SceneText::set_y(float)
+void SceneToggle::onChange(Callback@)
+void SceneToggle::set_color(uint)
+void SceneToggle::set_fill(uint)
+void SceneToggle::set_fillOpacity(float)
+void SceneToggle::set_label(const string&in)
+void SceneToggle::set_lineWidth(float)
+void SceneToggle::set_on(bool)
+void SceneToggle::set_opacity(float)
+void SceneToggle::set_rotation(float)
+void SceneToggle::set_scale(float)
+void SceneToggle::set_visible(bool)
+void SceneToggle::set_x(float)
+void SceneToggle::set_y(float)
+# 2026-11-04: Preso step 13 (devplan/preso.md §8d): heads, dashes, bends and between() for lines; SceneEllipse,
+# SceneArc, SceneSector, SceneRegular, SceneStar, SceneCurve, SceneNumber, SceneAxes; copies, boxes, nextTo,
+# arrange; more animations and Ease values; the scene's order, has(), removeAll(), lagged play().
+ArrowHead SceneArc::get_head() const
+ArrowHead SceneArc::get_tail() const
+ArrowHead SceneArrow::get_head() const
+ArrowHead SceneArrow::get_tail() const
+ArrowHead SceneCurve::get_head() const
+ArrowHead SceneCurve::get_tail() const
+ArrowHead SceneLine::get_head() const
+ArrowHead SceneLine::get_tail() const
+ArrowHead::Bar = 7
+ArrowHead::Circle = 4
+ArrowHead::Diamond = 6
+ArrowHead::None = 0
+ArrowHead::Open = 3
+ArrowHead::Square = 5
+ArrowHead::Stealth = 2
+ArrowHead::Triangle = 1
+Ease::Elastic = 6
+Ease::ThereAndBack = 5
+Ease::Wiggle = 7
+SceneAnimation@ SceneArc::colorTo(uint)
+SceneAnimation@ SceneArc::fadeIn()
+SceneAnimation@ SceneArc::fadeOut()
+SceneAnimation@ SceneArc::fadeTo(float)
+SceneAnimation@ SceneArc::fillTo(uint)
+SceneAnimation@ SceneArc::grow()
+SceneAnimation@ SceneArc::indicate()
+SceneAnimation@ SceneArc::move(float, float)
+SceneAnimation@ SceneArc::rotateBy(float)
+SceneAnimation@ SceneArc::rotateTo(float)
+SceneAnimation@ SceneArc::scaleBy(float)
+SceneAnimation@ SceneArc::scaleTo(float)
+SceneAnimation@ SceneArc::shift(float, float)
+SceneAnimation@ SceneArc::shrink()
+SceneAnimation@ SceneArc::sweepTo(float)
+SceneAnimation@ SceneArc::transform(SceneObject@)
+SceneAnimation@ SceneArc::tween(const string&in, float)
+SceneAnimation@ SceneArc::wiggle()
+SceneAnimation@ SceneArc::write()
+SceneAnimation@ SceneArrow::bendTo(float)
+SceneAnimation@ SceneArrow::fadeTo(float)
+SceneAnimation@ SceneArrow::indicate()
+SceneAnimation@ SceneArrow::rotateBy(float)
+SceneAnimation@ SceneArrow::scaleBy(float)
+SceneAnimation@ SceneArrow::wiggle()
+SceneAnimation@ SceneAxes::colorTo(uint)
+SceneAnimation@ SceneAxes::fadeIn()
+SceneAnimation@ SceneAxes::fadeOut()
+SceneAnimation@ SceneAxes::fadeTo(float)
+SceneAnimation@ SceneAxes::fillTo(uint)
+SceneAnimation@ SceneAxes::grow()
+SceneAnimation@ SceneAxes::indicate()
+SceneAnimation@ SceneAxes::move(float, float)
+SceneAnimation@ SceneAxes::rotateBy(float)
+SceneAnimation@ SceneAxes::rotateTo(float)
+SceneAnimation@ SceneAxes::scaleBy(float)
+SceneAnimation@ SceneAxes::scaleTo(float)
+SceneAnimation@ SceneAxes::shift(float, float)
+SceneAnimation@ SceneAxes::shrink()
+SceneAnimation@ SceneAxes::transform(SceneObject@)
+SceneAnimation@ SceneAxes::tween(const string&in, float)
+SceneAnimation@ SceneAxes::wiggle()
+SceneAnimation@ SceneAxes::write()
+SceneAnimation@ SceneBars::fadeTo(float)
+SceneAnimation@ SceneBars::indicate()
+SceneAnimation@ SceneBars::rotateBy(float)
+SceneAnimation@ SceneBars::scaleBy(float)
+SceneAnimation@ SceneBars::wiggle()
+SceneAnimation@ SceneButton::fadeTo(float)
+SceneAnimation@ SceneButton::indicate()
+SceneAnimation@ SceneButton::rotateBy(float)
+SceneAnimation@ SceneButton::scaleBy(float)
+SceneAnimation@ SceneButton::wiggle()
+SceneAnimation@ SceneCircle::fadeTo(float)
+SceneAnimation@ SceneCircle::indicate()
+SceneAnimation@ SceneCircle::rotateBy(float)
+SceneAnimation@ SceneCircle::scaleBy(float)
+SceneAnimation@ SceneCircle::wiggle()
+SceneAnimation@ SceneCode::fadeTo(float)
+SceneAnimation@ SceneCode::indicate()
+SceneAnimation@ SceneCode::rotateBy(float)
+SceneAnimation@ SceneCode::scaleBy(float)
+SceneAnimation@ SceneCode::wiggle()
+SceneAnimation@ SceneCurve::colorTo(uint)
+SceneAnimation@ SceneCurve::fadeIn()
+SceneAnimation@ SceneCurve::fadeOut()
+SceneAnimation@ SceneCurve::fadeTo(float)
+SceneAnimation@ SceneCurve::fillTo(uint)
+SceneAnimation@ SceneCurve::grow()
+SceneAnimation@ SceneCurve::indicate()
+SceneAnimation@ SceneCurve::move(float, float)
+SceneAnimation@ SceneCurve::rotateBy(float)
+SceneAnimation@ SceneCurve::rotateTo(float)
+SceneAnimation@ SceneCurve::scaleBy(float)
+SceneAnimation@ SceneCurve::scaleTo(float)
+SceneAnimation@ SceneCurve::shift(float, float)
+SceneAnimation@ SceneCurve::shrink()
+SceneAnimation@ SceneCurve::transform(SceneObject@)
+SceneAnimation@ SceneCurve::tween(const string&in, float)
+SceneAnimation@ SceneCurve::wiggle()
+SceneAnimation@ SceneCurve::write()
+SceneAnimation@ SceneEllipse::colorTo(uint)
+SceneAnimation@ SceneEllipse::fadeIn()
+SceneAnimation@ SceneEllipse::fadeOut()
+SceneAnimation@ SceneEllipse::fadeTo(float)
+SceneAnimation@ SceneEllipse::fillTo(uint)
+SceneAnimation@ SceneEllipse::grow()
+SceneAnimation@ SceneEllipse::indicate()
+SceneAnimation@ SceneEllipse::move(float, float)
+SceneAnimation@ SceneEllipse::rotateBy(float)
+SceneAnimation@ SceneEllipse::rotateTo(float)
+SceneAnimation@ SceneEllipse::scaleBy(float)
+SceneAnimation@ SceneEllipse::scaleTo(float)
+SceneAnimation@ SceneEllipse::shift(float, float)
+SceneAnimation@ SceneEllipse::shrink()
+SceneAnimation@ SceneEllipse::transform(SceneObject@)
+SceneAnimation@ SceneEllipse::tween(const string&in, float)
+SceneAnimation@ SceneEllipse::wiggle()
+SceneAnimation@ SceneEllipse::write()
+SceneAnimation@ SceneGrid::fadeTo(float)
+SceneAnimation@ SceneGrid::indicate()
+SceneAnimation@ SceneGrid::rotateBy(float)
+SceneAnimation@ SceneGrid::scaleBy(float)
+SceneAnimation@ SceneGrid::wiggle()
+SceneAnimation@ SceneGroup::fadeTo(float)
+SceneAnimation@ SceneGroup::indicate()
+SceneAnimation@ SceneGroup::rotateBy(float)
+SceneAnimation@ SceneGroup::scaleBy(float)
+SceneAnimation@ SceneGroup::wiggle()
+SceneAnimation@ SceneImage::fadeTo(float)
+SceneAnimation@ SceneImage::indicate()
+SceneAnimation@ SceneImage::rotateBy(float)
+SceneAnimation@ SceneImage::scaleBy(float)
+SceneAnimation@ SceneImage::wiggle()
+SceneAnimation@ SceneLine::bendTo(float)
+SceneAnimation@ SceneLine::fadeTo(float)
+SceneAnimation@ SceneLine::indicate()
+SceneAnimation@ SceneLine::rotateBy(float)
+SceneAnimation@ SceneLine::scaleBy(float)
+SceneAnimation@ SceneLine::wiggle()
+SceneAnimation@ SceneNumber::colorTo(uint)
+SceneAnimation@ SceneNumber::countTo(float)
+SceneAnimation@ SceneNumber::fadeIn()
+SceneAnimation@ SceneNumber::fadeOut()
+SceneAnimation@ SceneNumber::fadeTo(float)
+SceneAnimation@ SceneNumber::fillTo(uint)
+SceneAnimation@ SceneNumber::grow()
+SceneAnimation@ SceneNumber::indicate()
+SceneAnimation@ SceneNumber::move(float, float)
+SceneAnimation@ SceneNumber::rotateBy(float)
+SceneAnimation@ SceneNumber::rotateTo(float)
+SceneAnimation@ SceneNumber::scaleBy(float)
+SceneAnimation@ SceneNumber::scaleTo(float)
+SceneAnimation@ SceneNumber::shift(float, float)
+SceneAnimation@ SceneNumber::shrink()
+SceneAnimation@ SceneNumber::transform(SceneObject@)
+SceneAnimation@ SceneNumber::tween(const string&in, float)
+SceneAnimation@ SceneNumber::wiggle()
+SceneAnimation@ SceneNumber::write()
+SceneAnimation@ SceneObject::fadeTo(float)
+SceneAnimation@ SceneObject::indicate()
+SceneAnimation@ SceneObject::rotateBy(float)
+SceneAnimation@ SceneObject::scaleBy(float)
+SceneAnimation@ SceneObject::wiggle()
+SceneAnimation@ ScenePolygon::fadeTo(float)
+SceneAnimation@ ScenePolygon::indicate()
+SceneAnimation@ ScenePolygon::rotateBy(float)
+SceneAnimation@ ScenePolygon::scaleBy(float)
+SceneAnimation@ ScenePolygon::wiggle()
+SceneAnimation@ SceneRect::fadeTo(float)
+SceneAnimation@ SceneRect::indicate()
+SceneAnimation@ SceneRect::rotateBy(float)
+SceneAnimation@ SceneRect::scaleBy(float)
+SceneAnimation@ SceneRect::wiggle()
+SceneAnimation@ SceneRegular::colorTo(uint)
+SceneAnimation@ SceneRegular::fadeIn()
+SceneAnimation@ SceneRegular::fadeOut()
+SceneAnimation@ SceneRegular::fadeTo(float)
+SceneAnimation@ SceneRegular::fillTo(uint)
+SceneAnimation@ SceneRegular::grow()
+SceneAnimation@ SceneRegular::indicate()
+SceneAnimation@ SceneRegular::move(float, float)
+SceneAnimation@ SceneRegular::rotateBy(float)
+SceneAnimation@ SceneRegular::rotateTo(float)
+SceneAnimation@ SceneRegular::scaleBy(float)
+SceneAnimation@ SceneRegular::scaleTo(float)
+SceneAnimation@ SceneRegular::shift(float, float)
+SceneAnimation@ SceneRegular::shrink()
+SceneAnimation@ SceneRegular::transform(SceneObject@)
+SceneAnimation@ SceneRegular::tween(const string&in, float)
+SceneAnimation@ SceneRegular::wiggle()
+SceneAnimation@ SceneRegular::write()
+SceneAnimation@ SceneSector::colorTo(uint)
+SceneAnimation@ SceneSector::fadeIn()
+SceneAnimation@ SceneSector::fadeOut()
+SceneAnimation@ SceneSector::fadeTo(float)
+SceneAnimation@ SceneSector::fillTo(uint)
+SceneAnimation@ SceneSector::grow()
+SceneAnimation@ SceneSector::indicate()
+SceneAnimation@ SceneSector::move(float, float)
+SceneAnimation@ SceneSector::rotateBy(float)
+SceneAnimation@ SceneSector::rotateTo(float)
+SceneAnimation@ SceneSector::scaleBy(float)
+SceneAnimation@ SceneSector::scaleTo(float)
+SceneAnimation@ SceneSector::shift(float, float)
+SceneAnimation@ SceneSector::shrink()
+SceneAnimation@ SceneSector::sweepTo(float)
+SceneAnimation@ SceneSector::transform(SceneObject@)
+SceneAnimation@ SceneSector::tween(const string&in, float)
+SceneAnimation@ SceneSector::wiggle()
+SceneAnimation@ SceneSector::write()
+SceneAnimation@ SceneSlider::fadeTo(float)
+SceneAnimation@ SceneSlider::indicate()
+SceneAnimation@ SceneSlider::rotateBy(float)
+SceneAnimation@ SceneSlider::scaleBy(float)
+SceneAnimation@ SceneSlider::wiggle()
+SceneAnimation@ SceneStar::colorTo(uint)
+SceneAnimation@ SceneStar::fadeIn()
+SceneAnimation@ SceneStar::fadeOut()
+SceneAnimation@ SceneStar::fadeTo(float)
+SceneAnimation@ SceneStar::fillTo(uint)
+SceneAnimation@ SceneStar::grow()
+SceneAnimation@ SceneStar::indicate()
+SceneAnimation@ SceneStar::move(float, float)
+SceneAnimation@ SceneStar::rotateBy(float)
+SceneAnimation@ SceneStar::rotateTo(float)
+SceneAnimation@ SceneStar::scaleBy(float)
+SceneAnimation@ SceneStar::scaleTo(float)
+SceneAnimation@ SceneStar::shift(float, float)
+SceneAnimation@ SceneStar::shrink()
+SceneAnimation@ SceneStar::transform(SceneObject@)
+SceneAnimation@ SceneStar::tween(const string&in, float)
+SceneAnimation@ SceneStar::wiggle()
+SceneAnimation@ SceneStar::write()
+SceneAnimation@ SceneText::fadeTo(float)
+SceneAnimation@ SceneText::indicate()
+SceneAnimation@ SceneText::rotateBy(float)
+SceneAnimation@ SceneText::scaleBy(float)
+SceneAnimation@ SceneText::wiggle()
+SceneAnimation@ SceneToggle::fadeTo(float)
+SceneAnimation@ SceneToggle::indicate()
+SceneAnimation@ SceneToggle::rotateBy(float)
+SceneAnimation@ SceneToggle::scaleBy(float)
+SceneAnimation@ SceneToggle::wiggle()
+SceneArc@ SceneArc(float, float, float)
+SceneArc@ SceneArc::at(float, float)
+SceneArc@ SceneArc::copy() const
+SceneArc@ SceneArc::nextTo(SceneObject@, Side, float = 16)
+SceneArc@ SceneObject::opCast()
+SceneArrow@ SceneArrow()
+SceneArrow@ SceneArrow::between(SceneObject@, SceneObject@, float = 4)
+SceneArrow@ SceneArrow::copy() const
+SceneArrow@ SceneArrow::nextTo(SceneObject@, Side, float = 16)
+SceneAxes@ SceneAxes(float, float, float, float, float, float)
+SceneAxes@ SceneAxes::at(float, float)
+SceneAxes@ SceneAxes::copy() const
+SceneAxes@ SceneAxes::nextTo(SceneObject@, Side, float = 16)
+SceneAxes@ SceneObject::opCast()
+SceneBars@ SceneBars::copy() const
+SceneBars@ SceneBars::nextTo(SceneObject@, Side, float = 16)
+SceneButton@ SceneButton::copy() const
+SceneButton@ SceneButton::nextTo(SceneObject@, Side, float = 16)
+SceneCircle@ SceneCircle::copy() const
+SceneCircle@ SceneCircle::nextTo(SceneObject@, Side, float = 16)
+SceneCode@ SceneCode::copy() const
+SceneCode@ SceneCode::nextTo(SceneObject@, Side, float = 16)
+SceneCurve@ SceneAxes::plot(PlotFunction@)
+SceneCurve@ SceneAxes::plot(PlotFunction@, uint, int = 100)
+SceneCurve@ SceneCurve(const float[]&in, bool = false)
+SceneCurve@ SceneCurve::at(float, float)
+SceneCurve@ SceneCurve::copy() const
+SceneCurve@ SceneCurve::nextTo(SceneObject@, Side, float = 16)
+SceneCurve@ SceneObject::opCast()
+SceneEllipse@ SceneEllipse(float, float)
+SceneEllipse@ SceneEllipse::at(float, float)
+SceneEllipse@ SceneEllipse::copy() const
+SceneEllipse@ SceneEllipse::nextTo(SceneObject@, Side, float = 16)
+SceneEllipse@ SceneObject::opCast()
+SceneGrid@ SceneGrid::copy() const
+SceneGrid@ SceneGrid::nextTo(SceneObject@, Side, float = 16)
+SceneGroup@ SceneGroup::arrange(Side, float = 16)
+SceneGroup@ SceneGroup::copy() const
+SceneGroup@ SceneGroup::nextTo(SceneObject@, Side, float = 16)
+SceneImage@ SceneImage::copy() const
+SceneImage@ SceneImage::nextTo(SceneObject@, Side, float = 16)
+SceneLine@ SceneLine()
+SceneLine@ SceneLine::between(SceneObject@, SceneObject@, float = 4)
+SceneLine@ SceneLine::copy() const
+SceneLine@ SceneLine::nextTo(SceneObject@, Side, float = 16)
+SceneNumber@ SceneNumber(float, int = 0, Font@ = null)
+SceneNumber@ SceneNumber::at(float, float)
+SceneNumber@ SceneNumber::copy() const
+SceneNumber@ SceneNumber::nextTo(SceneObject@, Side, float = 16)
+SceneNumber@ SceneObject::opCast()
+SceneObject@ SceneArc::opImplCast()
+SceneObject@ SceneAxes::opImplCast()
+SceneObject@ SceneCurve::opImplCast()
+SceneObject@ SceneEllipse::opImplCast()
+SceneObject@ SceneNumber::opImplCast()
+SceneObject@ SceneObject::copy() const
+SceneObject@ SceneObject::nextTo(SceneObject@, Side, float = 16)
+SceneObject@ SceneRegular::opImplCast()
+SceneObject@ SceneSector::opImplCast()
+SceneObject@ SceneStar::opImplCast()
+ScenePolygon@ ScenePolygon::copy() const
+ScenePolygon@ ScenePolygon::nextTo(SceneObject@, Side, float = 16)
+SceneRect@ SceneRect::copy() const
+SceneRect@ SceneRect::nextTo(SceneObject@, Side, float = 16)
+SceneRegular@ SceneObject::opCast()
+SceneRegular@ SceneRegular(uint, float)
+SceneRegular@ SceneRegular::at(float, float)
+SceneRegular@ SceneRegular::copy() const
+SceneRegular@ SceneRegular::nextTo(SceneObject@, Side, float = 16)
+SceneSector@ SceneObject::opCast()
+SceneSector@ SceneSector(float, float, float)
+SceneSector@ SceneSector::at(float, float)
+SceneSector@ SceneSector::copy() const
+SceneSector@ SceneSector::nextTo(SceneObject@, Side, float = 16)
+SceneSlider@ SceneSlider::copy() const
+SceneSlider@ SceneSlider::nextTo(SceneObject@, Side, float = 16)
+SceneStar@ SceneObject::opCast()
+SceneStar@ SceneStar(uint, float, float = 0)
+SceneStar@ SceneStar::at(float, float)
+SceneStar@ SceneStar::copy() const
+SceneStar@ SceneStar::nextTo(SceneObject@, Side, float = 16)
+SceneText@ SceneText::copy() const
+SceneText@ SceneText::nextTo(SceneObject@, Side, float = 16)
+SceneToggle@ SceneToggle::copy() const
+SceneToggle@ SceneToggle::nextTo(SceneObject@, Side, float = 16)
+Side::Above = 2
+Side::Below = 3
+Side::Left = 0
+Side::Right = 1
+bool Scene::has(SceneObject@) const
+bool SceneArc::get_visible() const
+bool SceneAxes::get_visible() const
+bool SceneCurve::get_closed() const
+bool SceneCurve::get_smooth() const
+bool SceneCurve::get_visible() const
+bool SceneEllipse::get_visible() const
+bool SceneNumber::get_visible() const
+bool SceneRegular::get_visible() const
+bool SceneSector::get_visible() const
+bool SceneStar::get_visible() const
+class SceneArc
+class SceneAxes
+class SceneCurve
+class SceneEllipse
+class SceneNumber
+class SceneRegular
+class SceneSector
+class SceneStar
+enum ArrowHead
+enum Side
+float SceneArc::get_bottom() const
+float SceneArc::get_dash() const
+float SceneArc::get_dashGap() const
+float SceneArc::get_fillOpacity() const
+float SceneArc::get_headSize() const
+float SceneArc::get_left() const
+float SceneArc::get_lineWidth() const
+float SceneArc::get_opacity() const
+float SceneArc::get_radius() const
+float SceneArc::get_right() const
+float SceneArc::get_rotation() const
+float SceneArc::get_scale() const
+float SceneArc::get_start() const
+float SceneArc::get_sweep() const
+float SceneArc::get_top() const
+float SceneArc::get_x() const
+float SceneArc::get_y() const
+float SceneArrow::get_bend() const
+float SceneArrow::get_bottom() const
+float SceneArrow::get_dash() const
+float SceneArrow::get_dashGap() const
+float SceneArrow::get_endX() const
+float SceneArrow::get_endY() const
+float SceneArrow::get_headSize() const
+float SceneArrow::get_left() const
+float SceneArrow::get_right() const
+float SceneArrow::get_startX() const
+float SceneArrow::get_startY() const
+float SceneArrow::get_top() const
+float SceneAxes::get_bottom() const
+float SceneAxes::get_dash() const
+float SceneAxes::get_dashGap() const
+float SceneAxes::get_fillOpacity() const
+float SceneAxes::get_height() const
+float SceneAxes::get_left() const
+float SceneAxes::get_lineWidth() const
+float SceneAxes::get_opacity() const
+float SceneAxes::get_right() const
+float SceneAxes::get_rotation() const
+float SceneAxes::get_scale() const
+float SceneAxes::get_top() const
+float SceneAxes::get_width() const
+float SceneAxes::get_x() const
+float SceneAxes::get_xMax() const
+float SceneAxes::get_xMin() const
+float SceneAxes::get_xStep() const
+float SceneAxes::get_y() const
+float SceneAxes::get_yMax() const
+float SceneAxes::get_yMin() const
+float SceneAxes::get_yStep() const
+float SceneAxes::toX(float) const
+float SceneAxes::toY(float) const
+float SceneBars::get_bottom() const
+float SceneBars::get_dash() const
+float SceneBars::get_dashGap() const
+float SceneBars::get_left() const
+float SceneBars::get_right() const
+float SceneBars::get_top() const
+float SceneButton::get_bottom() const
+float SceneButton::get_dash() const
+float SceneButton::get_dashGap() const
+float SceneButton::get_left() const
+float SceneButton::get_right() const
+float SceneButton::get_top() const
+float SceneCircle::get_bottom() const
+float SceneCircle::get_dash() const
+float SceneCircle::get_dashGap() const
+float SceneCircle::get_left() const
+float SceneCircle::get_right() const
+float SceneCircle::get_top() const
+float SceneCode::get_bottom() const
+float SceneCode::get_dash() const
+float SceneCode::get_dashGap() const
+float SceneCode::get_left() const
+float SceneCode::get_right() const
+float SceneCode::get_top() const
+float SceneCurve::get_bottom() const
+float SceneCurve::get_dash() const
+float SceneCurve::get_dashGap() const
+float SceneCurve::get_fillOpacity() const
+float SceneCurve::get_headSize() const
+float SceneCurve::get_left() const
+float SceneCurve::get_lineWidth() const
+float SceneCurve::get_opacity() const
+float SceneCurve::get_right() const
+float SceneCurve::get_rotation() const
+float SceneCurve::get_scale() const
+float SceneCurve::get_top() const
+float SceneCurve::get_x() const
+float SceneCurve::get_y() const
+float SceneEllipse::get_bottom() const
+float SceneEllipse::get_dash() const
+float SceneEllipse::get_dashGap() const
+float SceneEllipse::get_fillOpacity() const
+float SceneEllipse::get_height() const
+float SceneEllipse::get_left() const
+float SceneEllipse::get_lineWidth() const
+float SceneEllipse::get_opacity() const
+float SceneEllipse::get_right() const
+float SceneEllipse::get_rotation() const
+float SceneEllipse::get_scale() const
+float SceneEllipse::get_top() const
+float SceneEllipse::get_width() const
+float SceneEllipse::get_x() const
+float SceneEllipse::get_y() const
+float SceneGrid::get_bottom() const
+float SceneGrid::get_dash() const
+float SceneGrid::get_dashGap() const
+float SceneGrid::get_left() const
+float SceneGrid::get_right() const
+float SceneGrid::get_top() const
+float SceneGroup::get_bottom() const
+float SceneGroup::get_dash() const
+float SceneGroup::get_dashGap() const
+float SceneGroup::get_left() const
+float SceneGroup::get_right() const
+float SceneGroup::get_top() const
+float SceneImage::get_bottom() const
+float SceneImage::get_dash() const
+float SceneImage::get_dashGap() const
+float SceneImage::get_left() const
+float SceneImage::get_right() const
+float SceneImage::get_top() const
+float SceneLine::get_bend() const
+float SceneLine::get_bottom() const
+float SceneLine::get_dash() const
+float SceneLine::get_dashGap() const
+float SceneLine::get_endX() const
+float SceneLine::get_endY() const
+float SceneLine::get_headSize() const
+float SceneLine::get_left() const
+float SceneLine::get_right() const
+float SceneLine::get_startX() const
+float SceneLine::get_startY() const
+float SceneLine::get_top() const
+float SceneNumber::get_bottom() const
+float SceneNumber::get_dash() const
+float SceneNumber::get_dashGap() const
+float SceneNumber::get_fillOpacity() const
+float SceneNumber::get_left() const
+float SceneNumber::get_lineWidth() const
+float SceneNumber::get_opacity() const
+float SceneNumber::get_right() const
+float SceneNumber::get_rotation() const
+float SceneNumber::get_scale() const
+float SceneNumber::get_top() const
+float SceneNumber::get_value() const
+float SceneNumber::get_x() const
+float SceneNumber::get_y() const
+float SceneObject::get_bottom() const
+float SceneObject::get_dash() const
+float SceneObject::get_dashGap() const
+float SceneObject::get_left() const
+float SceneObject::get_right() const
+float SceneObject::get_top() const
+float ScenePolygon::get_bottom() const
+float ScenePolygon::get_dash() const
+float ScenePolygon::get_dashGap() const
+float ScenePolygon::get_left() const
+float ScenePolygon::get_right() const
+float ScenePolygon::get_top() const
+float SceneRect::get_bottom() const
+float SceneRect::get_cornerRadius() const
+float SceneRect::get_dash() const
+float SceneRect::get_dashGap() const
+float SceneRect::get_left() const
+float SceneRect::get_right() const
+float SceneRect::get_top() const
+float SceneRegular::get_bottom() const
+float SceneRegular::get_dash() const
+float SceneRegular::get_dashGap() const
+float SceneRegular::get_fillOpacity() const
+float SceneRegular::get_left() const
+float SceneRegular::get_lineWidth() const
+float SceneRegular::get_opacity() const
+float SceneRegular::get_radius() const
+float SceneRegular::get_right() const
+float SceneRegular::get_rotation() const
+float SceneRegular::get_scale() const
+float SceneRegular::get_top() const
+float SceneRegular::get_x() const
+float SceneRegular::get_y() const
+float SceneSector::get_bottom() const
+float SceneSector::get_dash() const
+float SceneSector::get_dashGap() const
+float SceneSector::get_fillOpacity() const
+float SceneSector::get_innerRadius() const
+float SceneSector::get_left() const
+float SceneSector::get_lineWidth() const
+float SceneSector::get_opacity() const
+float SceneSector::get_radius() const
+float SceneSector::get_right() const
+float SceneSector::get_rotation() const
+float SceneSector::get_scale() const
+float SceneSector::get_start() const
+float SceneSector::get_sweep() const
+float SceneSector::get_top() const
+float SceneSector::get_x() const
+float SceneSector::get_y() const
+float SceneSlider::get_bottom() const
+float SceneSlider::get_dash() const
+float SceneSlider::get_dashGap() const
+float SceneSlider::get_left() const
+float SceneSlider::get_right() const
+float SceneSlider::get_top() const
+float SceneStar::get_bottom() const
+float SceneStar::get_dash() const
+float SceneStar::get_dashGap() const
+float SceneStar::get_fillOpacity() const
+float SceneStar::get_innerRadius() const
+float SceneStar::get_left() const
+float SceneStar::get_lineWidth() const
+float SceneStar::get_opacity() const
+float SceneStar::get_radius() const
+float SceneStar::get_right() const
+float SceneStar::get_rotation() const
+float SceneStar::get_scale() const
+float SceneStar::get_top() const
+float SceneStar::get_x() const
+float SceneStar::get_y() const
+float SceneText::get_bottom() const
+float SceneText::get_dash() const
+float SceneText::get_dashGap() const
+float SceneText::get_left() const
+float SceneText::get_right() const
+float SceneText::get_top() const
+float SceneToggle::get_bottom() const
+float SceneToggle::get_dash() const
+float SceneToggle::get_dashGap() const
+float SceneToggle::get_left() const
+float SceneToggle::get_right() const
+float SceneToggle::get_top() const
+funcdef float PlotFunction(float)
+int SceneNumber::get_decimals() const
+uint SceneArc::get_color() const
+uint SceneArc::get_fill() const
+uint SceneAxes::get_color() const
+uint SceneAxes::get_fill() const
+uint SceneCurve::get_color() const
+uint SceneCurve::get_count() const
+uint SceneCurve::get_fill() const
+uint SceneEllipse::get_color() const
+uint SceneEllipse::get_fill() const
+uint SceneNumber::get_color() const
+uint SceneNumber::get_fill() const
+uint SceneRegular::get_color() const
+uint SceneRegular::get_fill() const
+uint SceneRegular::get_sides() const
+uint SceneSector::get_color() const
+uint SceneSector::get_fill() const
+uint SceneStar::get_color() const
+uint SceneStar::get_fill() const
+uint SceneStar::get_points() const
+void Scene::play(const SceneAnimation@[]&in, float, float)
+void Scene::removeAll()
+void Scene::toBack(SceneObject@)
+void Scene::toFront(SceneObject@)
+void SceneArc::set_color(uint)
+void SceneArc::set_dash(float)
+void SceneArc::set_dashGap(float)
+void SceneArc::set_fill(uint)
+void SceneArc::set_fillOpacity(float)
+void SceneArc::set_head(ArrowHead)
+void SceneArc::set_headSize(float)
+void SceneArc::set_lineWidth(float)
+void SceneArc::set_opacity(float)
+void SceneArc::set_radius(float)
+void SceneArc::set_rotation(float)
+void SceneArc::set_scale(float)
+void SceneArc::set_start(float)
+void SceneArc::set_sweep(float)
+void SceneArc::set_tail(ArrowHead)
+void SceneArc::set_visible(bool)
+void SceneArc::set_x(float)
+void SceneArc::set_y(float)
+void SceneArrow::set_bend(float)
+void SceneArrow::set_dash(float)
+void SceneArrow::set_dashGap(float)
+void SceneArrow::set_endX(float)
+void SceneArrow::set_endY(float)
+void SceneArrow::set_head(ArrowHead)
+void SceneArrow::set_headSize(float)
+void SceneArrow::set_startX(float)
+void SceneArrow::set_startY(float)
+void SceneArrow::set_tail(ArrowHead)
+void SceneAxes::set_color(uint)
+void SceneAxes::set_dash(float)
+void SceneAxes::set_dashGap(float)
+void SceneAxes::set_fill(uint)
+void SceneAxes::set_fillOpacity(float)
+void SceneAxes::set_height(float)
+void SceneAxes::set_lineWidth(float)
+void SceneAxes::set_opacity(float)
+void SceneAxes::set_rotation(float)
+void SceneAxes::set_scale(float)
+void SceneAxes::set_visible(bool)
+void SceneAxes::set_width(float)
+void SceneAxes::set_x(float)
+void SceneAxes::set_xMax(float)
+void SceneAxes::set_xMin(float)
+void SceneAxes::set_xStep(float)
+void SceneAxes::set_y(float)
+void SceneAxes::set_yMax(float)
+void SceneAxes::set_yMin(float)
+void SceneAxes::set_yStep(float)
+void SceneBars::set_dash(float)
+void SceneBars::set_dashGap(float)
+void SceneButton::set_dash(float)
+void SceneButton::set_dashGap(float)
+void SceneCircle::set_dash(float)
+void SceneCircle::set_dashGap(float)
+void SceneCode::set_dash(float)
+void SceneCode::set_dashGap(float)
+void SceneCurve::set_closed(bool)
+void SceneCurve::set_color(uint)
+void SceneCurve::set_dash(float)
+void SceneCurve::set_dashGap(float)
+void SceneCurve::set_fill(uint)
+void SceneCurve::set_fillOpacity(float)
+void SceneCurve::set_head(ArrowHead)
+void SceneCurve::set_headSize(float)
+void SceneCurve::set_lineWidth(float)
+void SceneCurve::set_opacity(float)
+void SceneCurve::set_rotation(float)
+void SceneCurve::set_scale(float)
+void SceneCurve::set_smooth(bool)
+void SceneCurve::set_tail(ArrowHead)
+void SceneCurve::set_visible(bool)
+void SceneCurve::set_x(float)
+void SceneCurve::set_y(float)
+void SceneEllipse::set_color(uint)
+void SceneEllipse::set_dash(float)
+void SceneEllipse::set_dashGap(float)
+void SceneEllipse::set_fill(uint)
+void SceneEllipse::set_fillOpacity(float)
+void SceneEllipse::set_height(float)
+void SceneEllipse::set_lineWidth(float)
+void SceneEllipse::set_opacity(float)
+void SceneEllipse::set_rotation(float)
+void SceneEllipse::set_scale(float)
+void SceneEllipse::set_visible(bool)
+void SceneEllipse::set_width(float)
+void SceneEllipse::set_x(float)
+void SceneEllipse::set_y(float)
+void SceneGrid::set_dash(float)
+void SceneGrid::set_dashGap(float)
+void SceneGroup::set_dash(float)
+void SceneGroup::set_dashGap(float)
+void SceneImage::set_dash(float)
+void SceneImage::set_dashGap(float)
+void SceneLine::set_bend(float)
+void SceneLine::set_dash(float)
+void SceneLine::set_dashGap(float)
+void SceneLine::set_endX(float)
+void SceneLine::set_endY(float)
+void SceneLine::set_head(ArrowHead)
+void SceneLine::set_headSize(float)
+void SceneLine::set_startX(float)
+void SceneLine::set_startY(float)
+void SceneLine::set_tail(ArrowHead)
+void SceneNumber::set_color(uint)
+void SceneNumber::set_dash(float)
+void SceneNumber::set_dashGap(float)
+void SceneNumber::set_decimals(int)
+void SceneNumber::set_fill(uint)
+void SceneNumber::set_fillOpacity(float)
+void SceneNumber::set_lineWidth(float)
+void SceneNumber::set_opacity(float)
+void SceneNumber::set_rotation(float)
+void SceneNumber::set_scale(float)
+void SceneNumber::set_value(float)
+void SceneNumber::set_visible(bool)
+void SceneNumber::set_x(float)
+void SceneNumber::set_y(float)
+void SceneObject::set_dash(float)
+void SceneObject::set_dashGap(float)
+void ScenePolygon::set_dash(float)
+void ScenePolygon::set_dashGap(float)
+void SceneRect::set_cornerRadius(float)
+void SceneRect::set_dash(float)
+void SceneRect::set_dashGap(float)
+void SceneRegular::set_color(uint)
+void SceneRegular::set_dash(float)
+void SceneRegular::set_dashGap(float)
+void SceneRegular::set_fill(uint)
+void SceneRegular::set_fillOpacity(float)
+void SceneRegular::set_lineWidth(float)
+void SceneRegular::set_opacity(float)
+void SceneRegular::set_radius(float)
+void SceneRegular::set_rotation(float)
+void SceneRegular::set_scale(float)
+void SceneRegular::set_sides(uint)
+void SceneRegular::set_visible(bool)
+void SceneRegular::set_x(float)
+void SceneRegular::set_y(float)
+void SceneSector::set_color(uint)
+void SceneSector::set_dash(float)
+void SceneSector::set_dashGap(float)
+void SceneSector::set_fill(uint)
+void SceneSector::set_fillOpacity(float)
+void SceneSector::set_innerRadius(float)
+void SceneSector::set_lineWidth(float)
+void SceneSector::set_opacity(float)
+void SceneSector::set_radius(float)
+void SceneSector::set_rotation(float)
+void SceneSector::set_scale(float)
+void SceneSector::set_start(float)
+void SceneSector::set_sweep(float)
+void SceneSector::set_visible(bool)
+void SceneSector::set_x(float)
+void SceneSector::set_y(float)
+void SceneSlider::set_dash(float)
+void SceneSlider::set_dashGap(float)
+void SceneStar::set_color(uint)
+void SceneStar::set_dash(float)
+void SceneStar::set_dashGap(float)
+void SceneStar::set_fill(uint)
+void SceneStar::set_fillOpacity(float)
+void SceneStar::set_innerRadius(float)
+void SceneStar::set_lineWidth(float)
+void SceneStar::set_opacity(float)
+void SceneStar::set_points(uint)
+void SceneStar::set_radius(float)
+void SceneStar::set_rotation(float)
+void SceneStar::set_scale(float)
+void SceneStar::set_visible(bool)
+void SceneStar::set_x(float)
+void SceneStar::set_y(float)
+void SceneText::set_dash(float)
+void SceneText::set_dashGap(float)
+void SceneToggle::set_dash(float)
+void SceneToggle::set_dashGap(float)
+# 2026-11-04: Preso step 14 (devplan/preso.md §8e): SceneArray, SceneTable, SceneGraph, SceneBrace,
+# SceneCallout, SceneLabel, the charts, SceneIcon, SceneMark, SceneConfetti; code highlights and
+# transformTo; follow(), moveAlong(); the camera; Mark, Updater.
+Mark::Check = 0
+Mark::Cross = 1
+SceneAnimation@ Scene::panTo(float, float)
+SceneAnimation@ Scene::resetCamera()
+SceneAnimation@ Scene::zoomBy(float)
+SceneAnimation@ Scene::zoomTo(SceneObject@, float = 40)
+SceneAnimation@ SceneArc::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneArray::colorTo(uint)
+SceneAnimation@ SceneArray::fadeIn()
+SceneAnimation@ SceneArray::fadeOut()
+SceneAnimation@ SceneArray::fadeTo(float)
+SceneAnimation@ SceneArray::fillTo(uint)
+SceneAnimation@ SceneArray::grow()
+SceneAnimation@ SceneArray::highlight(uint)
+SceneAnimation@ SceneArray::highlight(uint, uint)
+SceneAnimation@ SceneArray::indicate()
+SceneAnimation@ SceneArray::move(float, float)
+SceneAnimation@ SceneArray::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneArray::pointTo(const string&in, uint)
+SceneAnimation@ SceneArray::rotateBy(float)
+SceneAnimation@ SceneArray::rotateTo(float)
+SceneAnimation@ SceneArray::scaleBy(float)
+SceneAnimation@ SceneArray::scaleTo(float)
+SceneAnimation@ SceneArray::set(uint, const ?&in)
+SceneAnimation@ SceneArray::shift(float, float)
+SceneAnimation@ SceneArray::shrink()
+SceneAnimation@ SceneArray::swap(uint, uint)
+SceneAnimation@ SceneArray::transform(SceneObject@)
+SceneAnimation@ SceneArray::tween(const string&in, float)
+SceneAnimation@ SceneArray::unhighlight(uint)
+SceneAnimation@ SceneArray::wiggle()
+SceneAnimation@ SceneArray::write()
+SceneAnimation@ SceneArrow::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneAxes::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneBarChart::build()
+SceneAnimation@ SceneBarChart::colorTo(uint)
+SceneAnimation@ SceneBarChart::fadeIn()
+SceneAnimation@ SceneBarChart::fadeOut()
+SceneAnimation@ SceneBarChart::fadeTo(float)
+SceneAnimation@ SceneBarChart::fillTo(uint)
+SceneAnimation@ SceneBarChart::grow()
+SceneAnimation@ SceneBarChart::indicate()
+SceneAnimation@ SceneBarChart::move(float, float)
+SceneAnimation@ SceneBarChart::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneBarChart::rotateBy(float)
+SceneAnimation@ SceneBarChart::rotateTo(float)
+SceneAnimation@ SceneBarChart::scaleBy(float)
+SceneAnimation@ SceneBarChart::scaleTo(float)
+SceneAnimation@ SceneBarChart::setValue(uint, float)
+SceneAnimation@ SceneBarChart::shift(float, float)
+SceneAnimation@ SceneBarChart::shrink()
+SceneAnimation@ SceneBarChart::transform(SceneObject@)
+SceneAnimation@ SceneBarChart::tween(const string&in, float)
+SceneAnimation@ SceneBarChart::wiggle()
+SceneAnimation@ SceneBarChart::write()
+SceneAnimation@ SceneBars::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneBrace::colorTo(uint)
+SceneAnimation@ SceneBrace::fadeIn()
+SceneAnimation@ SceneBrace::fadeOut()
+SceneAnimation@ SceneBrace::fadeTo(float)
+SceneAnimation@ SceneBrace::fillTo(uint)
+SceneAnimation@ SceneBrace::grow()
+SceneAnimation@ SceneBrace::indicate()
+SceneAnimation@ SceneBrace::move(float, float)
+SceneAnimation@ SceneBrace::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneBrace::rotateBy(float)
+SceneAnimation@ SceneBrace::rotateTo(float)
+SceneAnimation@ SceneBrace::scaleBy(float)
+SceneAnimation@ SceneBrace::scaleTo(float)
+SceneAnimation@ SceneBrace::shift(float, float)
+SceneAnimation@ SceneBrace::shrink()
+SceneAnimation@ SceneBrace::transform(SceneObject@)
+SceneAnimation@ SceneBrace::tween(const string&in, float)
+SceneAnimation@ SceneBrace::wiggle()
+SceneAnimation@ SceneBrace::write()
+SceneAnimation@ SceneButton::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneCallout::colorTo(uint)
+SceneAnimation@ SceneCallout::fadeIn()
+SceneAnimation@ SceneCallout::fadeOut()
+SceneAnimation@ SceneCallout::fadeTo(float)
+SceneAnimation@ SceneCallout::fillTo(uint)
+SceneAnimation@ SceneCallout::grow()
+SceneAnimation@ SceneCallout::indicate()
+SceneAnimation@ SceneCallout::move(float, float)
+SceneAnimation@ SceneCallout::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneCallout::rotateBy(float)
+SceneAnimation@ SceneCallout::rotateTo(float)
+SceneAnimation@ SceneCallout::scaleBy(float)
+SceneAnimation@ SceneCallout::scaleTo(float)
+SceneAnimation@ SceneCallout::shift(float, float)
+SceneAnimation@ SceneCallout::shrink()
+SceneAnimation@ SceneCallout::transform(SceneObject@)
+SceneAnimation@ SceneCallout::tween(const string&in, float)
+SceneAnimation@ SceneCallout::wiggle()
+SceneAnimation@ SceneCallout::write()
+SceneAnimation@ SceneCircle::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneCode::highlight(const int[]&in)
+SceneAnimation@ SceneCode::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneCode::transformTo(const string&in)
+SceneAnimation@ SceneConfetti::burst()
+SceneAnimation@ SceneConfetti::colorTo(uint)
+SceneAnimation@ SceneConfetti::fadeIn()
+SceneAnimation@ SceneConfetti::fadeOut()
+SceneAnimation@ SceneConfetti::fadeTo(float)
+SceneAnimation@ SceneConfetti::fillTo(uint)
+SceneAnimation@ SceneConfetti::grow()
+SceneAnimation@ SceneConfetti::indicate()
+SceneAnimation@ SceneConfetti::move(float, float)
+SceneAnimation@ SceneConfetti::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneConfetti::rotateBy(float)
+SceneAnimation@ SceneConfetti::rotateTo(float)
+SceneAnimation@ SceneConfetti::scaleBy(float)
+SceneAnimation@ SceneConfetti::scaleTo(float)
+SceneAnimation@ SceneConfetti::shift(float, float)
+SceneAnimation@ SceneConfetti::shrink()
+SceneAnimation@ SceneConfetti::transform(SceneObject@)
+SceneAnimation@ SceneConfetti::tween(const string&in, float)
+SceneAnimation@ SceneConfetti::wiggle()
+SceneAnimation@ SceneConfetti::write()
+SceneAnimation@ SceneCurve::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneEllipse::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneGraph::colorTo(uint)
+SceneAnimation@ SceneGraph::fadeIn()
+SceneAnimation@ SceneGraph::fadeOut()
+SceneAnimation@ SceneGraph::fadeTo(float)
+SceneAnimation@ SceneGraph::fillTo(uint)
+SceneAnimation@ SceneGraph::grow()
+SceneAnimation@ SceneGraph::highlightEdge(uint, uint)
+SceneAnimation@ SceneGraph::indicate()
+SceneAnimation@ SceneGraph::move(float, float)
+SceneAnimation@ SceneGraph::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneGraph::rotateBy(float)
+SceneAnimation@ SceneGraph::rotateTo(float)
+SceneAnimation@ SceneGraph::scaleBy(float)
+SceneAnimation@ SceneGraph::scaleTo(float)
+SceneAnimation@ SceneGraph::shift(float, float)
+SceneAnimation@ SceneGraph::shrink()
+SceneAnimation@ SceneGraph::transform(SceneObject@)
+SceneAnimation@ SceneGraph::tween(const string&in, float)
+SceneAnimation@ SceneGraph::unvisit(uint)
+SceneAnimation@ SceneGraph::visit(uint)
+SceneAnimation@ SceneGraph::wiggle()
+SceneAnimation@ SceneGraph::write()
+SceneAnimation@ SceneGrid::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneGroup::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneIcon::colorTo(uint)
+SceneAnimation@ SceneIcon::fadeIn()
+SceneAnimation@ SceneIcon::fadeOut()
+SceneAnimation@ SceneIcon::fadeTo(float)
+SceneAnimation@ SceneIcon::fillTo(uint)
+SceneAnimation@ SceneIcon::grow()
+SceneAnimation@ SceneIcon::indicate()
+SceneAnimation@ SceneIcon::move(float, float)
+SceneAnimation@ SceneIcon::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneIcon::rotateBy(float)
+SceneAnimation@ SceneIcon::rotateTo(float)
+SceneAnimation@ SceneIcon::scaleBy(float)
+SceneAnimation@ SceneIcon::scaleTo(float)
+SceneAnimation@ SceneIcon::shift(float, float)
+SceneAnimation@ SceneIcon::shrink()
+SceneAnimation@ SceneIcon::transform(SceneObject@)
+SceneAnimation@ SceneIcon::tween(const string&in, float)
+SceneAnimation@ SceneIcon::wiggle()
+SceneAnimation@ SceneIcon::write()
+SceneAnimation@ SceneImage::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneLabel::colorTo(uint)
+SceneAnimation@ SceneLabel::fadeIn()
+SceneAnimation@ SceneLabel::fadeOut()
+SceneAnimation@ SceneLabel::fadeTo(float)
+SceneAnimation@ SceneLabel::fillTo(uint)
+SceneAnimation@ SceneLabel::grow()
+SceneAnimation@ SceneLabel::indicate()
+SceneAnimation@ SceneLabel::move(float, float)
+SceneAnimation@ SceneLabel::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneLabel::rotateBy(float)
+SceneAnimation@ SceneLabel::rotateTo(float)
+SceneAnimation@ SceneLabel::scaleBy(float)
+SceneAnimation@ SceneLabel::scaleTo(float)
+SceneAnimation@ SceneLabel::shift(float, float)
+SceneAnimation@ SceneLabel::shrink()
+SceneAnimation@ SceneLabel::transform(SceneObject@)
+SceneAnimation@ SceneLabel::tween(const string&in, float)
+SceneAnimation@ SceneLabel::wiggle()
+SceneAnimation@ SceneLabel::write()
+SceneAnimation@ SceneLine::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneLineChart::build()
+SceneAnimation@ SceneLineChart::colorTo(uint)
+SceneAnimation@ SceneLineChart::fadeIn()
+SceneAnimation@ SceneLineChart::fadeOut()
+SceneAnimation@ SceneLineChart::fadeTo(float)
+SceneAnimation@ SceneLineChart::fillTo(uint)
+SceneAnimation@ SceneLineChart::grow()
+SceneAnimation@ SceneLineChart::indicate()
+SceneAnimation@ SceneLineChart::move(float, float)
+SceneAnimation@ SceneLineChart::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneLineChart::rotateBy(float)
+SceneAnimation@ SceneLineChart::rotateTo(float)
+SceneAnimation@ SceneLineChart::scaleBy(float)
+SceneAnimation@ SceneLineChart::scaleTo(float)
+SceneAnimation@ SceneLineChart::setValue(uint, float)
+SceneAnimation@ SceneLineChart::shift(float, float)
+SceneAnimation@ SceneLineChart::shrink()
+SceneAnimation@ SceneLineChart::transform(SceneObject@)
+SceneAnimation@ SceneLineChart::tween(const string&in, float)
+SceneAnimation@ SceneLineChart::wiggle()
+SceneAnimation@ SceneLineChart::write()
+SceneAnimation@ SceneMark::colorTo(uint)
+SceneAnimation@ SceneMark::fadeIn()
+SceneAnimation@ SceneMark::fadeOut()
+SceneAnimation@ SceneMark::fadeTo(float)
+SceneAnimation@ SceneMark::fillTo(uint)
+SceneAnimation@ SceneMark::grow()
+SceneAnimation@ SceneMark::indicate()
+SceneAnimation@ SceneMark::move(float, float)
+SceneAnimation@ SceneMark::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneMark::rotateBy(float)
+SceneAnimation@ SceneMark::rotateTo(float)
+SceneAnimation@ SceneMark::scaleBy(float)
+SceneAnimation@ SceneMark::scaleTo(float)
+SceneAnimation@ SceneMark::shift(float, float)
+SceneAnimation@ SceneMark::shrink()
+SceneAnimation@ SceneMark::transform(SceneObject@)
+SceneAnimation@ SceneMark::tween(const string&in, float)
+SceneAnimation@ SceneMark::wiggle()
+SceneAnimation@ SceneMark::write()
+SceneAnimation@ SceneNumber::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneObject::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ ScenePieChart::build()
+SceneAnimation@ ScenePieChart::colorTo(uint)
+SceneAnimation@ ScenePieChart::fadeIn()
+SceneAnimation@ ScenePieChart::fadeOut()
+SceneAnimation@ ScenePieChart::fadeTo(float)
+SceneAnimation@ ScenePieChart::fillTo(uint)
+SceneAnimation@ ScenePieChart::grow()
+SceneAnimation@ ScenePieChart::indicate()
+SceneAnimation@ ScenePieChart::move(float, float)
+SceneAnimation@ ScenePieChart::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ ScenePieChart::rotateBy(float)
+SceneAnimation@ ScenePieChart::rotateTo(float)
+SceneAnimation@ ScenePieChart::scaleBy(float)
+SceneAnimation@ ScenePieChart::scaleTo(float)
+SceneAnimation@ ScenePieChart::setValue(uint, float)
+SceneAnimation@ ScenePieChart::shift(float, float)
+SceneAnimation@ ScenePieChart::shrink()
+SceneAnimation@ ScenePieChart::transform(SceneObject@)
+SceneAnimation@ ScenePieChart::tween(const string&in, float)
+SceneAnimation@ ScenePieChart::wiggle()
+SceneAnimation@ ScenePieChart::write()
+SceneAnimation@ ScenePolygon::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneRect::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneRegular::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneSector::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneSlider::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneStar::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneTable::colorTo(uint)
+SceneAnimation@ SceneTable::fadeIn()
+SceneAnimation@ SceneTable::fadeOut()
+SceneAnimation@ SceneTable::fadeTo(float)
+SceneAnimation@ SceneTable::fillTo(uint)
+SceneAnimation@ SceneTable::grow()
+SceneAnimation@ SceneTable::highlight(uint, uint)
+SceneAnimation@ SceneTable::highlightColumn(uint)
+SceneAnimation@ SceneTable::highlightRow(uint)
+SceneAnimation@ SceneTable::indicate()
+SceneAnimation@ SceneTable::move(float, float)
+SceneAnimation@ SceneTable::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneTable::rotateBy(float)
+SceneAnimation@ SceneTable::rotateTo(float)
+SceneAnimation@ SceneTable::scaleBy(float)
+SceneAnimation@ SceneTable::scaleTo(float)
+SceneAnimation@ SceneTable::shift(float, float)
+SceneAnimation@ SceneTable::shrink()
+SceneAnimation@ SceneTable::transform(SceneObject@)
+SceneAnimation@ SceneTable::tween(const string&in, float)
+SceneAnimation@ SceneTable::unhighlightAll()
+SceneAnimation@ SceneTable::wiggle()
+SceneAnimation@ SceneTable::write()
+SceneAnimation@ SceneText::moveAlong(SceneObject@, bool = false)
+SceneAnimation@ SceneToggle::moveAlong(SceneObject@, bool = false)
+SceneAnimation@[]@ SceneGraph::highlightPath(const int[]&in)
+SceneArray@ SceneArray(const ?&in, float = 64)
+SceneArray@ SceneArray(const int[]&in, float = 64)
+SceneArray@ SceneArray::at(float, float)
+SceneArray@ SceneArray::copy() const
+SceneArray@ SceneArray::nextTo(SceneObject@, Side, float = 16)
+SceneArray@ SceneObject::opCast()
+SceneBarChart@ SceneBarChart(const float[]&in, const string[]&in, float = 500, float = 260)
+SceneBarChart@ SceneBarChart::at(float, float)
+SceneBarChart@ SceneBarChart::copy() const
+SceneBarChart@ SceneBarChart::nextTo(SceneObject@, Side, float = 16)
+SceneBarChart@ SceneObject::opCast()
+SceneBrace@ SceneBrace(SceneObject@, Side, const string&in = "")
+SceneBrace@ SceneBrace::at(float, float)
+SceneBrace@ SceneBrace::copy() const
+SceneBrace@ SceneBrace::nextTo(SceneObject@, Side, float = 16)
+SceneBrace@ SceneObject::opCast()
+SceneCallout@ SceneCallout(const string&in, SceneObject@, Side = Side::Above, float = 24)
+SceneCallout@ SceneCallout::at(float, float)
+SceneCallout@ SceneCallout::copy() const
+SceneCallout@ SceneCallout::nextTo(SceneObject@, Side, float = 16)
+SceneCallout@ SceneObject::opCast()
+SceneConfetti@ SceneConfetti(float = 0, float = 0)
+SceneConfetti@ SceneConfetti::at(float, float)
+SceneConfetti@ SceneConfetti::copy() const
+SceneConfetti@ SceneConfetti::nextTo(SceneObject@, Side, float = 16)
+SceneConfetti@ SceneObject::opCast()
+SceneGraph@ SceneGraph()
+SceneGraph@ SceneGraph::at(float, float)
+SceneGraph@ SceneGraph::copy() const
+SceneGraph@ SceneGraph::nextTo(SceneObject@, Side, float = 16)
+SceneGraph@ SceneObject::opCast()
+SceneGroup@ SceneGraph::node(uint)
+SceneIcon@ SceneIcon(const string&in, float = 64)
+SceneIcon@ SceneIcon::at(float, float)
+SceneIcon@ SceneIcon::copy() const
+SceneIcon@ SceneIcon::nextTo(SceneObject@, Side, float = 16)
+SceneIcon@ SceneObject::opCast()
+SceneLabel@ SceneLabel(const string&in, SceneObject@, Side = Side::Above, float = 8)
+SceneLabel@ SceneLabel::at(float, float)
+SceneLabel@ SceneLabel::copy() const
+SceneLabel@ SceneLabel::nextTo(SceneObject@, Side, float = 16)
+SceneLabel@ SceneObject::opCast()
+SceneLineChart@ SceneLineChart(const float[]&in, const string[]&in, float = 500, float = 260)
+SceneLineChart@ SceneLineChart::at(float, float)
+SceneLineChart@ SceneLineChart::copy() const
+SceneLineChart@ SceneLineChart::nextTo(SceneObject@, Side, float = 16)
+SceneLineChart@ SceneObject::opCast()
+SceneMark@ SceneMark(Mark, float = 48)
+SceneMark@ SceneMark::at(float, float)
+SceneMark@ SceneMark::copy() const
+SceneMark@ SceneMark::nextTo(SceneObject@, Side, float = 16)
+SceneMark@ SceneObject::opCast()
+SceneObject@ SceneArray::opImplCast()
+SceneObject@ SceneBarChart::opImplCast()
+SceneObject@ SceneBrace::opImplCast()
+SceneObject@ SceneCallout::opImplCast()
+SceneObject@ SceneConfetti::opImplCast()
+SceneObject@ SceneGraph::opImplCast()
+SceneObject@ SceneIcon::opImplCast()
+SceneObject@ SceneLabel::opImplCast()
+SceneObject@ SceneLineChart::opImplCast()
+SceneObject@ SceneMark::opImplCast()
+SceneObject@ ScenePieChart::opImplCast()
+SceneObject@ SceneTable::opImplCast()
+ScenePieChart@ SceneObject::opCast()
+ScenePieChart@ ScenePieChart(const float[]&in, const string[]&in, float = 120)
+ScenePieChart@ ScenePieChart::at(float, float)
+ScenePieChart@ ScenePieChart::copy() const
+ScenePieChart@ ScenePieChart::nextTo(SceneObject@, Side, float = 16)
+SceneRect@ SceneArray::cell(uint)
+SceneRect@ SceneTable::cell(uint, uint)
+SceneTable@ SceneObject::opCast()
+SceneTable@ SceneTable(uint, uint, float = 120, float = 48)
+SceneTable@ SceneTable::at(float, float)
+SceneTable@ SceneTable::copy() const
+SceneTable@ SceneTable::nextTo(SceneObject@, Side, float = 16)
+SceneText@ SceneArray::text(uint)
+SceneText@ SceneTable::text(uint, uint)
+bool SceneArray::get_indices() const
+bool SceneArray::get_visible() const
+bool SceneBarChart::get_visible() const
+bool SceneBrace::get_visible() const
+bool SceneCallout::get_visible() const
+bool SceneConfetti::get_visible() const
+bool SceneGraph::get_visible() const
+bool SceneIcon::get_visible() const
+bool SceneLabel::get_visible() const
+bool SceneLineChart::get_visible() const
+bool SceneMark::get_visible() const
+bool ScenePieChart::get_visible() const
+bool SceneTable::get_header() const
+bool SceneTable::get_visible() const
+class SceneArray
+class SceneBarChart
+class SceneBrace
+class SceneCallout
+class SceneConfetti
+class SceneGraph
+class SceneIcon
+class SceneLabel
+class SceneLineChart
+class SceneMark
+class ScenePieChart
+class SceneTable
+enum Mark
+float Scene::get_cameraX() const
+float Scene::get_cameraY() const
+float Scene::get_zoom() const
+float SceneArray::get_bottom() const
+float SceneArray::get_dash() const
+float SceneArray::get_dashGap() const
+float SceneArray::get_fillOpacity() const
+float SceneArray::get_left() const
+float SceneArray::get_lineWidth() const
+float SceneArray::get_opacity() const
+float SceneArray::get_right() const
+float SceneArray::get_rotation() const
+float SceneArray::get_scale() const
+float SceneArray::get_top() const
+float SceneArray::get_x() const
+float SceneArray::get_y() const
+float SceneBarChart::get_bottom() const
+float SceneBarChart::get_dash() const
+float SceneBarChart::get_dashGap() const
+float SceneBarChart::get_fillOpacity() const
+float SceneBarChart::get_left() const
+float SceneBarChart::get_lineWidth() const
+float SceneBarChart::get_opacity() const
+float SceneBarChart::get_right() const
+float SceneBarChart::get_rotation() const
+float SceneBarChart::get_scale() const
+float SceneBarChart::get_top() const
+float SceneBarChart::get_x() const
+float SceneBarChart::get_y() const
+float SceneBarChart::value(uint) const
+float SceneBrace::get_bottom() const
+float SceneBrace::get_dash() const
+float SceneBrace::get_dashGap() const
+float SceneBrace::get_fillOpacity() const
+float SceneBrace::get_left() const
+float SceneBrace::get_lineWidth() const
+float SceneBrace::get_opacity() const
+float SceneBrace::get_right() const
+float SceneBrace::get_rotation() const
+float SceneBrace::get_scale() const
+float SceneBrace::get_top() const
+float SceneBrace::get_x() const
+float SceneBrace::get_y() const
+float SceneCallout::get_bottom() const
+float SceneCallout::get_dash() const
+float SceneCallout::get_dashGap() const
+float SceneCallout::get_fillOpacity() const
+float SceneCallout::get_left() const
+float SceneCallout::get_lineWidth() const
+float SceneCallout::get_opacity() const
+float SceneCallout::get_right() const
+float SceneCallout::get_rotation() const
+float SceneCallout::get_scale() const
+float SceneCallout::get_top() const
+float SceneCallout::get_x() const
+float SceneCallout::get_y() const
+float SceneCode::get_dim() const
+float SceneConfetti::get_bottom() const
+float SceneConfetti::get_dash() const
+float SceneConfetti::get_dashGap() const
+float SceneConfetti::get_fillOpacity() const
+float SceneConfetti::get_left() const
+float SceneConfetti::get_lineWidth() const
+float SceneConfetti::get_opacity() const
+float SceneConfetti::get_right() const
+float SceneConfetti::get_rotation() const
+float SceneConfetti::get_scale() const
+float SceneConfetti::get_top() const
+float SceneConfetti::get_x() const
+float SceneConfetti::get_y() const
+float SceneGraph::get_bottom() const
+float SceneGraph::get_dash() const
+float SceneGraph::get_dashGap() const
+float SceneGraph::get_fillOpacity() const
+float SceneGraph::get_left() const
+float SceneGraph::get_lineWidth() const
+float SceneGraph::get_opacity() const
+float SceneGraph::get_right() const
+float SceneGraph::get_rotation() const
+float SceneGraph::get_scale() const
+float SceneGraph::get_top() const
+float SceneGraph::get_x() const
+float SceneGraph::get_y() const
+float SceneIcon::get_bottom() const
+float SceneIcon::get_dash() const
+float SceneIcon::get_dashGap() const
+float SceneIcon::get_fillOpacity() const
+float SceneIcon::get_left() const
+float SceneIcon::get_lineWidth() const
+float SceneIcon::get_opacity() const
+float SceneIcon::get_right() const
+float SceneIcon::get_rotation() const
+float SceneIcon::get_scale() const
+float SceneIcon::get_top() const
+float SceneIcon::get_x() const
+float SceneIcon::get_y() const
+float SceneLabel::get_bottom() const
+float SceneLabel::get_dash() const
+float SceneLabel::get_dashGap() const
+float SceneLabel::get_fillOpacity() const
+float SceneLabel::get_left() const
+float SceneLabel::get_lineWidth() const
+float SceneLabel::get_opacity() const
+float SceneLabel::get_right() const
+float SceneLabel::get_rotation() const
+float SceneLabel::get_scale() const
+float SceneLabel::get_top() const
+float SceneLabel::get_x() const
+float SceneLabel::get_y() const
+float SceneLineChart::get_bottom() const
+float SceneLineChart::get_dash() const
+float SceneLineChart::get_dashGap() const
+float SceneLineChart::get_fillOpacity() const
+float SceneLineChart::get_left() const
+float SceneLineChart::get_lineWidth() const
+float SceneLineChart::get_opacity() const
+float SceneLineChart::get_right() const
+float SceneLineChart::get_rotation() const
+float SceneLineChart::get_scale() const
+float SceneLineChart::get_top() const
+float SceneLineChart::get_x() const
+float SceneLineChart::get_y() const
+float SceneLineChart::value(uint) const
+float SceneMark::get_bottom() const
+float SceneMark::get_dash() const
+float SceneMark::get_dashGap() const
+float SceneMark::get_fillOpacity() const
+float SceneMark::get_left() const
+float SceneMark::get_lineWidth() const
+float SceneMark::get_opacity() const
+float SceneMark::get_right() const
+float SceneMark::get_rotation() const
+float SceneMark::get_scale() const
+float SceneMark::get_top() const
+float SceneMark::get_x() const
+float SceneMark::get_y() const
+float ScenePieChart::get_bottom() const
+float ScenePieChart::get_dash() const
+float ScenePieChart::get_dashGap() const
+float ScenePieChart::get_fillOpacity() const
+float ScenePieChart::get_left() const
+float ScenePieChart::get_lineWidth() const
+float ScenePieChart::get_opacity() const
+float ScenePieChart::get_right() const
+float ScenePieChart::get_rotation() const
+float ScenePieChart::get_scale() const
+float ScenePieChart::get_top() const
+float ScenePieChart::get_x() const
+float ScenePieChart::get_y() const
+float ScenePieChart::value(uint) const
+float SceneTable::get_bottom() const
+float SceneTable::get_dash() const
+float SceneTable::get_dashGap() const
+float SceneTable::get_fillOpacity() const
+float SceneTable::get_left() const
+float SceneTable::get_lineWidth() const
+float SceneTable::get_opacity() const
+float SceneTable::get_right() const
+float SceneTable::get_rotation() const
+float SceneTable::get_scale() const
+float SceneTable::get_top() const
+float SceneTable::get_x() const
+float SceneTable::get_y() const
+funcdef void Updater(SceneObject@)
+string SceneArray::value(uint) const
+string SceneBrace::get_text() const
+string SceneCallout::get_text() const
+string SceneLabel::get_text() const
+string SceneTable::get(uint, uint) const
+uint SceneArray::get_color() const
+uint SceneArray::get_count() const
+uint SceneArray::get_fill() const
+uint SceneBarChart::get_color() const
+uint SceneBarChart::get_count() const
+uint SceneBarChart::get_fill() const
+uint SceneBrace::get_color() const
+uint SceneBrace::get_fill() const
+uint SceneCallout::get_color() const
+uint SceneCallout::get_fill() const
+uint SceneCode::get_lineCount() const
+uint SceneConfetti::get_color() const
+uint SceneConfetti::get_fill() const
+uint SceneGraph::addEdge(uint, uint, bool = true)
+uint SceneGraph::addNode(const ?&in)
+uint SceneGraph::get_color() const
+uint SceneGraph::get_edges() const
+uint SceneGraph::get_fill() const
+uint SceneGraph::get_nodes() const
+uint SceneIcon::get_color() const
+uint SceneIcon::get_fill() const
+uint SceneLabel::get_color() const
+uint SceneLabel::get_fill() const
+uint SceneLineChart::get_color() const
+uint SceneLineChart::get_count() const
+uint SceneLineChart::get_fill() const
+uint SceneMark::get_color() const
+uint SceneMark::get_fill() const
+uint ScenePieChart::get_color() const
+uint ScenePieChart::get_count() const
+uint ScenePieChart::get_fill() const
+uint SceneTable::get_color() const
+uint SceneTable::get_columns() const
+uint SceneTable::get_fill() const
+uint SceneTable::get_rows() const
+void Scene::set_cameraX(float)
+void Scene::set_cameraY(float)
+void Scene::set_zoom(float)
+void SceneArc::follow(Updater@)
+void SceneArc::unfollow()
+void SceneArray::follow(Updater@)
+void SceneArray::set_color(uint)
+void SceneArray::set_dash(float)
+void SceneArray::set_dashGap(float)
+void SceneArray::set_fill(uint)
+void SceneArray::set_fillOpacity(float)
+void SceneArray::set_indices(bool)
+void SceneArray::set_lineWidth(float)
+void SceneArray::set_opacity(float)
+void SceneArray::set_rotation(float)
+void SceneArray::set_scale(float)
+void SceneArray::set_visible(bool)
+void SceneArray::set_x(float)
+void SceneArray::set_y(float)
+void SceneArray::unfollow()
+void SceneArrow::follow(Updater@)
+void SceneArrow::unfollow()
+void SceneAxes::follow(Updater@)
+void SceneAxes::unfollow()
+void SceneBarChart::follow(Updater@)
+void SceneBarChart::set_color(uint)
+void SceneBarChart::set_dash(float)
+void SceneBarChart::set_dashGap(float)
+void SceneBarChart::set_fill(uint)
+void SceneBarChart::set_fillOpacity(float)
+void SceneBarChart::set_lineWidth(float)
+void SceneBarChart::set_opacity(float)
+void SceneBarChart::set_rotation(float)
+void SceneBarChart::set_scale(float)
+void SceneBarChart::set_visible(bool)
+void SceneBarChart::set_x(float)
+void SceneBarChart::set_y(float)
+void SceneBarChart::unfollow()
+void SceneBars::follow(Updater@)
+void SceneBars::unfollow()
+void SceneBrace::follow(Updater@)
+void SceneBrace::set_color(uint)
+void SceneBrace::set_dash(float)
+void SceneBrace::set_dashGap(float)
+void SceneBrace::set_fill(uint)
+void SceneBrace::set_fillOpacity(float)
+void SceneBrace::set_lineWidth(float)
+void SceneBrace::set_opacity(float)
+void SceneBrace::set_rotation(float)
+void SceneBrace::set_scale(float)
+void SceneBrace::set_text(const string&in)
+void SceneBrace::set_visible(bool)
+void SceneBrace::set_x(float)
+void SceneBrace::set_y(float)
+void SceneBrace::unfollow()
+void SceneButton::follow(Updater@)
+void SceneButton::unfollow()
+void SceneCallout::follow(Updater@)
+void SceneCallout::set_color(uint)
+void SceneCallout::set_dash(float)
+void SceneCallout::set_dashGap(float)
+void SceneCallout::set_fill(uint)
+void SceneCallout::set_fillOpacity(float)
+void SceneCallout::set_lineWidth(float)
+void SceneCallout::set_opacity(float)
+void SceneCallout::set_rotation(float)
+void SceneCallout::set_scale(float)
+void SceneCallout::set_text(const string&in)
+void SceneCallout::set_visible(bool)
+void SceneCallout::set_x(float)
+void SceneCallout::set_y(float)
+void SceneCallout::unfollow()
+void SceneCircle::follow(Updater@)
+void SceneCircle::unfollow()
+void SceneCode::follow(Updater@)
+void SceneCode::set_dim(float)
+void SceneCode::unfollow()
+void SceneConfetti::follow(Updater@)
+void SceneConfetti::set_color(uint)
+void SceneConfetti::set_dash(float)
+void SceneConfetti::set_dashGap(float)
+void SceneConfetti::set_fill(uint)
+void SceneConfetti::set_fillOpacity(float)
+void SceneConfetti::set_lineWidth(float)
+void SceneConfetti::set_opacity(float)
+void SceneConfetti::set_rotation(float)
+void SceneConfetti::set_scale(float)
+void SceneConfetti::set_visible(bool)
+void SceneConfetti::set_x(float)
+void SceneConfetti::set_y(float)
+void SceneConfetti::unfollow()
+void SceneCurve::follow(Updater@)
+void SceneCurve::unfollow()
+void SceneEllipse::follow(Updater@)
+void SceneEllipse::unfollow()
+void SceneGraph::follow(Updater@)
+void SceneGraph::layoutCircle(float = 150)
+void SceneGraph::layoutGrid(uint, float = 100)
+void SceneGraph::layoutRow(float = 90)
+void SceneGraph::layoutTree(uint = 0, float = 90, float = 70)
+void SceneGraph::set_color(uint)
+void SceneGraph::set_dash(float)
+void SceneGraph::set_dashGap(float)
+void SceneGraph::set_fill(uint)
+void SceneGraph::set_fillOpacity(float)
+void SceneGraph::set_lineWidth(float)
+void SceneGraph::set_opacity(float)
+void SceneGraph::set_rotation(float)
+void SceneGraph::set_scale(float)
+void SceneGraph::set_visible(bool)
+void SceneGraph::set_x(float)
+void SceneGraph::set_y(float)
+void SceneGraph::unfollow()
+void SceneGrid::follow(Updater@)
+void SceneGrid::unfollow()
+void SceneGroup::follow(Updater@)
+void SceneGroup::unfollow()
+void SceneIcon::follow(Updater@)
+void SceneIcon::set_color(uint)
+void SceneIcon::set_dash(float)
+void SceneIcon::set_dashGap(float)
+void SceneIcon::set_fill(uint)
+void SceneIcon::set_fillOpacity(float)
+void SceneIcon::set_lineWidth(float)
+void SceneIcon::set_opacity(float)
+void SceneIcon::set_rotation(float)
+void SceneIcon::set_scale(float)
+void SceneIcon::set_visible(bool)
+void SceneIcon::set_x(float)
+void SceneIcon::set_y(float)
+void SceneIcon::unfollow()
+void SceneImage::follow(Updater@)
+void SceneImage::unfollow()
+void SceneLabel::follow(Updater@)
+void SceneLabel::set_color(uint)
+void SceneLabel::set_dash(float)
+void SceneLabel::set_dashGap(float)
+void SceneLabel::set_fill(uint)
+void SceneLabel::set_fillOpacity(float)
+void SceneLabel::set_lineWidth(float)
+void SceneLabel::set_opacity(float)
+void SceneLabel::set_rotation(float)
+void SceneLabel::set_scale(float)
+void SceneLabel::set_text(const string&in)
+void SceneLabel::set_visible(bool)
+void SceneLabel::set_x(float)
+void SceneLabel::set_y(float)
+void SceneLabel::unfollow()
+void SceneLine::follow(Updater@)
+void SceneLine::unfollow()
+void SceneLineChart::follow(Updater@)
+void SceneLineChart::set_color(uint)
+void SceneLineChart::set_dash(float)
+void SceneLineChart::set_dashGap(float)
+void SceneLineChart::set_fill(uint)
+void SceneLineChart::set_fillOpacity(float)
+void SceneLineChart::set_lineWidth(float)
+void SceneLineChart::set_opacity(float)
+void SceneLineChart::set_rotation(float)
+void SceneLineChart::set_scale(float)
+void SceneLineChart::set_visible(bool)
+void SceneLineChart::set_x(float)
+void SceneLineChart::set_y(float)
+void SceneLineChart::unfollow()
+void SceneMark::follow(Updater@)
+void SceneMark::set_color(uint)
+void SceneMark::set_dash(float)
+void SceneMark::set_dashGap(float)
+void SceneMark::set_fill(uint)
+void SceneMark::set_fillOpacity(float)
+void SceneMark::set_lineWidth(float)
+void SceneMark::set_opacity(float)
+void SceneMark::set_rotation(float)
+void SceneMark::set_scale(float)
+void SceneMark::set_visible(bool)
+void SceneMark::set_x(float)
+void SceneMark::set_y(float)
+void SceneMark::unfollow()
+void SceneNumber::follow(Updater@)
+void SceneNumber::unfollow()
+void SceneObject::follow(Updater@)
+void SceneObject::unfollow()
+void ScenePieChart::follow(Updater@)
+void ScenePieChart::set_color(uint)
+void ScenePieChart::set_dash(float)
+void ScenePieChart::set_dashGap(float)
+void ScenePieChart::set_fill(uint)
+void ScenePieChart::set_fillOpacity(float)
+void ScenePieChart::set_lineWidth(float)
+void ScenePieChart::set_opacity(float)
+void ScenePieChart::set_rotation(float)
+void ScenePieChart::set_scale(float)
+void ScenePieChart::set_visible(bool)
+void ScenePieChart::set_x(float)
+void ScenePieChart::set_y(float)
+void ScenePieChart::unfollow()
+void ScenePolygon::follow(Updater@)
+void ScenePolygon::unfollow()
+void SceneRect::follow(Updater@)
+void SceneRect::unfollow()
+void SceneRegular::follow(Updater@)
+void SceneRegular::unfollow()
+void SceneSector::follow(Updater@)
+void SceneSector::unfollow()
+void SceneSlider::follow(Updater@)
+void SceneSlider::unfollow()
+void SceneStar::follow(Updater@)
+void SceneStar::unfollow()
+void SceneTable::follow(Updater@)
+void SceneTable::set(uint, uint, const ?&in)
+void SceneTable::set_color(uint)
+void SceneTable::set_dash(float)
+void SceneTable::set_dashGap(float)
+void SceneTable::set_fill(uint)
+void SceneTable::set_fillOpacity(float)
+void SceneTable::set_header(bool)
+void SceneTable::set_lineWidth(float)
+void SceneTable::set_opacity(float)
+void SceneTable::set_rotation(float)
+void SceneTable::set_scale(float)
+void SceneTable::set_visible(bool)
+void SceneTable::set_x(float)
+void SceneTable::set_y(float)
+void SceneTable::unfollow()
+void SceneText::follow(Updater@)
+void SceneText::unfollow()
+void SceneToggle::follow(Updater@)
+void SceneToggle::unfollow()

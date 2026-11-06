@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Preso
+Comment=Presentations written in Markdown, with retro themes and scripted animations
+Exec=preso %f
+Terminal=false
+Categories=Office;Presentation;
+MimeType=text/markdown;

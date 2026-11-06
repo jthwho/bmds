@@ -682,6 +682,26 @@ interface.
 **Order:** 8a the VFS and `Trash` (host-tested; `trash` and the shell work alone), 8b the Trash
 window and the desktop's Trash, 8c Properties.
 
+### 4l. Open With ▸, and types by name (2026-11-03, `preso.md` §8b)
+
+- **Open With ▸** on a single file's menus: the File menu's and item menu's in a folder window,
+  and a desktop icon's (not for folders, applications or launchers). `FolderActions::findOpenWith()`
+  lists, without repeats and at most 8: the applications `mimeapps.list` names for the type
+  (its line, then its media's `MEDIA/*`), then `text/plain`'s for a text type, then every
+  launcher entry whose `MimeType=` has the type (or `text/plain`, for text). The first is what
+  Open does. Each item has its entry's icon and name; choosing one starts it on the file.
+  The list is read when the menu is shown (the launcher's directories, as Open's fallback reads
+  them), kept with the file until the next menu.
+- **Types by name first:** Open and Properties passed `IdentifyName | IdentifyContent`, which
+  `Vfs::identify()` takes as "by the contents only", so `notes.md` was `text/plain` and
+  `slides.png` named wrong would still be a PNG. They now pass no flag: the name, else the
+  contents (`filetypes.md` §4b). The item model already typed by name first and read contents
+  only for names that say nothing (FB12).
+- **As built (2026-11-03):** as above. `FolderWindow::fileSelected()` decides when it shows;
+  choices are `ChooseOpenWith` (100) and up in a window, 100 and up on a desktop icon. Each item
+  has its entry's icon (`forProgram()`: its `Icon=`, else its program's notes). Seen on the
+  board on `tour.md`: Text Editor (vi, the board's `mimeapps.list`), Preso, Edit.
+
 ## 5. Steps
 
 1. **The window limit, then the toolkit's furniture:** 255 windows and connections in growing

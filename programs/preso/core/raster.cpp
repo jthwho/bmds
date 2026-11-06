@@ -149,6 +149,23 @@ namespace preso {
                 return;
         }
 
+        void Path::addSolid(const Point *points, uint32_t count) {
+                if (count < 3 || !grow(count)) return;
+                // A stroke's quads have a negative signed area (shoelace, y down): so this.
+                float area = 0;
+                for (uint32_t i = 0; i < count; i++) {
+                        const Point &p = points[i], &q = points[(i + 1) % count];
+                        area += p.x * q.y - q.x * p.y;
+                }
+                if (area <= 0) {
+                        addPolygon(points, count);
+                        return;
+                }
+                moveTo(points[count - 1]);
+                for (uint32_t i = count - 1; i-- > 0;) lineTo(points[i]);
+                return;
+        }
+
         void Path::addStroke(const Point *points, uint32_t count, bool closed, float width) {
                 if (count == 0 || width <= 0) return;
                 float hw = width / 2;
@@ -302,7 +319,18 @@ namespace preso {
 
                 // ---- Accumulating a row
 
-                constexpr uint32_t MaxSpans = 32;
+                // Enough for a grid's row (28 lines across a region: 56 edges; at 32, every row of
+                // the showcase's camera grid was walked a pixel at a time, 85% of its frame).
+                constexpr uint32_t MaxSpans = 128;
+
+                struct Span {
+                                int32_t first, last;
+                };
+
+                int compareSpans(const void *a, const void *b) {
+                        int32_t fa = static_cast<const Span *>(a)->first, fb = static_cast<const Span *>(b)->first;
+                        return fa < fb ? -1 : fa > fb ? 1 : 0;
+                }
 
                 struct Row {
                                 float  *cells;       ///< One a pixel from lo, and two past hi.
@@ -310,8 +338,7 @@ namespace preso {
                                 int32_t first, last; ///< The cells touched (first > last: none).
                                 // The runs of cells the edges touched; between them the coverage
                                 // doesn't change (filled as a run). Past MaxSpans: every cell visited.
-                                int32_t  spanFirst[MaxSpans];
-                                int32_t  spanLast[MaxSpans];
+                                Span     span[MaxSpans];
                                 uint32_t spans;
                 };
 
@@ -330,10 +357,7 @@ namespace preso {
                         float x1ceil = float(x1i);
                         if (x0i < row.first) row.first = x0i;
                         if (x1i + 1 > row.last) row.last = x1i + 1;
-                        if (row.spans < MaxSpans) {
-                                row.spanFirst[row.spans] = x0i;
-                                row.spanLast[row.spans] = x1i > x0i + 1 ? x1i : x0i + 1;
-                        }
+                        if (row.spans < MaxSpans) row.span[row.spans] = Span{x0i, x1i > x0i + 1 ? x1i : x0i + 1};
                         row.spans++;
                         if (x1i <= x0i + 1) {
                                 float xmf = 0.5f * (x0 + x1) - x0floor;
@@ -435,7 +459,6 @@ namespace preso {
                         0x7FFFFFFF,
                         -1,
                               {},
-                              {},
                         0};
                 if (edges == nullptr || active == nullptr || row.cells == nullptr) {
                         free(edges);
@@ -514,21 +537,29 @@ namespace preso {
                                         pixel(c, sum < 0 ? -sum : sum);
                                 }
                         } else {
-                                // By where they start (a few: insertion), then each run and each gap.
-                                for (uint32_t i = 1; i < row.spans; i++) {
-                                        int32_t  f = row.spanFirst[i], l = row.spanLast[i];
-                                        uint32_t j = i;
-                                        while (j > 0 && row.spanFirst[j - 1] > f) {
-                                                row.spanFirst[j] = row.spanFirst[j - 1];
-                                                row.spanLast[j] = row.spanLast[j - 1];
-                                                j--;
+                                // By where they start (a few: insertion; many, in any order, as a
+                                // grid's lines from its middle out: qsort), then each run and gap.
+                                bool sorted = true;
+                                for (uint32_t i = 1; i < row.spans && sorted; i++)
+                                        sorted = row.span[i - 1].first <= row.span[i].first;
+                                if (sorted) {
+                                        // As they came (a row's edges left to right).
+                                } else if (row.spans > 16) {
+                                        qsort(row.span, row.spans, sizeof(Span), compareSpans);
+                                } else {
+                                        for (uint32_t i = 1; i < row.spans; i++) {
+                                                Span     sp = row.span[i];
+                                                uint32_t j = i;
+                                                while (j > 0 && row.span[j - 1].first > sp.first) {
+                                                        row.span[j] = row.span[j - 1];
+                                                        j--;
+                                                }
+                                                row.span[j] = sp;
                                         }
-                                        row.spanFirst[j] = f;
-                                        row.spanLast[j] = l;
                                 }
                                 int32_t at = row.first;
                                 for (uint32_t i = 0; i < row.spans; i++) {
-                                        int32_t f = row.spanFirst[i], l = row.spanLast[i];
+                                        int32_t f = row.span[i].first, l = row.span[i].last;
                                         if (l < at) continue; // inside one before
                                         if (f > at) {
                                                 run(at, f);
@@ -571,11 +602,49 @@ namespace preso {
                 // True if @p t only moves (unscaled, unturned): then pixels are copied, not sampled,
                 // to the nearest whole pixel (sampled between pixels, text goes soft).
                 bool wholeMove(const Affine &t, int32_t *dx, int32_t *dy) {
-                        if (t.a != 1 || t.b != 0 || t.c != 0 || t.d != 1) return false;
+                        // Near enough (a scene shrunk to fit draws its text scaled by fit, then back by
+                        // 1 / fit: a float's rounding from 1): under a hundredth of a pixel across 4096.
+                        constexpr float Near = 2e-6f;
+                        if (fabsf(t.a - 1) > Near || fabsf(t.b) > Near || fabsf(t.c) > Near || fabsf(t.d - 1) > Near)
+                                return false;
                         *dx = int32_t(floorf(t.e + 0.5f));
                         *dy = int32_t(floorf(t.f + 0.5f));
                         return true;
                 }
+
+        } // namespace
+
+        namespace {
+
+                // Where each pixel of a row samples a picture through @p inverse: 16.16 fixed point,
+                // the row's first worked out, then a step a pixel (no transform, no floor a pixel).
+                // Pictures are under 32768 pixels a side: the fixed point holds them.
+                class Sampler {
+                        public:
+                                explicit Sampler(const Affine &inverse)
+                                    : _inverse(inverse), _dx(int32_t(lroundf(inverse.a * 65536))),
+                                      _dy(int32_t(lroundf(inverse.b * 65536))) {}
+                                void row(int32_t x, int32_t y) {
+                                        Point s = _inverse.apply(Point{float(x) + 0.5f, float(y) + 0.5f});
+                                        _x = int32_t(lroundf((s.x - 0.5f) * 65536));
+                                        _y = int32_t(lroundf((s.y - 0.5f) * 65536));
+                                        return;
+                                }
+                                void next() {
+                                        _x += _dx;
+                                        _y += _dy;
+                                        return;
+                                }
+                                int32_t  ix() const { return _x >> 16; } // C++20: a floor
+                                int32_t  iy() const { return _y >> 16; }
+                                uint32_t fx() const { return uint32_t(_x >> 8) & 0xFF; }
+                                uint32_t fy() const { return uint32_t(_y >> 8) & 0xFF; }
+
+                        private:
+                                Affine  _inverse;
+                                int32_t _dx, _dy;
+                                int32_t _x = 0, _y = 0;
+                };
 
         } // namespace
 
@@ -608,17 +677,29 @@ namespace preso {
                 auto    at = [&](int32_t x, int32_t y) -> uint32_t {
                         return x < x0 || y < y0 || x >= x1 || y >= y1 ? 0 : mask[size_t(y) * stride + uint32_t(x)];
                 };
+                Sampler sampler(inverse);
                 for (int32_t y = r.y; y < r.y + r.height; y++) {
                         uint8_t *line = canvas.pixels() + size_t(y) * canvas.stride();
-                        for (int32_t x = r.x; x < r.x + r.width; x++) {
-                                Point s = inverse.apply(Point{float(x) + 0.5f, float(y) + 0.5f});
-                                float sx = s.x - 0.5f, sy = s.y - 0.5f;
-                                if (sx <= float(x0) - 1 || sy <= float(y0) - 1 || sx >= float(x1) || sy >= float(y1))
-                                        continue;
-                                int32_t  ix = int32_t(floorf(sx)), iy = int32_t(floorf(sy));
-                                uint32_t fx = uint32_t((sx - float(ix)) * 256), fy = uint32_t((sy - float(iy)) * 256);
-                                uint32_t top = at(ix, iy) * (256 - fx) + at(ix + 1, iy) * fx;
-                                uint32_t bottom = at(ix, iy + 1) * (256 - fx) + at(ix + 1, iy + 1) * fx;
+                        sampler.row(r.x, y);
+                        for (int32_t x = r.x; x < r.x + r.width; x++, sampler.next()) {
+                                int32_t ix = sampler.ix(), iy = sampler.iy();
+                                if (ix < x0 - 1 || iy < y0 - 1 || ix >= x1 || iy >= y1) continue;
+                                uint32_t fx = sampler.fx(), fy = sampler.fy(), p00, p10, p01, p11;
+                                if (ix >= x0 && iy >= y0 && ix + 1 < x1 && iy + 1 < y1) {
+                                        const uint8_t *m = mask + size_t(iy) * stride + uint32_t(ix);
+                                        p00 = m[0];
+                                        p10 = m[1];
+                                        p01 = m[stride];
+                                        p11 = m[stride + 1];
+                                } else {
+                                        p00 = at(ix, iy);
+                                        p10 = at(ix + 1, iy);
+                                        p01 = at(ix, iy + 1);
+                                        p11 = at(ix + 1, iy + 1);
+                                }
+                                if ((p00 | p10 | p01 | p11) == 0) continue;
+                                uint32_t top = p00 * (256 - fx) + p10 * fx;
+                                uint32_t bottom = p01 * (256 - fx) + p11 * fx;
                                 uint32_t c = (top * (256 - fy) + bottom * fy) >> 16;
                                 if (c != 0) blendPixel(line, canvas.format(), x, color, (c * alpha + 127) / 255);
                         }
@@ -626,21 +707,27 @@ namespace preso {
                 return;
         }
 
-        void drawPicture(Canvas &canvas, const ScaledImage &image, const Affine &transform, uint8_t alpha) {
+        void drawPicture(Canvas &canvas, const ScaledImage &image, const Affine &transform, uint8_t alpha,
+                         const Rect *source) {
                 if (alpha == 0 || image.pixels == nullptr) return;
+                int32_t w = image.width, h = image.height;
+                Rect    part = source != nullptr ? source->intersected(Rect{0, 0, w, h}) : Rect{0, 0, w, h};
+                if (part.isEmpty()) return;
                 int32_t dx = 0, dy = 0;
-                if (alpha == 255 && wholeMove(transform, &dx, &dy)) {
+                bool    whole = wholeMove(transform, &dx, &dy);
+                if (whole && alpha == 255) {
+                        // A part: the canvas clipped to where it goes.
+                        Rect clip = canvas.clip();
+                        canvas.setClip(clip.intersected(Rect{dx + part.x, dy + part.y, part.width, part.height}));
                         blitImage(canvas, image, dx, dy);
+                        canvas.setClip(clip);
                         return;
                 }
-                Affine inverse;
-                if (!transform.inverted(&inverse)) return;
-                int32_t w = image.width, h = image.height;
-                Rect    r = transformedBounds(transform, 0, 0, float(w), float(h)).intersected(canvas.clip());
-                bool    rgb565 = image.format == PixelFormat::Rgb565;
-                // A pixel of the picture as premultiplied channels and its opacity (all 0 outside).
+                bool rgb565 = image.format == PixelFormat::Rgb565;
+                // A pixel of the picture (its part) as premultiplied channels and its opacity (all 0
+                // outside).
                 auto at = [&](int32_t x, int32_t y, uint32_t *c) {
-                        if (x < 0 || y < 0 || x >= w || y >= h) {
+                        if (x < part.x || y < part.y || x >= part.x + part.width || y >= part.y + part.height) {
                                 c[0] = c[1] = c[2] = c[3] = 0;
                                 return;
                         }
@@ -659,14 +746,36 @@ namespace preso {
                         }
                         c[3] = image.alpha != nullptr ? image.alpha[size_t(y) * uint32_t(w) + uint32_t(x)] : 255;
                 };
+                if (whole) {
+                        // Moved by whole pixels, faded: each pixel as it is (a fading line of code).
+                        Rect r = Rect{dx + part.x, dy + part.y, part.width, part.height}.intersected(canvas.clip());
+                        for (int32_t y = r.y; y < r.y + r.height; y++) {
+                                uint8_t *line = canvas.pixels() + size_t(y) * canvas.stride();
+                                for (int32_t x = r.x; x < r.x + r.width; x++) {
+                                        uint32_t c[4];
+                                        at(x - dx, y - dy, c);
+                                        if (c[3] != 0)
+                                                blendPremultiplied(line, canvas.format(), x, c[0], c[1], c[2], c[3],
+                                                                   alpha);
+                                }
+                        }
+                        return;
+                }
+                Affine inverse;
+                if (!transform.inverted(&inverse)) return;
+                Rect r = transformedBounds(transform, float(part.x), float(part.y), float(part.width),
+                                           float(part.height))
+                                 .intersected(canvas.clip());
+                Sampler sampler(inverse);
                 for (int32_t y = r.y; y < r.y + r.height; y++) {
                         uint8_t *line = canvas.pixels() + size_t(y) * canvas.stride();
-                        for (int32_t x = r.x; x < r.x + r.width; x++) {
-                                Point s = inverse.apply(Point{float(x) + 0.5f, float(y) + 0.5f});
-                                float sx = s.x - 0.5f, sy = s.y - 0.5f;
-                                if (sx <= -1 || sy <= -1 || sx >= float(w) || sy >= float(h)) continue;
-                                int32_t  ix = int32_t(floorf(sx)), iy = int32_t(floorf(sy));
-                                uint32_t fx = uint32_t((sx - float(ix)) * 256), fy = uint32_t((sy - float(iy)) * 256);
+                        sampler.row(r.x, y);
+                        for (int32_t x = r.x; x < r.x + r.width; x++, sampler.next()) {
+                                int32_t ix = sampler.ix(), iy = sampler.iy();
+                                if (ix < part.x - 1 || iy < part.y - 1 || ix >= part.x + part.width ||
+                                    iy >= part.y + part.height)
+                                        continue;
+                                uint32_t fx = sampler.fx(), fy = sampler.fy();
                                 uint32_t p00[4], p10[4], p01[4], p11[4], out[4];
                                 at(ix, iy, p00);
                                 at(ix + 1, iy, p10);

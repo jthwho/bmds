@@ -23,10 +23,15 @@ namespace preso {
                 In,    ///< Slow, then fast.
                 Out,   ///< Fast, then slow.
                 InOut, ///< Slow at both ends (the default).
-                Bounce ///< Lands and bounces, as a ball.
+                Bounce,       ///< Lands and bounces, as a ball.
+                ThereAndBack, ///< To its end and back to where it began (indicate()).
+                Elastic,      ///< Past its end and back, as a spring.
+                Wiggle,       ///< Either way of its end and back to where it began, a few times (wiggle()).
         };
 
         float eased(Ease ease, float t);
+        /** @brief Whether @p ease ends where it began (an animation of it ends at its start). */
+        bool returns(Ease ease);
 
         /** @brief What an animation changes. */
         enum class Property : uint8_t {
@@ -47,6 +52,16 @@ namespace preso {
                 BarValue,  ///< A bar's (index).
                 BarOffset, ///< A bar's place (index), in bars.
                 BarColor,  ///< A bar's (index).
+                CornerRadius,
+                Start, ///< An arc's or sector's, degrees.
+                Sweep,
+                InnerRadius,
+                Bend,  ///< A line's, degrees.
+                Value, ///< A number's (its text follows).
+                Dash,
+                HeadSize,
+                Along, ///< Where along `other`'s path (0 to 1): moveAlong(); `index` 1: turned to face its way.
+                Dim,   ///< Code: how much the lines out of focus are dimmed.
         };
 
         /** @brief The property scripts write as @p name (tween()); false if there is none. */
@@ -67,6 +82,9 @@ namespace preso {
                                 Remove,   ///< Out of the scene at its end, its opacity and scale as they were.
                                 Become,   ///< The target takes `other`'s look (a transform).
                                 SwapBars, ///< Bars `index` and `index2` change places at its end.
+                                SwapChildren, ///< Its children `index` and `index2` change places in its order.
+                                Focus,        ///< Code: `mask` its lines in focus (as it begins, if any; at its end).
+                                NewCode, ///< Code: `other`'s text as it begins, hidden (its lines move) until its end.
                         };
 
                         static Animation *make(Shape *target);
@@ -80,7 +98,11 @@ namespace preso {
                         void from(float value);
 
                         Shape   *target;
-                        Shape   *other = nullptr; ///< Then::Become's.
+                        Shape   *other = nullptr; ///< Then::Become's; Along's path.
+                        /** @brief Animations played with it, on its progress (a composite's parts). */
+                        Animation *with = nullptr;
+                        /** @brief Plays @p a with this (a reference taken); false if @p a is null. */
+                        bool     join(Animation *a);
                         Ease     ease = Ease::InOut;
                         float    delay = 0;     ///< Seconds after the play begins.
                         float    duration = -1; ///< Seconds; < 0: the play's.
@@ -88,6 +110,7 @@ namespace preso {
                         Then     then = Then::Nothing;
                         uint16_t index = 0; ///< SwapBars'.
                         uint16_t index2 = 0;
+                        uint64_t mask = 0; ///< Then::Focus's.
 
                         /** @brief Begins: values captured, added to @p scene if it brings its target in. */
                         void begin(Scene &scene);

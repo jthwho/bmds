@@ -274,6 +274,20 @@ namespace preso {
                         // ---- Where Preso's own files are (`themes/`): nullptr, none
 
                         virtual const char *dataFolder() { return nullptr; }
+                        /**
+                         * @brief An icon of the system's theme named @p name, the size nearest @p side it
+                         *        has: its pixels (0xAARRGGBB, straight alpha, malloc'd: the caller frees
+                         *        them) into @p pixels and its side into @p actual. Error::NotFound if there
+                         *        is none (or no theme: by default).
+                         */
+                        [[nodiscard]] virtual Error loadIcon(const char *name, int32_t side, uint32_t **pixels,
+                                                             int32_t *actual) {
+                                (void)name;
+                                (void)side;
+                                (void)pixels;
+                                (void)actual;
+                                return Error::NotFound;
+                        }
 
                         // ---- Pixels for slides (where the platform's copies want them)
 
@@ -301,6 +315,13 @@ namespace preso {
                          *        demo has the screen, §6a); openScreen() opens it again.
                          */
                         virtual void closeScreen() {}
+                        /** @brief The window's title, if the screen is a window (angel's stage). */
+                        virtual void setTitle(const char *title) { (void)title; }
+                        /**
+                         * @brief openScreen() opens a window of its size, not the whole screen, with the
+                         *        system's pointer and keys by their usages (angel's stage, §8c).
+                         */
+                        virtual void setWindowed(bool windowed) { (void)windowed; }
                         /** @brief Shows @p canvas (the screen's size and format). */
                         virtual void present(const Canvas &canvas) { (void)canvas; }
                         /**

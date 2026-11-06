@@ -5,20 +5,23 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * preso (devplan/preso.md): presentations written in Markdown. `preso DECK [SLIDE]` presents
- * a deck; `preso check DECK...` reads decks, lays out their slides (running their scripts), and
+ * preso (devplan/preso.md): presentations written in Markdown. `preso` alone opens a window to
+ * open a deck from (on BMDS, §8b); `preso DECK [SLIDE]` presents a deck; `preso check DECK...` reads decks, lays out their slides (running their scripts), and
  * reports what is wrong; `preso export DECK DIR` draws each step to a PNG; `preso --api` lists
  * what a deck's scripts have (tests/preso/api.lock).
  * The platform is BMDS's on the board (PRESO_BMDS), the headless one elsewhere.
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "core/presenter.h"
 #include "script/runtime.h"
 
 #ifdef PRESO_BMDS
+#include <unistd.h>
 #include "bmds/bmdsplatform.h"
+#include "bmds/startwindow.h"
 using SystemPlatform = preso::BmdsPlatform;
 #else
 #include "headless/headless.h"
@@ -32,7 +35,8 @@ using SystemPlatform = preso::HeadlessPlatform;
 namespace {
 
         void usage(FILE *out) {
-                fputs("usage: preso DECK [SLIDE]          present a deck (from slide SLIDE)\n"
+                fputs("usage: preso                      a window to open a deck from (on BMDS)\n"
+                      "       preso DECK [SLIDE]         present a deck (from slide SLIDE)\n"
                       "       preso --trust DECK [SLIDE] the same, its scripts with files, the system and the "
                       "network,\n"
                       "                                  its demos run without asking\n"
@@ -102,22 +106,55 @@ namespace {
                 return presenter.problems() > 0 ? 1 : 0;
         }
 
-        int present(const char *path, uint32_t slide, bool trusted, bool loop) {
+        // The deck's problems to @p messages, and what stopped it too (stderr when that's stdout).
+        int present(const char *path, uint32_t slide, bool trusted, bool loop, FILE *messages) {
                 SystemPlatform   platform;
-                preso::Presenter presenter(platform, path, stdout, preso::makeAngelScripts, trusted);
+                preso::Presenter presenter(platform, path, messages, preso::makeAngelScripts, trusted);
                 if (presenter.load() != preso::Error::Ok) return 2;
                 presenter.setLoop(loop);
                 preso::Error error = presenter.run(slide);
                 if (error != preso::Error::Ok) {
-                        fprintf(stderr, "preso: %s: %s\n", path, preso::errorName(error));
+                        fprintf(messages == stdout ? stderr : messages, "preso: %s: %s\n", path,
+                                preso::errorName(error));
                         return 1;
                 }
                 return 0;
         }
 
+#ifdef PRESO_BMDS
+        // The start window's (devplan/preso.md §8b): from the first slide, not trusted.
+        int presentChosen(const char *path, FILE *messages) {
+                return present(path, 1, false, false, messages);
+        }
+
+        // Started on a deck with no terminal to tell (Files' Open With): a deck that won't present
+        // is told in a message box.
+        int presentWithoutTerminal(const char *path, uint32_t slide, bool trusted, bool loop) {
+                char  *problems = nullptr;
+                size_t length = 0;
+                FILE  *messages = open_memstream(&problems, &length);
+                if (messages == nullptr) return present(path, slide, trusted, loop, stdout);
+                const int status = present(path, slide, trusted, loop, messages);
+                fclose(messages);
+                if (status != 0) {
+                        char        text[900];
+                        const char *slash = strrchr(path, '/');
+                        snprintf(text, sizeof(text), "%s %s.\n\n%s", slash != nullptr ? slash + 1 : path,
+                                 status == 2 ? "couldn't be opened" : "stopped with a problem",
+                                 problems != nullptr ? problems : "");
+                        if (!preso::tellInWindow("Preso", text)) fputs(text, stderr);
+                }
+                free(problems);
+                return status;
+        }
+#endif
+
 } // namespace
 
 int main(int argc, char **argv) {
+#ifdef PRESO_BMDS
+        if (argc == 1) return preso::runStartWindow(argv[0], presentChosen);
+#endif
         if (argc >= 2 && strcmp(argv[1], "--version") == 0) {
                 printf("preso %s\n", PRESO_VERSION);
                 return 0;
@@ -164,7 +201,11 @@ int main(int argc, char **argv) {
                         usage(stderr);
                         return 2;
                 }
-                return present(argv[first], uint32_t(slide), trusted, loop);
+#ifdef PRESO_BMDS
+                if (isatty(STDERR_FILENO) == 0)
+                        return presentWithoutTerminal(argv[first], uint32_t(slide), trusted, loop);
+#endif
+                return present(argv[first], uint32_t(slide), trusted, loop, stdout);
         }
         usage(stderr);
         return 2;

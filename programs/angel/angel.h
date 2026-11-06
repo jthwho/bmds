@@ -177,6 +177,14 @@ namespace angel {
         // libbmdsgame (null: `BMDS_GAME_FONT_DEFAULT`), and a reference let go of.
         int32_t fontHandle(const void *font);
         void    releaseFont(void *font);
+        // A Font object's name, as Font() takes it ("IBM Plex Sans 14 bold"); a new Font object
+        // (one reference) for one, or nullptr with an exception raised.
+        const char *fontName(const void *font);
+        void       *fontNamed(const char *name);
+        // A new Event object (one reference) of EventType @p type, as a Screen's events are;
+        // released as scripts' are.
+        void *makeEvent(int type, const char *key, const char *text, int x, int y, int button, int wheel, bool repeat);
+        void  releaseEvent(void *event);
 
         // A GUI canvas drawn as a Screen is (graphics.cpp's pictures, gui.cpp's Canvas). Its drawing
         // methods find their picture through the hooks (their auxiliary pointer): given the

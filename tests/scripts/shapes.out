@@ -1,0 +1,13 @@
+copy: new, 100 x 60
+nextTo: left 164 is a's right 154 + 10, y 100
+between: 158, 100 to 342, 100
+end moved: 200, start kept 158, 100
+heads: 1 0
+arrange: copied group has 3, its box -62 to 62
+counted to 12.5 (1 decimal)
+axes: x 0 at 200, 4 at 400; y 2 at 250
+plot: 5 points, closed false
+has a true, has the plot false
+after indicate: scale 1, rotation 0
+lagged: opacity 0.5, rotation 90, scale 2 at 2500
+removed all: has a false

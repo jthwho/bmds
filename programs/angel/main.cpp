@@ -13,7 +13,9 @@
  * `file:line:column: error: message`; `--report-fd N` writes them to descriptor N as well, a
  * tab-separated line each, and an uncaught exception too (for an editor's Run). `--serve` is the
  * editor's checker (devplan/editor.md §9): requests on stdin, answers on stdout. `--debug N` is
- * its debugger (§17, debug.cpp): commands on descriptor N, events on --report-fd's.
+ * its debugger (§17, debug.cpp): commands on descriptor N, events on --report-fd's. A script
+ * of a scene (Preso's: SceneRect, scene.play()...) plays on a stage, a window of its own
+ * (devplan/preso.md §8c, programs/preso/script/stage.cpp).
  */
 
 #include <errno.h>
@@ -21,7 +23,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../preso/script/stage.h"
 #include "angel.h"
+#ifdef ANGEL_BMDS
+#include "../preso/bmds/bmdsplatform.h"
+#else
+#include "../preso/headless/headless.h"
+#endif
 
 #ifndef ANGEL_VERSION
 #define ANGEL_VERSION "1"
@@ -86,6 +94,12 @@ namespace {
                         reportLine(reportFile, nullptr, severity, file, line, column, text);
                         fflush(reportFile);
                 }
+                return;
+        }
+
+        // A stage's error (its script failed while it played).
+        void stageReport(const char *file, int line, const char *message) {
+                diagnostic("error", file, line, 1, message);
                 return;
         }
 
@@ -392,6 +406,7 @@ namespace {
                 angel::registerProcess(engine);
                 angel::registerFolders(engine);
                 angel::registerAudio(engine);
+                preso::registerSceneApi(engine); // after Font, Event and Callback, which it names
                 return engine;
         }
 
@@ -411,6 +426,7 @@ namespace {
                         return nullptr;
                 }
                 asIScriptFunction *entry = top != nullptr ? top : main;
+                if (entry == nullptr && preso::Stage::hasDraw(module)) return nullptr; // a scene's draw() only
                 if (entry == nullptr) {
                         diagnostic("error", sources[0].path, 1, 1,
                                    "nothing to run: no statements outside functions, and no main()");
@@ -428,28 +444,37 @@ namespace {
                 return entry;
         }
 
-        int run(asIScriptEngine *engine, asIScriptModule *module) {
+        int run(asIScriptEngine *engine, asIScriptModule *module, preso::Stage &stage) {
                 asIScriptFunction *entry = entryOf(module);
-                if (entry == nullptr) return ExitFailure;
-                asIScriptContext *ctx = engine->CreateContext();
-                if (ctx == nullptr || ctx->Prepare(entry) < 0) {
-                        fprintf(stderr, "angel: can't start the script\n");
-                        return 70;
+                if (entry == nullptr && !preso::Stage::hasDraw(module)) return ExitFailure;
+                int status = 0;
+                if (entry != nullptr) {
+                        asIScriptContext *ctx = engine->CreateContext();
+                        if (ctx == nullptr || ctx->Prepare(entry) < 0) {
+                                fprintf(stderr, "angel: can't start the script\n");
+                                return 70;
+                        }
+                        if (angel::isDebugging()) angel::debugContext(ctx);
+                        const int r = ctx->Execute();
+                        if (r == asEXECUTION_FINISHED) {
+                                if (entry->GetReturnTypeId() == asTYPEID_INT32) status = int(ctx->GetReturnDWord());
+                        } else if (r == asEXECUTION_EXCEPTION) {
+                                fflush(stdout);
+                                reportExceptionHere(ctx);
+                                status = ExitFailure;
+                        } else if (r != asEXECUTION_ABORTED || !stage.isWanted()) {
+                                fprintf(stderr, "angel: the script stopped (%d)\n", r);
+                                status = ExitFailure;
+                        }
+                        ctx->Release();
                 }
-                if (angel::isDebugging()) angel::debugContext(ctx);
-                const int r = ctx->Execute();
-                int       status = 0;
-                if (r == asEXECUTION_FINISHED) {
-                        if (entry->GetReturnTypeId() == asTYPEID_INT32) status = int(ctx->GetReturnDWord());
-                } else if (r == asEXECUTION_EXCEPTION) {
+                // A scene: its first scene call stopped the run, or a draw() is left to show. The
+                // stage plays it from its start.
+                if (status == 0 && (stage.isWanted() || preso::Stage::hasDraw(module))) {
                         fflush(stdout);
-                        reportExceptionHere(ctx);
-                        status = ExitFailure;
-                } else {
-                        fprintf(stderr, "angel: the script stopped (%d)\n", r);
-                        status = ExitFailure;
+                        status = stage.play(module);
+                        stage.finish();
                 }
-                ctx->Release();
                 // Windows stay up, the picture to be seen, until closed.
                 fflush(stdout);
                 angel::finishSound();
@@ -657,7 +682,14 @@ int main(int argc, char **argv) {
         }
         angel::setArguments(argc - first, argv + first);
         if (load(argv[first], nullptr, 0) < 0 || loadErrors != 0) return ExitFailure;
+#ifdef ANGEL_BMDS
+        preso::BmdsPlatform platform;
+#else
+        preso::HeadlessPlatform platform;
+#endif
+        preso::Stage     stage(platform, argv[first], stageReport);
         asIScriptEngine *engine = makeEngine();
+        stage.attach(engine);
         // Debugged: built with line cues, where the line callback is called.
         if (angel::isDebugging()) engine->SetEngineProperty(asEP_BUILD_WITHOUT_LINE_CUES, 0);
         asIScriptModule *module = engine->GetModule("script", asGM_ALWAYS_CREATE);
@@ -675,7 +707,7 @@ int main(int argc, char **argv) {
                 angel::registerGuiClasses(engine, texts, lengths, size_t(sourceCount));
         }
         int status = ExitFailure;
-        if (module->Build() >= 0) status = checkOnly ? 0 : run(engine, module);
+        if (module->Build() >= 0) status = checkOnly ? 0 : run(engine, module, stage);
         fflush(stdout);
         module->Discard();
         angel::releaseGui();

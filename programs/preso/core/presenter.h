@@ -205,7 +205,6 @@ namespace preso {
                         bool          _animating = false;       ///< Regions' frames asked for.
                         bool          _regionsStale = false;    ///< _ahead's regions drawn before they last changed.
                         int64_t       _lastFrame = 0;           ///< When regions' clocks last moved.
-                        Rect          _unglowed;                ///< What moving frames drew without the theme's glow.
                         const DrawOp *_entered = nullptr;       ///< The region with the keys.
                         const DrawOp *_pointerRegion = nullptr; ///< The region a held button went down in.
                         uint32_t      _buttons = 0;             ///< The pointer's, as last told.

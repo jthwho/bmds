@@ -5,7 +5,8 @@ the text screen, files and other programs, graphics and input, sound, the networ
 the corpus and the API lock; the editor and the IDE (`editor.md`: `edit`, its AngelScript mode,
 `angel --serve` and `--report-fd`); the debugger (`angel --debug`, `editor.md` §17). As built
 and measured: §10 to §13, `editor.md` §14 to §16 and §19; the guide's fourteen lessons and the
-Serpents and Rooftops games (§14, §15).
+Serpents and Rooftops games (§14, §15). Since 2026-11-04 angel also has Preso's scene (`SceneRect`,
+`scene.play()`...), played on a stage of its own: `preso.md` §8c, and the guide's lesson 19.
 
 ## 1. Goal
 
