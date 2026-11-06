@@ -735,6 +735,20 @@ Error Surface::willDraw(Span<const Rect> rects, unsigned int timeoutMs) {
         return prepareFor(deadline, rects, Span<const Rect>());
 }
 
+Result<uint8_t *> Surface::beginWrite(Span<const Rect> rects, unsigned int timeoutMs) {
+        if (!isStarted()) return makeError<uint8_t *>(Error::InvalidState);
+        for (const Rect &rect : rects)
+                if (!fits(rect)) return makeError<uint8_t *>(Error::Invalid);
+        const Deadline deadline(timeoutMs);
+        Error          err = prepareFor(deadline, rects, Span<const Rect>());
+        // Our own drawing lands first: the other engine's writes go over it.
+        if (err.isOk()) err = _batching ? flushBatch(deadline) : _chain.wait(remainingMs(deadline));
+        if (err.isError()) return makeError<uint8_t *>(err);
+        if (_buffering == Buffering::Double)
+                for (const Rect &rect : rects) markDamage(rect);
+        return makeResult(back());
+}
+
 Error Surface::wait(unsigned int timeoutMs) {
         const Deadline deadline(timeoutMs);
         const Error    err = _widen.wait(remainingMs(deadline));

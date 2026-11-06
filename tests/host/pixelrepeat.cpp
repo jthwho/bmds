@@ -28,6 +28,22 @@ TEST_CASE("Pixels::repeat16 writes each pixel the factor's times") {
         }
 }
 
+TEST_CASE("Pixels::repeat8 writes each index the factor's times, at any alignment") {
+        uint8_t in[37];
+        for (size_t i = 0; i < sizeof(in); ++i) in[i] = uint8_t(i * 29 + 3);
+        for (unsigned times = 1; times <= 4; ++times) {
+                for (size_t offset = 0; offset < 4; ++offset) {
+                        for (size_t count = 0; count <= sizeof(in); ++count) {
+                                std::vector<uint8_t> out(offset + count * times + 1, 0x5a);
+                                Pixels::repeat8(in, count, out.data() + offset, times, Simd::Kernel::Scalar);
+                                for (size_t i = 0; i < count * times; ++i) CHECK(out[offset + i] == in[i / times]);
+                                CHECK(out[offset + count * times] == 0x5a); // nothing past the end
+                                for (size_t i = 0; i < offset; ++i) CHECK(out[i] == 0x5a);
+                        }
+                }
+        }
+}
+
 TEST_CASE("Pixels::repeat24 writes each 3-byte pixel the factor's times") {
         const uint8_t        in[6] = {1, 2, 3, 4, 5, 6};
         std::vector<uint8_t> out(3 * 2 * 3 + 1, 0x5a);

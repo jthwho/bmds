@@ -7,8 +7,8 @@
  *
  * benchprog: the system as programs see it, measured for `bench` (devplan/bench.md §4f, §12, §14):
  * system calls, starting a program, sleeps' lateness, TCP over loopback, the synth's load, a MIDI
- * file decoded, pictures encoded and decoded; a surface's presents, libbmdsgame's drawing, and a
- * software renderer's inner loops. `benchprog WHAT [KEY=VALUE...]`, run by `bench` as
+ * file decoded, pictures encoded and decoded; a surface's presents, libbmdsgame's drawing, a
+ * software renderer's inner loops, and libbmds3d's. `benchprog WHAT [KEY=VALUE...]`, run by `bench` as
  * share/bench/benchprog.bench declares; each run's figure a `@bench` line (bmds/benchlib.h).
  */
 
@@ -26,6 +26,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <bmds/3d.h>
 #include <bmds/benchlib.h>
 #include <bmds/game.h>
 #include <bmds/sys.h>
@@ -551,6 +552,10 @@ static int run_surface(void) {
                 {"quake_l8_320x240_full", 320, 240, BMDS_PIXEL_L8, BMDS_SURFACE_FULL_SCREEN, 0, 0, 0},
                 {"l8_320x200_window", 320, 200, BMDS_PIXEL_L8, 0, 4, 3, 0},
                 {"blocks_565_640x360_full", 640, 360, BMDS_PIXEL_RGB565, BMDS_SURFACE_FULL_SCREEN, 0, 0, 0},
+                /* BMDS Demo #1's (devplan/demo.md §8a): every pixel changed every frame. */
+                {"demo_l8_640x360_full", 640, 360, BMDS_PIXEL_L8, BMDS_SURFACE_FULL_SCREEN | BMDS_SURFACE_WHOLE, 0, 0,
+                 0},
+                {"demo_l8_640x360_window", 640, 360, BMDS_PIXEL_L8, BMDS_SURFACE_WHOLE, 0, 0, 0},
                 {"bgr24_maximized_all", 0, 0, BMDS_PIXEL_BGR24, BMDS_SURFACE_MAXIMIZED, 0, 0, 0},
                 {"bgr24_maximized_square", 0, 0, BMDS_PIXEL_BGR24, BMDS_SURFACE_MAXIMIZED, 0, 0, 1},
         };
@@ -813,11 +818,100 @@ static int run_render(void) {
         return err;
 }
 
+/* ---- libbmds3d (devplan/3d.md §10): wireframes and points into a 640x360 L8 canvas in PSRAM ---- */
+
+struct wire_run {
+                bmds_3d_t     *ctx;
+                bmds_canvas_t *canvas;
+                bmds_3d_mesh_t meshes[3];
+                float         *stars;
+                int            what; /* 0: the meshes, hidden lines; 1: the same, all edges; 2: the stars */
+};
+
+#define WIRE_STARS 2000
+#define WIRE_FRAMES 30
+
+/* WIRE_FRAMES frames, the objects turned a little each: ms a frame (no clear). */
+static int wire_sample(void *arg, double *out) {
+        struct wire_run         *r = arg;
+        const bmds_3d_material_t m = {.size = sizeof(m),
+                                      .mode = r->what == 2 ? BMDS_3D_POINTS : BMDS_3D_WIRE,
+                                      .flags = BMDS_3D_DEPTH_CUE | (r->what == 0 ? BMDS_3D_CULL_BACK : 0),
+                                      .ramp_first = 32,
+                                      .ramp_count = 32};
+        static const bmds_vec3_t axes[3] = {{1, 1, 0}, {1, 0, 0.5f}, {0, 1, 0}};
+        static const float       at[3][3] = {{-2.5f, 0, 0}, {0, 0, 0}, {2.8f, 0.5f, 0}};
+        const int64_t            t0 = bmds_bench_now_ns();
+        for (int f = 0; f < WIRE_FRAMES; ++f) {
+                bmds_3d_begin(r->ctx);
+                if (r->what == 2) {
+                        bmds_mat4_t identity;
+                        bmds_mat4_identity(&identity);
+                        bmds_3d_load(r->ctx, &identity);
+                        (void)bmds_3d_points(r->ctx, r->stars, WIRE_STARS, &m);
+                }
+                for (int k = 0; k < 3 && r->what != 2; ++k) {
+                        bmds_mat4_t place;
+                        bmds_mat4_translation(&place, at[k][0], at[k][1], at[k][2]);
+                        bmds_3d_load(r->ctx, &place);
+                        bmds_3d_rotate(r->ctx, axes[k], 0.05f * (float)f + (float)k);
+                        (void)bmds_3d_draw(r->ctx, &r->meshes[k], &m);
+                }
+                bmds_3d_end(r->ctx);
+        }
+        *out = (double)(bmds_bench_now_ns() - t0) / 1e6 / WIRE_FRAMES;
+        r->canvas->damage_count = 0;
+        return 0;
+}
+
+static int run_wire(void) {
+        struct wire_run r;
+        memset(&r, 0, sizeof(r));
+        uint8_t      *pixels = malloc(640 * 360);
+        bmds_canvas_t canvas;
+        r.stars = malloc(WIRE_STARS * 3 * sizeof(float));
+        if (pixels == NULL || r.stars == NULL || bmds_canvas_init(&canvas, pixels, 640, 640, 360, BMDS_PIXEL_L8) != 0 ||
+            bmds_3d_create(NULL, &r.ctx) != 0) {
+                printf("wire: no memory\n");
+                return 1;
+        }
+        memset(pixels, 0, 640 * 360);
+        r.canvas = &canvas;
+        static const bmds_3d_shape_t shapes[3] = {{sizeof(bmds_3d_shape_t), BMDS_3D_SHAPE_CUBE, 0, 0, 1.0f, 0, 0},
+                                                  {sizeof(bmds_3d_shape_t), BMDS_3D_SHAPE_TORUS, 32, 12, 2.2f, 0.5f, 0},
+                                                  {sizeof(bmds_3d_shape_t), BMDS_3D_SHAPE_SPHERE, 12, 8, 0.6f, 0, 0}};
+        int                          err = 0;
+        for (int k = 0; k < 3 && err == 0; ++k) err = bmds_3d_mesh_make(&shapes[k], 0, &r.meshes[k]);
+        for (int i = 0; i < WIRE_STARS * 3; i += 3) {
+                r.stars[i] = (float)(i * 37 % 800) / 10.0f - 40.0f;
+                r.stars[i + 1] = (float)(i * 53 % 500) / 10.0f - 25.0f;
+                r.stars[i + 2] = -(float)(i * 71 % 580) / 10.0f - 2.0f;
+        }
+        bmds_mat4_t p, v;
+        bmds_mat4_perspective(&p, 1.047f, 640.0f / 360.0f, 0.5f, 100.0f);
+        bmds_mat4_look_at(&v, bmds_vec3(0, 2, 8), bmds_vec3(0, 0, 0), bmds_vec3(0, 1, 0));
+        bmds_3d_set_target(r.ctx, &canvas);
+        bmds_3d_set_projection(r.ctx, &p);
+        static const char *const names[3] = {"wire_hidden_ms", "wire_all_ms", "points_2000_ms"};
+        for (r.what = 0; r.what < 3 && err == 0; ++r.what) {
+                bmds_mat4_t identity;
+                bmds_mat4_identity(&identity);
+                bmds_3d_set_view(r.ctx, r.what == 2 ? &identity : &v);
+                bmds_3d_set_fog(r.ctx, r.what == 2 ? 2.0f : 5.0f, r.what == 2 ? 60.0f : 12.0f);
+                err = bmds_bench_measure(&bench, names[r.what], "ms", BMDS_BENCH_LOWER, wire_sample, &r);
+        }
+        for (int k = 0; k < 3; ++k) bmds_3d_mesh_free(&r.meshes[k]);
+        bmds_3d_destroy(r.ctx);
+        free(r.stars);
+        free(pixels);
+        return err;
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
-                fprintf(stderr,
-                        "usage: benchprog syscall|launch|sleep|pipe|loopback|synth|midi|images|surface|draw|render "
-                        "[KEY=VALUE...]\n");
+                fprintf(stderr, "usage: benchprog "
+                                "syscall|launch|sleep|pipe|loopback|synth|midi|images|surface|draw|render|wire "
+                                "[KEY=VALUE...]\n");
                 return 2;
         }
         self = argv[0];
@@ -835,6 +929,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "surface") == 0) return run_surface();
         if (strcmp(what, "draw") == 0) return run_draw();
         if (strcmp(what, "render") == 0) return run_render();
+        if (strcmp(what, "wire") == 0) return run_wire();
         fprintf(stderr, "benchprog: %s: no such benchmark\n", what);
         return 2;
 }

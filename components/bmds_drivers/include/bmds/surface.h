@@ -231,6 +231,17 @@ class Surface {
                 Error willDraw(Span<const Rect> rects, unsigned int timeoutMs);
 
                 /**
+                 * @brief Readies @p rects (on 4-pixel columns) for another engine to write whole by
+                 *        DMA (the PPA's CLUT: `devplan/demo.md` §8a): as `willDraw()`, then this
+                 *        surface's own copies finished and the rectangles marked changed. The caller
+                 *        writes only inside them, in the back buffer returned (`stride()` bytes a
+                 *        line), and finishes before its next call on this surface (`present()` too).
+                 * @return The back buffer's first pixel; `InvalidState`, `Invalid`, `Timeout`.
+                 * @blocking Only while a swap is pending, and for the copies.
+                 */
+                Result<uint8_t *> beginWrite(Span<const Rect> rects, unsigned int timeoutMs);
+
+                /**
                  * @brief Waits for a started copy.
                  * @return `Ok` or `Timeout`.
                  * @blocking

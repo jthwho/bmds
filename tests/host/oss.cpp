@@ -21,6 +21,7 @@
 #include <bmds/errno.h>
 #include <bmds/sys.h>
 #include "fakefonts.h"
+#include "fakememory.h"
 
 extern "C" {
 long __bmds_oss_ioctl(long fd, unsigned long request, void *arg);
@@ -114,6 +115,7 @@ namespace {
                 t.slot[BMDS_SYS_SYSCONF_GET] = reinterpret_cast<bmds_sys_fn_t>(sysconfGet);
                 t.slot[BMDS_SYS_SYSCONF_SET] = reinterpret_cast<bmds_sys_fn_t>(sysconfSet);
                 FakeFonts::install(t.slot);
+                FakeMemory::install(t.slot); // libbmds3d's memory
                 return t;
         }
 

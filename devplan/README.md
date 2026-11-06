@@ -38,6 +38,9 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`network.md`](network.md) — Phase 7: Ethernet and the IPv4 stack (vendored lwIP), BSD sockets, a real-time fast path for PTP and AES67, NTP, SSH.
 - [`logging.md`](logging.md) — one log for the whole system: `syslog()` through `/dev/log`, `logger`, rotated files on the card.
 - [`apps.md`](apps.md) — application folders (`apps/NAME.app`): found by looking, every one a command in a virtual `/apps`, their data in the home.
+- [`3d.md`](3d.md) — `libbmds3d`: software 3D for programs (our own API, not OpenGL), L8 first, PIE spans (planned).
+- [`sequencer.md`](sequencer.md) — the SDK's sequencer: songs as patterns over scheduled MIDI, beat sync by heard time, live control (planned).
+- [`demo.md`](demo.md) — BMDS Demo #1 (`demo1`): a demoscene-style demo of the system, 2D and 3D over techno, speech (planned).
 - [`controls.md`](controls.md) — gamepads, and actions with keyboard and pad bindings for every application, changed in one standard editor.
 - [`controlpanel.md`](controlpanel.md) — Settings, the control panel: every sysconf setting in grouped pages, like the Mac's System Settings (planned).
 - [`scripting.md`](scripting.md) — AngelScript for children and amateurs: `angel` with the whole system as a frozen script API, and an IDE like QBasic's (steps 1-9 built).

@@ -147,6 +147,14 @@ namespace Pixels {
                       Simd::Kernel kernel = Simd::best());
 
         /**
+         * @brief As `repeat16()`, for 8-bit pixels (indices): a row of L8 scaled across before the
+         *        PPA's CLUT expands it (`devplan/demo.md` §8a). PIE for 2 (16 pixels a step, both
+         *        16-byte aligned).
+         * @hotpath
+         */
+        void repeat8(const uint8_t *in, size_t count, uint8_t *out, unsigned times, Simd::Kernel kernel = Simd::best());
+
+        /**
          * @brief As `repeat16()`, for 3-byte pixels (B, G, R).
          * @hotpath
          */

@@ -406,6 +406,28 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // repeat8 at 2 (the PIE case: aligned, whole steps and a scalar tail; demo.md §8a).
+        int testRepeat8(CommandContext &ctx, Noise &noise) {
+                constexpr size_t Max = 2048;
+                Block            in(MemSpace::Internal, Max), a(MemSpace::Internal, Max * 2 + 32),
+                        b(MemSpace::Internal, Max * 2 + 32);
+                if (in.p == nullptr || a.p == nullptr || b.p == nullptr) return Shell::ExitFailure;
+                for (unsigned c = 0; c < 2000; ++c) {
+                        const size_t n = noise.below(Max);
+                        noise.fill(in.p, Max);
+                        std::memset(a.p, 0x5a, Max * 2 + 32);
+                        std::memset(b.p, 0x5a, Max * 2 + 32);
+                        Pixels::repeat8(in.p, n, a.p, 2, Simd::Kernel::Scalar);
+                        Pixels::repeat8(in.p, n, b.p, 2, Simd::Kernel::Pie);
+                        if (std::memcmp(a.p, b.p, Max * 2 + 32) != 0) {
+                                ctx.printf("repeat8: case %u (%u pixels) differs\n", c, unsigned(n));
+                                return Shell::ExitFailure;
+                        }
+                }
+                ctx.printf("repeat8: 2000 cases, the same\n");
+                return Shell::ExitSuccess;
+        }
+
         // ---- Stress (simd.md §5): the kernels from tasks that switch mid-kernel, and PIE's registers
         // checked across switches.
 
@@ -683,6 +705,7 @@ namespace {
                 {"blend", testBlend},
                 {"text", testText},
                 {"repeat16", testRepeat16},
+                {"repeat8", testRepeat8},
         };
 
         int runSimd(CommandContext &ctx) {

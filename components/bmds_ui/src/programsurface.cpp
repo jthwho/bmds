@@ -27,6 +27,7 @@
 #include <bmds/painter.h>
 #include <bmds/pads.h>
 #include <bmds/pngdecoder.h>
+#include <bmds/ppa.h>
 #include <bmds/programsurface.h>
 #include <bmds/scanout.h>
 #include <bmds/spinlock.h>
@@ -323,6 +324,7 @@ Error ProgramSurface::setPalette(size_t first, Span<const uint32_t> rgb) {
         if (rgb.size() > 0) {
                 _paletteChanged = true;
                 _tripleStale.store(true, std::memory_order_release);
+                _clutStale.store(true, std::memory_order_release);
         }
         return Error::Ok;
 }
@@ -716,8 +718,37 @@ Error ProgramSurface::enterFullScreen(const VideoTiming &mode, bool own) {
                 _strip = nullptr;
                 return err;
         }
+        startPpa();
         pushPresented();
         return Error::Ok;
+}
+
+// L8 at a whole scale: the PPA's CLUT expands the indices (repeated across by the CPU) into the
+// scan surface, the CPU's palette lookups gone (devplan/demo.md §8a). Without it (the PPA busy
+// elsewhere, no memory), the CPU expands as before.
+void ProgramSurface::startPpa() {
+        if (_config.format != Format::L8 || _layout.scaleX == 0 || _ppa != nullptr) return;
+        void *memory = Memory::alloc(MemSpace::Psram, sizeof(Ppa));
+        if (memory == nullptr) return;
+        _ppa = ::new (memory) Ppa();
+        const Error err = _ppa->start();
+        if (err.isError()) {
+                bmdsInfo("ProgramSurface: the PPA isn't free (%s): L8 expanded by the CPU", err.desc());
+                stopPpa();
+                return;
+        }
+        _clutStale.store(true, std::memory_order_release);
+        Memory::free(_triple); // the CPU's table for 3x: not needed
+        _triple = nullptr;
+        return;
+}
+
+void ProgramSurface::stopPpa() {
+        if (_ppa == nullptr) return;
+        _ppa->~Ppa(); // waits for a job under way
+        Memory::free(_ppa);
+        _ppa = nullptr;
+        return;
 }
 
 void ProgramSurface::leaveFullScreen() {
@@ -738,6 +769,7 @@ void ProgramSurface::leaveFullScreen() {
         }
         _underRect = Rect();
         _arrowAt.store(-1, std::memory_order_release);
+        stopPpa();
         Memory::free(_strip); // the last copy from it waited for above
         _strip = nullptr;
         Memory::free(_triple);
@@ -790,6 +822,12 @@ void ProgramSurface::convert() {
                                              uint16_t(r.width * l.scaleX), r.height};
                         }
                 }
+                if (_ppa != nullptr && convertWithPpa(index, changed.rects, on, changed.count)) {
+                        drawArrow();
+                        (void)_fs->present(DrawTimeoutMs);
+                        release(index);
+                        return;
+                }
                 (void)_fs->willDraw(Span<const Rect>(on, changed.count), DrawTimeoutMs);
                 const uint8_t *buf = _buffers[index];
                 int            k = 0;
@@ -831,6 +869,54 @@ void ProgramSurface::convert() {
         (void)_fs->present(DrawTimeoutMs);
         if (dirty) release(index);
         return;
+}
+
+// The newest present's @p count changed rectangles (@p changed, landing at @p on) by the PPA: each
+// row's indices repeated across into one half of the strip by the CPU while the CLUT expands the
+// other half into the scan surface's back buffer. @return false if it couldn't start (then the CPU
+// converts; nothing was written).
+bool ProgramSurface::convertWithPpa(int8_t index, const Rect *changed, const Rect *on, size_t count) {
+        if (_clutStale.exchange(false, std::memory_order_acq_rel)) {
+                uint32_t palette[Ppa::PaletteSize];
+                {
+                        Mutex::Locker locker(_lock, WaitForever); // the palette as one
+                        std::memcpy(palette, _palette, sizeof(palette));
+                }
+                if (_ppa->wait(DrawTimeoutMs).isError()) return false;
+                _ppa->setPalette(palette, 0, Ppa::PaletteSize);
+        }
+        auto [back, err] = _fs->beginWrite(Span<const Rect>(on, count), DrawTimeoutMs);
+        if (err.isError()) {
+                _clutStale.store(true, std::memory_order_release);
+                return false;
+        }
+        const Layout       l = _layout;
+        const Ppa::Picture screen{back, _fs->width(), _fs->height(), Ppa::Format::Rgb888};
+        const size_t       half = _stripBytes / 2;
+        const uint8_t     *buf = _buffers[index];
+        int                k = 0;
+        for (size_t i = 0; i < count && err.isOk(); ++i) {
+                const Rect    &r = changed[i];
+                const uint16_t width = on[i].width; // L8: a byte a pixel
+                const uint16_t perHalf = uint16_t(half / width > 0 ? half / width : 1);
+                for (uint16_t y = 0; y < r.height && err.isOk(); y = uint16_t(y + perHalf), k ^= 1) {
+                        const uint16_t rows = uint16_t(r.height - y < perHalf ? r.height - y : perHalf);
+                        uint8_t       *strip = _strip + size_t(k) * half;
+                        // This half's last job ended when the other half's started (one job at a time).
+                        for (uint16_t row = 0; row < rows; ++row)
+                                Pixels::repeat8(buf + size_t(r.y + y + row) * _stride + r.x, r.width,
+                                                strip + size_t(row) * width, l.scaleX);
+                        (void)esp_cache_msync(strip, size_t(rows) * width,
+                                              ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+                        const Ppa::Picture from{strip, width, rows, Ppa::Format::L8};
+                        err = _ppa->expand(from, Rect{0, 0, width, rows}, screen, on[i].x, uint16_t(on[i].y + y), false,
+                                           DrawTimeoutMs);
+                }
+        }
+        const Error done = _ppa->wait(DrawTimeoutMs); // before anything else touches the back buffer
+        if (err.isError() || done.isError())
+                bmdsWarn("ProgramSurface: the PPA's expansion: %s", (err.isError() ? err : done).desc());
+        return true;
 }
 
 namespace {

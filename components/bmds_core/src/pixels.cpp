@@ -246,6 +246,67 @@ void Pixels::repeat16(const uint16_t *in, size_t count, uint16_t *out, unsigned 
         return;
 }
 
+void Pixels::repeat8(const uint8_t *in, size_t count, uint8_t *out, unsigned times, Simd::Kernel kernel) {
+        size_t done = 0;
+#if BMDS_HAS_PIE
+        if (Simd::usable(kernel) == Simd::Kernel::Pie && times == 2 && count >= 16 &&
+            (reinterpret_cast<uintptr_t>(in) & 15) == 0 && (reinterpret_cast<uintptr_t>(out) & 15) == 0) {
+                // 16 pixels a step: loaded twice and zipped by 8 bits, each pixel beside itself.
+                const size_t   steps = count / 16;
+                const uint8_t *a = in;
+                const uint8_t *b = in;
+                uint8_t       *o = out;
+                for (size_t i = 0; i < steps; ++i)
+                        asm volatile("esp.vld.128.ip q0, %[a], 16\n"
+                                     "esp.vld.128.ip q1, %[b], 16\n"
+                                     "esp.vzip.8 q0, q1\n"
+                                     "esp.vst.128.ip q0, %[o], 16\n"
+                                     "esp.vst.128.ip q1, %[o], 16\n"
+                                     : [a] "+cr"(a), [b] "+cr"(b), [o] "+cr"(o)
+                                     :
+                                     : "memory");
+                done = steps * 16;
+        }
+#endif
+        (void)kernel;
+        uint8_t *o = out + done * times;
+        if (times == 2) {
+                // Two pixels a halfword, four from a word read where the output is aligned.
+                size_t i = done;
+                if ((reinterpret_cast<uintptr_t>(o) & 3) == 0) {
+                        auto *w = reinterpret_cast<uint32_t *>(o);
+                        for (; i + 2 <= count; i += 2) {
+                                const uint32_t p = in[i], q = in[i + 1];
+                                *w++ = p | p << 8 | q << 16 | q << 24;
+                        }
+                        o = reinterpret_cast<uint8_t *>(w);
+                }
+                for (; i < count; ++i, o += 2) o[0] = o[1] = in[i];
+                return;
+        }
+        size_t i = done;
+        if ((reinterpret_cast<uintptr_t>(o) & 3) == 0 && (times == 3 || times == 4)) {
+                auto *w = reinterpret_cast<uint32_t *>(o);
+                if (times == 4) {
+                        for (; i < count; ++i) *w++ = in[i] * 0x01010101u;
+                } else {
+                        // Four pixels, twelve bytes: a a a b, b b c c, c d d d.
+                        for (; i + 4 <= count; i += 4, w += 3) {
+                                const uint32_t a = in[i], b = in[i + 1], c = in[i + 2], d = in[i + 3];
+                                w[0] = a * 0x010101u | b << 24;
+                                w[1] = b * 0x0101u | c * 0x01010000u;
+                                w[2] = c | d * 0x01010100u;
+                        }
+                }
+                o = reinterpret_cast<uint8_t *>(w);
+        }
+        for (; i < count; ++i) {
+                const uint8_t v = in[i];
+                for (unsigned t = 0; t < times; ++t) *o++ = v;
+        }
+        return;
+}
+
 void Pixels::repeat24(const uint8_t *in, size_t count, uint8_t *out, unsigned times) {
         for (size_t i = 0; i < count; ++i) {
                 const uint8_t b = in[3 * i], g = in[3 * i + 1], r = in[3 * i + 2];

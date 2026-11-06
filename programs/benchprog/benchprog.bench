@@ -57,6 +57,11 @@ Exec=benchprog render
 Tags=quick
 Help=Doom's columns and spans for a 320x200 frame, drawn into PSRAM and into internal RAM
 
+[Bench render.wire]
+Exec=benchprog wire
+Tags=quick
+Help=libbmds3d's wireframes (a cube, a torus, a sphere; hidden lines or all) and 2000 points, 640x360 L8 in PSRAM
+
 [Bench kernel.pipe]
 Exec=benchprog pipe
 Tags=quick

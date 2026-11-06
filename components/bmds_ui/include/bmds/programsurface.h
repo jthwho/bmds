@@ -31,6 +31,7 @@
 BMDS_NAMESPACE_BEGIN
 
 class Painter;
+class Ppa;
 class Surface;
 
 /**
@@ -238,6 +239,9 @@ class ProgramSurface final : public SwapChain {
                 Error  enterFullScreen(const VideoTiming &mode, bool own);
                 void   leaveFullScreen();
                 void            convert(); // the newest present into the scan surface
+                bool            convertWithPpa(int8_t index, const Rect *changed, const Rect *on, size_t count);
+                void            startPpa();
+                void            stopPpa();
 
                 static void redrawEntry(void *arg, Painter &painter);
                 static void keyEntry(void *arg, const KeyEvent &event);
@@ -278,6 +282,8 @@ class ProgramSurface final : public SwapChain {
                 uint8_t       *_strip = nullptr;        // full screen's rows, internal DMA RAM (while full screen)
                 uint32_t         *_triple = nullptr;  // expandTriple()'s table: L8 full screen at 3 times (presenter's)
                 std::atomic<bool> _tripleStale{true}; // the palette changed since it was made
+                Ppa              *_ppa = nullptr;     // L8 at a whole scale full screen: the CLUT expands (presenter's)
+                std::atomic<bool> _clutStale{true};   // the palette changed since the CLUT was loaded
                 size_t         _stripBytes = 0;
 
                 // SwapChain's _lock: also the window's size, its focus, full screen's state.

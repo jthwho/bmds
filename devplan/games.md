@@ -1324,3 +1324,31 @@ above were taken with the old commands.
   so the first long-running program (dropbear, at boot) held 64 KB of it for good. Stacks over
   32 KB (the deep-recursion budgets, mostly untouched) now go to PSRAM (`stackSpaceFor()`); the
   games' 32 KB stacks still go to internal RAM when there is room.
+
+## 27. L8 full screen through the PPA's CLUT (2026-11-06, `demo.md` §8)
+
+BMDS Demo #1 changes every pixel of a 640×360 L8 picture every frame, and full screen that
+presented at 35-39 fps: the presenter's palette lookups on core 1 took ~12 ms of a ~16 ms
+conversion (`demo.md` §8b has the profile). Now, for L8 at a whole scale:
+
+- **The CPU repeats indices, the PPA looks them up:** each changed row's indices go into a half
+  of the presenter's strip repeated `scaleX` times (`Pixels::repeat8()`: PIE `vzip.8` at 2×, word
+  stores at 3× and 4×, a scalar twin in `simd test repeat8` and the host tests), the half is
+  written back from the cache, and `Ppa::expand()` (the blender's CLUT, with its invisible
+  foreground: bypass never completes, `docs/platforms/esp32p4.md`) writes it as RGB888 into the
+  scan surface's back buffer while the CPU fills the other half.
+- **`Surface::beginWrite(rects)`:** what `startBlit()` does before its own DMA (the pending swap
+  waited for, the last present's changes copied forward where the rectangles don't cover them,
+  the surface's own jobs finished, the rectangles marked changed), then the back buffer for
+  another engine to write; the caller finishes before its next call on the surface.
+- **The CLUT is loaded when the palette changes** (`_clutStale`, set by `setPalette()` beside the
+  triple table's flag), after the last job, so a palette lands on the present it came with.
+- **The PPA is one user's at a time:** `Ppa::start()` claims it (`Busy` for a second instance), so
+  a `display.ppa.*` bench run during a full-screen game is refused, not mixed into its frames.
+  The presenter holds it from entering full screen to leaving; without it (`Busy`, no memory) the
+  CPU expands as before, said in the log.
+- **Measured** (`benchprog-display surface`, `demo.md` §8b): every L8 case full screen at 60 with
+  less CPU (the demo's 16.8 → 6.6 ms a frame, Doom's 5.6 → 3.6, Quake's 6.8 → 4.4). The first
+  build's `repeat8` wrote a byte at a time at 3× and cost Doom 3 ms more than the old path:
+  word stores fixed it. Colours checked against the CPU path (`wire`), a cycling palette
+  (`surfdemo -f l8 -F`), and full screen entered and left over and over (the bench's cases).

@@ -246,7 +246,12 @@ until silicon v3; then test again.
 - **The blender's CLUT** (L8 through a 256-entry palette to RGB888; IDF leaves L8 out) is exact
   and ~39 Mpixel/s: 1.65 ms for 320×200. Its **bypass mode with only the background channel
   never completes**, and a 2D-DMA job that never completes stays in the pool: every later job
-  times out until a restart. Keep the foreground channel (an invisible A8 plane).
+  times out until a restart. Keep the foreground channel (an invisible A8 plane). **It keeps up
+  with a 1280×360 frame at 60 Hz** (2026-11-06, `devplan/games.md` §27): fed indices already
+  repeated across (PIE `vzip.8`, cheap) from internal RAM in ~12-row jobs, it expands a 640×360 L8
+  game's whole frame every frame, and the presenter's CPU fell from ~16.8 to ~6.6 ms a frame; the
+  CPU's own lookups had been ~12 ms with PSRAM shared by the scan, the 2D-DMA and the program.
+  The CPU's remaining cost is reading the program's frame from PSRAM (~43 MB/s under that load).
 - **A stuck 2D-DMA job can be ended: `dma2d_force_end()`, but only once it has its channels**
   (found 2026-10-15, `devplan/windows.md` §4k, after a display `BlitChain` job never finished
   and froze the desktop). It decides "in flight" by whether `trans->rx_chan`'s channel is busy,

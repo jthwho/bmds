@@ -79,8 +79,10 @@ class Ppa {
                 Ppa &operator=(const Ppa &) = delete;
 
                 /**
-                 * @brief Powers the PPA and takes a 2D-DMA pool; the palette is black.
-                 * @return `Ok`, `InvalidState` (started), `NoMem`, or the driver's error.
+                 * @brief Powers the PPA and takes a 2D-DMA pool; the palette is black. The PPA is
+                 *        one instance's until `stop()`: another's `start()` meanwhile is refused.
+                 * @return `Ok`, `InvalidState` (started), `Busy` (another instance has it), `NoMem`,
+                 *         or the driver's error.
                  */
                 Error start();
 

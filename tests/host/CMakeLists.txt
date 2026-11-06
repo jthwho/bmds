@@ -93,6 +93,12 @@ add_executable(bmds_host_tests
         oss.cpp
         ${BMDS_ROOT}/sdk/crt/oss.c
         fakefonts.cpp
+        fakememory.cpp
+        3d.cpp
+        ${BMDS_ROOT}/sdk/3d/math.c
+        ${BMDS_ROOT}/sdk/3d/mesh.c
+        ${BMDS_ROOT}/sdk/3d/context.c
+        ${BMDS_ROOT}/sdk/3d/wire.c
         fontlibrary.cpp
         fonts.cpp
         game.cpp

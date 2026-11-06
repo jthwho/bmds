@@ -11,6 +11,7 @@
  * devplan/display.md §8 did).
  */
 
+#include <atomic>
 #include <cstring>
 #include <new>
 #include <esp_cache.h>
@@ -32,6 +33,10 @@ namespace {
         constexpr uint32_t     BlendRxL8 = 4;     // blend0_rx_cm: L8 through the CLUT (ppa_ll.h, commented out)
         constexpr uint32_t     BlendRxA8 = 6;     // blend1_rx_cm: A8
         constexpr uint32_t     BlendTxRgb888 = 1; // blend_tx_cm
+
+        // The one PPA: its registers and CLUT are one user's from start() to stop() (a full-screen
+        // presenter, a benchmark); a second start() is refused rather than sharing them.
+        std::atomic<bool> claimed{false};
 
         uint32_t pbyte(Ppa::Format format) {
                 switch (Ppa::bytesPerPixel(format)) {
@@ -212,11 +217,15 @@ struct PpaIsr {
 
 Error Ppa::start() {
         if (_hw != nullptr) return Error::InvalidState;
+        if (claimed.exchange(true, std::memory_order_acq_rel)) return Error::Busy;
         // A completion left from a job of an earlier start, cleared.
         while (_done.tryAcquire().isOk()) {}
         _busy = false;
         void *memory = Memory::alloc(MemSpace::Internal, sizeof(Hardware));
-        if (memory == nullptr) return Error::NoMem;
+        if (memory == nullptr) {
+                claimed.store(false, std::memory_order_release);
+                return Error::NoMem;
+        }
         _hw = new (memory) Hardware();
         Hardware &hw = *_hw;
         hw.descriptorBytes =
@@ -271,6 +280,7 @@ void Ppa::stop() {
         hw.~Hardware();
         Memory::free(_hw);
         _hw = nullptr;
+        claimed.store(false, std::memory_order_release);
         return;
 }
 
