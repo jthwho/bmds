@@ -158,6 +158,9 @@ thread, no locks on the drawing thread.
   port's destination as routed now (the system synths: their period, stream queue and the device's
   delay; a hardware or network port: 0, the device's own being unknown). `-BMDS_ENOSYS` before it
   (old kernels), so the configured default applies.
+  - **Then (2026-11-07, `audio.md` §27): `BMDS_MIDI_ALLOW_LATENCY` (op 6)** lets an fd's events be
+    heard later; a built-in synth then renders ahead at that fixed latency, which `BMDS_MIDI_LATENCY`
+    returns. `bmds_seq_config_t.allow_latency_us` asks for it before the latency is read.
 - **K3, the synths' sound controllers** (no ABI change: MIDI's own meanings, GM2's sound
   controllers): 74 brightness and 71 resonance (the wavetable: TinySoundFont's per-voice low-pass
   offset from the preset's own cutoff and Q; FM: the modulators' levels, which is what brightness

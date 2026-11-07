@@ -60,6 +60,17 @@ class MidiSink {
                  */
                 virtual int64_t latencyNs() const { return 0; }
 
+                /**
+                 * @brief Lets @p owner's events be heard up to @p ns late (0: takes it back;
+                 *        `devplan/audio.md` §27): a synth may then render ahead. A sink that can't
+                 *        ignores it. @nonblocking (under the router's lock)
+                 */
+                virtual void allowLatency(const void *owner, int64_t ns) {
+                        (void)owner;
+                        (void)ns;
+                        return;
+                }
+
         protected:
                 constexpr MidiSink() = default;
                 ~MidiSink() = default;
@@ -223,6 +234,15 @@ class MidiRouter {
                  *        to), or to its destination. @nonblocking
                  */
                 int64_t latencyNs(uint8_t number, bool asSource);
+
+                /**
+                 * @brief Tells the sinks where @p owner's events go now (from port @p number, as
+                 *        `latencyNs()` finds them) that they may be heard up to @p ns late, and every
+                 *        other sink 0, so a route changed since is forgotten (`MidiSink::
+                 *        allowLatency()`, `devplan/audio.md` §27). @p ns 0: forgotten everywhere.
+                 * @nonblocking
+                 */
+                void allowLatency(uint8_t number, bool asSource, const void *owner, int64_t ns);
 
                 /**
                  * @brief An event to port @p destination's destination alone.

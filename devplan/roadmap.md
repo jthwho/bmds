@@ -289,8 +289,9 @@ Plan: [`input.md`](input.md).
   Step 4 in part (§10): four more parts (tunnel and fire in 2D, vector balls and solids in 3D), the hook
   (an eight-bar melody, a square lead and a vibraphone), 88 bars in nine sections; 60 fps without music,
   40-58 with it: the synth preempts the presenter, whose PPA needs ~9 ms a frame; the levers tried and
-  measured in esp32p4.md §4c; FM's waveforms now in internal RAM while it plays (not its cost); next,
-  the synth's own cost (35-42% of a core) profiled per voice.
+  measured in esp32p4.md §4c; FM's waveforms now in internal RAM while it plays (not its cost). Then
+  the synth renders ahead (`audio.md` §27, `BMDS_MIDI_ALLOW_LATENCY`, ABI appended): with FM, plasma
+  59, stars 60, tunnel 59, fire 51, balls 56, solids 41, no underrun; next, FM's own cost per voice.
   Step 0 done (§8b, 2026-11-06): whole L8 frames full screen at 60 (the PPA's CLUT expands what the CPU
   repeats across; `Surface::beginWrite()`; the PPA claimed by one user at a time): 640×360 54 → 60 fps,
   the presenter's CPU 16.8 → 6.6 ms a frame; Doom's and Quake's cheaper too (`games.md` §27).
@@ -341,6 +342,11 @@ Plan: [`input.md`](input.md).
     every 32 frames, Q31 gains, channels sharing a pan mixed together: d_runnin 200 → 134 ms a
     second of music (the wavetable's 149), d_doom2 184 (219); slow-attack pads, silent since
     step 1, sound again. Later: 4-operator voices, WOPL banks.
+  - [x] 6f. Rendering ahead (§27, 2026-11-07, the user's idea): `BMDS_MIDI_ALLOW_LATENCY` (op 6,
+    ABI appended) lets an fd's events be heard later; a built-in synth then writes a PCM ring
+    below the presenter at that fixed latency (`BMDS_MIDI_LATENCY` says it), raising itself only
+    while the ring runs low; real time otherwise, as before. `bmds_seq_config_t.allow_latency_us`.
+    demo1 beside FM: tunnel 44 → 59 fps, fire 40 → 51, balls 45 → 56, no underrun.
   - [ ] 6e. The synth module (`synthmodule.md`, planned 2026-10-28, the user's use case): the
     board as a live sound module with no display; a performance of 16 parts, each a preset from
     any SF2 or SF3, only their samples loaded; a `module` port, two cores, reverb and chorus,

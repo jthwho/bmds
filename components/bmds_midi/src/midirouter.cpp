@@ -308,6 +308,23 @@ int64_t MidiRouter::latencyNs(uint8_t number, bool asSource) {
         return most;
 }
 
+void MidiRouter::allowLatency(uint8_t number, bool asSource, const void *owner, int64_t ns) {
+        Mutex::Locker lock(_lock, WaitForever);
+        bool          target[MaxPorts] = {};
+        if (ns > 0 && number < MaxPorts && _ports[number].used) {
+                if (!asSource) {
+                        target[number] = true;
+                } else {
+                        for (size_t i = 0; i < _connectionCount; ++i)
+                                if (_connections[i].source == number) target[_connections[i].destination] = true;
+                }
+        }
+        for (size_t i = 0; i < MaxPorts; ++i)
+                if (_ports[i].used && _ports[i].sink != nullptr)
+                        _ports[i].sink->allowLatency(owner, target[i] ? ns : 0);
+        return;
+}
+
 Error MidiRouter::deliver(uint8_t destination, const MidiEvent &event) {
         MidiSink *kick = nullptr;
         {

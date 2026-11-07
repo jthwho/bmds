@@ -2,7 +2,7 @@
 # application folder.
 name = "demo1"
 version = "1"
-revision = 3
+revision = 6
 description = "BMDS Demo #1: a demoscene-style show of the system's graphics, sound and speech"
 title = "BMDS Demo #1"
 license = "MIT"

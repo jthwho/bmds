@@ -59,10 +59,16 @@ namespace {
                         }
                         void kick() override { ++kicked; }
                         void portGone() override { gone = true; }
+                        void allowLatency(const void *owner, int64_t ns) override {
+                                allowedBy = owner;
+                                allowedNs = ns;
+                        }
 
                         std::vector<MidiEvent> events;
                         int                    kicked = 0;
                         bool                   gone = false;
+                        const void            *allowedBy = nullptr; // the last allowLatency()'s
+                        int64_t                allowedNs = -1;
 
                 private:
                         size_t _room;
@@ -269,6 +275,37 @@ TEST_CASE("MidiRouter: connections, fan-out, taps") {
         router.noteDeviceError(m);
         CHECK(router.port(m).value().counters.parseErrors == 3);
         CHECK(router.port(m).value().counters.deviceErrors == 1);
+}
+
+TEST_CASE("MidiRouter: a latency allowed reaches where events go now, and nowhere else") {
+        MidiRouter    router;
+        Collector     fm, wavetable;
+        const int     owner = 0;
+        const uint8_t sys = router.addPort(MidiRouter::Kind::System, MidiRouter::Source, "system", nullptr).value();
+        const uint8_t f = router.addPort(MidiRouter::Kind::System, MidiRouter::Destination, "fm", &fm).value();
+        const uint8_t w =
+                router.addPort(MidiRouter::Kind::System, MidiRouter::Destination, "wavetable", &wavetable).value();
+        REQUIRE(router.connect(sys, f) == Error::Ok);
+        // From a source: its connections' sinks; the others told 0.
+        router.allowLatency(sys, true, &owner, 120'000'000);
+        CHECK(fm.allowedBy == &owner);
+        CHECK(fm.allowedNs == 120'000'000);
+        CHECK(wavetable.allowedNs == 0);
+        // Routed elsewhere and allowed again: the old destination forgets it.
+        REQUIRE(router.disconnect(sys, f) == Error::Ok);
+        REQUIRE(router.connect(sys, w) == Error::Ok);
+        router.allowLatency(sys, true, &owner, 120'000'000);
+        CHECK(fm.allowedNs == 0);
+        CHECK(wavetable.allowedNs == 120'000'000);
+        // To a destination's file: that sink alone. Taken back: everywhere.
+        router.allowLatency(f, false, &owner, 80'000'000);
+        CHECK(fm.allowedNs == 80'000'000);
+        CHECK(wavetable.allowedNs == 0);
+        router.allowLatency(f, false, &owner, 0);
+        CHECK(fm.allowedNs == 0);
+        router.allowLatency(9, false, &owner, 80'000'000); // no such port: all told 0
+        CHECK(fm.allowedNs == 0);
+        CHECK(wavetable.allowedNs == 0);
 }
 
 TEST_CASE("MidiRouter: connections by name") {

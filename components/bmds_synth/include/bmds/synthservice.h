@@ -25,7 +25,9 @@ BMDS_NAMESPACE_BEGIN
  * destination) exists. Idle, it costs the port, a ring of 1,024 events (16 KB of PSRAM) and a control
  * thread (its stack in PSRAM) waiting. The first event opens a synth on its engine and a
  * real-time stream on `/dev/dsp` (the device's period), and starts the audio thread; 5 s with no
- * events and no voice sounding, both are closed. While the wavetable is the system synth and
+ * events and no voice sounding, both are closed. While an fd allows it latency
+ * (`BMDS_MIDI_ALLOW_LATENCY`, `devplan/audio.md` §27), the stream is a PCM one instead, rendered
+ * that far ahead. While the wavetable is the system synth and
  * `synth/keep-fonts` is on, its font is loaded at the start (and when `synth/font` changes) and
  * left in the font cache, so the first note doesn't wait for the card; otherwise the first note
  * loads it, and a notification says so.
@@ -46,6 +48,8 @@ namespace SynthServices {
                         uint32_t starts = 0;      ///< Times it started playing.
                         uint32_t late = 0;        ///< Its stream's late periods, all told.
                         uint32_t peakVoices = 0;  ///< The most at once, since boot.
+                        uint32_t aheadMs = 0;     ///< The latency allowed it, rendering ahead (0: real time).
+                        uint32_t raised = 0;      ///< Ahead: times its ring ran low and it went above drawing.
         };
 
         /**

@@ -63,6 +63,7 @@ static struct {
                 float    frame_ms, draw_ms, busy[2];
                 uint32_t counters[2];
                 int      have_counters;
+                int      pointer_hidden;
 } show;
 
 float demo_sines[DEMO_SINES];
@@ -101,6 +102,10 @@ static void music_start(void) {
         c.size = sizeof(c);
         c.port = show.wavetable ? "wavetable" : "fm"; /* by name: /dev/midi is whichever the user set */
         c.latency_us = -1;
+        /* The music is all scheduled and the frames drawn for when they're seen: the synth may
+         * render 250 ms ahead, so drawing (the presenter above it) doesn't make it miss a period
+         * (devplan/audio.md §27). */
+        c.allow_latency_us = 250000;
         int err = bmds_seq_open(&c, song_get(), &show.seq);
         if (err == 0) err = bmds_seq_play(show.seq, 0);
         if (err < 0) {
@@ -230,6 +235,12 @@ static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
         const float   dt = show.last_ns != 0 ? (float)(start - show.last_ns) / 1e9f : 0.0f;
         d->game = game;
         show.last_ns = start;
+        if (!show.pointer_hidden) {
+                /* No arrow over the show; the pointer still moves (and steers) and presses. */
+                uint32_t mode = BMDS_POINTER_HIDDEN;
+                show.pointer_hidden =
+                        bmds_surface_control(bmds_game_fd(game), BMDS_SURFACE_POINTER, &mode, sizeof(mode)) == 0;
+        }
         if (show.music > 0 && --show.music == 0) {
                 /* A quarter second in, not before the loop: a synth starting allocates internal RAM,
                  * which full screen needs too (its scan's descriptors); asked first, it went to a

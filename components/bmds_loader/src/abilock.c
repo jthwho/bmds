@@ -920,3 +920,4 @@ _Static_assert(offsetof(bmds_surface_timing_t, frames) == 4 && offsetof(bmds_sur
                        offsetof(bmds_surface_timing_t, reserved) == 20 && sizeof(bmds_surface_timing_t) == 24,
                "ABI: bmds_surface_timing_t");
 _Static_assert(BMDS_MIDI_LATENCY == 5, "ABI: BMDS_MIDI_LATENCY");
+_Static_assert(BMDS_MIDI_ALLOW_LATENCY == 6, "ABI: BMDS_MIDI_ALLOW_LATENCY");

@@ -120,10 +120,18 @@ class MidiFile final : public Stream, private MidiSink {
                 /** @brief Throws away what waits to be read. */
                 void dropInput();
 
-                /** @brief Throws away what it scheduled and hasn't sent (`BMDS_MIDI_CANCEL`). */
                 /** @brief Returns the latency of where this fd's events go (`MidiRouter::latencyNs()`). */
                 int64_t latencyNs() const;
 
+                /**
+                 * @brief Lets this fd's events be heard up to @p ns late (`BMDS_MIDI_ALLOW_LATENCY`,
+                 *        `MidiRouter::allowLatency()`): told where they go now, again on a connect or
+                 *        disconnect, taken back as it closes. 0 takes it back.
+                 * @return `Ok`, `Invalid` (`/dev/midinew` with no port yet).
+                 */
+                Error setAllowedLatency(int64_t ns);
+
+                /** @brief Throws away what it scheduled and hasn't sent (`BMDS_MIDI_CANCEL`). */
                 void cancelScheduled();
 
                 Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override;
@@ -179,6 +187,7 @@ class MidiFile final : public Stream, private MidiSink {
                 MidiQueue             _scheduled;                  // the clock's lock, both ends
                 MidiEvent            *_scheduledStorage = nullptr; // PSRAM, from the first scheduled write
                 int64_t               _lastScheduledNs = 0;        // the latest queued
+                std::atomic<int64_t>  _allowedNs{0};               // BMDS_MIDI_ALLOW_LATENCY's
                 SpinLock              _heldLock;
                 uint8_t               _held[16][16] = {}; // the notes it holds on: a bit a note, by channel
 };

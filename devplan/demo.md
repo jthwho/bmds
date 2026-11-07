@@ -341,3 +341,10 @@ where the SDK already had what they need (textures, step 6, not needed yet: the 
   Result: 35 KB of internal RAM free during the show (lowest 32 KB, from 5.6); but FM still takes
   42% of core 1 in drop B, so the flash reads weren't its cost; frame rates within noise (plasma
   57, stars 55, tunnel 44, fire 40, balls 45, solids 40). Next: FM's voice loop profiled per voice.
+- **The synth renders ahead (2026-11-07, the user's idea; `audio.md` §27):** the music is all
+  scheduled, so demo1 allows the port 250 ms (`bmds_seq_config_t.allow_latency_us`) and FM writes a
+  PCM ring below the presenter instead of meeting each period at 19, raising itself above it only
+  while the ring is under a quarter full (5 times in the whole show). Frame rates with FM: plasma
+  59, stars 60, tunnel 59, fire 51, balls 56, solids 41; no underrun, no late period or event. Fire
+  and solids are their drawing's now (18.4 and 23.2 ms on core 0); FM's own cost (31-42 % of core
+  1) still matters, since at 60 fps the presenter takes 57 % of it: profiled per voice next.

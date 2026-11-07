@@ -2969,3 +2969,84 @@ connected `fm` (`synth/system` `fm`). The user's settings were put back after.
     48 gives 43 sounding on average and 1,910 stolen; 64, 50 and 798. Kept at 32 (an OPL3 had 18
     channels; the cost grows with the voices that sound); `max_voices` asks for more.
   - Fuzzed again (5 minutes, the new paths): no fault.
+
+## 27. Rendering ahead: a synth port that keeps time beside a busy program (design, 2026-11-07)
+
+**Why.** The system synths are real-time clients: each 5 ms period is rendered when the device
+asks for it, at priority 19, and a period not ended by the next end-of-frame is lost as silence.
+Beside demo1's full-screen present (the presenter at priority 4 on core 1, `docs/platforms/
+esp32p4.md` §4c), FM's ~40 % of the core preempts the presenter, and frame rates fall to 40-58;
+the presenter above the synth made 60 but broke the music. A game's music is scheduled ahead
+anyway (`bmds/seq.h` writes its events 80 ms early), so it doesn't need a 15 ms path from event
+to sound: it needs the latency to be known. **The user's decision (2026-11-07): keep the
+real-time synth as it is; let games and the like trade latency for it.**
+
+**The ABI (appended): `midi_control(fd, BMDS_MIDI_ALLOW_LATENCY, us)` (op 6).** This fd's events
+may be heard up to `us` µs after their time. A built-in synth they reach then renders ahead,
+and `BMDS_MIDI_LATENCY` returns the latency it settled on (at most `us`: a constant, not a
+measurement). 0 (the default) takes it back. The allowance holds until the fd closes or sets
+another; while any fd's is on a synth, every writer to it hears that latency (the smallest of
+the allowances). A port that can't run ahead (USB, network) ignores it. Older kernels:
+`-BMDS_EINVAL`, so a program keeps the real-time latency it asks for.
+
+**In the router.** `MidiSink::allowLatency(owner, ns)` (a no-op by default); `MidiRouter::
+allowLatency(port, asSource, owner, ns)` tells the sinks where the fd's events go now (as
+`latencyNs()` finds them) its allowance, and every other sink 0, so a route that changed is
+forgotten. `MidiFile` calls it when set, on connect and disconnect, and with 0 as it closes.
+
+**In the service.** Each synth keeps its allowances (8 owners; under the router's lock) and the
+latency L = the smallest, at most 250 ms; under 40 ms it stays real-time. Its audio thread runs
+in one of two modes and changes between periods when L changes, keeping the synth open (only
+the stream is reconfigured):
+
+- **Real time** (L = 0): as before (`RtStream`, the measured latency).
+- **Ahead** (L > 0): an ordinary PCM stream on `/dev/dsp` (float at the device's rate, a ring
+  of R frames in PSRAM, started at a period queued), written a period at a time; `write()` blocks
+  while the ring is full, which paces the thread. The thread's own priority is 3: above programs
+  (2), below the presenter (4) and the window manager (5), so drawing preempts it and the ring
+  covers the gap. Each period's events are placed by their time: an event at T sounds at T + L.
+  The frame being written is heard at `max(taken + P, now) + queued/rate + 2P` (`taken`: when
+  the mixer last took frames, P the device's period, two DMA buffers after it); an event goes on
+  the frame `(T + L - heard)·rate` frames on, waiting in the port's ring until its period
+  (`peek()`), so the engine's queue holds a period's events. One for a frame already written is
+  late: placed at once and counted.
+- **R:** the largest power of two (the ring's rounding) with `R/rate + 4P + 15 ms ≤ L`. The
+  frames written but not heard are at most R + a period in flight + the three buffers; the 15 ms
+  is an event's wait between arriving and its period being placed (a render, and the presenter
+  holding the thread off). 250 ms at 48 kHz, 5 ms periods: R = 8,192 (171 ms, 64 KB of PSRAM).
+- **Counted:** `synth status` says `ahead N ms` or `real time`; late periods count the ring's
+  underruns and the late events too.
+
+**Not done (each a later choice):** `BMDS_MIDI_CANCEL` doesn't take back what is rendered (up to
+R plays on after a stop; the sequencer's all-notes-off follows it); a route changed by settings
+(`synth/system`) keeps the allowance where it was until the fd sets it again.
+
+**`bmds/seq.h`:** `bmds_seq_config_t.allow_latency_us` (appended; the library is static, no ABI
+promise), set before the latency is asked. demo1 allows 250 ms (its frames are drawn for when
+they are seen, so it doesn't show).
+
+### As built (2026-11-07)
+
+As designed, with three things the board found:
+
+- **The heard time is a timeline, not a measurement.** Each period's "when is the next frame
+  heard" came from the stream's position, whose time is when the mixer took frames: it jitters
+  by a millisecond or more, so an event was put off a period, then found late by 0.2-1.2 ms on
+  the next (four at a time: a step's notes; ~60 in a demo1 run with no underrun). It is now kept
+  a period on each period, eased a 32nd of the way to the measurement, and taken as measured only
+  after an underrun (or 20 ms off). Late events: 0.
+- **The margin:** 2 ms at first; 15 ms covers the presenter holding the thread off.
+- **Behind, raised.** Ahead at priority 3, the synth still lost core 1 to the presenter once a
+  part reached 60 fps: the tunnel's presenter takes 57 % of core 1 at 60 (`Pixels::repeat8`, the
+  CPU's pixel doubling, 61 % of that: memory-bound reading PSRAM), FM 31 %; 24-110 underruns in
+  its 14 s, with a 120 ms or a 250 ms latency alike (a shortfall a ring only delays). Now the
+  thread raises itself to 6 (above the presenter and the window manager) while its ring holds
+  under a quarter, and goes back to 3 at half (`Thread::setCurrentPriority()`, new): drawing
+  yields only when the music would break. Over demo1's 151 s: raised 5 times (one is the start,
+  the ring empty), no underrun, no late event, no late period.
+- **demo1 beside FM (fps), ahead vs real time:** plasma 59 (57), stars 60 (55), tunnel 59 (44),
+  fire 51 (40), balls 56 (45), solids 41 (40). Fire and solids are their own drawing's now (core
+  0: 18.4 and 23.2 ms a frame).
+- `synth status` says `ahead 250 ms` or `real time`, and how often it was raised; with demo1
+  gone, the allowance goes with its fd and `fm` is real-time again (checked: a note from `midi
+  send` played as a real-time client).

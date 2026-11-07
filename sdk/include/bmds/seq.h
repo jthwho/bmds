@@ -104,6 +104,10 @@ typedef struct bmds_seq_config_t {
                                      "/dev/midi", the system synth. */
                 uint32_t    lookahead_ms; /**< Events written this far ahead of when they are sent (0: 80). */
                 int32_t     latency_us;   /**< The output's latency; -1: asked of the port (`BMDS_MIDI_LATENCY`). */
+                /** Latency the port may take (`BMDS_MIDI_ALLOW_LATENCY`, asked before the latency): a built-in synth
+                 *  then renders ahead, keeping time beside a busy program (0: as low as it goes, real time). Appended:
+                 *  a config of the older `size` leaves it 0. */
+                uint32_t allow_latency_us;
 } bmds_seq_config_t;
 
 /**

@@ -109,6 +109,14 @@ class Thread {
                 static Error pinCurrent(int core);
 
                 /**
+                 * @brief Sets the calling thread's (or task's) FreeRTOS priority to @p priority (at
+                 *        most `configMAX_PRIORITIES - 1`): for a thread that raises itself while it
+                 *        falls behind and goes back after (`devplan/audio.md` §27). Target only.
+                 * @nonblocking It may switch to another thread at once (lowered).
+                 */
+                static void setCurrentPriority(unsigned int priority);
+
+                /**
                  * @brief Blocks the calling thread (or task) for @p delayMs.
                  * @blocking
                  */

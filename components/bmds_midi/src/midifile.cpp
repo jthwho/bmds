@@ -149,6 +149,8 @@ void MidiFile::handleClosed(uint8_t) {
                 _scheduledStorage = nullptr;
         }
         releaseHeld();
+        if (hasPort() && _allowedNs.load(std::memory_order_relaxed) != 0)
+                Midi::router().allowLatency(_port, _owner || _asSource, this, 0);
         if (hasPort()) {
                 // After these, the router calls it no more.
                 if (_owner) {
@@ -237,12 +239,23 @@ MidiFile::Status MidiFile::status() {
 
 Error MidiFile::connect(uint8_t destination) {
         if (!hasPort()) return Error::Invalid;
-        return Midi::router().connect(_port, destination);
+        const Error err = Midi::router().connect(_port, destination);
+        if (err.isOk() && _allowedNs.load(std::memory_order_relaxed) != 0) (void)setAllowedLatency(_allowedNs.load());
+        return err;
 }
 
 Error MidiFile::disconnect(uint8_t destination) {
         if (!hasPort()) return Error::Invalid;
-        return Midi::router().disconnect(_port, destination);
+        const Error err = Midi::router().disconnect(_port, destination);
+        if (err.isOk() && _allowedNs.load(std::memory_order_relaxed) != 0) (void)setAllowedLatency(_allowedNs.load());
+        return err;
+}
+
+Error MidiFile::setAllowedLatency(int64_t ns) {
+        if (!hasPort() || ns < 0) return Error::Invalid;
+        _allowedNs.store(ns, std::memory_order_relaxed);
+        Midi::router().allowLatency(_port, _owner || _asSource, this, ns);
+        return Error::Ok;
 }
 
 void MidiFile::cancelScheduled() {

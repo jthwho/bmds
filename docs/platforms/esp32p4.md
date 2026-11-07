@@ -629,6 +629,18 @@ until silicon v3; then test again.
     open (the user's choice: 16 KB, given back when the synth closes after 5 s of quiet), FM still
     took 42% of core 1 in drop B and frame rates moved within a launch's noise (tunnel 41 → 44,
     solids 38 → 40). The cost is somewhere else in the voice loop; profile it per voice next.
+  - **What fixed it: the synth renders ahead** (2026-11-07, `devplan/audio.md` §27): a program
+    whose music is scheduled allows the port latency (`BMDS_MIDI_ALLOW_LATENCY`; demo1 250 ms), and
+    the synth writes a PCM ring at priority 3, below the presenter, instead of meeting each 5 ms
+    period at 19. Frame rates beside FM: plasma 59, stars 60, tunnel 59, fire 51, balls 56,
+    solids 41 (the last two their own drawing's now). **But at 60 fps the presenter takes 57 % of
+    core 1** (tunnel; `Pixels::repeat8`, the CPU's doubling, 61 % of that, memory-bound) and FM
+    31 %: below the presenter the synth fell behind for good (24-110 underruns in 14 s, whatever
+    the ring). It now raises itself above the presenter (6) while its ring is under a quarter
+    full, back to 3 at half: raised 5 times in the whole demo, no underrun. **The ring's time is a
+    poor clock:** a PCM stream's position is stamped when the mixer takes frames, a millisecond or
+    more of jitter; placing events by it each period put some a period late. A timeline advanced a
+    period a period, eased to the measurement, re-anchored only on an underrun: none late.
 - **Internal RAM goes to thread stacks first** (2026-11-06): the loader puts a program thread's
   stack (32 KB by default) in internal RAM while 64 KB more stays free. Three default threads (a
   program's main, libbmds3d's helper, the sequencer's player) took ~96 KB; full screen then takes

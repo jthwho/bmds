@@ -694,6 +694,17 @@ typedef struct bmds_midi_status_t {
  *        `value` 0. Kernels before it: `-BMDS_EINVAL`.
  */
 #define BMDS_MIDI_LATENCY 5u
+/**
+ * @brief Lets this fd's events be heard up to `value` microseconds after their time (appended
+ *        2026-11-07, `devplan/audio.md` §27): a built-in synth they reach then renders ahead of
+ *        the device, so a busy program can't make it miss a period, and `BMDS_MIDI_LATENCY` returns
+ *        the latency it settled on (at most `value`, constant while the allowance holds). For music
+ *        scheduled ahead (a game's), not live playing. Held until the fd closes or sets another;
+ *        while one is on a synth, all its writers hear that latency (the smallest allowed). 0 (the
+ *        default) takes it back; a port that can't run ahead ignores it. Kernels before it:
+ *        `-BMDS_EINVAL`.
+ */
+#define BMDS_MIDI_ALLOW_LATENCY 6u
 
 /**
  * @brief Scheduled output (appended 2026-10-20, `devplan/audio.md` §25): an event written with a

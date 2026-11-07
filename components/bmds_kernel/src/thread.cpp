@@ -135,6 +135,12 @@ Error Thread::pinCurrent(int core) {
         return Error::Ok;
 }
 
+void Thread::setCurrentPriority(unsigned int priority) {
+        if (priority >= configMAX_PRIORITIES) priority = configMAX_PRIORITIES - 1;
+        vTaskPrioritySet(nullptr, static_cast<UBaseType_t>(priority));
+        return;
+}
+
 void Thread::sleep(unsigned int delayMs) {
         vTaskDelay(Detail::toTicks(delayMs));
         return;

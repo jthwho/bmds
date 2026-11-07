@@ -15,6 +15,8 @@
 
 #include <pthread.h>
 #include <sched.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -385,7 +387,8 @@ static int32_t open_port(const char *port) {
 }
 
 int bmds_seq_open(const bmds_seq_config_t *config, const bmds_seq_song_t *song, bmds_seq_t **out) {
-        if (out == NULL || (config != NULL && config->size < sizeof(*config))) return -BMDS_EINVAL;
+        if (out == NULL || (config != NULL && config->size < offsetof(bmds_seq_config_t, allow_latency_us)))
+                return -BMDS_EINVAL;
         bmds_seq_t *q = NULL;
         int         e = bmds_seq_make(song, &q);
         if (e < 0) return e;
@@ -409,6 +412,11 @@ int bmds_seq_open(const bmds_seq_config_t *config, const bmds_seq_song_t *song, 
         const int32_t lookahead = config != NULL && config->lookahead_ms != 0 ? (int32_t)config->lookahead_ms
                                                                               : (int32_t)DEFAULT_LOOKAHEAD_MS;
         q->lookahead_ns = (int64_t)lookahead * 1000000;
+        /* Allowed first, so the latency asked is the one it settled on (an old kernel: EINVAL, real time). */
+        if (config != NULL && config->size >= sizeof(*config) && config->allow_latency_us != 0)
+                (void)bmds_midi_control(
+                        q->fd, BMDS_MIDI_ALLOW_LATENCY,
+                        config->allow_latency_us > (uint32_t)INT32_MAX ? INT32_MAX : (int32_t)config->allow_latency_us);
         int32_t latency = config != NULL ? config->latency_us : -1;
         if (latency < 0) latency = bmds_midi_control(q->fd, BMDS_MIDI_LATENCY, 0);
         q->latency_ns = (int64_t)(latency >= 0 ? latency : DEFAULT_LATENCY_US) * 1000;
