@@ -964,3 +964,52 @@ TEST_CASE("3d: more shapes: cylinders, cones, icospheres, torus knots, extrusion
         shape.segments = 6;
         CHECK(bmds_3d_mesh_make(&shape, 0, &m) == -BMDS_EINVAL);
 }
+
+TEST_CASE("3d: two cores with a queue too small for a draw: the same triangles, nothing lost") {
+        const size_t before = FakeMemory::live();
+        uint32_t     counted[2][3] = {};
+        for (uint32_t cores = 1; cores <= 2; ++cores) {
+                Picture          pic(96, 64, BMDS_PIXEL_L8);
+                bmds_3d_t       *ctx = nullptr;
+                bmds_3d_config_t config{};
+                config.size = sizeof(config);
+                config.cores = cores;
+                config.max_triangles = 50;
+                config.max_draws = 2;
+                REQUIRE(bmds_3d_create(&config, &ctx) == 0);
+                bmds_3d_set_target(ctx, &pic.canvas);
+                bmds_mat4_t p, v;
+                bmds_mat4_perspective(&p, Pi / 3.0f, 1.5f, 0.5f, 50.0f);
+                bmds_mat4_look_at(&v, bmds_vec3(0, 1, 5), bmds_vec3(0, 0, 0), bmds_vec3(0, 1, 0));
+                bmds_3d_set_projection(ctx, &p);
+                bmds_3d_set_view(ctx, &v);
+                bmds_3d_shape_t shape{};
+                shape.size = sizeof(shape);
+                shape.kind = BMDS_3D_SHAPE_TORUS_KNOT;
+                shape.segments = 64;
+                shape.rings = 6;
+                bmds_3d_mesh_t knot{};
+                REQUIRE(bmds_3d_mesh_make(&shape, 0, &knot) == 0);
+                auto m = material(BMDS_3D_GOURAUD, 0, BMDS_3D_CULL_BACK);
+                m.ramp_first = 1;
+                m.ramp_count = 40;
+                bmds_3d_begin(ctx);
+                for (int i = 0; i < 3; ++i) REQUIRE(bmds_3d_draw(ctx, &knot, &m) == 0);
+                bmds_3d_end(ctx);
+                bmds_3d_stats_t st{};
+                st.size = sizeof(st);
+                bmds_3d_stats(ctx, &st);
+                counted[cores - 1][0] = st.triangles;
+                counted[cores - 1][1] = st.backfaces;
+                counted[cores - 1][2] = st.clipped;
+                CHECK(st.flushes > 5);
+                CHECK(!pic.lit().empty());
+                for (const auto &q : pic.lit()) CHECK(pic.l8(q.first, q.second) <= 40);
+                bmds_3d_mesh_free(&knot);
+                bmds_3d_destroy(ctx);
+        }
+        CHECK(counted[0][0] == counted[1][0]);
+        CHECK(counted[0][1] == counted[1][1]);
+        CHECK(counted[0][2] == counted[1][2]);
+        CHECK(FakeMemory::live() == before);
+}

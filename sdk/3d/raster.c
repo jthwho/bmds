@@ -17,51 +17,33 @@
 #include <string.h>
 #include "3d_internal.h"
 
-/* An edge's first pixel column on successive rows: q, with r the remainder in [0, d). */
+/* An edge on successive rows: its x at the row's centre in 28.4 scaled by 4096 (so 1 is 1/65536 of
+   a pixel), stepped by a whole number a row. The slope comes from one float division; stepping it
+   adds integers only, so the x a row has is the same whichever row the stepping began on, and two
+   triangles sharing an edge (both stepping it top to bottom, from the same two ends) get the same
+   columns: no gap, no overlap. */
 typedef struct {
-                int32_t q, r, d, step_q, step_r;
+                int64_t x, step;
 } edge_t;
 
-/* Floor division by @p b > 0 (no separate modulo: one library call at most). */
-static int64_t floor_div(int64_t a, int64_t b) {
-        const int64_t q = a / b;
-        return q * b > a ? q - 1 : q;
-}
-
-static int32_t floor_div32(int32_t a, int32_t b) {
-        const int32_t q = a / b;
-        return q * b > a ? q - 1 : q;
-}
-
-/* The edge (x0, y0)-(x1, y1), y1 > y0, at row @p row (its centre at row × 16 + 8). Coordinates
-   inside the guard band keep d, 16 × dx and most numerators in 32 bits: the hardware divides. */
+/* The edge (x0, y0)-(x1, y1), y1 > y0, at row @p row (its centre at row × 16 + 8). Inside the guard
+   band |dx| / dy × 4096 fits 32 bits. */
 static void edge_init(edge_t *e, int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t row) {
-        const int64_t dy = (int64_t)y1 - y0, dx = (int64_t)x1 - x0, d = 16 * dy;
-        const int64_t yc = (int64_t)row * 16 + 8;
-        const int64_t m = ((int64_t)x0 - 8) * dy + (yc - y0) * dx + d - 1; /* ceil as floor */
-        const int32_t d32 = (int32_t)d, step = (int32_t)(16 * dx);
-        int64_t       q;
-        if (m >= INT32_MIN && m <= INT32_MAX)
-                q = floor_div32((int32_t)m, d32);
-        else
-                q = floor_div(m, d);
-        const int32_t sq = floor_div32(step, d32);
-        e->q = (int32_t)q;
-        e->r = (int32_t)(m - q * d);
-        e->d = d32;
-        e->step_q = sq;
-        e->step_r = step - sq * d32;
+        const float   f = (float)(x1 - x0) * 4096.0f / (float)(y1 - y0);
+        const int32_t slope = f > 2.0e9f ? 2000000000 : f < -2.0e9f ? -2000000000 : (int32_t)f;
+        e->x = (int64_t)x0 * 4096 + (int64_t)(row * 16 + 8 - y0) * slope;
+        e->step = (int64_t)slope * 16;
         return;
 }
 
 static inline void edge_step(edge_t *e) {
-        e->q += e->step_q;
-        e->r += e->step_r;
-        if (e->r >= e->d) {
-                ++e->q;
-                e->r -= e->d;
-        }
+        e->x += e->step;
         return;
+}
+
+/* The first pixel column whose centre is at or right of the edge: ceil((x − 8) / 16) in 28.4. */
+static inline int32_t edge_column(const edge_t *e) {
+        return (int32_t)((e->x + 32767) >> 16);
 }
 
 /* The first row whose centre is at or below @p y (28.4). */
@@ -115,7 +97,7 @@ uint32_t bmds_3d_triangle(bmds_canvas_t *c, const bmds_3d_area_t *area, const bm
         if (t->y[b] > t->y[k]) tmp = b, b = k, k = tmp;
         if (t->y[a] > t->y[b]) tmp = a, a = b, b = tmp;
         const int32_t x0 = t->x[a], y0 = t->y[a], x1 = t->x[b], y1 = t->y[b], x2 = t->x[k], y2 = t->y[k];
-        const int64_t cross = ((int64_t)x1 - x0) * ((int64_t)y2 - y0) - ((int64_t)y1 - y0) * ((int64_t)x2 - x0);
+        const int64_t cross = (int64_t)(x1 - x0) * (y2 - y0) - (int64_t)(y1 - y0) * (x2 - x0);
         if (cross == 0 || y2 == y0) return 0;
         const int long_left = cross > 0; /* the middle vertex right of the long edge */
 
@@ -164,7 +146,8 @@ uint32_t bmds_3d_triangle(bmds_canvas_t *c, const bmds_3d_area_t *area, const bm
         int32_t  minx = area->ix1, maxx = area->ix0;
         for (int32_t y = row; y < end; ++y) {
                 if (y == mid && y != row) edge_init(&shorte, x1, y1, x2, y2, y);
-                int32_t xl = long_left ? longe.q : shorte.q, xr = long_left ? shorte.q : longe.q;
+                const int32_t cl = edge_column(&longe), cs = edge_column(&shorte);
+                int32_t       xl = long_left ? cl : cs, xr = long_left ? cs : cl;
                 if (xl < area->ix0) xl = area->ix0;
                 if (xr > area->ix1) xr = area->ix1;
                 if (xl < xr) {

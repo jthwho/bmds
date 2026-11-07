@@ -287,6 +287,11 @@ until silicon v3; then test again.
   with PIE: 1 ms with the source cached, 6.6 ms from PSRAM). Design for fewer bytes: rows
   repeated by the scan's descriptors rather than written twice, damage rather than whole frames,
   sources brought into internal RAM by DMA rather than read by the CPU.
+- **Memory-bound work doesn't scale across the two cores; compute-bound work does** (measured
+  2026-11-06, `devplan/3d.md` §13): splitting libbmds3d's triangle rasterizing between the cores
+  took 12.3 ms to 10.1, but splitting its vertex transforms and triangle queueing (reads and
+  writes of records in PSRAM, little arithmetic) gained 3%: the cores share one L1 data cache and
+  contend for it. Split the arithmetic, not the copying.
 - **A program's timings move up to ~10% from one launch to the next** (found 2026-11-06,
   `devplan/3d.md` §13 step 3): the same `benchprog` binary, pinned to one core, ran a frame in 9.5
   ms on one launch and 10.5 on the next, while runs within a launch agreed to ~2%; probably where

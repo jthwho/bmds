@@ -309,8 +309,8 @@ int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3
                 const float    depth = -(p[0]->vz + p[1]->vz + p[2]->vz) * (1.0f / 3.0f);
                 if (any == 0 && cull) {
                         /* Placed already: a back face goes before it is lit. */
-                        const int64_t w = ((int64_t)p[1]->fx - p[0]->fx) * ((int64_t)p[2]->fy - p[0]->fy) -
-                                          ((int64_t)p[2]->fx - p[0]->fx) * ((int64_t)p[1]->fy - p[0]->fy);
+                        const int64_t w = (int64_t)(p[1]->fx - p[0]->fx) * (p[2]->fy - p[0]->fy) -
+                                          (int64_t)(p[2]->fx - p[0]->fx) * (p[1]->fy - p[0]->fy);
                         if (w >= 0) { /* y down: a front face winds negative */
                                 if (w > 0) ++ctx->stats.backfaces;
                                 continue;

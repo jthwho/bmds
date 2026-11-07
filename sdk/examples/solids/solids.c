@@ -12,7 +12,9 @@
  * closing the window ends it. On L8 the shades are palette ramps (bmds/palette.h); with -f 565 or
  * 888 the same scene in RGB. The frame's time and counters show at the top.
  *
- *     solids [-F] [-f l8|565|888]
+ * -s sets the picture's size (320x180: a quarter of the pixels, scaled 4 times on the screen).
+ *
+ *     solids [-F] [-f l8|565|888] [-s WIDTHxHEIGHT]
  */
 
 #include <math.h>
@@ -75,8 +77,8 @@ static void on_event(bmds_game_t *game, const bmds_surface_event_t *e) {
                 if (e->data[0] == KEY_S) s->shape = (s->shape + 1) % SHAPES;
         } else if (e->type == BMDS_EVENT_POINTER && (int32_t)e->data[0] != BMDS_POINTER_GONE) {
                 /* The pointer's place, -1..1 each way: where the light comes from. */
-                s->light_x = 2.0f * (float)(int32_t)e->data[0] / WIDTH - 1.0f;
-                s->light_y = 1.0f - 2.0f * (float)(int32_t)e->data[1] / HEIGHT;
+                s->light_x = 2.0f * (float)(int32_t)e->data[0] / (float)bmds_game_width(game) - 1.0f;
+                s->light_y = 1.0f - 2.0f * (float)(int32_t)e->data[1] / (float)bmds_game_height(game);
         }
         return;
 }
@@ -206,15 +208,19 @@ int main(int argc, char **argv) {
         config.flags = BMDS_SURFACE_WHOLE;
         config.title = "Solids";
         int opt;
-        while ((opt = getopt(argc, argv, "Ff:")) != -1) {
+        while ((opt = getopt(argc, argv, "Ff:s:")) != -1) {
                 if (opt == 'F') {
                         config.flags |= BMDS_SURFACE_FULL_SCREEN;
+                } else if (opt == 's') {
+                        if (sscanf(optarg, "%ux%u", &config.width, &config.height) != 2 || config.width < 64 ||
+                            config.height < 64 || config.width % 4 != 0)
+                                return 2;
                 } else if (opt == 'f') {
                         config.format = strcmp(optarg, "565") == 0   ? BMDS_PIXEL_RGB565
                                         : strcmp(optarg, "888") == 0 ? BMDS_PIXEL_BGR24
                                                                      : BMDS_PIXEL_L8;
                 } else {
-                        fprintf(stderr, "usage: solids [-F] [-f l8|565|888]\n");
+                        fprintf(stderr, "usage: solids [-F] [-f l8|565|888] [-s WIDTHxHEIGHT]\n");
                         return 2;
                 }
         }
@@ -259,7 +265,8 @@ int main(int argc, char **argv) {
                 return 1;
         }
         bmds_mat4_t projection;
-        bmds_mat4_perspective(&projection, 55.0f * PI / 180.0f, (float)WIDTH / (float)HEIGHT, 0.5f, 100.0f);
+        bmds_mat4_perspective(&projection, 55.0f * PI / 180.0f, (float)config.width / (float)config.height, 0.5f,
+                              100.0f);
         bmds_3d_set_projection(s.ctx, &projection);
         s.second_ns = now_ns();
 

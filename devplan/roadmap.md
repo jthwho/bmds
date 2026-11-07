@@ -264,8 +264,11 @@ Plan: [`input.md`](input.md).
   `bmds/palette.h`, the `solids` example, `render.solids` (a 2,304-triangle torus: 9.5 ms flat, 11.7
   Gouraud). Step 3 in progress (§13): two cores (`cores` = 2: Gouraud 12.3 → 10.1 ms), vertices in internal
   RAM optional (it starved full screen in the example), cylinders, cones, icospheres, torus knots, extruded
-  outlines; `solids` full screen at 40-55 fps by scene. Next: a smaller vertex record, the helper sharing
-  the vertex work.
+  outlines; `solids` full screen at 40-55 fps by scene. Tried and reverted (measured, §13): a smaller vertex
+  record (slower), the helper sharing the vertex work (3%: the cores share one L1). Experiments (§13): a
+  canvas in internal RAM no faster than PSRAM (bands not built); at 320×180 `solids` runs at 60 (45 at
+  640×360). The cost is per triangle (~1,100 cycles), not pixels; the per-triangle work (edges without
+  divisions, kept: the same speed) moved it ±2%: no single step left to remove.
 - [ ] The sequencer (`sequencer.md`, planned 2026-11-06 with the user): songs as patterns in the SDK
   (`bmds/seq.h`), played through scheduled MIDI and the game mixer, beat sync by heard time (frame times and
   a port's latency from the kernel), live control quantized to the grid, the synths' sound controllers

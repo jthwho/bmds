@@ -879,9 +879,10 @@ static int run_wire(void) {
         }
         memset(pixels, 0, 640 * 360);
         r.canvas = &canvas;
-        static const bmds_3d_shape_t shapes[3] = {{sizeof(bmds_3d_shape_t), BMDS_3D_SHAPE_CUBE, 0, 0, 1.0f, 0, 0},
-                                                  {sizeof(bmds_3d_shape_t), BMDS_3D_SHAPE_TORUS, 32, 12, 2.2f, 0.5f, 0},
-                                                  {sizeof(bmds_3d_shape_t), BMDS_3D_SHAPE_SPHERE, 12, 8, 0.6f, 0, 0}};
+        static const bmds_3d_shape_t shapes[3] = {
+                {sizeof(bmds_3d_shape_t), BMDS_3D_SHAPE_CUBE, 0, 0, 1.0f, 0, 0, 0, 0},
+                {sizeof(bmds_3d_shape_t), BMDS_3D_SHAPE_TORUS, 32, 12, 2.2f, 0.5f, 0, 0, 0},
+                {sizeof(bmds_3d_shape_t), BMDS_3D_SHAPE_SPHERE, 12, 8, 0.6f, 0, 0, 0, 0}};
         int                          err = 0;
         for (int k = 0; k < 3 && err == 0; ++k) err = bmds_3d_mesh_make(&shapes[k], 0, &r.meshes[k]);
         for (int i = 0; i < WIRE_STARS * 3; i += 3) {
@@ -956,7 +957,12 @@ static int32_t pin_core(void) {
 static int run_solids(void) {
         struct solids_run r;
         memset(&r, 0, sizeof(r));
-        uint8_t      *pixels = malloc(640 * 360);
+        /* w=, h=: the canvas's size (the scene framed the same); canvas=internal: in internal RAM. */
+        const int32_t w = (int32_t)bmds_bench_param_long(&bench, "w", 640),
+                      h = (int32_t)bmds_bench_param_long(&bench, "h", 360);
+        const int internal = strcmp(bmds_bench_param(&bench, "canvas", "psram"), "internal") == 0;
+        if (w < 16 || h < 16 || w > 1280 || h > 720) return 2;
+        uint8_t *pixels = internal ? bmds_mem_alloc((uint32_t)(w * h), 64, BMDS_MEM_FAST) : malloc((size_t)(w * h));
         bmds_canvas_t canvas;
         /* fast=1: the context's scratch (vertices, the queue) in internal RAM where it fits. */
         const bmds_3d_config_t config = {.size = sizeof(config),
@@ -965,17 +971,19 @@ static int run_solids(void) {
                                          .max_triangles = 1200,
                                          .cores = (uint32_t)bmds_bench_param_long(&bench, "cores", 1)};
         printf("solids: on core %d\n", (int)pin_core()); /* before the context: its helper takes the other */
-        if (pixels == NULL || bmds_canvas_init(&canvas, pixels, 640, 640, 360, BMDS_PIXEL_L8) != 0 ||
+        if (pixels == NULL || bmds_canvas_init(&canvas, pixels, (uint32_t)w, w, h, BMDS_PIXEL_L8) != 0 ||
             bmds_3d_create(&config, &r.ctx) != 0) {
                 printf("solids: no memory\n");
                 return 1;
         }
-        memset(pixels, 0, 640 * 360);
+        memset(pixels, 0, (size_t)(w * h));
         /* 48 x 24: 2304 triangles, about half facing the camera, ~70,000 pixels a frame. */
-        const bmds_3d_shape_t shape = {sizeof(shape), BMDS_3D_SHAPE_TORUS, 48, 24, 2.0f, 0.8f, 0};
-        int                   err = bmds_3d_mesh_make(&shape, 0, &r.torus);
+        const bmds_3d_shape_t shape = {sizeof(shape), BMDS_3D_SHAPE_TORUS, 48, 24, 2.0f, 0.8f, 0, 0, 0};
+        /* meshfast=1: the torus's arrays in internal RAM. */
+        int err = bmds_3d_mesh_make(&shape, bmds_bench_param_long(&bench, "meshfast", 0) != 0 ? BMDS_MEM_FAST : 0,
+                                    &r.torus);
         bmds_mat4_t           p, v;
-        bmds_mat4_perspective(&p, 1.047f, 640.0f / 360.0f, 0.5f, 100.0f);
+        bmds_mat4_perspective(&p, 1.047f, (float)w / (float)h, 0.5f, 100.0f);
         bmds_mat4_look_at(&v, bmds_vec3(0, 1, 6.5f), bmds_vec3(0, 0, 0), bmds_vec3(0, 1, 0));
         bmds_3d_set_target(r.ctx, &canvas);
         bmds_3d_set_projection(r.ctx, &p);
@@ -992,7 +1000,10 @@ static int run_solids(void) {
                (unsigned)st.pixels);
         bmds_3d_mesh_free(&r.torus);
         bmds_3d_destroy(r.ctx);
-        free(pixels);
+        if (internal)
+                bmds_mem_free(pixels);
+        else
+                free(pixels);
         return err;
 }
 
