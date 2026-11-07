@@ -178,28 +178,50 @@ static void radix(uint32_t **k, uint32_t **k2, uint16_t **o, uint16_t **o2, uint
         return;
 }
 
+uint32_t bmds_3d_raster_queue(bmds_3d_t *ctx, const bmds_3d_area_t *area, const uint16_t *order, uint32_t n,
+                              bmds_3d_bounds_t *bounds, uint32_t *drawn) {
+        uint32_t pixels = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+                const bmds_3d_tri_t *t = &ctx->tris[order[i]];
+                const uint32_t       px = bmds_3d_triangle(ctx->target, area, &ctx->records[t->draw], t, bounds);
+                if (px != 0) ++*drawn;
+                pixels += px;
+        }
+        return pixels;
+}
+
 void bmds_3d_flush(bmds_3d_t *ctx) {
         const uint32_t n = ctx->tri_count;
         if (n != 0 && ctx->target != NULL) {
                 uint32_t *k = ctx->keys, *k2 = ctx->keys2;
                 uint16_t *o = ctx->order, *o2 = ctx->order2;
                 for (uint32_t i = 0; i < n; ++i) o[i] = (uint16_t)i;
-                radix(&k, &k2, &o, &o2, n); /* by triangle */
                 if (ctx->sort_order == BMDS_3D_ORDER_DRAWS) {
-                        /* Then by draw, stably: each draw's triangles stay in their order. */
-                        for (uint32_t i = 0; i < n; ++i) k[i] = ctx->records[ctx->tris[o[i]].draw].key;
-                        radix(&k, &k2, &o, &o2, n);
+                        /* The draws ranked far to near (few: insertion, stable), then one key a
+                           triangle: its draw's rank, and its own depth's top 16 bits below. */
+                        const uint32_t r = ctx->record_count;
+                        uint16_t      *ranked = ctx->ranked;
+                        for (uint32_t i = 0; i < r; ++i) {
+                                const uint32_t key = ctx->records[i].key;
+                                uint32_t       j = i;
+                                while (j > 0 && ctx->records[ranked[j - 1]].key > key) {
+                                        ranked[j] = ranked[j - 1];
+                                        --j;
+                                }
+                                ranked[j] = (uint16_t)i;
+                        }
+                        for (uint32_t i = 0; i < r; ++i) ctx->records[ranked[i]].rank = i;
+                        for (uint32_t i = 0; i < n; ++i) k[i] = ctx->records[ctx->tris[i].draw].rank << 16 | k[i] >> 16;
                 }
+                radix(&k, &k2, &o, &o2, n);
                 bmds_3d_area_t area;
                 if (bmds_3d_area(ctx, &area)) {
                         bmds_3d_bounds_t bounds = {0, 0, 0, 0};
-                        for (uint32_t i = 0; i < n; ++i) {
-                                const bmds_3d_tri_t *t = &ctx->tris[o[i]];
-                                const uint32_t       px =
-                                        bmds_3d_triangle(ctx->target, &area, &ctx->records[t->draw], t, &bounds);
-                                if (px != 0) ++ctx->stats.drawn;
-                                ctx->stats.pixels += px;
-                        }
+                        uint32_t         drawn = 0;
+                        ctx->stats.pixels += ctx->helper != NULL
+                                                     ? bmds_3d_helper_raster(ctx, &area, o, n, &bounds, &drawn)
+                                                     : bmds_3d_raster_queue(ctx, &area, o, n, &bounds, &drawn);
+                        ctx->stats.drawn += drawn;
                         bmds_3d_damage(ctx, &bounds);
                 }
         }
@@ -267,25 +289,12 @@ int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3
         bmds_3d_view_light_t lights[BMDS_3D_LIGHTS];
         const uint32_t       nlights = unlit ? 0 : view_lights(ctx, lights);
 
-        /* Gouraud's shades per vertex, from the mesh's normals. */
+        /* Gouraud's shades per vertex, from the mesh's normals: each lit the first time a triangle
+           that is drawn uses it (-1: not yet), so the vertices of back faces cost nothing. */
         const int per_vertex = rec.smooth && (unlit || mesh->normals != NULL);
-        if (per_vertex) {
-                const float *m = mv->m;
-                for (uint32_t v = 0; v < mesh->vertex_count; ++v) {
-                        bmds_3d_vertex_t *x = &ctx->vertices[v];
-                        float             i = 1.0f;
-                        if (!unlit) {
-                                const float      *nn = mesh->normals + 3 * v;
-                                const bmds_vec3_t n =
-                                        bmds_vec3_normalize(bmds_vec3(m[0] * nn[0] + m[4] * nn[1] + m[8] * nn[2],
-                                                                      m[1] * nn[0] + m[5] * nn[1] + m[9] * nn[2],
-                                                                      m[2] * nn[0] + m[6] * nn[1] + m[10] * nn[2]));
-                                i = light_at(ctx, lights, nlights, bmds_vec3(x->vx, x->vy, x->vz), n);
-                        }
-                        if (fog) i *= fog_at(ctx, x->vz);
-                        x->s = i * top;
-                }
-        }
+        if (per_vertex)
+                for (uint32_t v = 0; v < mesh->vertex_count; ++v) ctx->vertices[v].s = -1.0f;
+        const float *mm = mv->m;
 
         if (!per_vertex) ctx->records[draw].smooth = 0; /* a shade a triangle: flat spans */
         const int                ortho = ctx->projection.m[11] == 0.0f;
@@ -311,7 +320,23 @@ int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3
                 /* The shades. */
                 float shade[3];
                 if (per_vertex) {
-                        for (int k = 0; k < 3; ++k) shade[k] = p[k]->s;
+                        for (int k = 0; k < 3; ++k) {
+                                bmds_3d_vertex_t *x = &ctx->vertices[ix[k]];
+                                if (x->s < 0.0f) {
+                                        float i = 1.0f;
+                                        if (!unlit) {
+                                                const float      *nn = mesh->normals + 3 * ix[k];
+                                                const bmds_vec3_t n = bmds_vec3_normalize(
+                                                        bmds_vec3(mm[0] * nn[0] + mm[4] * nn[1] + mm[8] * nn[2],
+                                                                  mm[1] * nn[0] + mm[5] * nn[1] + mm[9] * nn[2],
+                                                                  mm[2] * nn[0] + mm[6] * nn[1] + mm[10] * nn[2]));
+                                                i = light_at(ctx, lights, nlights, bmds_vec3(x->vx, x->vy, x->vz), n);
+                                        }
+                                        if (fog) i *= fog_at(ctx, x->vz);
+                                        x->s = i * top;
+                                }
+                                shade[k] = x->s;
+                        }
                 } else {
                         float i = 1.0f;
                         if (!unlit) {

@@ -138,7 +138,10 @@ static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
                 s->palette_set = 1;
         }
         const int64_t start = now_ns();
-        bmds_canvas_clear(c, INK_BACKGROUND);
+        /* Every pixel repainted (the loop copies nothing forward), the clear by the 2D-DMA. */
+        const bmds_rect_t whole = {0, 0, (uint32_t)c->width, (uint32_t)c->height};
+        bmds_game_repainted(game, &whole);
+        bmds_game_dma_fill(game, &whole, 1, INK_BACKGROUND);
         bmds_3d_t *ctx = s->ctx;
         bmds_3d_set_target(ctx, c);
         bmds_3d_begin(ctx);
@@ -271,6 +274,7 @@ int main(int argc, char **argv) {
         config.event = on_event;
         config.tick = on_tick;
         config.draw = on_draw;
+        config.options = BMDS_GAME_REPAINTS;
         err = bmds_game_run(&config);
         bmds_3d_mesh_free(&s.sphere);
         bmds_3d_mesh_free(&s.torus);

@@ -125,7 +125,6 @@ uint32_t bmds_3d_triangle(bmds_canvas_t *c, const bmds_3d_area_t *area, const bm
         if (row >= end) return 0;
 
         /* The shade: flat, or its plane over the screen (pixels, shade units). */
-        const float top = (float)rec->top;
         uint32_t    flat = 0;
         float       ga = 0.0f, gb = 0.0f, gc = 0.0f; /* s = ga·x + gb·y + gc */
         if (!rec->smooth) {
@@ -136,14 +135,23 @@ uint32_t bmds_3d_triangle(bmds_canvas_t *c, const bmds_3d_area_t *area, const bm
                 const float dx2 = (float)(x2 - x0) / 16.0f, dy2 = (float)(y2 - y0) / 16.0f;
                 const float s0 = (float)t->s[a] / 256.0f, ds1 = (float)t->s[b] / 256.0f - s0;
                 const float ds2 = (float)t->s[k] / 256.0f - s0;
-                const float det = dx1 * dy2 - dx2 * dy1;
-                ga = (ds1 * dy2 - ds2 * dy1) / det;
-                gb = (ds2 * dx1 - ds1 * dx2) / det;
+                const float inv = 1.0f / (dx1 * dy2 - dx2 * dy1);
+                ga = (ds1 * dy2 - ds2 * dy1) * inv;
+                gb = (ds2 * dx1 - ds1 * dx2) * inv;
                 gc = s0 - ga * fx0 - gb * fy0;
         }
-        /* A pixel across, 16.16 (a sliver's huge gradient held in range; its spans re-stepped below). */
-        const float   gs = ga * 65536.0f;
+        /* The plane in 16.16 at pixel centres, rounded by half, from the top vertex's pixel (xa, ya):
+           s(x, y) = s0 + ia·(x − xa) + ib·(y − ya). Every value fits 32 bits (float to int64 is a
+           library call through doubles here); a sliver's huge gradient is held in range, and its
+           spans re-stepped below. */
+        const float   gs = ga * 65536.0f, gt = gb * 65536.0f;
         const int32_t step = gs > 2.0e9f ? 2000000000 : gs < -2.0e9f ? -2000000000 : (int32_t)gs;
+        const int64_t ia = step;
+        const int64_t ib = gt > 2.0e9f ? 2000000000 : gt < -2.0e9f ? -2000000000 : (int32_t)gt;
+        const int32_t xa = x0 >> 4, ya = y0 >> 4;
+        const float   s0f = (ga * ((float)xa + 0.5f) + gb * ((float)ya + 0.5f) + gc) * 65536.0f + 32768.0f;
+        const int64_t ic = s0f > 2.0e9f ? 2000000000 : s0f < -2.0e9f ? -2000000000 : (int32_t)s0f;
+        const int64_t smax = ((int64_t)rec->top << 16) + 32768;
 
         edge_t longe, shorte;
         edge_init(&longe, x0, y0, x2, y2, row);
@@ -165,9 +173,8 @@ uint32_t bmds_3d_triangle(bmds_canvas_t *c, const bmds_3d_area_t *area, const bm
                                 /* The plane at the first pixel's centre, stepped by its x gradient; the
                                    last pixel checked against the ramp (rounding at a sliver's edge). */
                                 const int32_t n = xr - xl;
-                                float         sa = ga * ((float)xl + 0.5f) + gb * ((float)y + 0.5f) + gc;
-                                sa = sa < 0.0f ? 0.0f : sa > top ? top : sa;
-                                s = (int32_t)(sa * 65536.0f) + 32768;
+                                int64_t       s64 = ia * (xl - xa) + ib * (y - ya) + ic;
+                                s = (int32_t)(s64 < 32768 ? 32768 : s64 > smax ? smax : s64);
                                 ds = step;
                                 const int64_t last = (int64_t)s + (int64_t)ds * (n - 1);
                                 if (last < 0 || last >= ((int64_t)rec->top + 1) << 16) {

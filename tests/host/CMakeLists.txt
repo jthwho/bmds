@@ -101,6 +101,7 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/3d/wire.c
         ${BMDS_ROOT}/sdk/3d/solid.c
         ${BMDS_ROOT}/sdk/3d/raster.c
+        ${BMDS_ROOT}/sdk/3d/cores.c
         fontlibrary.cpp
         fonts.cpp
         game.cpp

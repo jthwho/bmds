@@ -21,6 +21,12 @@
 
 /* ---- The context ------------------------------------------------------------------------------ */
 
+/* @p bytes of scratch with @p mem_flags, else (internal RAM short) in PSRAM. */
+static void *scratch(uint32_t bytes, uint32_t mem_flags) {
+        void *p = bmds_mem_alloc(bytes, 0, mem_flags);
+        return p != NULL || mem_flags == 0 ? p : bmds_mem_alloc(bytes, 0, 0);
+}
+
 int bmds_3d_create(const bmds_3d_config_t *config, bmds_3d_t **out) {
         if (out == NULL) return -BMDS_EINVAL;
         *out = NULL;
@@ -38,13 +44,16 @@ int bmds_3d_create(const bmds_3d_config_t *config, bmds_3d_t **out) {
         ctx->vertices = (bmds_3d_vertex_t *)bmds_mem_alloc(bytes, 0, mem_flags);
         /* Internal RAM if it fits, as the config says; else PSRAM. */
         if (ctx->vertices == NULL && mem_flags != 0) ctx->vertices = (bmds_3d_vertex_t *)bmds_mem_alloc(bytes, 0, 0);
-        /* The solids' queue, in PSRAM: written once a triangle, read once at the end. */
-        ctx->tris = (bmds_3d_tri_t *)bmds_mem_alloc(tris * (uint32_t)sizeof(bmds_3d_tri_t), 0, 0);
-        ctx->keys = (uint32_t *)bmds_mem_alloc(tris * 2 * (uint32_t)sizeof(uint32_t), 0, 0);
-        ctx->order = (uint16_t *)bmds_mem_alloc(tris * 2 * (uint32_t)sizeof(uint16_t), 0, 0);
-        ctx->records = (bmds_3d_record_t *)bmds_mem_alloc(draws * (uint32_t)sizeof(bmds_3d_record_t), 0, 0);
+        /* The solids' queue in PSRAM: written once a triangle, read once at the end. Internal RAM is
+           the kernel's too (a full-screen presenter needs ~30 KB of it); the vertices, read several
+           times a draw, are what gains from it (3d.md §13, step 3). */
+        ctx->tris = (bmds_3d_tri_t *)scratch(tris * (uint32_t)sizeof(bmds_3d_tri_t), 0);
+        ctx->keys = (uint32_t *)scratch(tris * 2 * (uint32_t)sizeof(uint32_t), 0);
+        ctx->order = (uint16_t *)scratch(tris * 2 * (uint32_t)sizeof(uint16_t), 0);
+        ctx->records = (bmds_3d_record_t *)scratch(draws * (uint32_t)sizeof(bmds_3d_record_t), 0);
+        ctx->ranked = (uint16_t *)scratch(draws * (uint32_t)sizeof(uint16_t), 0);
         if (ctx->vertices == NULL || ctx->tris == NULL || ctx->keys == NULL || ctx->order == NULL ||
-            ctx->records == NULL) {
+            ctx->records == NULL || ctx->ranked == NULL) {
                 bmds_3d_destroy(ctx);
                 return -BMDS_ENOMEM;
         }
@@ -53,6 +62,11 @@ int bmds_3d_create(const bmds_3d_config_t *config, bmds_3d_t **out) {
         ctx->max_tris = tris;
         ctx->max_records = draws;
         ctx->max_vertices = max;
+        if (config != NULL && config->cores > 2) {
+                bmds_3d_destroy(ctx);
+                return -BMDS_EINVAL;
+        }
+        if (config != NULL && config->cores == 2) (void)bmds_3d_helper_start(ctx); /* else one core */
         ctx->ambient = 0.25f;
         ctx->lights[0] = (bmds_3d_light_t){
                 sizeof(bmds_3d_light_t), BMDS_3D_LIGHT_DIRECTIONAL, BMDS_3D_LIGHT_VIEW, -0.4f, 0.6f, 1.0f, 0.8f};
@@ -69,11 +83,13 @@ int bmds_3d_create(const bmds_3d_config_t *config, bmds_3d_t **out) {
 
 void bmds_3d_destroy(bmds_3d_t *ctx) {
         if (ctx == NULL) return;
+        bmds_3d_helper_stop(ctx);
         bmds_mem_free(ctx->vertices);
         bmds_mem_free(ctx->tris);
         bmds_mem_free(ctx->keys);
         bmds_mem_free(ctx->order);
         bmds_mem_free(ctx->records);
+        bmds_mem_free(ctx->ranked);
         bmds_mem_free(ctx);
         return;
 }

@@ -52,6 +52,7 @@ typedef struct bmds_3d_record_t {
                 uint32_t top;                        /* the highest shade (0: one, unshaded) */
                 uint8_t  smooth;                     /* Gouraud: shades between the vertices' */
                 uint32_t key;                        /* the draw's depth key (its centre), for BMDS_3D_ORDER_DRAWS */
+                uint32_t rank; /* its place far to near among the queued draws (bmds_3d_flush()) */
                 uint32_t shades[BMDS_3D_RGB_SHADES]; /* RGB565, BGR24: each shade's pixel */
 } bmds_3d_record_t;
 
@@ -80,6 +81,9 @@ typedef struct bmds_3d_bounds_t {
                 int32_t x0, y0, x1, y1; /* empty while x1 <= x0 */
 } bmds_3d_bounds_t;
 
+/** @brief A context's helper on the other core (config `cores` 2): it draws a band of the queue. */
+typedef struct bmds_3d_helper_t bmds_3d_helper_t;
+
 struct bmds_3d_t {
                 bmds_canvas_t    *target;
                 int32_t           vx, vy, vw, vh;
@@ -101,7 +105,10 @@ struct bmds_3d_t {
                 uint32_t          max_tris, tri_count;
                 bmds_3d_record_t *records;
                 uint32_t          max_records, record_count;
+                uint16_t         *ranked;     /* the records far to near, for the sort (max_records) */
                 uint32_t          sort_order; /* BMDS_3D_ORDER_... */
+                bmds_3d_helper_t *helper;     /* NULL: one core */
+                float             share;      /* with a helper: the top band's part of the rows, 0..1 */
 };
 
 /** @brief The rectangle @p ctx draws in; 0 when there is none (no target, an empty viewport). */
@@ -142,6 +149,23 @@ int bmds_3d_point(bmds_3d_t *ctx, const bmds_3d_area_t *area, const bmds_3d_ink_
 /** @brief Queues @p mesh's triangles as a solid (its vertices transformed already). @return 0 or an error. */
 int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3d_material_t *material,
                         const bmds_mat4_t *mv);
+
+/** @brief Draws the sorted queue's @p n triangles (@p order) inside @p area; @return the pixels. */
+uint32_t bmds_3d_raster_queue(bmds_3d_t *ctx, const bmds_3d_area_t *area, const uint16_t *order, uint32_t n,
+                              bmds_3d_bounds_t *bounds, uint32_t *drawn);
+
+/** @brief Starts @p ctx's helper. @return 0, or `-BMDS_ENOMEM` (then one core). */
+int bmds_3d_helper_start(bmds_3d_t *ctx);
+
+/** @brief Stops @p ctx's helper (waits for it). */
+void bmds_3d_helper_stop(bmds_3d_t *ctx);
+
+/**
+ * @brief Draws the sorted queue on two cores: the helper the rows from the split down, the caller
+ *        the rest; the split moved towards equal times. @return the pixels.
+ */
+uint32_t bmds_3d_helper_raster(bmds_3d_t *ctx, const bmds_3d_area_t *area, const uint16_t *order, uint32_t n,
+                               bmds_3d_bounds_t *bounds, uint32_t *drawn);
 
 /** @brief Draws what is queued, far to near, and empties the queue. */
 void bmds_3d_flush(bmds_3d_t *ctx);

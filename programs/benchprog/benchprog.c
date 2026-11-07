@@ -820,6 +820,8 @@ static int run_render(void) {
 
 /* ---- libbmds3d (devplan/3d.md §10): wireframes and points into a 640x360 L8 canvas in PSRAM ---- */
 
+static int32_t pin_core(void);
+
 struct wire_run {
                 bmds_3d_t     *ctx;
                 bmds_canvas_t *canvas;
@@ -892,6 +894,7 @@ static int run_wire(void) {
         bmds_mat4_look_at(&v, bmds_vec3(0, 2, 8), bmds_vec3(0, 0, 0), bmds_vec3(0, 1, 0));
         bmds_3d_set_target(r.ctx, &canvas);
         bmds_3d_set_projection(r.ctx, &p);
+        printf("wire: on core %d\n", (int)pin_core());
         static const char *const names[3] = {"wire_hidden_ms", "wire_all_ms", "points_2000_ms"};
         for (r.what = 0; r.what < 3 && err == 0; ++r.what) {
                 bmds_mat4_t identity;
@@ -933,13 +936,37 @@ static int solids_sample(void *arg, double *out) {
         return 0;
 }
 
+/* core=N: the bench's thread kept to core N, so runs compare (core 0 also has the window manager
+   and more interrupts: runs on either differ by ~1 ms). @return the core it runs on, or -1. */
+static int32_t pin_core(void) {
+        const long   core = bmds_bench_param_long(&bench, "core", -1);
+        bmds_sched_t s;
+        memset(&s, 0, sizeof(s));
+        s.size = sizeof(s);
+        if (core == 0 || core == 1) {
+                s.cores = 1u << core;
+                if (bmds_sched(BMDS_SCHED_PIN, 0, &s) != 0) return -1;
+                sched_yield(); /* onto it */
+        }
+        memset(&s, 0, sizeof(s));
+        s.size = sizeof(s);
+        return bmds_sched(BMDS_SCHED_GET, 0, &s) == 0 ? s.core : -1;
+}
+
 static int run_solids(void) {
         struct solids_run r;
         memset(&r, 0, sizeof(r));
         uint8_t      *pixels = malloc(640 * 360);
         bmds_canvas_t canvas;
+        /* fast=1: the context's scratch (vertices, the queue) in internal RAM where it fits. */
+        const bmds_3d_config_t config = {.size = sizeof(config),
+                                         .max_vertices = 1300,
+                                         .mem_flags = bmds_bench_param_long(&bench, "fast", 0) != 0 ? BMDS_MEM_FAST : 0,
+                                         .max_triangles = 1200,
+                                         .cores = (uint32_t)bmds_bench_param_long(&bench, "cores", 1)};
+        printf("solids: on core %d\n", (int)pin_core()); /* before the context: its helper takes the other */
         if (pixels == NULL || bmds_canvas_init(&canvas, pixels, 640, 640, 360, BMDS_PIXEL_L8) != 0 ||
-            bmds_3d_create(NULL, &r.ctx) != 0) {
+            bmds_3d_create(&config, &r.ctx) != 0) {
                 printf("solids: no memory\n");
                 return 1;
         }
@@ -953,6 +980,7 @@ static int run_solids(void) {
         bmds_3d_set_target(r.ctx, &canvas);
         bmds_3d_set_projection(r.ctx, &p);
         bmds_3d_set_view(r.ctx, &v);
+        (void)bmds_3d_set_order(r.ctx, (uint32_t)bmds_bench_param_long(&bench, "order", 0)); /* 1: by triangle */
         static const char *const names[2] = {"torus_flat_ms", "torus_gouraud_ms"};
         for (int k = 0; k < 2 && err == 0; ++k) {
                 r.mode = k == 0 ? BMDS_3D_FLAT : BMDS_3D_GOURAUD;

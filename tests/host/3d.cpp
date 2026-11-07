@@ -806,3 +806,161 @@ TEST_CASE("3d: draws ordered whole by default, triangles mixed on request") {
         }
         CHECK(bmds_3d_set_order(s.ctx, 7) == -BMDS_EINVAL);
 }
+
+TEST_CASE("3d: two cores draw what one does, pixel for pixel") {
+        const size_t before = FakeMemory::live();
+        for (uint32_t format : {uint32_t(BMDS_PIXEL_L8), uint32_t(BMDS_PIXEL_RGB565)}) {
+                CAPTURE(format);
+                std::vector<uint8_t> pictures[2];
+                for (uint32_t cores = 1; cores <= 2; ++cores) {
+                        Picture          pic(96, 64, format);
+                        bmds_3d_t       *ctx = nullptr;
+                        bmds_3d_config_t config{};
+                        config.size = sizeof(config);
+                        config.cores = cores;
+                        REQUIRE(bmds_3d_create(&config, &ctx) == 0);
+                        bmds_3d_set_target(ctx, &pic.canvas);
+                        bmds_mat4_t p, v;
+                        bmds_mat4_perspective(&p, Pi / 3.0f, 1.5f, 0.5f, 50.0f);
+                        bmds_mat4_look_at(&v, bmds_vec3(0, 1, 5), bmds_vec3(0, 0, 0), bmds_vec3(0, 1, 0));
+                        bmds_3d_set_projection(ctx, &p);
+                        bmds_3d_set_view(ctx, &v);
+                        bmds_3d_shape_t shape{};
+                        shape.size = sizeof(shape);
+                        shape.kind = BMDS_3D_SHAPE_TORUS;
+                        bmds_3d_mesh_t torus{};
+                        REQUIRE(bmds_3d_mesh_make(&shape, 0, &torus) == 0);
+                        auto m = material(BMDS_3D_GOURAUD, 0, BMDS_3D_CULL_BACK);
+                        m.ramp_first = 1;
+                        m.ramp_count = 40;
+                        m.rgb = 0x80c0ff;
+                        // Several frames: the split moves between them.
+                        for (int f = 0; f < 6; ++f) {
+                                std::fill(pic.pixels.begin(), pic.pixels.end(), 0);
+                                bmds_mat4_t r;
+                                bmds_mat4_rotation_x(&r, 0.3f * float(f));
+                                bmds_3d_load(ctx, &r);
+                                bmds_3d_begin(ctx);
+                                REQUIRE(bmds_3d_draw(ctx, &torus, &m) == 0);
+                                bmds_3d_end(ctx);
+                                pictures[cores - 1].insert(pictures[cores - 1].end(), pic.pixels.begin(),
+                                                           pic.pixels.end());
+                        }
+                        bmds_3d_mesh_free(&torus);
+                        bmds_3d_destroy(ctx);
+                }
+                CHECK(pictures[0] == pictures[1]);
+        }
+        bmds_3d_config_t bad{};
+        bad.size = sizeof(bad);
+        bad.cores = 3;
+        bmds_3d_t *ctx = nullptr;
+        CHECK(bmds_3d_create(&bad, &ctx) == -BMDS_EINVAL);
+        CHECK(FakeMemory::live() == before);
+}
+
+namespace {
+
+        // Every triangle facing out (along its vertices' normals), and none with no area.
+        void checkOutward(const bmds_3d_mesh_t &m) {
+                for (uint32_t t = 0; t < m.triangle_count; ++t) {
+                        const uint16_t *i = m.triangles + 3 * t;
+                        auto            pos = [&](uint32_t v) {
+                                return bmds_vec3(m.positions[3 * v], m.positions[3 * v + 1], m.positions[3 * v + 2]);
+                        };
+                        const bmds_vec3_t n = bmds_vec3_cross(bmds_vec3_sub(pos(i[1]), pos(i[0])),
+                                                              bmds_vec3_sub(pos(i[2]), pos(i[0])));
+                        bmds_vec3_t       want = bmds_vec3(0, 0, 0);
+                        for (int k = 0; k < 3; ++k)
+                                want = bmds_vec3_add(want, bmds_vec3(m.normals[3 * i[k]], m.normals[3 * i[k] + 1],
+                                                                     m.normals[3 * i[k] + 2]));
+                        CHECK(bmds_vec3_dot(n, want) > 0.0f);
+                }
+        }
+
+} // namespace
+
+TEST_CASE("3d: more shapes: cylinders, cones, icospheres, torus knots, extrusions") {
+        const size_t    before = FakeMemory::live();
+        bmds_3d_shape_t shape{};
+        shape.size = sizeof(shape);
+        bmds_3d_mesh_t m{};
+
+        SUBCASE("cylinder: closed, its caps' spokes no edges") {
+                shape.kind = BMDS_3D_SHAPE_CYLINDER;
+                shape.segments = 12;
+                REQUIRE(bmds_3d_mesh_make(&shape, 0, &m) == 0);
+                CHECK(m.triangle_count == 12 * 2 + 2 * 12);
+                CHECK(m.edge_count == 12 * 3); // two rims and the uprights
+                CHECK(edgeInfo(m).open == 0);
+        }
+        SUBCASE("cone: closed, a point on top") {
+                shape.kind = BMDS_3D_SHAPE_CONE;
+                shape.segments = 10;
+                REQUIRE(bmds_3d_mesh_make(&shape, 0, &m) == 0);
+                CHECK(m.triangle_count == 10 + 10);
+                CHECK(m.edge_count == 10 * 2); // the rim and the slopes
+                CHECK(edgeInfo(m).open == 0);
+                CHECK(near(m.bounds[3], std::sqrt(2.0f), 1e-3f));
+        }
+        SUBCASE("icosphere: Euler's count, every point on the sphere") {
+                shape.kind = BMDS_3D_SHAPE_ICOSPHERE;
+                shape.segments = 2;
+                shape.radius = 2.0f;
+                REQUIRE(bmds_3d_mesh_make(&shape, 0, &m) == 0);
+                CHECK(m.vertex_count == 162);
+                CHECK(m.triangle_count == 320);
+                CHECK(m.edge_count == 480);
+                CHECK(edgeInfo(m).open == 0);
+                for (uint32_t v = 0; v < m.vertex_count; ++v)
+                        CHECK(near(bmds_vec3_length(bmds_vec3(m.positions[3 * v], m.positions[3 * v + 1],
+                                                              m.positions[3 * v + 2])),
+                                   2.0f, 1e-4f));
+        }
+        SUBCASE("torus knot: closed both ways, the seam welded") {
+                shape.kind = BMDS_3D_SHAPE_TORUS_KNOT;
+                shape.segments = 64;
+                shape.rings = 6;
+                REQUIRE(bmds_3d_mesh_make(&shape, 0, &m) == 0);
+                CHECK(m.triangle_count == 2 * 64 * 6);
+                CHECK(m.edge_count == 2 * 64 * 6);
+                CHECK(edgeInfo(m).open == 0);
+        }
+        SUBCASE("extrusion of a concave L, wound either way") {
+                for (int reversed = 0; reversed < 2; ++reversed) {
+                        static const float l[] = {0, 0, 3, 0, 3, 1, 1, 1, 1, 3, 0, 3};
+                        float              xy[12];
+                        for (int i = 0; i < 6; ++i) {
+                                const int k = reversed ? 5 - i : i;
+                                xy[2 * i] = l[2 * k], xy[2 * i + 1] = l[2 * k + 1];
+                        }
+                        bmds_3d_mesh_t e{};
+                        REQUIRE(bmds_3d_mesh_extrude(xy, 6, 0.5f, 0, &e) == 0);
+                        CHECK(e.triangle_count == 2 * 4 + 2 * 6);
+                        CHECK(e.edge_count == 3 * 6); // two outlines and the uprights
+                        CHECK(edgeInfo(e).open == 0);
+                        checkOutward(e);
+                        // The caps cover the L's area exactly: 5 square units each.
+                        float capArea = 0.0f;
+                        for (uint32_t t = 0; t < e.triangle_count; ++t) {
+                                const uint16_t *i = e.triangles + 3 * t;
+                                if (e.normals[3 * i[0] + 2] < 0.5f) continue; // the front cap's only
+                                const float *a = e.positions + 3 * i[0], *b = e.positions + 3 * i[1],
+                                            *c = e.positions + 3 * i[2];
+                                capArea += 0.5f * ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
+                        }
+                        CHECK(near(capArea, 5.0f, 1e-4f));
+                        bmds_3d_mesh_free(&e);
+                }
+                static const float bowtie[] = {0, 0, 2, 2, 2, 0, 0, 2};
+                bmds_3d_mesh_t     e{};
+                CHECK(bmds_3d_mesh_extrude(bowtie, 4, 1.0f, 0, &e) == -BMDS_EINVAL);
+                CHECK(bmds_3d_mesh_extrude(bowtie, 2, 1.0f, 0, &e) == -BMDS_EINVAL);
+        }
+        if (m.triangle_count != 0) checkOutward(m);
+        bmds_3d_mesh_free(&m);
+        CHECK(FakeMemory::live() == before);
+        shape.kind = BMDS_3D_SHAPE_ICOSPHERE;
+        shape.segments = 6;
+        CHECK(bmds_3d_mesh_make(&shape, 0, &m) == -BMDS_EINVAL);
+}

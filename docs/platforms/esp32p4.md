@@ -287,6 +287,15 @@ until silicon v3; then test again.
   with PIE: 1 ms with the source cached, 6.6 ms from PSRAM). Design for fewer bytes: rows
   repeated by the scan's descriptors rather than written twice, damage rather than whole frames,
   sources brought into internal RAM by DMA rather than read by the CPU.
+- **A program's timings move up to ~10% from one launch to the next** (found 2026-11-06,
+  `devplan/3d.md` §13 step 3): the same `benchprog` binary, pinned to one core, ran a frame in 9.5
+  ms on one launch and 10.5 on the next, while runs within a launch agreed to ~2%; probably where
+  its buffers and code land in PSRAM. Compare builds A/B, alternated over several launches,
+  pinned, averaged: single launches made changes of no effect look ±0.5-1 ms.
+- **Float to 64-bit integer is a library call through doubles** (`__fixsfdi` and
+  `__fixunssfdi` call `__muldf3`, `__subdf3`...): a few per triangle cost 3-4 ms a frame in
+  libbmds3d. Float to int32 is one instruction; keep fixed-point values in 32 bits (offsets from
+  a nearby origin), and `nm` the library for `U __*df*` helpers after touching hot code.
 - **Two cores reading PSRAM slow each other, and the display's scan makes it worse** (measured
   2026-10-28, `synth.module`, `devplan/synthmodule.md` §2a): wavetable voices reading 13 MB of
   samples cost about 10 µs a 64-frame block on one core, cache misses and all; on both cores at

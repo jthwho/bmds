@@ -365,6 +365,175 @@ static void make_torus(builder_t *b, float r, float tube, uint32_t segments, uin
         return;
 }
 
+/* Marks triangle @p t's side between @p d0 and @p d1 (if it has one) as no edge. */
+static void mark(builder_t *b, uint32_t t, uint32_t d0, uint32_t d1) {
+        const uint16_t *v = b->triangles + 3 * t;
+        for (uint32_t side = 0; side < 3; ++side) {
+                const uint32_t p = v[side], q = v[(side + 1) % 3];
+                if ((p == d0 && q == d1) || (p == d1 && q == d0)) b->diagonals[t] |= (uint8_t)(1u << side);
+        }
+        return;
+}
+
+/* A cap: triangles from @p centre to the rim @p rim .. @p rim + @p n (n + 1 vertices, the last the
+   first's twin), only the rim an edge. */
+static void fan(builder_t *b, uint32_t centre, uint32_t rim, uint32_t n) {
+        for (uint32_t i = 0; i < n; ++i) {
+                const uint32_t t = b->triangle_count;
+                if (!triangle(b, centre, rim + i, rim + i + 1, centre, rim + i)) continue;
+                mark(b, t, centre, rim + i + 1);
+        }
+        return;
+}
+
+/* Cylinder (@p tip 0: radius at both ends) or cone (the top a point), half height @p h. */
+static void make_tube(builder_t *b, float r, float h, uint32_t segments, uint32_t rings, int cone) {
+        uint32_t v = 0;
+        for (uint32_t j = 0; j <= rings; ++j) {
+                const float f = (float)j / (float)rings, y = -h + 2.0f * h * f, rr = cone ? r * (1.0f - f) : r;
+                for (uint32_t i = 0; i <= segments; ++i, ++v) {
+                        const float a = 2.0f * PI * (float)i / (float)segments;
+                        const float ca = i == segments ? 1.0f : cosf(a), sa = i == segments ? 0.0f : sinf(a);
+                        /* A cone's side leans: its normal tilts up by the slope. */
+                        const bmds_vec3_t n = bmds_vec3_normalize(bmds_vec3(
+                                ca * (cone ? 2.0f * h : 1.0f), cone ? r : 0.0f, -sa * (cone ? 2.0f * h : 1.0f)));
+                        vertex(b, v, bmds_vec3(rr * ca, y, -rr * sa), n, (float)i / (float)segments, 1.0f - f);
+                }
+        }
+        for (uint32_t j = 0; j < rings; ++j)
+                for (uint32_t i = 0; i < segments; ++i) {
+                        const uint32_t k = j * (segments + 1) + i;
+                        quad(b, k, k + 1, k + segments + 2, k + segments + 1);
+                }
+        /* The caps: the bottom, and a cylinder's top. */
+        for (int top = 0; top < (cone ? 1 : 2); ++top) {
+                const float       y = top ? h : -h;
+                const bmds_vec3_t n = bmds_vec3(0.0f, top ? 1.0f : -1.0f, 0.0f);
+                const uint32_t    centre = v++;
+                vertex(b, centre, bmds_vec3(0.0f, y, 0.0f), n, 0.5f, 0.5f);
+                const uint32_t rim = v;
+                for (uint32_t i = 0; i <= segments; ++i, ++v) {
+                        const float a = 2.0f * PI * (float)i / (float)segments;
+                        const float ca = i == segments ? 1.0f : cosf(a), sa = i == segments ? 0.0f : sinf(a);
+                        vertex(b, v, bmds_vec3(r * ca, y, -r * sa), n, 0.5f + 0.5f * ca, 0.5f - 0.5f * sa);
+                }
+                fan(b, centre, rim, segments);
+        }
+        return;
+}
+
+/* A (p, q) torus knot: a tube round the curve, framed as three.js's TorusKnotGeometry does. */
+static bmds_vec3_t knot_at(float t, float p, float q, float scale) {
+        const float cq = cosf(q * t);
+        return bmds_vec3_scale(bmds_vec3((2.0f + cq) * cosf(p * t), (2.0f + cq) * sinf(p * t), sinf(q * t)), scale);
+}
+
+static void make_knot(builder_t *b, float r, float tube, uint32_t segments, uint32_t rings, uint32_t p, uint32_t q) {
+        const float scale = r / 3.0f; /* the curve reaches 3 */
+        for (uint32_t i = 0; i <= segments; ++i) {
+                const float       t = 2.0f * PI * (float)(i % segments) / (float)segments; /* the seam the same */
+                const bmds_vec3_t c1 = knot_at(t, (float)p, (float)q, scale);
+                const bmds_vec3_t c2 = knot_at(t + 0.01f, (float)p, (float)q, scale);
+                const bmds_vec3_t tangent = bmds_vec3_sub(c2, c1);
+                bmds_vec3_t       n = bmds_vec3_add(c2, c1);
+                const bmds_vec3_t bi = bmds_vec3_normalize(bmds_vec3_cross(tangent, n));
+                n = bmds_vec3_normalize(bmds_vec3_cross(bi, tangent));
+                for (uint32_t j = 0; j <= rings; ++j) {
+                        const float       a = 2.0f * PI * (float)(j % rings) / (float)rings;
+                        const bmds_vec3_t d = bmds_vec3_add(bmds_vec3_scale(n, cosf(a)), bmds_vec3_scale(bi, sinf(a)));
+                        vertex(b, i * (rings + 1) + j, bmds_vec3_add(c1, bmds_vec3_scale(d, tube)), d,
+                               (float)i / (float)segments, (float)j / (float)rings);
+                }
+        }
+        for (uint32_t i = 0; i < segments; ++i)
+                for (uint32_t j = 0; j < rings; ++j) {
+                        const uint32_t k = i * (rings + 1) + j;
+                        quad(b, k, k + rings + 1, k + rings + 2, k + 1);
+                }
+        return;
+}
+
+/* An icosphere: the icosahedron's faces split @p levels times, each new point pushed out to the
+   sphere. An edge's midpoint is made once: a hash of the edge (its two vertices) to the point. */
+static int make_icosphere(builder_t *b, float r, uint32_t levels) {
+        const float          t = 1.6180339887f;
+        static const float   corners[12][3] = {{-1, 1, 0},  {1, 1, 0},  {-1, -1, 0}, {1, -1, 0}, {0, -1, 1},  {0, 1, 1},
+                                               {0, -1, -1}, {0, 1, -1}, {1, 0, -1},  {1, 0, 1},  {-1, 0, -1}, {-1, 0, 1}};
+        static const uint8_t faces[20][3] = {{0, 11, 5}, {0, 5, 1},  {0, 1, 7},   {0, 7, 10}, {0, 10, 11},
+                                             {1, 5, 9},  {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
+                                             {3, 9, 4},  {3, 4, 2},  {3, 2, 6},   {3, 6, 8},  {3, 8, 9},
+                                             {4, 9, 5},  {2, 4, 11}, {6, 2, 10},  {8, 6, 7},  {9, 8, 1}};
+        float               *pos = b->positions;
+        uint32_t             nv = 12, nf = 20;
+        /* (0, ±1, ±t) and its cyclic turns: the table's ±1 in the place of the golden ratio. */
+        for (uint32_t i = 0; i < 12; ++i) {
+                const float scale[3] = {i < 4   ? 1.0f
+                                        : i < 8 ? 1.0f
+                                                : t,
+                                        i < 4 ? t : 1.0f,
+                                        i < 4   ? 1.0f
+                                        : i < 8 ? t
+                                                : 1.0f};
+                const bmds_vec3_t v = bmds_vec3_normalize(
+                        bmds_vec3(corners[i][0] * scale[0], corners[i][1] * scale[1], corners[i][2] * scale[2]));
+                pos[3 * i] = v.x, pos[3 * i + 1] = v.y, pos[3 * i + 2] = v.z;
+        }
+        const uint32_t final_faces = 20u << (2 * levels);
+        uint32_t       size = 1;
+        while (size < final_faces * 2) size <<= 1; /* the last level's edges: 1.5 a face */
+        uint16_t *list = (uint16_t *)bmds_mem_alloc(final_faces * 3 * 2 * (uint32_t)sizeof(uint16_t), 0, 0);
+        uint32_t *keys = (uint32_t *)bmds_mem_alloc(size * 2 * (uint32_t)sizeof(uint32_t), 0, 0);
+        if (list == NULL || keys == NULL) {
+                bmds_mem_free(list);
+                bmds_mem_free(keys);
+                return -BMDS_ENOMEM;
+        }
+        uint32_t *points = keys + size;
+        uint16_t *cur = list, *next = list + final_faces * 3;
+        for (uint32_t f = 0; f < 20; ++f)
+                for (int k = 0; k < 3; ++k) cur[3 * f + k] = faces[f][k];
+        for (uint32_t level = 0; level < levels; ++level) {
+                for (uint32_t i = 0; i < size; ++i) keys[i] = 0xffffffffu;
+                for (uint32_t f = 0; f < nf; ++f) {
+                        uint16_t mid[3];
+                        for (int k = 0; k < 3; ++k) {
+                                uint32_t a = cur[3 * f + k], c = cur[3 * f + (k + 1) % 3];
+                                if (a > c) {
+                                        const uint32_t x = a;
+                                        a = c, c = x;
+                                }
+                                const uint32_t key = a << 16 | c;
+                                uint32_t       slot = (key * 2654435761u) & (size - 1);
+                                while (keys[slot] != 0xffffffffu && keys[slot] != key) slot = (slot + 1) & (size - 1);
+                                if (keys[slot] == 0xffffffffu) {
+                                        const bmds_vec3_t m = bmds_vec3_normalize(
+                                                bmds_vec3_add(bmds_vec3(pos[3 * a], pos[3 * a + 1], pos[3 * a + 2]),
+                                                              bmds_vec3(pos[3 * c], pos[3 * c + 1], pos[3 * c + 2])));
+                                        pos[3 * nv] = m.x, pos[3 * nv + 1] = m.y, pos[3 * nv + 2] = m.z;
+                                        keys[slot] = key;
+                                        points[slot] = nv++;
+                                }
+                                mid[k] = (uint16_t)points[slot];
+                        }
+                        const uint16_t a = cur[3 * f], bb = cur[3 * f + 1], c = cur[3 * f + 2];
+                        const uint16_t out[12] = {a, mid[0], mid[2], bb,     mid[1], mid[0],
+                                                  c, mid[2], mid[1], mid[0], mid[1], mid[2]};
+                        for (int k = 0; k < 12; ++k) next[12 * f + k] = out[k];
+                }
+                nf *= 4;
+                uint16_t *swap = cur;
+                cur = next, next = swap;
+        }
+        bmds_mem_free(keys);
+        for (uint32_t v = 0; v < nv; ++v) {
+                const bmds_vec3_t n = bmds_vec3(pos[3 * v], pos[3 * v + 1], pos[3 * v + 2]);
+                vertex(b, v, bmds_vec3_scale(n, r), n, 0.5f + atan2f(n.z, n.x) / (2.0f * PI), 0.5f - asinf(n.y) / PI);
+        }
+        for (uint32_t f = 0; f < nf; ++f) (void)triangle(b, cur[3 * f], cur[3 * f + 1], cur[3 * f + 2], 0, 0);
+        bmds_mem_free(list);
+        return 0;
+}
+
 int bmds_3d_mesh_make(const bmds_3d_shape_t *shape, uint32_t mem_flags, bmds_3d_mesh_t *mesh) {
         if (shape == NULL || mesh == NULL || shape->size < sizeof(bmds_3d_shape_t) || shape->flags != 0)
                 return -BMDS_EINVAL;
@@ -391,6 +560,28 @@ int bmds_3d_mesh_make(const bmds_3d_shape_t *shape, uint32_t mem_flags, bmds_3d_
                         vertices = (segments + 1) * (rings + 1);
                         triangles = 2 * segments * rings;
                         break;
+                case BMDS_3D_SHAPE_CYLINDER:
+                case BMDS_3D_SHAPE_CONE:
+                        if (segments == 0) segments = 24;
+                        if (rings == 0) rings = 1;
+                        if (segments < 3 || segments > 1024 || rings > 1024) return -BMDS_EINVAL;
+                        vertices = (segments + 1) * (rings + 1) +
+                                   (shape->kind == BMDS_3D_SHAPE_CONE ? 1 : 2) * (segments + 2);
+                        triangles = 2 * segments * rings + (shape->kind == BMDS_3D_SHAPE_CONE ? 1 : 2) * segments;
+                        break;
+                case BMDS_3D_SHAPE_ICOSPHERE:
+                        if (segments == 0) segments = 2;
+                        if (segments > 5) return -BMDS_EINVAL;
+                        vertices = 10u * (1u << (2 * segments)) + 2;
+                        triangles = 20u << (2 * segments);
+                        break;
+                case BMDS_3D_SHAPE_TORUS_KNOT:
+                        if (segments == 0) segments = 128;
+                        if (rings == 0) rings = 8;
+                        if (segments < 8 || rings < 3 || segments > 4096 || rings > 256) return -BMDS_EINVAL;
+                        vertices = (segments + 1) * (rings + 1);
+                        triangles = 2 * segments * rings;
+                        break;
                 default: return -BMDS_EINVAL;
         }
         if (vertices > MAX_VERTICES) return -BMDS_EINVAL;
@@ -411,13 +602,168 @@ int bmds_3d_mesh_make(const bmds_3d_shape_t *shape, uint32_t mem_flags, bmds_3d_
                        diagonals,
                        vertices,
                        0};
+        const float r2 = shape->radius2;
+        int         made = 0;
         switch (shape->kind) {
                 case BMDS_3D_SHAPE_CUBE: make_cube(&b, r); break;
                 case BMDS_3D_SHAPE_GRID: make_grid(&b, r, segments); break;
                 case BMDS_3D_SHAPE_SPHERE: make_sphere(&b, r, segments, rings); break;
-                default: make_torus(&b, r, shape->radius2 > 0.0f ? shape->radius2 : r / 3.0f, segments, rings); break;
+                case BMDS_3D_SHAPE_TORUS: make_torus(&b, r, r2 > 0.0f ? r2 : r / 3.0f, segments, rings); break;
+                case BMDS_3D_SHAPE_CYLINDER:
+                case BMDS_3D_SHAPE_CONE:
+                        make_tube(&b, r, r2 > 0.0f ? r2 : r, segments, rings, shape->kind == BMDS_3D_SHAPE_CONE);
+                        break;
+                case BMDS_3D_SHAPE_ICOSPHERE: made = make_icosphere(&b, r, segments); break;
+                default:
+                        make_knot(&b, r, r2 > 0.0f ? r2 : r / 8.0f, segments, rings,
+                                  shape->p != 0 || shape->q != 0 ? shape->p : 2,
+                                  shape->p != 0 || shape->q != 0 ? shape->q : 3);
+                        break;
+        }
+        if (made < 0) {
+                bmds_mem_free(block);
+                bmds_mem_free(diagonals);
+                return made;
         }
 
+        memset(mesh, 0, sizeof(*mesh));
+        mesh->size = sizeof(*mesh);
+        mesh->vertex_count = vertices;
+        mesh->positions = b.positions;
+        mesh->normals = b.normals;
+        mesh->uvs = b.uvs;
+        mesh->triangle_count = b.triangle_count;
+        mesh->triangles = b.triangles;
+        mesh->owned = block;
+        bmds_3d_mesh_bounds(mesh);
+        const int e = edges_build(mesh, 0, mem_flags, diagonals);
+        bmds_mem_free(diagonals);
+        if (e < 0) {
+                bmds_3d_mesh_free(mesh);
+                return e;
+        }
+        return 0;
+}
+
+/* ---- Extrusion -------------------------------------------------------------------------------- */
+
+static float cross2(const float *xy, uint32_t a, uint32_t b, uint32_t c) {
+        return (xy[2 * b] - xy[2 * a]) * (xy[2 * c + 1] - xy[2 * a + 1]) -
+               (xy[2 * b + 1] - xy[2 * a + 1]) * (xy[2 * c] - xy[2 * a]);
+}
+
+/* Whether point @p p is inside triangle a, b, c (counter-clockwise), its edges included. */
+static int inside2(const float *xy, uint32_t p, uint32_t a, uint32_t b, uint32_t c) {
+        return cross2(xy, a, b, p) >= 0.0f && cross2(xy, b, c, p) >= 0.0f && cross2(xy, c, a, p) >= 0.0f;
+}
+
+/* Ear clipping: @p n points (counter-clockwise) into @p out triangles (3 indices each, n - 2 of
+   them), using @p ring (n entries) as scratch. @return 0, or -1 (a polygon that crosses itself). */
+static int triangulate(const float *xy, uint32_t n, uint16_t *ring, uint16_t *out) {
+        for (uint32_t i = 0; i < n; ++i) ring[i] = (uint16_t)i;
+        uint32_t left = n, made = 0, guard = 0;
+        uint32_t i = 0;
+        while (left > 3) {
+                const uint32_t a = ring[(i + left - 1) % left], b = ring[i % left], c = ring[(i + 1) % left];
+                int            ear = cross2(xy, a, b, c) >= 0.0f; /* collinear: an ear of no area */
+                for (uint32_t k = 0; ear && k < left; ++k) {
+                        const uint32_t p = ring[k];
+                        if (p != a && p != b && p != c && inside2(xy, p, a, b, c)) ear = 0;
+                }
+                if (ear) {
+                        out[3 * made] = (uint16_t)a, out[3 * made + 1] = (uint16_t)b, out[3 * made + 2] = (uint16_t)c;
+                        ++made;
+                        for (uint32_t k = i % left; k + 1 < left; ++k) ring[k] = ring[k + 1];
+                        --left;
+                        guard = 0;
+                        if (i >= left) i = 0;
+                } else {
+                        i = (i + 1) % left;
+                        if (++guard > left) return -1; /* no ear left: it crosses itself */
+                }
+        }
+        out[3 * made] = ring[0], out[3 * made + 1] = ring[1], out[3 * made + 2] = ring[2];
+        return 0;
+}
+
+int bmds_3d_mesh_extrude(const float *xy, uint32_t count, float depth, uint32_t mem_flags, bmds_3d_mesh_t *mesh) {
+        if (xy == NULL || mesh == NULL || count < 3 || count > 8000 || !(depth > 0.0f)) return -BMDS_EINVAL;
+        /* The points counter-clockwise (a copy, turned if the caller's go the other way). */
+        float area = 0.0f;
+        for (uint32_t i = 0; i < count; ++i) {
+                const uint32_t j = (i + 1) % count;
+                area += xy[2 * i] * xy[2 * j + 1] - xy[2 * j] * xy[2 * i + 1];
+        }
+        if (!(area != 0.0f)) return -BMDS_EINVAL;
+        const uint32_t vertices = 2 * count + 4 * count, triangles = 2 * (count - 2) + 2 * count;
+        const size_t   floats = (size_t)vertices * 8;
+        const size_t   bytes = floats * sizeof(float) + (size_t)triangles * 3 * sizeof(uint16_t);
+        float         *block = (float *)bmds_mem_alloc((uint32_t)bytes, 0, mem_flags);
+        uint8_t       *diagonals = (uint8_t *)bmds_mem_alloc(triangles, 0, 0);
+        float         *ccw = (float *)bmds_mem_alloc(count * 2 * (uint32_t)sizeof(float), 0, 0);
+        uint16_t      *scratch = (uint16_t *)bmds_mem_alloc(count * 4 * (uint32_t)sizeof(uint16_t), 0, 0);
+        if (block == NULL || diagonals == NULL || ccw == NULL || scratch == NULL) {
+                bmds_mem_free(block), bmds_mem_free(diagonals), bmds_mem_free(ccw), bmds_mem_free(scratch);
+                return -BMDS_ENOMEM;
+        }
+        for (uint32_t i = 0; i < count; ++i) {
+                const uint32_t k = area > 0.0f ? i : count - 1 - i;
+                ccw[2 * i] = xy[2 * k], ccw[2 * i + 1] = xy[2 * k + 1];
+        }
+        uint16_t *cap = scratch + count; /* (count - 2) × 3 */
+        if (triangulate(ccw, count, scratch, cap) != 0) {
+                bmds_mem_free(block), bmds_mem_free(diagonals), bmds_mem_free(ccw), bmds_mem_free(scratch);
+                return -BMDS_EINVAL;
+        }
+        builder_t b = {block,
+                       block + 3 * vertices,
+                       block + 6 * vertices,
+                       (uint16_t *)(void *)(block + floats),
+                       diagonals,
+                       vertices,
+                       0};
+        float     lo[2] = {ccw[0], ccw[1]}, hi[2] = {ccw[0], ccw[1]};
+        for (uint32_t i = 1; i < count; ++i)
+                for (int k = 0; k < 2; ++k) {
+                        if (ccw[2 * i + k] < lo[k]) lo[k] = ccw[2 * i + k];
+                        if (ccw[2 * i + k] > hi[k]) hi[k] = ccw[2 * i + k];
+                }
+        const float h = 0.5f * depth;
+        /* The caps: front (+Z) and back (-Z); only their outline an edge. */
+        for (int back = 0; back < 2; ++back) {
+                const uint32_t    base = back ? count : 0;
+                const bmds_vec3_t n = bmds_vec3(0.0f, 0.0f, back ? -1.0f : 1.0f);
+                for (uint32_t i = 0; i < count; ++i) {
+                        const float u = (ccw[2 * i] - lo[0]) / (hi[0] - lo[0] > 0.0f ? hi[0] - lo[0] : 1.0f);
+                        const float v = (hi[1] - ccw[2 * i + 1]) / (hi[1] - lo[1] > 0.0f ? hi[1] - lo[1] : 1.0f);
+                        vertex(&b, base + i, bmds_vec3(ccw[2 * i], ccw[2 * i + 1], back ? -h : h), n, u, v);
+                }
+                for (uint32_t t = 0; t + 2 < count; ++t) {
+                        const uint32_t i0 = cap[3 * t], i1 = cap[3 * t + 1], i2 = cap[3 * t + 2];
+                        const uint32_t k = b.triangle_count;
+                        if (!triangle(&b, base + i0, base + i1, base + i2, 0, 0)) continue;
+                        /* A side that isn't the outline's (neighbours in the ring) is no edge. */
+                        const uint32_t v3[3] = {i0, i1, i2};
+                        for (int e = 0; e < 3; ++e) {
+                                const uint32_t p = v3[e], q = v3[(e + 1) % 3];
+                                if ((p + 1) % count != q && (q + 1) % count != p) mark(&b, k, base + p, base + q);
+                        }
+                }
+        }
+        /* The sides: a quad each, faceted. */
+        for (uint32_t i = 0; i < count; ++i) {
+                const uint32_t    j = (i + 1) % count, v = 2 * count + 4 * i;
+                const bmds_vec3_t n = bmds_vec3_normalize(
+                        bmds_vec3(ccw[2 * j + 1] - ccw[2 * i + 1], -(ccw[2 * j] - ccw[2 * i]), 0.0f));
+                const float u0 = (float)i / (float)count, u1 = (float)(i + 1) / (float)count;
+                vertex(&b, v, bmds_vec3(ccw[2 * i], ccw[2 * i + 1], h), n, u0, 0.0f);
+                vertex(&b, v + 1, bmds_vec3(ccw[2 * j], ccw[2 * j + 1], h), n, u1, 0.0f);
+                vertex(&b, v + 2, bmds_vec3(ccw[2 * j], ccw[2 * j + 1], -h), n, u1, 1.0f);
+                vertex(&b, v + 3, bmds_vec3(ccw[2 * i], ccw[2 * i + 1], -h), n, u0, 1.0f);
+                quad(&b, v, v + 1, v + 2, v + 3);
+        }
+        bmds_mem_free(ccw);
+        bmds_mem_free(scratch);
         memset(mesh, 0, sizeof(*mesh));
         mesh->size = sizeof(*mesh);
         mesh->vertex_count = vertices;

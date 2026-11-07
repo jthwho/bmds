@@ -56,20 +56,31 @@ static float clamp_f(float v, float lo, float hi) {
         return v < lo ? lo : v > hi ? hi : v;
 }
 
-/* Steps from @p a to @p b along x (|dx| >= |dy|), @p a.x <= @p b.x, inside @p area. */
-#define STEP_LINE(PUT)                                                                                                 \
+/* The pixels i0..i1 along the major axis: the minor coordinate and the shade from @p MINOR and
+   @p SHADE (expressions of fy, fs), each written by @p PUT. */
+#define LOOP(MINOR, SHADE, PUT)                                                                                        \
         do {                                                                                                           \
                 for (int32_t i = i0; i <= i1; ++i) {                                                                   \
-                        int32_t minor = fy >> 16;                                                                      \
-                        if (minor < lo) minor = lo;                                                                    \
-                        if (minor > hi) minor = hi;                                                                    \
-                        int32_t sh = fs >> 16;                                                                         \
-                        if (sh < 0) sh = 0;                                                                            \
-                        if (sh > top) sh = top;                                                                        \
+                        const int32_t minor = (MINOR);                                                                 \
+                        const int32_t sh = (SHADE);                                                                    \
                         PUT;                                                                                           \
                         fy += dy;                                                                                      \
                         fs += ds;                                                                                      \
                 }                                                                                                      \
+        } while (0)
+
+#define CLAMPED(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
+
+/* One of three loops: clamping each pixel (an end out of range: rounding at the area's edge),
+   one pixel value (unshaded), or shaded without clamps (the ends in range, so all between). */
+#define STEP_LINE(PUT)                                                                                                 \
+        do {                                                                                                           \
+                if (clamp)                                                                                             \
+                        LOOP(CLAMPED(fy >> 16, lo, hi), CLAMPED(fs >> 16, 0, top), PUT);                               \
+                else if (top == 0)                                                                                     \
+                        LOOP(fy >> 16, 0, PUT);                                                                        \
+                else                                                                                                   \
+                        LOOP(fy >> 16, fs >> 16, PUT);                                                                 \
         } while (0)
 
 /* Draws the projected segment @p a - @p b (both inside @p area) on @p c. @return the pixels. */
@@ -102,6 +113,11 @@ static uint32_t raster(bmds_canvas_t *c, const bmds_3d_area_t *area, const bmds_
         int32_t         fy = (int32_t)((va + first * slope) * 65536.0f), dy = (int32_t)(slope * 65536.0f);
         int32_t         fs = (int32_t)((sa + first * sslope + 0.5f) * 65536.0f), ds = (int32_t)(sslope * 65536.0f);
         const uint32_t *shades = ink->shades;
+        /* Both ends in range: every pixel between is (the minor and the shade are linear). */
+        const int64_t last_y = (int64_t)fy + (int64_t)dy * (i1 - i0), last_s = (int64_t)fs + (int64_t)ds * (i1 - i0);
+        const int     clamp =
+                (fy >> 16) < lo || (fy >> 16) > hi || (last_y >> 16) < lo || (last_y >> 16) > hi ||
+                (top != 0 && ((fs >> 16) < 0 || (fs >> 16) > top || (last_s >> 16) < 0 || (last_s >> 16) > top));
         const size_t    stride = c->stride;
         if (x_major)
                 bmds_3d_include(bounds, i0, lo, i1 + 1, hi + 1);

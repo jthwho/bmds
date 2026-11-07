@@ -187,6 +187,19 @@ typedef struct bmds_3d_mesh_t {
         4u /**< A torus about Y: `radius` to the tube's centre, `radius2` the tube's;
                                      `segments` around, `rings` around the tube. */
 
+#define BMDS_3D_SHAPE_CYLINDER                                                                                         \
+        5u /**< About Y: `radius`, `radius2` half its height (0: radius); `segments`
+                                       around, `rings` along; capped. */
+#define BMDS_3D_SHAPE_CONE                                                                                             \
+        6u /**< About Y, its point up: `radius` at the base, `radius2` half its height
+                                       (0: radius); capped. */
+#define BMDS_3D_SHAPE_ICOSPHERE                                                                                        \
+        7u /**< A sphere of even triangles: an icosahedron split `segments` times
+                                        (0: 2; at most 5). */
+#define BMDS_3D_SHAPE_TORUS_KNOT                                                                                       \
+        8u /**< A (p, q) torus knot, `radius` across, its tube `radius2` (0: radius /
+                                         8); `segments` along (0: 128), `rings` round the tube (0: 8). */
+
 /** @brief A shape bmds_3d_mesh_make() makes. */
 typedef struct bmds_3d_shape_t {
                 uint32_t size;     /**< `sizeof(bmds_3d_shape_t)`. */
@@ -194,8 +207,9 @@ typedef struct bmds_3d_shape_t {
                 uint32_t segments; /**< Around (0: the shape's default). */
                 uint32_t rings;    /**< Across (0: the shape's default). */
                 float    radius;   /**< The size (0: 1). */
-                float    radius2;  /**< The torus's tube (0: radius / 3). */
+                float    radius2;  /**< The torus's tube (0: radius / 3); the others' as their kinds say. */
                 uint32_t flags;    /**< 0. */
+                uint32_t p, q;     /**< `BMDS_3D_SHAPE_TORUS_KNOT`'s windings (0, 0: 2, 3). */
 } bmds_3d_shape_t;
 
 /**
@@ -204,6 +218,14 @@ typedef struct bmds_3d_shape_t {
  * @return 0, or `-BMDS_EINVAL` (an unknown kind or flags, too many vertices), `-BMDS_ENOMEM`.
  */
 int bmds_3d_mesh_make(const bmds_3d_shape_t *shape, uint32_t mem_flags, bmds_3d_mesh_t *mesh);
+
+/**
+ * @brief Makes a mesh of the simple polygon @p xy (@p count points x, y, either winding, no holes)
+ *        extruded along Z from -@p depth / 2 to +@p depth / 2: capped, faceted, edges round the
+ *        outline and its sides only. Logos and letters, a piece at a time.
+ * @return 0, or `-BMDS_EINVAL` (fewer than 3 points, a polygon that crosses itself), `-BMDS_ENOMEM`.
+ */
+int bmds_3d_mesh_extrude(const float *xy, uint32_t count, float depth, uint32_t mem_flags, bmds_3d_mesh_t *mesh);
 
 /** @brief Frees what bmds_3d_mesh_make() and bmds_3d_mesh_edges() allocated, and empties @p mesh. */
 void bmds_3d_mesh_free(bmds_3d_mesh_t *mesh);
@@ -258,9 +280,15 @@ typedef struct bmds_3d_t bmds_3d_t;
 typedef struct bmds_3d_config_t {
                 uint32_t size;         /**< `sizeof(bmds_3d_config_t)`. */
                 uint32_t max_vertices; /**< The most vertices a mesh drawn has (0: 4096). */
-                uint32_t mem_flags;    /**< The scratch memory's (`BMDS_MEM_FAST`: internal RAM, if it fits). */
+                uint32_t mem_flags;    /**< The vertices' scratch (`BMDS_MEM_FAST`: internal RAM, if it fits; 44
+                                            bytes a vertex: ~10% faster solids, but internal RAM is the
+                                            kernel's too: 45 KB of it kept a program from going full
+                                            screen). The queue is in PSRAM. */
                 uint32_t max_triangles; /**< Solids' triangles queued before they are drawn (0: 2048). */
                 uint32_t max_draws;     /**< Solids' draws queued before they are drawn (0: 64). */
+                uint32_t cores;         /**< 2: a helper thread on the other core draws a band of the solids
+                                             (the split follows how busy each core is); 0 or 1: the caller's
+                                             thread only. Points, lines and wire stay on the caller's. */
 } bmds_3d_config_t;
 
 /**
