@@ -294,6 +294,20 @@ Error MidiRouter::send(uint8_t source, const MidiEvent &event) {
         return Error::Ok;
 }
 
+int64_t MidiRouter::latencyNs(uint8_t number, bool asSource) {
+        Mutex::Locker lock(_lock, WaitForever);
+        if (number >= MaxPorts || !_ports[number].used) return 0;
+        if (!asSource) return _ports[number].sink != nullptr ? _ports[number].sink->latencyNs() : 0;
+        int64_t most = 0;
+        for (size_t i = 0; i < _connectionCount; ++i) {
+                if (_connections[i].source != number) continue;
+                const MidiSink *sink = _ports[_connections[i].destination].sink;
+                const int64_t   ns = sink != nullptr ? sink->latencyNs() : 0;
+                if (ns > most) most = ns;
+        }
+        return most;
+}
+
 Error MidiRouter::deliver(uint8_t destination, const MidiEvent &event) {
         MidiSink *kick = nullptr;
         {

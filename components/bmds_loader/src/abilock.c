@@ -912,3 +912,11 @@ _Static_assert(offsetof(bmds_syntax_scan_t, language) == 4 && offsetof(bmds_synt
                        offsetof(bmds_syntax_scan_t, count) == 28 && sizeof(bmds_syntax_scan_t) == 32,
                "ABI: bmds_syntax_scan_t");
 #endif
+
+/* Frame times and a MIDI port's latency (devplan/sequencer.md §7, K1 and K2; 2026-11-06). */
+_Static_assert(BMDS_SURFACE_TIMING == 8, "ABI: BMDS_SURFACE_TIMING");
+_Static_assert(offsetof(bmds_surface_timing_t, frames) == 4 && offsetof(bmds_surface_timing_t, frame_ns) == 8 &&
+                       offsetof(bmds_surface_timing_t, period_ns) == 16 &&
+                       offsetof(bmds_surface_timing_t, reserved) == 20 && sizeof(bmds_surface_timing_t) == 24,
+               "ABI: bmds_surface_timing_t");
+_Static_assert(BMDS_MIDI_LATENCY == 5, "ABI: BMDS_MIDI_LATENCY");

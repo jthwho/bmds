@@ -273,9 +273,16 @@ Plan: [`input.md`](input.md).
   (`bmds/seq.h`), played through scheduled MIDI and the game mixer, beat sync by heard time (frame times and
   a port's latency from the kernel), live control quantized to the grid, the synths' sound controllers
   (filter, envelopes, portamento), speech rendered into sounds; a text form and SMF export.
+  Step 1 done (§11, 2026-11-06): K1 (frame times, `BMDS_SURFACE_TIMING`; `bmds_game_frame_ns()`), K2 (a
+  port's latency, `BMDS_MIDI_LATENCY`: the synths measure theirs, 14.9 ms), `bmds/seq.h` (the player, position,
+  hits; host-tested), the `beat` example.
 - [ ] BMDS Demo #1 (`demo.md`, planned 2026-11-06 with the user): `demo1`, a demoscene-style demo at 640×360
   L8: copper bars, plasma, tunnel, starfield, wireframe and shaded 3D, vector balls, fire, a textured cube,
   an original techno track on FM or the wavetable, speech on the beat, mouse and keys playing along.
+  Step 1 done (§10, 2026-11-06): `programs/demo1` and `dist/demo1`, the show's palette (fades, flashes,
+  cycling), the overlay, keys; copper bars all in the palette with a sine scroller (6.7 ms) and plasma
+  (11.1 ms), both at 60 full screen.
+  Step 2 done (§10): stars gathering into the letters BMDS in wire (extruded outlines), ~9 ms, 60 fps.
   Step 0 done (§8b, 2026-11-06): whole L8 frames full screen at 60 (the PPA's CLUT expands what the CPU
   repeats across; `Surface::beginWrite()`; the PPA claimed by one user at a time): 640×360 54 → 60 fps,
   the presenter's CPU 16.8 → 6.6 ms a frame; Doom's and Quake's cheaper too (`games.md` §27).

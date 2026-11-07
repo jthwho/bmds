@@ -73,6 +73,12 @@ int bmds_game_palette(bmds_game_t *game, uint32_t first, uint32_t count, const u
         return bmds_surface_control(game->fd, BMDS_SURFACE_PALETTE, (void *)&p, sizeof(p));
 }
 
+int64_t bmds_game_frame_ns(const bmds_game_t *game) {
+        bmds_surface_timing_t t = {sizeof(t), 0, 0, 0, 0};
+        if (bmds_surface_control(game->fd, BMDS_SURFACE_TIMING, &t, sizeof(t)) != 0 || t.frame_ns == 0) return 0;
+        return t.frame_ns + 2 * (int64_t)(t.period_ns != 0 ? t.period_ns : 16666667u);
+}
+
 int32_t bmds_game_fd(const bmds_game_t *game) {
         return game->fd;
 }

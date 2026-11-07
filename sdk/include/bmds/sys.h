@@ -686,6 +686,14 @@ typedef struct bmds_midi_status_t {
 #define BMDS_MIDI_DISCONNECT 2u /**< Ends that connection. */
 #define BMDS_MIDI_FLUSH 3u      /**< Throws away what waits to be read. */
 #define BMDS_MIDI_CANCEL 4u     /**< Throws away what this fd scheduled and isn't sent yet (appended 2026-10-20). */
+/**
+ * @brief Returns the microseconds from an event's time to its sound leaving the output, for where
+ *        this fd's events go now (appended 2026-11-06, `devplan/sequencer.md` §7, K2): a built-in
+ *        synth's as it measures it (its period and the device's queue), the most of the ports a
+ *        source is connected to, 0 where it can't be known (a USB or network synth's own delay).
+ *        `value` 0. Kernels before it: `-BMDS_EINVAL`.
+ */
+#define BMDS_MIDI_LATENCY 5u
 
 /**
  * @brief Scheduled output (appended 2026-10-20, `devplan/audio.md` §25): an event written with a
@@ -1585,6 +1593,7 @@ typedef struct bmds_surface_present_t {
 #define BMDS_SURFACE_INFO 5u    /**< `bmds_surface_info_t *`: its state. */
 #define BMDS_SURFACE_IMAGE 6u /**< `const bmds_surface_image_t *`: a picture BLIT copies from (appended 2026-10-16). */
 #define BMDS_SURFACE_BLIT 7u /**< `const bmds_surface_blit_t *`: copies or fills by the 2D-DMA (appended 2026-10-16). */
+#define BMDS_SURFACE_TIMING 8u /**< `bmds_surface_timing_t *`: when frames begin (appended 2026-11-06). */
 
 /** @brief `BMDS_SURFACE_POINTER`'s modes. */
 #define BMDS_POINTER_NORMAL 0u   /**< The system's arrow. */
@@ -1624,6 +1633,20 @@ typedef struct bmds_surface_info_t {
                 uint32_t picture_width; /**< The surface's own size, its buffers' (appended 2026-10-15). */
                 uint32_t picture_height;
 } bmds_surface_info_t;
+
+/**
+ * @brief `BMDS_SURFACE_TIMING`'s argument (appended 2026-11-06, `devplan/sequencer.md` §7, K1):
+ *        when the display began its last frame and how long frames are, so a program knows when a
+ *        frame it presents will be seen (frame N, as `surface_present()` numbers it, begins near
+ *        `frame_ns + (N - frames) × period_ns`) and can draw what should be on the screen then.
+ */
+typedef struct bmds_surface_timing_t {
+                uint32_t size;      /**< Set by the caller: `sizeof(bmds_surface_timing_t)`. */
+                uint32_t frames;    /**< Frames the display has begun (`bmds_surface_info_t::frames`). */
+                int64_t  frame_ns;  /**< `BMDS_CLOCK_MONOTONIC` when the last of them began (0: none yet). */
+                uint32_t period_ns; /**< A frame's length, measured (0: not known yet). */
+                uint32_t reserved;  /**< 0. */
+} bmds_surface_timing_t;
 
 /** @brief Image slots a surface has (`BMDS_SURFACE_IMAGE`). */
 #define BMDS_SURFACE_IMAGES 4u

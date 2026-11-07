@@ -60,6 +60,11 @@ uint32_t SwapChain::frames() {
         return d != nullptr ? d->scanout().stats().frames : 0;
 }
 
+SwapChain::FrameTime SwapChain::frameTime() {
+        Display *d = display0();
+        return d != nullptr ? d->scanout().frameTime() : FrameTime();
+}
+
 SwapChain::~SwapChain() {
         for (uint8_t *&b : _buffers) {
                 Memory::free(b);

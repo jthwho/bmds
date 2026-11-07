@@ -297,6 +297,11 @@ until silicon v3; then test again.
   ms on one launch and 10.5 on the next, while runs within a launch agreed to ~2%; probably where
   its buffers and code land in PSRAM. Compare builds A/B, alternated over several launches,
   pinned, averaged: single launches made changes of no effect look ±0.5-1 ms.
+- **musl's `sinf` and `cosf` work in doubles** (found 2026-11-06, `devplan/demo.md` §10): the
+  reduction and the polynomial (`__rem_pio2f`, `__sindf`) are double-precision code, which this
+  core does in software (`__muldf3`, `__subdf3`): 640 calls a frame were a quarter of a demo
+  part's time. In a hot loop use a table (BMDS Demo #1's `dsin`: 4,096 floats) or a polynomial in
+  floats.
 - **Float to 64-bit integer is a library call through doubles** (`__fixsfdi` and
   `__fixunssfdi` call `__muldf3`, `__subdf3`...): a few per triangle cost 3-4 ms a frame in
   libbmds3d. Float to int32 is one instruction; keep fixed-point values in 32 bits (offsets from

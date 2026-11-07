@@ -114,6 +114,10 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/game/smf.c
         ${BMDS_ROOT}/sdk/game/palette.c
         palette.cpp
+        demo1.cpp
+        seq.cpp
+        ${BMDS_ROOT}/sdk/game/seq.c
+        ${BMDS_ROOT}/programs/demo1/pal.c
         blocks.cpp
         ${BMDS_ROOT}/programs/blocks/rules.c
         solitaire.cpp

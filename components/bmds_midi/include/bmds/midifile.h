@@ -121,6 +121,9 @@ class MidiFile final : public Stream, private MidiSink {
                 void dropInput();
 
                 /** @brief Throws away what it scheduled and hasn't sent (`BMDS_MIDI_CANCEL`). */
+                /** @brief Returns the latency of where this fd's events go (`MidiRouter::latencyNs()`). */
+                int64_t latencyNs() const;
+
                 void cancelScheduled();
 
                 Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override;

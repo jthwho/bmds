@@ -305,7 +305,20 @@ struct ScanoutIsr {
                                         s._linkErrors0 |= st0;
                                         s._linkErrors1 |= st1;
                                 }
+                                // The frame's start, for programs placing things in time (frameTime()).
+                                const int64_t  now = esp_timer_get_time();
+                                const uint32_t q4 = static_cast<uint32_t>(now - s._frameUs) << 4;
+                                s._frameSeq.fetch_add(1, std::memory_order_acq_rel);
+                                if (s._frameUs != 0 && now - s._frameUs < 100000) {
+                                        // Smoothed by an eighth; a gap (a stall, a restart) not counted.
+                                        if (s._periodQ4 == 0)
+                                                s._periodQ4 = q4;
+                                        else if (q4 < 2 * s._periodQ4)
+                                                s._periodQ4 = s._periodQ4 - (s._periodQ4 >> 3) + (q4 >> 3);
+                                }
+                                s._frameUs = now;
                                 s._frames.fetch_add(1, std::memory_order_relaxed);
+                                s._frameSeq.fetch_add(1, std::memory_order_release);
                                 surface.frameFromIsr(notify);
                                 s._notifyPending = s._notifyPending || !notify;
                         }
@@ -1140,6 +1153,20 @@ volatile uint32_t *Scanout::hostRegisters() const {
 volatile uint32_t *Scanout::bridgeRegisters() const {
         if (_hw == nullptr || !_hw->busClock || _hw->hal.bridge == nullptr) return nullptr;
         return reinterpret_cast<volatile uint32_t *>(_hw->hal.bridge);
+}
+
+Scanout::FrameTime Scanout::frameTime() const {
+        FrameTime t;
+        for (;;) {
+                const uint32_t a = _frameSeq.load(std::memory_order_acquire);
+                if ((a & 1u) != 0) continue; // the interrupt is writing it (on the other core)
+                t.frames = _frames.load(std::memory_order_relaxed);
+                t.startUs = _frameUs;
+                t.periodUs = _periodQ4 >> 4;
+                std::atomic_thread_fence(std::memory_order_acquire);
+                if (_frameSeq.load(std::memory_order_relaxed) == a) break;
+        }
+        return t;
 }
 
 Scanout::Stats Scanout::stats() const {

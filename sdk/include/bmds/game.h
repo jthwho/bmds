@@ -323,6 +323,14 @@ void bmds_game_quit(bmds_game_t *game);
 /** @brief Asks for a frame (`draw`) without a tick, inactive too (a pause screen drawn as it goes). */
 void bmds_game_redraw(bmds_game_t *game);
 
+/**
+ * @brief From `draw`: when the frame being drawn should be on the screen (`BMDS_CLOCK_MONOTONIC`):
+ *        two frames after the display's last began, as a present is converted and swapped in at a
+ *        frame's start (devplan/sequencer.md §6). For drawing what is heard then. 0: the kernel
+ *        can't tell (before `BMDS_SURFACE_TIMING`).
+ */
+int64_t bmds_game_frame_ns(const bmds_game_t *game);
+
 /** @brief Returns the surface's descriptor (for `BMDS_SURFACE_...` controls: the palette, the pointer). */
 int32_t bmds_game_fd(const bmds_game_t *game);
 

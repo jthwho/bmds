@@ -17,6 +17,7 @@
 #include <bmds/mutex.h>
 #include <bmds/rect.h>
 #include <bmds/result.h>
+#include <bmds/scanout.h>
 #include <bmds/semaphore.h>
 #include <bmds/span.h>
 #include <bmds/stream.h>
@@ -171,6 +172,10 @@ class SwapChain : public Stream {
 
                 /** @brief Returns the display's frames so far (the scan's: every surface's). */
                 static uint32_t frames();
+
+                /** @brief When the display's last frame began, and a frame's length (`Scanout::frameTime()`). */
+                using FrameTime = Scanout::FrameTime;
+                static FrameTime frameTime();
 
                 // Stream
                 SwapChain *swapChain() override { return this; }

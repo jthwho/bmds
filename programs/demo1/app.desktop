@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=BMDS Demo #1
+Comment=A demoscene-style show of the system: 2D and 3D effects, palette tricks, techno and speech
+Exec=demo1
+Categories=Game;
+X-BMDS-Id=demo1
+X-BMDS-Display=FullScreen

@@ -238,6 +238,15 @@ int32_t bmds_k_surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size
                         if (err == Error::Timeout) return -BMDS_EAGAIN;
                         return err.isOk() ? 0 : bmds::Process::errnoFor(err);
                 }
+                case BMDS_SURFACE_TIMING: { // devplan/sequencer.md §7, K1
+                        const SwapChain::FrameTime k = SwapChain::frameTime();
+                        bmds_surface_timing_t      t = {};
+                        t.size = sizeof(t);
+                        t.frames = k.frames;
+                        t.frame_ns = k.startUs * 1000;
+                        t.period_ns = k.periodUs * 1000;
+                        return bmds::detail::copyOut(t, static_cast<bmds_surface_timing_t *>(arg));
+                }
                 case BMDS_SURFACE_INFO: {
                         const SwapChain::Info      k = surface->info();
                         bmds_surface_info_t        i = {};

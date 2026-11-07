@@ -65,6 +65,8 @@ namespace {
 
                         void kick() override; // the control thread woken while not playing
 
+                        int64_t latencyNs() const override; // the service's, measured each period
+
                         Service              *service = nullptr;
                         MidiQueue             ring; // the router's lock pushes; the audio thread pops
                         std::atomic<uint32_t> dropped{0};
@@ -140,6 +142,12 @@ namespace {
                         std::atomic<uint32_t> _starts{0};
                         std::atomic<uint32_t> _late{0};
                         std::atomic<uint32_t> _peakVoices{0};
+                        std::atomic<int32_t>  _latencyUs{0}; // an event's time to its sound: the last period's
+
+                public:
+                        int64_t latencyNs() const;
+
+                private:
                         uint32_t              _lateBase = 0;              // the stream's count when this run began
                         String                _warmFont{MemSpace::Psram}; // the font last loaded early
                         uint32_t              _notice = 0;                // the load notification's id, replaced
@@ -155,6 +163,17 @@ namespace {
         void Port::kick() {
                 service->kicked();
                 return;
+        }
+
+        int64_t Port::latencyNs() const {
+                return service->latencyNs();
+        }
+
+        // Until a period has measured it (the synth idle): an estimate, three of the device's usual 5 ms
+        // periods (devplan/sequencer.md §7).
+        int64_t Service::latencyNs() const {
+                const int32_t us = _latencyUs.load(std::memory_order_relaxed);
+                return static_cast<int64_t>(us > 0 ? us : 15000) * 1000;
         }
 
         void watched(void *arg) {
@@ -176,6 +195,11 @@ namespace {
                 const int64_t periodNs = static_cast<int64_t>(p.frames) * 1000000000 / p.rateHz;
                 const int64_t windowStart = run.lastReturnNs != 0 ? run.lastReturnNs : now - periodNs;
                 run.lastReturnNs = now;
+                // An event at time T is placed at T − windowStart into this period, which is heard
+                // from p.playNs: its latency is p.playNs − windowStart.
+                if (p.playNs > windowStart)
+                        _latencyUs.store(static_cast<int32_t>((p.playNs - windowStart) / 1000),
+                                         std::memory_order_relaxed);
                 MidiEvent m;
                 bool      any = false;
                 while (port.ring.pop(m)) {

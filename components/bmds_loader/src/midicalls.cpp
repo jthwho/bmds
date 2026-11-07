@@ -135,6 +135,11 @@ int32_t bmds_k_midi_control(int32_t fd, uint32_t op, int32_t value) {
                         file->cancelScheduled();
                 return 0;
         }
+        if (op == BMDS_MIDI_LATENCY) { // devplan/sequencer.md §7, K2
+                if (value != 0) return -BMDS_EINVAL;
+                const int64_t us = file->latencyNs() / 1000;
+                return static_cast<int32_t>(us > INT32_MAX ? INT32_MAX : us < 0 ? 0 : us);
+        }
         if (value < 0 || value >= static_cast<int32_t>(MidiRouter::MaxPorts))
                 return op == BMDS_MIDI_CONNECT || op == BMDS_MIDI_DISCONNECT ? -BMDS_ENOENT : -BMDS_EINVAL;
         switch (op) {

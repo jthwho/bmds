@@ -360,6 +360,10 @@ Error MidiFile::emit(MidiEvent &e) {
         return Midi::router().deliver(_port, e);
 }
 
+int64_t MidiFile::latencyNs() const {
+        return Midi::router().latencyNs(_port, _owner || _asSource);
+}
+
 void MidiFile::noteHeld(const MidiEvent &e) {
         if (e.size < 3) return;
         const uint8_t    kind = e.data[0] & 0xf0;

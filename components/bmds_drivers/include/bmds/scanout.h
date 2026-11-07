@@ -198,6 +198,20 @@ class Scanout {
                 /** @brief Returns the counters. */
                 Stats stats() const;
 
+                /** @brief When a frame began (`devplan/sequencer.md` §7, K1). */
+                struct FrameTime {
+                                uint32_t frames = 0; ///< Frames begun (`Stats::frames`).
+                                int64_t startUs = 0; ///< When the last of them began (`esp_timer_get_time()`), 0: none.
+                                uint32_t periodUs = 0; ///< A frame's length, smoothed (0: not known yet).
+                };
+
+                /**
+                 * @brief Returns when the last frame began and how long frames are: what a program
+                 *        needs to know when a frame it presents will be seen.
+                 * @nonblocking From any task (the interrupt writes it under a sequence count).
+                 */
+                FrameTime frameTime() const;
+
                 /**
                  * @brief Holds the DMA (suspended at a burst's end) for @p us microseconds, so the
                  *        bridge runs dry: an underrun on purpose, to test the resync
@@ -266,6 +280,9 @@ class Scanout {
                 std::atomic<bool>      _stopping{false};
                 std::atomic<uint32_t>  _sent{0};   // blocks sent since the last restart
                 std::atomic<uint32_t>  _frames{0}; // frames begun
+                std::atomic<uint32_t>  _frameSeq{0};  // odd while the interrupt writes the frame's time
+                int64_t                _frameUs = 0;  // when frame _frames began (frameTime())
+                uint32_t               _periodQ4 = 0; // a frame's length in 16ths of a µs, smoothed
                 std::atomic<uint32_t>  _swaps{0};
                 std::atomic<uint32_t>  _stalls{0};
                 std::atomic<uint32_t>  _underruns{0};

@@ -203,4 +203,46 @@ thread, no locks on the drawing thread.
 
 ## 11. As built
 
-(Nothing yet.)
+### Step 1: K1, K2, the player, the sync queries, `beat` (2026-11-06)
+
+- **K1, frame times** (ABI, appended): a surface's `BMDS_SURFACE_TIMING` control (8) fills
+  `bmds_surface_timing_t` {size, frames, frame_ns, period_ns}: when the scanout last wrapped and its
+  smoothed period. Not in `bmds_surface_info_t` as planned: the info is a snapshot taken at open,
+  this is read each frame. The scanout's frame-wrap interrupt writes it under a sequence lock
+  (`Scanout::frameTime()`, the period smoothed by 1/8, gaps over twice the period ignored);
+  `Swapchain::frameTime()` hands it out. `bmds_game_frame_ns()` is `frame_ns + 2 × period`: a frame
+  drawn now is seen two scanouts on. On the board it reads 20.1-20.5 ms ahead in a window.
+- **K2, a port's latency** (ABI, appended): `midi_control(fd, BMDS_MIDI_LATENCY, 0)` (op 5),
+  microseconds. `MidiSink::latencyNs()` (0 by default: hardware and network ports),
+  `MidiRouter::latencyNs()` (the most of a source's connections, or the port's own sink),
+  `MidiFile::latencyNs()`. The synth services measure theirs each period: an event at T is placed
+  at T − (the period's window start), heard from the period's `playNs`, so the latency is
+  `playNs − windowStart`; before the first period, an estimate of 15 ms. Measured: 14.8-14.9 ms
+  on the FM synth.
+- **`libbmdsgame`: `bmds/seq.h`, `sdk/game/seq.c`** (440 lines): songs as C structs (patterns of
+  steps with controller lanes, tracks, sections with a tempo, transposition and a cue; swing; a
+  loop section). The timeline is each section's start and step length, worked out at open;
+  `bmds_seq_position()` is arithmetic on it (round the loop too), so it takes any moment with no
+  lock. The scheduler walks the steps in order, each track's pattern round, and emits a step's
+  controllers and notes after the note-offs due by then (a sorted array of 256): scheduled MIDI
+  must never go back in time on an fd. A note's off is a millisecond before its length, so the
+  next starts clean; an accent is velocity + 24; channel 10 isn't transposed. The player is a
+  `SCHED_FIFO` thread waking every 20 ms that sends what is heard before now + latency + lookahead
+  (80 ms, not the 60 planned: a wake can be late by a tick), each event `latency` early; at play,
+  each track's program, volume and pan; at stop, the fd's queue cancelled and notes and sound off
+  on the song's channels. The hits are a ring of 512 under a mutex. Not yet: one `write()` a wake
+  (it writes an event at a time), the player's stack in PSRAM, its cost measured.
+- **Latency is asked at open**, and the synth idle until notes arrive answers its estimate: right
+  for the FM synth (14.9 measured against 15), but a port whose real latency differs from the
+  estimate gets it only at the next open. Asking again while playing would move send times
+  backwards if it grew; left for step 2 (with live control), where a change can wait for a gap.
+- **Host tests** (`tests/host/seq.cpp`, through `seq_internal.h`: a sequencer with no port or
+  thread, the scheduler driven by hand): order and offs, transposition and lanes, the song's end;
+  scheduled in 20 ms pieces exactly as in one; swing and accents; position and hits round the
+  loop; bad songs refused.
+- **`sdk/examples/beat`:** a 128 BPM loop of four tracks (kick, clap, hats, a bass whose filter
+  opens through the bar) and a window drawn for the moment it is seen: the kick flashes the
+  background (`bmds_seq_last_hit()`, decaying), the clap lights the beat's box, the hats each
+  frame (`bmds_seq_hits()` since the last frame) lift their steps, and the position and both
+  latencies in text. Space stops and plays. Run on the board: in time by eye; the ear's check is
+  the user's.

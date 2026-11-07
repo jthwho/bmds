@@ -1,0 +1,11 @@
+# BMDS Demo #1 (programs/demo1, devplan/demo.md): a demoscene-style show of the system, as an
+# application folder.
+name = "demo1"
+version = "1"
+description = "BMDS Demo #1: a demoscene-style show of the system's graphics, sound and speech"
+title = "BMDS Demo #1"
+license = "MIT"
+source_tree = "programs/demo1"
+license_files = ["../../LICENSE"]
+# It draws every frame: started away from the display's core (BMDS_PROGRAM_DISPLAY).
+display = true

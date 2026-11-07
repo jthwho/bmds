@@ -183,4 +183,48 @@ The demo is built alongside the libraries, each step using what has just landed:
 
 ## 10. As built
 
-(Nothing yet.)
+### Step 1: the skeleton, copper and plasma (2026-11-06)
+
+- **`programs/demo1`:** `demo1.c` (the frame loop at 60, part switching, pause, the overlay),
+  `pal.c` (the show's palette: a part's base, crossfades between parts, flashes, cycling; entries
+  252-255 the overlay's; host-tested in `tests/host/demo1.cpp`), `demo.h` (the parts' interface, a
+  4,096-entry sine table), `parts/copper.c`, `parts/plasma.c`; `app.desktop` (full screen
+  suggested). **`dist/demo1`** builds `apps/demo1.app` (259 KB), checked with `bmds-dist build`.
+- **The picture:** 640×360 L8, `BMDS_GAME_REPAINTS` (every pixel repainted, nothing copied
+  forward). The loop draws on its ticks, so the show has an empty tick; its time is the clock's
+  (a stall over 0.1 s doesn't jump it). Keys: Space the next part, 1-9 a part, P pause, F the
+  overlay (frames a second, the time a frame and its drawing, each core's busy share from
+  `cpu.coreN.busy_us`), Escape. Raw keys for now; actions in `controls.conf` at the polish step.
+- **Part 1, copper bars and a sine scroller:** the bars are the copper way, all palette: every pair
+  of rows is its own entry, the picture of those rows is still (copied in by the 2D-DMA each frame,
+  `bmds_game_dma_copy`), and the sky and eight dark-bright-dark bars are 180 entries worked out
+  each frame. The message is drawn once into a strip in unscii at 4× (64 pixels high, sharp: the
+  look), and each column of the screen copies a column of it moved by a wave, its rows a band of
+  64 entries that cycles. The pointer across bends the wave; a click flashes white.
+- **Part 2, plasma:** three waves summed (across, a table a frame; down, a value a row; a turning
+  wave stepped along each row in fixed point) through a table to 252 colours, the palette turned
+  two steps a frame; one value for each pair of pixels, four pixels a 32-bit store.
+- **Measured on the board** (full screen, the overlay):
+
+  | | first build | now |
+  |---|---|---|
+  | copper | 19.6 ms drawing, 50 fps | 6.7 ms, 60 fps (core 0 35%) |
+  | plasma | 16.5 ms, 57 fps | 11.1 ms, 60 fps (core 0 69%) |
+
+  What it took: built as a display program (`BMDS_DISPLAY=1` for `bmds-cc`, `display = true` in the
+  recipe), or it shares the presenter's core (the first run: 25 ms, core 1 at 100%); musl's
+  `sinf` does its work in doubles, which this core does in software (a quarter of the copper's
+  time at 640 calls a frame), hence the table; the bars moved from ~300 KB of row fills into the
+  palette; the plasma's pairs and word stores.
+
+### Step 2: stars into letters (2026-11-06)
+
+- **Part 3, `parts/stars.c`:** 900 stars rush at the viewer as 3D points (depth-cued along a
+  32-entry ramp, fog 2-55); from 4 s to 8 s they slow and gather onto the letters BMDS, each star
+  given a place along the letters' edges (as many a unit of edge as there are stars to go); at
+  9.5 s they let go and rush on. The letters are outlines extruded by libbmds3d
+  (`bmds_3d_mesh_extrude()`, B's and D's holes extruded on their own, which in wire are the
+  letters' holes), drawn in wire, back faces culled, faded in through their own ramp's colours as
+  the stars arrive, and swinging (`0.8 sin`, always readable). Dragging turns them; a click
+  flashes. Points are 2 pixels while they draw the letters.
+- **Measured:** about 9 ms a frame, 60 fps full screen.

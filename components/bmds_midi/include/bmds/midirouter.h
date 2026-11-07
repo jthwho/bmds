@@ -53,6 +53,13 @@ class MidiSink {
                 /** @brief A tap's port was removed (under the router's lock). @nonblocking */
                 virtual void portGone() { return; }
 
+                /**
+                 * @brief Returns the nanoseconds from an event's time to its sound leaving the
+                 *        output, as far as this sink knows (0: unknown, or none: a device's own
+                 *        delay). @nonblocking (under the router's lock)
+                 */
+                virtual int64_t latencyNs() const { return 0; }
+
         protected:
                 constexpr MidiSink() = default;
                 ~MidiSink() = default;
@@ -209,6 +216,13 @@ class MidiRouter {
                  * @return `Ok`, `NotExist`, `Invalid` (it has no source).
                  */
                 Error send(uint8_t source, const MidiEvent &event);
+
+                /**
+                 * @brief Returns the latency (`MidiSink::latencyNs()`) of where events go: from
+                 *        port @p number's source (@p asSource: the most of the ports it is connected
+                 *        to), or to its destination. @nonblocking
+                 */
+                int64_t latencyNs(uint8_t number, bool asSource);
 
                 /**
                  * @brief An event to port @p destination's destination alone.
