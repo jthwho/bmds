@@ -228,3 +228,116 @@ The demo is built alongside the libraries, each step using what has just landed:
   the stars arrive, and swinging (`0.8 sin`, always readable). Dragging turns them; a click
   flashes. Points are 2 pixels while they draw the letters.
 - **Measured:** about 9 ms a frame, 60 fps full screen.
+
+### Step 3: the song, the sync, the cue timeline (2026-11-06)
+
+- **`song.c`:** the track as sequencer data, 140 BPM in A minor, Am-F-C-G a bar each, nine tracks:
+  kick, clap, hats (sixteenths under off-beat open ones), an acid bass following the chords (Synth
+  Bass 2, its filter on 74 opening and closing over four bars: heard once the synths take 74, K3),
+  a sawtooth arpeggio, a warm pad in three voices, a crash every eight bars. Seven sections, 72 bars:
+  intro 8, build 8 (the kick from quarters to sixteenths, a beat of silence), drop 16, break 8,
+  build 8, drop 16 (a busier bass, the pad back), outro 8, then round again: 2 minutes 3, not the
+  3½ of §4 (whose bar counts make 2 minutes; longer sections when the other parts exist). The
+  patterns are written out by code at the first call (the rules are shorter than the steps).
+  Host-tested: the song valid, its events in order, no note started over itself, its sections
+  where they should be round the loop (`tests/host/demo1.cpp`).
+- **The sync (`sync_t` in `demo.h`):** each frame, for the moment it is seen
+  (`bmds_game_frame_ns()`): where the song is, each of kick, clap, hats and bass as its last note's
+  loudness decaying (τ 0.15, 0.2, 0.06, 0.1 s), the notes since the last frame, a pulse falling
+  through each beat. Parts read it; none keeps the music's state.
+  - **Copper:** the kick lights the bars and the sky and widens the bars' swing, the clap lifts the
+    scroller's wave, each kick jolts the text's colours on.
+  - **Plasma:** the cue chooses the mood (deep blues and greens at the break), the kick turns the
+    palette faster, a clap flashes it.
+  - **Stars:** round eight bars of the music, not seconds: they gather over bars 3-4, hold, let go
+    at 6½; the letters stay, swinging, and fade over the last bar; the kick surges them, the clap
+    brightens the letters.
+- **The cue timeline:** each section entered chooses its part (intro copper, build plasma, drop
+  stars, break plasma, build copper, drop stars, outro copper); a part chosen by key holds until
+  the next section. M stops and starts the music, W switches FM and the wavetable (both from the
+  song's start until live control, sequencer step 2), `-n` none, `-W` the wavetable.
+- **FM by its name:** `/dev/midi` is whichever synth the user set (the wavetable on this board), so
+  the demo asks for the port named `fm` (the sequencer takes names now); the overlay's second line
+  says which, and where the song is.
+- **Internal RAM:** music and full screen didn't fit together at first: whichever started second
+  failed ("full screen: Out of memory" into a window, or "fm: real-time audio: Out of memory" and
+  silence). Program thread stacks take internal RAM first; with libbmds3d's helper at 12 KB, the
+  player at 8 KB and demo1's own at 20 KB (`stack =` in the recipe) both fit, with 18 KB to spare
+  (docs/platforms/esp32p4.md §4c). The music still starts a quarter second in, after full screen.
+- **A kernel panic found on the way:** with several full-screen instances started over each other
+  and killed (a test script's mistake), the scanout's interrupt read a freed surface: a switch
+  request left pending by a `show()` that timed out, or the probation fallback, still pointed at a
+  full-screen surface its program had freed. `Scanout::forget()` now drops both under a lock the
+  switches take, and refuses while the surface is the one sent; `ProgramSurface` calls it (showing
+  the desktop first if needed) before freeing, and keeps the surface rather than free it under the
+  scan. The same start-and-kill stress ran clean before and after the fix, so it isn't the original
+  sequence; the fix is from reading the code.
+- **Measured with music** (full screen, FM, the overlay): copper 58 fps (drawing 11.1 ms), plasma
+  54-60, the stars at the drop 55. The synth is a real-time thread that takes 19-25% of a core and
+  lands on either core (above); when it lands on core 0 it takes its time from the drawing.
+- **The synths placed** (the user's choice): their real-time threads on core 1, the mixer on core
+  0 (it too landed by chance). The wavetable then costs plasma almost nothing (57-58 fps), FM more
+  than before (41-45: the presenter misses frames with core 1 at 62-64%, not yet explained; on core
+  0, 49-52). Table in docs/platforms/esp32p4.md §4c.
+
+### Step 4 (part): four more parts, the hook, a longer song (2026-11-06)
+
+The user's ask: more scenes, 2D and 3D, and a catchy melody. Built ahead of their libraries' steps
+where the SDK already had what they need (textures, step 6, not needed yet: the tunnel is a table).
+
+- **Tunnel (`parts/tunnel.c`, 2D):** a half-size table (448×252 cells, 16 bits each: u round, v
+  along; the shade a 256-entry table of v), larger than the screen so the window onto it swings
+  the far end about (the pointer steers it); a 256×64 texture of 32 values (XOR bricks, dark
+  mortar) in seven palette rows near to far, each row cycled. The kick pushes the flight and turns
+  the colours, the clap twists. 2×2 pixels, two cells a pair of word stores.
+- **Fire (`parts/fire.c`, 2D and wire):** a half-size heat field, each cell the average of the
+  four below less a cooling read from a moving noise table (flicker), fed at the bottom (hotter on
+  the kick); libbmds3d draws a wire icosahedron, then the torus knot, *into the heat field* at its
+  hottest (the field is a canvas), so the shape burns. A click throws a fireball. Two heat fields, each
+  frame's made from the last's; rows with nothing below stay empty without being worked out.
+- **Vector balls (`parts/balls.c`, 3D):** 216 balls easing between a cube of 6³, a sphere, a torus,
+  a double helix and a rippling sheet every two bars; `bmds_3d_project()` and
+  `bmds_3d_sort_depth()` (from last frame's order: insertion sort, nearly sorted), sprites in 16
+  sizes drawn a span a row, four colour ramps; a checkered floor stepped across in fixed point,
+  four pixels a store, and a sky the 2D-DMA copies. A click blows them apart.
+- **Solids (`parts/solids.c`, 3D):** a Gouraud torus knot (64×5: 640 triangles) pumping on the
+  kick, its colour going round the wheel a bar at a time; four flat polyhedra orbiting, spun up on
+  each eight-bar phrase or a click; a wire floor (6×6); the light from the pointer, the clap
+  lifting the ambient.
+- **The hook (`song.c`):** an eight-bar melody over the chords in 3-3-2 (dotted eighths, an eighth),
+  its second half answering and climbing to C6, ending on A held over G; a square lead (GM 80) in
+  the drops and the finale, a vibraphone (GM 11) an octave up from the break on. Eleven tracks,
+  nine sections, 88 bars (2 minutes 31): intro (copper), build (plasma), drop (stars), groove
+  (tunnel), break (fire), build (balls), drop (solids), finale (stars), outro (copper). The host
+  test counts the hook five times and the vibraphone six.
+- **Measured** (full screen, the overlay, drawing / frames a second):
+
+  | | no music | music, intro | music, its own section (FM; the wavetable the same) |
+  |---|---|---|---|
+  | tunnel | 10.3 ms / 60 | 14.2 / 58 | 13.0 / 41 |
+  | fire | | 17.3 / 52 | 14.2 / 40 |
+  | balls | | | 14.6 / 43-45 |
+  | solids | | 17.3 / 53 | 19.1-19.5 / 37-38 |
+
+  Profiled (`prof`, `addr2line` on a `-g` build of the same code), then: the tunnel's lookups,
+  the fire's two passes, the balls' per-pixel tests and sky `memset`, the solids' floor lines (as
+  much as half the knot). Fixed what was cheap (16-bit table, the 16 KB texture, spans, DMA sky,
+  word stores, a lighter knot and floor); worth 1-3 ms each.
+- **What holds them at 40: the synth beside the presenter, not the parts.** Without music the
+  tunnel draws in 10.3 ms and runs at 60; with it, ~40. Measured after (docs/platforms/esp32p4.md
+  §4c has the numbers): the PPA's CLUT needs ~9 ms of each frame at 1280×360 (its own rate); the
+  synth's real-time thread preempts the presenter between PPA jobs and the PPA idles, so the
+  conversion takes 13.5-15.5 ms instead of 10.5 and misses vsync on every other frame. Tried: the
+  presenter above the synth (60 fps, but the synth missed its periods: silence), rows fetched by
+  the 2D-DMA (less CPU, the same wall time), internal RAM's uncached address (PIE faults there), the
+  synth on core 0 (the new parts +5-9 fps, plasma -8), the parts' rows on both cores (nothing:
+  memory-bound). Kept: the PPA bench cases, the parts' row loops as functions, the fire's two
+  fields. The synths stay on core 1 (the user's choice). What is left is the synth's own cost
+  (35-40% of a core, mostly memory stalls): the next step, with an internal-RAM budget.
+- **FM's waveforms in internal RAM (2026-11-07, the user's choice: 16 KB while FM plays):** eight
+  2 KB blocks copied at open, given back at close (5 s after the last note); any without room read
+  from flash, said in the log, host-tested (the same samples either way). To make room, a display
+  program's stacks keep 128 KB more of internal RAM free (the loader), so demo1's go to PSRAM.
+  Result: 35 KB of internal RAM free during the show (lowest 32 KB, from 5.6); but FM still takes
+  42% of core 1 in drop B, so the flash reads weren't its cost; frame rates within noise (plasma
+  57, stars 55, tunnel 44, fire 40, balls 45, solids 40). Next: FM's voice loop profiled per voice.

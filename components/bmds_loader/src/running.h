@@ -206,6 +206,7 @@ struct Running final : ProcessOwner, ProcessControl {
                 size_t               imageBytes = 0;    // its size (the profiler's modules)
                 ImageWindow::Mapping mapping;           // its shared pages, if mapped (§14.2)
                 const ProgramEntry  *builtin = nullptr; // a program built in (/bin/NAME): no image
+                bool                 display = false;   // BMDS_PROGRAM_DISPLAY: drawing to the screen continuously
                 void                *data = nullptr;    // the builtin's (Context::data)
                 uintptr_t            entry = 0;         // the program's _start
                 ProgramThread        main;              // the first thread

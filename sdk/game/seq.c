@@ -15,6 +15,7 @@
 
 #include <pthread.h>
 #include <sched.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "seq_internal.h"
@@ -26,6 +27,8 @@
 #define MAX_OFFS 256u /* notes sounding at once, their offs pending */
 #define HITS 512u     /* the ring of notes heard */
 #define WAKE_NS 20000000ll
+#define BATCH 32u                          /* events a write */
+#define PLAYER_STACK BMDS_THREAD_STACK_MIN /* 3 KB used on the board (2026-11-06): the least there is */
 #define DEFAULT_LOOKAHEAD_MS 80u
 #define DEFAULT_LATENCY_US 15000
 #define GAP_NS 1000000ll /* a note ends this much before its length, so the next can start clean */
@@ -58,6 +61,8 @@ struct bmds_seq_t {
                 uint32_t      off_count;
                 /* The port and the thread. */
                 int32_t   fd;
+                bmds_midi_event_t out[BATCH]; /* a wake's events, written together */
+                uint32_t          out_count;
                 pthread_t thread;
                 int       thread_running;
                 int       stop; /* LOAD/STORE */
@@ -313,19 +318,40 @@ int bmds_seq_last_hit(bmds_seq_t *q, int64_t time_ns, uint32_t track, bmds_seq_h
 
 /* ---- The player ------------------------------------------------------------------------------- */
 
-/* An event to the port, sent its latency ahead of when it is heard; a full queue waited out. */
-static void send_event(void *arg, int64_t heard_ns, const uint8_t *bytes, uint32_t length) {
-        bmds_seq_t       *q = (bmds_seq_t *)arg;
-        bmds_midi_event_t e;
-        memset(&e, 0, sizeof(e));
-        e.time_ns = heard_ns - q->latency_ns;
-        e.length = (uint8_t)length;
-        memcpy(e.data, bytes, length);
-        for (;;) {
-                const int32_t r = bmds_write(q->fd, &e, sizeof(e));
-                if (r != -BMDS_EAGAIN || LOAD(q->stop)) return;
-                (void)bmds_sleep(5000000);
+/* The events gathered, to the port in as few writes as it takes; a full queue waited out. */
+static void flush(bmds_seq_t *q) {
+        uint32_t done = 0;
+        while (done < q->out_count) {
+                const int32_t r = bmds_write(q->fd, q->out + done, (q->out_count - done) * sizeof(bmds_midi_event_t));
+                if (r > 0) {
+                        done += (uint32_t)r / sizeof(bmds_midi_event_t);
+                } else if (r == -BMDS_EAGAIN && !LOAD(q->stop)) {
+                        (void)bmds_sleep(5000000);
+                } else {
+                        break; /* a port gone: what is left is dropped */
+                }
         }
+        q->out_count = 0;
+        return;
+}
+
+/* An event for the port, sent its latency ahead of when it is heard (gathered; flush() writes). */
+static void queue_event(void *arg, int64_t heard_ns, const uint8_t *bytes, uint32_t length) {
+        bmds_seq_t *q = (bmds_seq_t *)arg;
+        if (q->out_count == BATCH) flush(q);
+        bmds_midi_event_t *e = &q->out[q->out_count++];
+        memset(e, 0, sizeof(*e));
+        e->time_ns = heard_ns - q->latency_ns;
+        e->length = (uint8_t)length;
+        memcpy(e->data, bytes, length);
+        return;
+}
+
+/* An event now. */
+static void send_event(void *arg, int64_t heard_ns, const uint8_t *bytes, uint32_t length) {
+        queue_event(arg, heard_ns, bytes, length);
+        flush((bmds_seq_t *)arg);
+        return;
 }
 
 static void *player(void *arg) {
@@ -333,10 +359,29 @@ static void *player(void *arg) {
         struct sched_param rt = {.sched_priority = 40};
         (void)pthread_setschedparam(pthread_self(), SCHED_FIFO, &rt);
         while (!LOAD(q->stop) && !q->ended) {
-                bmds_seq_schedule(q, now_ns() + q->latency_ns + q->lookahead_ns, send_event, q);
+                bmds_seq_schedule(q, now_ns() + q->latency_ns + q->lookahead_ns, queue_event, q);
+                flush(q);
                 (void)bmds_sleep(WAKE_NS);
         }
         return NULL;
+}
+
+/* A port by its file, or by its name (each /dev/midiN asked). */
+static int32_t open_port(const char *port) {
+        if (port == NULL) port = "/dev/midi";
+        if (port[0] == '/') return bmds_open(port, BMDS_O_WRITE);
+        for (uint32_t n = 0; n < 16; ++n) {
+                char path[16];
+                snprintf(path, sizeof(path), "/dev/midi%u", (unsigned)n);
+                const int32_t fd = bmds_open(path, BMDS_O_WRITE);
+                if (fd < 0) continue;
+                bmds_midi_status_t st;
+                memset(&st, 0, sizeof(st));
+                st.size = sizeof(st);
+                if (bmds_midi_status(fd, &st) == 0 && strncmp(st.name, port, sizeof(st.name)) == 0) return fd;
+                bmds_close(fd);
+        }
+        return -BMDS_ENOENT;
 }
 
 int bmds_seq_open(const bmds_seq_config_t *config, const bmds_seq_song_t *song, bmds_seq_t **out) {
@@ -344,8 +389,7 @@ int bmds_seq_open(const bmds_seq_config_t *config, const bmds_seq_song_t *song, 
         bmds_seq_t *q = NULL;
         int         e = bmds_seq_make(song, &q);
         if (e < 0) return e;
-        const char *port = config != NULL && config->port != NULL ? config->port : "/dev/midi";
-        q->fd = bmds_open(port, BMDS_O_WRITE);
+        q->fd = open_port(config != NULL ? config->port : NULL);
         if (q->fd < 0) {
                 e = q->fd;
                 q->fd = -1;
@@ -405,7 +449,14 @@ int bmds_seq_play(bmds_seq_t *q, int64_t start_ns) {
         }
         bmds_seq_start_at(q, start_ns != 0 ? start_ns : now_ns() + q->latency_ns + q->lookahead_ns, q->latency_ns);
         STORE(q->stop, 0);
-        if (pthread_create(&q->thread, NULL, player, q) != 0) {
+        /* A small stack: a thread's default (32 KB) goes in internal RAM while there is room, which
+         * full screen and the synths need too (devplan/sequencer.md §11). */
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, PLAYER_STACK);
+        const int made = pthread_create(&q->thread, &attr, player, q);
+        pthread_attr_destroy(&attr);
+        if (made != 0) {
                 q->playing = 0;
                 return -BMDS_ENOMEM;
         }

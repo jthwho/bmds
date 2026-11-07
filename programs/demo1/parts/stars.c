@@ -9,7 +9,9 @@
  * the letters become a wireframe that spins while the stars let go and rush on. The letters are
  * outlines extruded by libbmds3d (bmds_3d_mesh_extrude(); B's and D's holes extruded on their own:
  * in wire they are the letters' holes), shaded by distance along palette ramps; the stars are 3D
- * points. Dragging turns the letters; a click flashes.
+ * points. In time with the music (sync_t), round eight bars: the stars gather over bars 3 and 4,
+ * hold, and let go at 6½; the kick surges them on, the clap brightens the letters. Dragging turns
+ * the letters; a click flashes.
  */
 
 #include <stdlib.h>
@@ -23,9 +25,10 @@
 #define RAMP_STARS 1
 #define RAMP_LOGO (RAMP_STARS + RAMP)
 #define PIECES 7
-#define GATHER_START 4.0f /* seconds into the part */
-#define GATHER_END 8.0f
-#define LET_GO 9.5f
+#define ROUND 8.0f        /* bars: the part's round */
+#define GATHER_START 2.0f /* bars into the round */
+#define GATHER_END 4.0f
+#define LET_GO 6.5f
 
 /* The letters' outlines in their own units (7 high), y up; holes as pieces of their own. */
 static const float b_outer[] = {0, 0, 4, 0, 5, 1, 5, 2.6f, 4.4f, 3.5f, 5, 4.4f, 5, 6, 4, 7, 0, 7};
@@ -146,16 +149,22 @@ static void frame(demo_t *demo, bmds_canvas_t *c, float t, float dt) {
         bmds_3d_set_target(ctx, c);
         bmds_3d_begin(ctx);
 
-        /* The stars rush (slower while they gather). */
-        const float gather = ease(t, GATHER_START, GATHER_END) * (1.0f - ease(t, LET_GO, LET_GO + 1.0f));
-        const float speed = 25.0f * (1.0f - 0.85f * gather);
+        /* Where in the round of bars: the music's place, or the part's time at 140 BPM without it. */
+        const sync_t *y = &demo->sync;
+        float         bars = y->known ? (float)y->pos.bar + y->pos.bar_phase : t / y->bar_seconds;
+        bars -= ROUND * (float)(int32_t)(bars / ROUND);
+        const float letting = ease(bars, LET_GO, LET_GO + 1.0f);
+
+        /* The stars rush (slower while they gather, surging on the kick). */
+        const float gather = ease(bars, GATHER_START, GATHER_END) * (1.0f - letting);
+        const float speed = 25.0f * (1.0f - 0.85f * gather) * (1.0f + 1.5f * y->kick);
         for (int i = 0; i < STARS; ++i) {
                 float *p = s.stars + 3 * i;
                 p[2] += speed * dt;
                 if (p[2] > -1.0f) new_star(p, 1);
         }
         /* The letters' turn: swinging once they are there (always readable), plus the pointer's. */
-        const float spin = t > GATHER_END ? 0.8f * dsin((t - GATHER_END) * 0.9f) : 0.0f;
+        const float spin = bars > GATHER_END ? 0.8f * dsin((bars - GATHER_END) * y->bar_seconds * 0.9f) : 0.0f;
         bmds_mat4_t model, turn, place;
         bmds_mat4_rotation_y(&model, spin + s.yaw);
         bmds_mat4_rotation_x(&turn, 0.25f * dsin(t * 0.7f) + s.pitch);
@@ -186,15 +195,16 @@ static void frame(demo_t *demo, bmds_canvas_t *c, float t, float dt) {
         m.flags = BMDS_3D_DEPTH_CUE;
         m.ramp_first = RAMP_STARS;
         m.ramp_count = RAMP;
-        m.point_size = gather > 0.3f ? 2 : 1; /* bigger while they draw the letters */
+        m.point_size = gather > 0.3f || y->kick > 0.7f ? 2 : 1; /* bigger drawing the letters, and on a kick */
         (void)bmds_3d_points(ctx, s.shown, STARS, &m);
         m.point_size = 0;
 
         /* The letters in wire, faded in as the stars arrive (their ramp's colours scaled). */
-        const float show = ease(t, GATHER_END - 1.0f, GATHER_END + 0.5f);
+        const float show = ease(bars, GATHER_END - 0.6f, GATHER_END + 0.3f) * (1.0f - ease(bars, 7.0f, 7.9f));
         if (show > 0.0f) {
-                uint32_t ramp[RAMP];
-                bmds_palette_mix_rgb(ramp, s.logo, RAMP, 0x000000, (uint32_t)(256.0f * (1.0f - show)));
+                uint32_t    ramp[RAMP];
+                const float lit = show * (0.7f + 0.3f * y->clap);
+                bmds_palette_mix_rgb(ramp, s.logo, RAMP, 0x000000, (uint32_t)(256.0f * (1.0f - lit)));
                 pal_set_entries(&demo->pal, RAMP_LOGO, RAMP, ramp);
                 bmds_3d_load(ctx, &model);
                 bmds_3d_set_fog(ctx, 6.0f, 13.0f);

@@ -177,7 +177,7 @@ struct FmSynth::State {
                 float    outScale = 0;
                 uint32_t rateHz = 48000;
                 Channel  channels[MidiChannels];
-                const int16_t *waves = &FmTables::Waves.level[0][0]; // the eight waveforms' periods
+                const int16_t *waves[8] = {}; // the eight waveforms' periods: open()'s copies, or flash's
                 int32_t  mix[BlockFrames * 2];
                 int32_t  sum[BlockFrames];        // a channel's voices
                 uint8_t  order[SynthEngine::MaxVoices]; // the sounding voices by channel, a block's
@@ -474,7 +474,7 @@ namespace {
                 op = State::Op();
                 op.flags = o.character & 0xf0;
                 op.mult2 = Mult2[o.character & 0x0f];
-                op.wave = s.waves + (o.waveform & 0x07) * FmTables::WavePeriod;
+                op.wave = s.waves[o.waveform & 0x07];
                 const unsigned sl = o.sustainRelease >> 4;
                 op.sustainLevel = uint8_t(sl == 15 ? 31 : sl);
                 op.stage = Attack;
@@ -872,6 +872,19 @@ Error FmSynth::open(const Op2Bank &bank, const Config &config) {
         State &s = *_state;
         s.voiceCount = c.maxVoices;
         s.voices = reinterpret_cast<State::Voice *>(static_cast<uint8_t *>(mem) + sizeof(State));
+        // The waveforms (8 × 2 KB) in internal RAM while playing, each from flash only without room
+        // for it: read from flash they go through the caches a drawing program's PSRAM traffic
+        // churns, and rendering stalled on them (FM took 35-40% of a core beside BMDS Demo #1,
+        // devplan/demo.md §10). A block each, so a fragmented heap still takes them. Given back by
+        // close(): the service closes the synth after 5 s of quiet.
+        for (unsigned w = 0; w < 8; ++w) {
+                auto *copy =
+                        static_cast<int16_t *>(Memory::alloc(MemSpace::Internal, sizeof(FmTables::Waves.level[w])));
+                if (copy != nullptr) std::memcpy(copy, FmTables::Waves.level[w], sizeof(FmTables::Waves.level[w]));
+                _waves[w] = copy;
+                s.waves[w] = copy != nullptr ? copy : FmTables::Waves.level[w];
+        }
+
         for (size_t i = 0; i < s.voiceCount; ++i) ::new (&s.voices[i]) State::Voice();
         s.rateHz = c.rateHz;
         s.incScale = 4294967296.0f / float(c.rateHz);
@@ -896,12 +909,22 @@ Error FmSynth::open(const Op2Bank &bank, const Config &config) {
         return Error::Ok;
 }
 
+size_t FmSynth::wavesInFlash() const {
+        size_t n = 0;
+        for (const int16_t *w : _waves) n += w == nullptr;
+        return isOpen() ? n : 0;
+}
+
 void FmSynth::close() {
         if (_state != nullptr) {
                 _state->~State();
                 Memory::free(_state);
         }
         _state = nullptr;
+        for (int16_t *&w : _waves) {
+                Memory::free(w);
+                w = nullptr;
+        }
         _bank = nullptr;
         Memory::free(_events);
         _events = nullptr;

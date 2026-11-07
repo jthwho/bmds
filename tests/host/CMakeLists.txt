@@ -118,6 +118,7 @@ add_executable(bmds_host_tests
         seq.cpp
         ${BMDS_ROOT}/sdk/game/seq.c
         ${BMDS_ROOT}/programs/demo1/pal.c
+        ${BMDS_ROOT}/programs/demo1/song.c
         blocks.cpp
         ${BMDS_ROOT}/programs/blocks/rules.c
         solitaire.cpp

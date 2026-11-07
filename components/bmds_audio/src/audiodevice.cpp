@@ -430,6 +430,10 @@ Error AudioDevice::startLocked(uint32_t rateHz, uint32_t periodFrames) {
                 tc.name = "audio";
                 tc.stackBytes = 4096;
                 tc.priority = CONFIG_BMDS_AUDIO_PRIORITY;
+                // Off the display's core, where the synths' real-time threads and the presenters
+                // are: left to chance (its first float pins it), it joined them there and the
+                // presenter missed frames (devplan/demo.md §10, 2026-11-06).
+                tc.core = 0;
                 const Error err = _task.start(tc, taskEntry, this);
                 if (err.isError()) return err;
         }

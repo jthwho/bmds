@@ -10,7 +10,9 @@
  * each frame), and the bars and the sky are those entries' colours, worked out each frame. The
  * message is drawn once into a strip in unscii at four times its size; each frame each column of
  * the screen copies a column of the strip moved up or down by a wave, its rows coloured by a band
- * of the palette that cycles. The pointer across bends the wave; a click flashes the palette.
+ * of the palette that cycles. On the beat (sync_t): the kick brightens the bars and the sky and
+ * widens the bars' swing, the clap lifts the wave, each kick jolts the text's colours on. The
+ * pointer across bends the wave; a click flashes the palette.
  */
 
 #include <stdlib.h>
@@ -42,6 +44,7 @@ static struct {
                 uint32_t          sky[ROWS];
                 uint32_t          bars[BARS][BAR_ROWS];
                 uint32_t          row_rgb[ROWS]; /* this frame's */
+                uint32_t          lit[BAR_ROWS]; /* a bar this frame, the kick's light in it */
                 float             scroll;
 } s;
 
@@ -94,13 +97,17 @@ static void frame(demo_t *demo, bmds_canvas_t *c, float t, float dt) {
         const bmds_rect_t whole = {0, 0, DEMO_WIDTH, DEMO_HEIGHT};
         bmds_game_dma_copy(demo->game, 0, &whole, 1);
 
-        /* The bars, back to front, as the rows' colours over the sky. */
-        memcpy(s.row_rgb, s.sky, sizeof(s.sky));
+        /* The bars, back to front, as the rows' colours over the sky (the kick lights both). */
+        const sync_t  *y = &demo->sync;
+        const uint32_t light = (uint32_t)(110.0f * y->kick);
+        bmds_palette_mix_rgb(s.row_rgb, s.sky, ROWS, 0x4030a0, light);
+        const float swing = 55.0f + 25.0f * y->kick;
         for (int b = 0; b < BARS; ++b) {
                 const float   phase = t * 1.3f + (float)b * 0.55f;
-                const int32_t top = (int32_t)(ROWS / 2 - BAR_ROWS / 2 + 65.0f * dsin(phase) * dcos(t * 0.37f));
+                const int32_t top = (int32_t)(ROWS / 2 - BAR_ROWS / 2 + swing * dsin(phase) * dcos(t * 0.37f));
+                bmds_palette_mix_rgb(s.lit, s.bars[b], BAR_ROWS, 0xffffff, light);
                 for (int32_t r = 0; r < BAR_ROWS; ++r)
-                        if (top + r >= 0 && top + r < ROWS) s.row_rgb[top + r] = s.bars[b][r];
+                        if (top + r >= 0 && top + r < ROWS) s.row_rgb[top + r] = s.lit[r];
         }
         pal_set_entries(&demo->pal, ROW_FIRST, ROWS, s.row_rgb);
 
@@ -109,18 +116,19 @@ static void frame(demo_t *demo, bmds_canvas_t *c, float t, float dt) {
         if (s.scroll >= (float)s.width) s.scroll -= (float)(s.width + DEMO_WIDTH);
         const float   bend = demo->pointer_x >= 0 ? 0.004f + 0.02f * (float)demo->pointer_x / DEMO_WIDTH : 0.012f;
         const int32_t base = DEMO_HEIGHT / 2 - STRIP_HEIGHT / 2;
+        const float   height = 62.0f + 28.0f * y->clap; /* at most 90: the strip stays on the screen */
         uint8_t      *px = c->pixels;
         for (int32_t x = 0; x < DEMO_WIDTH; ++x) {
                 const int32_t u = x + (int32_t)s.scroll;
                 if (u < 0 || u >= s.width) continue;
-                const int32_t  y0 = base + (int32_t)(70.0f * dsin((float)x * bend + t * 2.4f));
+                const int32_t  y0 = base + (int32_t)(height * dsin((float)x * bend + t * 2.4f));
                 const uint8_t *col = s.strip + u;
                 uint8_t       *out = px + (size_t)y0 * c->stride + x;
                 for (int32_t r = 0; r < STRIP_HEIGHT; ++r, col += s.width, out += c->stride)
                         if (*col != 0) *out = (uint8_t)(TEXT_FIRST + r);
         }
         /* The text's band cycles. */
-        pal_rotate(&demo->pal, TEXT_FIRST, TEXT_COUNT, 1);
+        pal_rotate(&demo->pal, TEXT_FIRST, TEXT_COUNT, 1 + 6 * (int32_t)y->kicks);
         bmds_canvas_damage_all(c);
         return;
 }

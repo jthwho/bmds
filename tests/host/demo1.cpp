@@ -6,15 +6,18 @@
  * See LICENSE file in the project root folder for license information.
  *
  * BMDS Demo #1's palette (programs/demo1/pal.c, devplan/demo.md §7): crossfades between parts,
- * flashes over them, cycling, and the overlay's entries kept.
+ * flashes over them, cycling, and the overlay's entries kept; its song (song.c) valid and in order.
  */
 
 #include <doctest.h>
 
+#include <string>
 #include <vector>
 
 extern "C" {
 #include "../../programs/demo1/pal.h"
+#include "../../programs/demo1/song.h"
+#include "../../sdk/game/seq_internal.h"
 }
 
 TEST_CASE("demo1: the palette fades, flashes and cycles, the overlay's entries kept") {
@@ -72,4 +75,55 @@ TEST_CASE("demo1: the palette fades, flashes and cycles, the overlay's entries k
         REQUIRE(shown != nullptr);
         CHECK(shown[PAL_PARTS - 1] == 7);
         CHECK(shown[PAL_ACCENT] == 0x40e0ff);
+}
+
+TEST_CASE("demo1: the song is a valid song, 88 bars at 140, its events in order") {
+        const bmds_seq_song_t *song = song_get();
+        REQUIRE(song == song_get()); // made once
+        bmds_seq_t *q = nullptr;
+        REQUIRE(bmds_seq_make(song, &q) == 0);
+        bmds_seq_start_at(q, 0, 0);
+        struct Seen {
+                        int64_t last = 0;
+                        int     events = 0, ons = 0, out_of_order = 0;
+                        int     sounding[16][128] = {};
+                        int     doubled = 0; // a note on while the same note sounds on its channel
+                        int     hook = 0, bells = 0; // the melody's notes, and the vibraphone's
+        } seen;
+        const int64_t bar = 16 * 107142857ll; // sixteen steps, each rounded to the ns as the sequencer does
+        bmds_seq_schedule(
+                q, 88 * bar,
+                [](void *arg, int64_t ns, const uint8_t *b, uint32_t) {
+                        Seen *x = static_cast<Seen *>(arg);
+                        if (ns < x->last) ++x->out_of_order;
+                        x->last = ns;
+                        ++x->events;
+                        const int ch = b[0] & 15;
+                        if ((b[0] & 0xf0) == 0x90) {
+                                if (x->sounding[ch][b[1]] != 0 && ch != 9) ++x->doubled;
+                                ++x->sounding[ch][b[1]];
+                                ++x->ons;
+                                x->hook += ch == 3;
+                                x->bells += ch == 4;
+                        }
+                        if ((b[0] & 0xf0) == 0x80) --x->sounding[ch][b[1]];
+                },
+                &seen);
+        CHECK(seen.out_of_order == 0);
+        CHECK(seen.doubled == 0);
+        CHECK(seen.ons > 2000);
+        CHECK(seen.hook == 5 * 42); // drops A and B (16 bars each), the finale (8): the hook five times
+        CHECK(seen.bells == 6 * 42); // the break, the build, drop B, the finale, the outro
+        bmds_seq_position_t pos{};
+        pos.size = sizeof(pos);
+        REQUIRE(bmds_seq_position(q, 88 * bar - 1, &pos) == 0);
+        CHECK(pos.section == SONG_OUTRO);
+        CHECK(pos.loops == 0);
+        REQUIRE(bmds_seq_position(q, 88 * bar + 1, &pos) == 0);
+        CHECK(pos.section == SONG_INTRO);
+        CHECK(pos.loops == 1);
+        REQUIRE(bmds_seq_position(q, 16 * bar, &pos) == 0);
+        CHECK(std::string(pos.cue) == "drop");
+        bmds_seq_close(q);
+        return;
 }

@@ -15,19 +15,32 @@
 #include <stdint.h>
 #include <bmds/3d.h>
 #include <bmds/game.h>
+#include <bmds/seq.h>
 #include "pal.h"
+#include "song.h"
 
 #define DEMO_WIDTH 640
 #define DEMO_HEIGHT 360
 
 typedef struct demo_t demo_t;
 
+/** @brief The music at the moment a frame is seen (demo1.c fills it each frame; parts read it). */
+typedef struct {
+                int                 known; /* the song is playing and heard: the rest is valid */
+                bmds_seq_position_t pos;
+                float               kick, clap, hat, bass; /* each one's last note, its loudness decaying (0..1) */
+                uint32_t            kicks, claps, hats;    /* notes heard since the last frame */
+                float               pulse;                 /* 1 on the beat, falling to 0 at the next */
+                float               bar_seconds;           /* a bar's length (at 140 BPM when not known) */
+} sync_t;
+
 /** @brief A part of the show. */
 typedef struct {
                 const char *name;
                 /** @brief Once, before the show: tables, pictures. @return 0 or a negative error. */
                 int (*init)(demo_t *demo);
-                /** @brief On becoming the part shown: its palette (pal_set_base()), its time from 0. */
+                /** @brief On becoming the part shown: its palette (pal_set_base()), its time from 0 (the sync is
+                 *         the frame's: a section's cue may choose a mood). */
                 void (*enter)(demo_t *demo);
                 /** @brief Draws the whole frame at @p t seconds into the part (@p dt since the last). */
                 void (*frame)(demo_t *demo, bmds_canvas_t *canvas, float t, float dt);
@@ -41,6 +54,7 @@ struct demo_t {
                 pal_t        pal;
                 int32_t      pointer_x, pointer_y; /* the picture's pixels; -1: none */
                 int          button;               /* the left button held */
+                sync_t       sync;
 };
 
 /** @brief Entries in the sine table: a turn. */
@@ -67,5 +81,9 @@ static inline float dcos(float a) {
 extern const part_t part_copper;
 extern const part_t part_plasma;
 extern const part_t part_stars;
+extern const part_t part_tunnel;
+extern const part_t part_fire;
+extern const part_t part_balls;
+extern const part_t part_solids;
 
 #endif // DEMO1_DEMO_H

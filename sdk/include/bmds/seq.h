@@ -100,7 +100,8 @@ typedef struct bmds_seq_t bmds_seq_t;
 /** @brief bmds_seq_open()'s settings. */
 typedef struct bmds_seq_config_t {
                 uint32_t    size;         /**< `sizeof(bmds_seq_config_t)`. */
-                const char *port;         /**< A MIDI port's file (NULL: "/dev/midi", the system synth). */
+                const char *port;         /**< A MIDI port's file ("/dev/midi3"), or a port's name ("wavetable"); NULL:
+                                     "/dev/midi", the system synth. */
                 uint32_t    lookahead_ms; /**< Events written this far ahead of when they are sent (0: 80). */
                 int32_t     latency_us;   /**< The output's latency; -1: asked of the port (`BMDS_MIDI_LATENCY`). */
 } bmds_seq_config_t;

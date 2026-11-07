@@ -708,10 +708,7 @@ Error ProgramSurface::enterFullScreen(const VideoTiming &mode, bool own) {
                         Mutex::Locker locker(_lock, WaitForever);
                         _fullScreen = false;
                 }
-                if (d->scanout().surface() == _fs) (void)d->showDesktop(SwitchTimeoutMs);
-                _fs->~Surface();
-                Memory::free(_fs);
-                _fs = nullptr;
+                freeFullScreen(d);
                 Memory::free(_strip);
                 Memory::free(_triple);
                 _triple = nullptr;
@@ -751,6 +748,24 @@ void ProgramSurface::stopPpa() {
         return;
 }
 
+// The full-screen surface freed once the scanout holds nothing of it: the desktop shown first if
+// it is the one sent. If the scan can't be moved off it, it is kept (and logged): a surface freed
+// under the scanout is read by its interrupt (a panic, 2026-11-06).
+void ProgramSurface::freeFullScreen(Display *d) {
+        if (d != nullptr && d->scanout().forget(*_fs).isError()) {
+                (void)d->showDesktop(SwitchTimeoutMs);
+                if (d->scanout().forget(*_fs).isError()) {
+                        bmdsWarn("ProgramSurface: the scan stays on a full-screen surface: kept, not freed");
+                        _fs = nullptr;
+                        return;
+                }
+        }
+        _fs->~Surface();
+        Memory::free(_fs);
+        _fs = nullptr;
+        return;
+}
+
 void ProgramSurface::leaveFullScreen() {
         bmdsInfo("ProgramSurface: leaving full screen");
         Display *d = display0();
@@ -759,13 +774,10 @@ void ProgramSurface::leaveFullScreen() {
                 _fullScreen = false;
                 _dirty = false;
         }
-        if (d != nullptr && d->scanout().surface() == _fs) (void)d->showDesktop(SwitchTimeoutMs);
         if (_wm != nullptr && _window != 0) (void)_wm->setFullScreen(_window, false);
         if (_fs != nullptr) {
                 (void)_fs->wait(DrawTimeoutMs);
-                _fs->~Surface();
-                Memory::free(_fs);
-                _fs = nullptr;
+                freeFullScreen(d);
         }
         _underRect = Rect();
         _arrowAt.store(-1, std::memory_order_release);

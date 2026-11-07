@@ -56,7 +56,13 @@ class FmSynth : public SynthEngine {
                  */
                 Error open(const Op2Bank &bank, const Config &config);
 
-                /** @brief Stops: its memory goes. */
+                /**
+                 * @brief Returns how many of the eight waveforms (2 KB each) `open()` found no internal
+                 *        RAM for, and reads from flash (slower beside a drawing program); 0 when closed.
+                 */
+                size_t wavesInFlash() const;
+
+                /** @brief Stops: its memory goes (the waveforms' 16 KB of internal RAM with it). */
                 void close();
 
                 Kind kind() const override { return Kind::Fm; }
@@ -76,6 +82,7 @@ class FmSynth : public SynthEngine {
                 void apply(const Event &event, uint64_t frame);
 
                 State         *_state = nullptr; // internal RAM: the voices, the channels, the mix
+                int16_t       *_waves[8] = {};   // the waveforms in internal RAM while open; nullptr: flash's
                 const Op2Bank *_bank = nullptr;
                 Config         _config;
                 Event         *_events = nullptr; // a ring in PSRAM, in frame order

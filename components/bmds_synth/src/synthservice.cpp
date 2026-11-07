@@ -227,6 +227,11 @@ namespace {
         }
 
         void Service::audioEntry(void *arg) {
+                // On the display's core (the loader's DisplayCore), away from programs that draw
+                // (core 0), and pinned before its first float would pin it wherever it happened to
+                // be: frame rates beside the music swung 43-60 with that chance (the user's choice,
+                // 2026-11-06; docs/platforms/esp32p4.md §4c).
+                (void)Thread::pinCurrent(1);
                 auto *run = static_cast<std::pair<Service *, Run *> *>(arg);
                 run->first->audioMain(*run->second);
                 return;

@@ -296,6 +296,9 @@ namespace {
                         SynthEngines::close(e);
                         return makeError<SynthEngine *>(err);
                 }
+                if (e->wavesInFlash() != 0)
+                        bmdsWarn("FM: %u of 8 waveforms read from flash (no internal RAM for them: slower)",
+                                 static_cast<unsigned>(e->wavesInFlash()));
                 return makeResult(static_cast<SynthEngine *>(e));
         }
 

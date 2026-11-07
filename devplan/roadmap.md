@@ -283,6 +283,14 @@ Plan: [`input.md`](input.md).
   cycling), the overlay, keys; copper bars all in the palette with a sine scroller (6.7 ms) and plasma
   (11.1 ms), both at 60 full screen.
   Step 2 done (§10): stars gathering into the letters BMDS in wire (extruded outlines), ~9 ms, 60 fps.
+  Step 3 done (§10): the song (140 BPM, 72 bars, host-tested), each frame told where the music is when
+  it is seen, parts 1-3 on the beat, sections choosing parts; FM by name; stacks trimmed so full screen and
+  a synth fit in internal RAM; a scanout use-after-free fixed (`Scanout::forget()`).
+  Step 4 in part (§10): four more parts (tunnel and fire in 2D, vector balls and solids in 3D), the hook
+  (an eight-bar melody, a square lead and a vibraphone), 88 bars in nine sections; 60 fps without music,
+  40-58 with it: the synth preempts the presenter, whose PPA needs ~9 ms a frame; the levers tried and
+  measured in esp32p4.md §4c; FM's waveforms now in internal RAM while it plays (not its cost); next,
+  the synth's own cost (35-42% of a core) profiled per voice.
   Step 0 done (§8b, 2026-11-06): whole L8 frames full screen at 60 (the PPA's CLUT expands what the CPU
   repeats across; `Surface::beginWrite()`; the PPA claimed by one user at a time): 640×360 54 → 60 fps,
   the presenter's CPU 16.8 → 6.6 ms a frame; Doom's and Quake's cheaper too (`games.md` §27).

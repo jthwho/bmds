@@ -586,6 +586,63 @@ until silicon v3; then test again.
   a power-on reset: the RTC memory's kept records (`devplan/keptstate.md`) start again. A reset
   through RTS keeps the device and the port.
 
+- **A task's first float decides its core for good** (2026-11-06, `devplan/demo.md` §10): ESP-IDF
+  saves the FPU's (and PIE's) registers lazily, so a task is pinned to whichever core it is on the
+  first time it uses either (`Thread::pinCurrent()` says so). An unpinned real-time thread that
+  starts by doing floating point, such as a synth's `fm rt`, lands on a core by chance and stays.
+  BMDS Demo #1's plasma with FM playing ran at 43 fps in one launch and 54 in the next for that
+  reason alone (the synth beside the drawing on core 0, or beside the presenter on core 1). The
+  mixer (`audio`, priority 20) does the same. Now placed (the user's choice): the synths' real-time
+  threads on core 1 (`Thread::pinCurrent()` before their first float), the mixer on core 0. Plasma
+  full screen, two launches each:
+
+  | | synths core 0 | synths core 1, mixer core 1 | synths core 1, mixer core 0 (kept) |
+  |---|---|---|---|
+  | FM | 49-52 fps | 40-41 | 41-45 |
+  | wavetable | 50-54 | 48-49 | 57-58 |
+
+  On core 0 a synth takes its time from the drawing; on core 1 the wavetable fits beside the
+  presenter and FM doesn't, though it uses no more CPU (24% against 20%): not explained yet (FM's
+  voices are in the TCM; the presenter's frames are missed with core 1 at only 62-64%). An earlier
+  reading of FM on core 1 at 59-60 fps was wrong: FM had no memory to start then, and was silent.
+- **Whole L8 frames full screen, beside a synth: what bounds them** (2026-11-06, `devplan/demo.md`
+  §10 step 4, each measured on the board with a temporary probe in the presenter, then removed):
+  - **The PPA's CLUT has a floor of ~9 ms a frame at 1280×360:** 51 Mpixel/s, the same into
+    internal RAM as into PSRAM (`bench run display.ppa.scale`: `expand_l8_1280x12_internal` 303 µs,
+    `_psram` 297 µs), so its own rate, not bandwidth. A conversion's wall time: 10.5 ms with no
+    music (60 fps), 13.4-15.5 ms with a synth on core 1 (40-42 fps). Waiting for the swap: ~0.3 ms.
+  - **The synth's real-time thread (19) preempts the presenter (`surface`, 4)** between PPA jobs,
+    and the PPA idles. Raising the presenter to 20 gave 56-60 fps, but the synth missed 11,267
+    periods in two minutes (`audio.dsp0.client_late`; a real-time client must finish a period
+    before the mixer's next, 5 ms; a late one is dropped: silence). Not usable.
+  - **Fetching the strip's rows by the 2D-DMA** (into the strip's tail, repeated forward in place)
+    cut the presenter's CPU from 33% to 23% of core 1 but not the conversion's wall time.
+  - **Internal RAM's uncached address (`CACHE_LL_L2MEM_NON_CACHE_ADDR`, +0x40000000) faults on
+    PIE:** `esp.vld.128` there is a load access fault (MTVAL 0x8ff86340), a panic. Scalar code only.
+  - **The synth on core 0 instead:** the presenter keeps up, the drawing pays (core 0 92-100%):
+    demo1's tunnel 41 → 50 fps, fire 40 → 47, balls 43 → 48, solids 37 → 42, stars 55 → 58, but
+    plasma 60 → 52. **Splitting the parts' rows across both cores then gained nothing** (core 1
+    74-77% busy, the same frame times): the loops are memory-bound (the shared L1, above).
+  - **What is left: the synth's own cost**, 35-42% of a core in demo1's busiest section (FM,
+    `renderVoice` half of it), several times what its instructions should take. **Not its
+    waveforms' reads from flash** (2026-11-07): with all eight copied into internal RAM while FM is
+    open (the user's choice: 16 KB, given back when the synth closes after 5 s of quiet), FM still
+    took 42% of core 1 in drop B and frame rates moved within a launch's noise (tunnel 41 → 44,
+    solids 38 → 40). The cost is somewhere else in the voice loop; profile it per voice next.
+- **Internal RAM goes to thread stacks first** (2026-11-06): the loader puts a program thread's
+  stack (32 KB by default) in internal RAM while 64 KB more stays free. Three default threads (a
+  program's main, libbmds3d's helper, the sequencer's player) took ~96 KB; full screen then takes
+  ~90 KB more (the strip, the scan's descriptors), and a synth starting after that found no 4 KB
+  for its real-time stream or stack ("fm: real-time audio: Out of memory"); started before, it was
+  full screen that failed. The stacks used 10, 3 and 3 KB: libbmds3d's helper now asks for 12 KB,
+  the player 8 KB (the least), and demo1 20 KB (`stack =` in its recipe). With full screen and FM
+  playing, 18 KB of internal RAM stays free, against 9 KB with full screen alone before.
+  **A display program's stacks now leave 128 KB more** (`DisplayReserveBytes` in the loader,
+  2026-11-07): BMDS_PROGRAM_DISPLAY programs go full screen after they start, and often play music;
+  their stacks took internal RAM while it looked free, and FM later found no 2 KB block for its
+  waveforms. demo1's stacks now go to PSRAM (its drawing times unchanged); with full screen and FM
+  playing, 35 KB of internal RAM stays free (lowest 32 KB), against 18.5 (lowest 5.6) before.
+
 ## 4d. The full-speed USB PHYs (`devplan/audio.md` §23)
 
 - **Two full-speed PHYs, two controllers on them:** USB-Serial/JTAG on PHY 0 (GPIO24/25, the

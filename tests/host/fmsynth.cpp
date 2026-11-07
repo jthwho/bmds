@@ -25,6 +25,7 @@
 #include <bmds/op2bank.h>
 #include <bmds/synth.h>
 #include <bmds/synthlimiter.h>
+#include "hostmemory.h"
 
 using bmds::ByteSpan;
 using bmds::Error;
@@ -383,6 +384,66 @@ TEST_CASE("FmSynth: each waveform's shape") {
                         CHECK(std::count_if(begin, s.end(), [&](float x) { return std::fabs(x) < hi * 0.99f; }) == 0);
                 }
         }
+}
+
+TEST_CASE("FmSynth: the waveforms copied while open, flash's without room; the same sound") {
+        // Each waveform a note on its own channel, together: every copy read.
+        BankWriter writer;
+        for (uint8_t w = 0; w < 8; ++w) {
+                VoiceSpec v;
+                v.carrier.waveform = w;
+                v.modulator.waveform = uint8_t(7 - w);
+                writer.set(w, v);
+        }
+        const std::vector<uint8_t> bytes = writer.bytes();
+        const auto                 play = [](Player &p) {
+                for (uint8_t w = 0; w < 8; ++w) {
+                        p.send({uint8_t(0xc0 | w), w});
+                        p.send({uint8_t(0x90 | w), uint8_t(40 + 5 * w), 100});
+                }
+                return p.render(Rate / 4);
+        };
+        const size_t       before = HostMemory::liveAllocations();
+        std::vector<float> copied;
+        size_t             opening = 0; // allocations open() makes before the waveforms'
+        {
+                Player p(bytes);
+                CHECK(p.synth.wavesInFlash() == 0);
+                opening = HostMemory::liveAllocations() - before - 8;
+                copied = play(p);
+        }
+        CHECK(HostMemory::liveAllocations() == before); // closing gave them back
+        for (long room : {0L, 3L}) {
+                CAPTURE(room);
+                Op2Bank bank;
+                REQUIRE(bank.open(ByteSpan(bytes.data(), bytes.size())) == Error::Ok);
+                FmSynth         synth;
+                FmSynth::Config c;
+                c.rateHz = Rate;
+                c.channels = 1;
+                {
+                        HostMemory::FailGuard guard(long(opening) + room);
+                        REQUIRE(synth.open(bank, c) == Error::Ok); // without the copies: still open
+                }
+                CHECK(synth.wavesInFlash() == size_t(8 - room));
+                synth.close();
+                CHECK(synth.wavesInFlash() == 0);
+        }
+        // Read from flash, the same samples.
+        {
+                Player whole(bytes); // reopened below with no room for any copy
+                whole.synth.close();
+                FmSynth::Config c;
+                c.rateHz = Rate;
+                c.channels = 1;
+                {
+                        HostMemory::FailGuard guard{static_cast<long>(opening)};
+                        REQUIRE(whole.synth.open(whole.bank, c) == Error::Ok);
+                }
+                REQUIRE(whole.synth.wavesInFlash() == 8);
+                CHECK(play(whole) == copied);
+        }
+        CHECK(HostMemory::liveAllocations() == before);
 }
 
 TEST_CASE("FmSynth: the envelope's attack, decay and release against the chip's rates") {

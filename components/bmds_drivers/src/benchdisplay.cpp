@@ -117,6 +117,40 @@ namespace {
                         ctx, "expand_l8_320x200",
                         [&] { return ppa.expand(l8, Rect{0, 0, 320, 200}, mid, 0, 0, false, JobTimeoutMs); }, wait);
                 if (err.isError()) return err;
+                // The full-screen presenter's job (devplan/demo.md §10): a 1280×12 strip of indices
+                // in internal RAM, expanded into internal RAM or into PSRAM (the back buffer's).
+                // Equal: the PPA's own rate; PSRAM slower: the writes' bandwidth.
+                {
+                        constexpr uint16_t W = 1280, H = 12;
+                        auto *strip = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, W * H, 64));
+                        auto *inner =
+                                static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, W * H * 3, 64));
+                        if (strip != nullptr && inner != nullptr) {
+                                fillRandom(strip, W * H);
+                                writeBack(strip, W * H);
+                                const Ppa::Picture from{strip, W, H, Ppa::Format::L8};
+                                const Ppa::Picture toInner{inner, W, H, Ppa::Format::Rgb888};
+                                const Ppa::Picture toPsram{p.out, OutWidth, OutHeight, Ppa::Format::Rgb888};
+                                err = timeJob(
+                                        ctx, "expand_l8_1280x12_internal",
+                                        [&] {
+                                                return ppa.expand(from, Rect{0, 0, W, H}, toInner, 0, 0, false,
+                                                                  JobTimeoutMs);
+                                        },
+                                        wait);
+                                if (err.isOk())
+                                        err = timeJob(
+                                                ctx, "expand_l8_1280x12_psram",
+                                                [&] {
+                                                        return ppa.expand(from, Rect{0, 0, W, H}, toPsram, 0, 0, false,
+                                                                          JobTimeoutMs);
+                                                },
+                                                wait);
+                        }
+                        Memory::free(strip);
+                        Memory::free(inner);
+                        if (err.isError()) return err;
+                }
                 return timeJob(
                         ctx, "doom_expand_and_scale",
                         [&] {

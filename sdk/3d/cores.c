@@ -102,7 +102,15 @@ int bmds_3d_helper_start(bmds_3d_t *ctx) {
         const int32_t core = current_core();
         keep_to(core);
         start_t s = {h, core >= 0 ? 1 - core : -1};
-        if (pthread_create(&h->thread, NULL, helper_entry, &s) != 0) {
+        /* A small stack (3 KB used rasterizing bands on the board, 2026-11-06; at least 8 KB, for system calls):
+         * a thread's default 32 KB goes in internal RAM while there is room, which full screen and
+         * the synths need too. */
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setstacksize(&attr, 12u * 1024u);
+        const int made = pthread_create(&h->thread, &attr, helper_entry, &s);
+        pthread_attr_destroy(&attr);
+        if (made != 0) {
                 pthread_cond_destroy(&h->done);
                 pthread_cond_destroy(&h->wake);
                 pthread_mutex_destroy(&h->lock);

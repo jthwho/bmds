@@ -14,6 +14,7 @@
 #include <bmds/config.h>
 #include <bmds/edid.h>
 #include <bmds/error.h>
+#include <bmds/mutex.h>
 #include <bmds/semaphore.h>
 #include <bmds/surface.h>
 #include <bmds/task.h>
@@ -128,6 +129,16 @@ class Scanout {
                  * @blocking
                  */
                 Error show(Surface &surface, unsigned int timeoutMs);
+
+                /**
+                 * @brief Lets go of every pointer to @p surface before it is freed: a `show()` of it
+                 *        not taken yet is dropped (one that timed out may still be pending), and the
+                 *        fallback is forgotten if it is the one. Waits for a switch under way.
+                 * @return `Ok` (nothing points at it), or `InvalidState`: it is the surface sent (or
+                 *         being switched to), so another must be shown first (`Display::showDesktop()`).
+                 * @blocking
+                 */
+                Error forget(const Surface &surface);
 
                 /**
                  * @brief As `show()`, at @p timing (fitted to the clocks already, the surface its
@@ -308,6 +319,7 @@ class Scanout {
                 uint8_t                _requestLanes = 0;   // and its lanes (0: as now)
                 bool                   _requestHasTiming = false;
                 Surface               *_fallback = nullptr; // the surface before a show(), while on probation
+                Mutex                  _switchLock;         // switches and forget(): the surface pointers above
                 VideoTiming            _fallbackTiming;     // and its timing
                 uint8_t                _fallbackLanes = 0;  // and lanes
                 uint32_t               _fallbackStalls = 0; // the stalls when it was shown

@@ -240,6 +240,12 @@ thread, no locks on the drawing thread.
   thread, the scheduler driven by hand): order and offs, transposition and lanes, the song's end;
   scheduled in 20 ms pieces exactly as in one; swing and accents; position and hits round the
   loop; bad songs refused.
+- **After the demo's first use** (demo step 3): `bmds_seq_config_t::port` also takes a port's name
+  (`"fm"`, `"wavetable"`: each `/dev/midiN` asked its name), since `/dev/midi` is whichever synth
+  the user set; a wake's events go in one `write()` (up to 32 at a time); the player's stack is 8
+  KB (`BMDS_THREAD_STACK_MIN`: 3 KB used), because a thread's default 32 KB goes in internal RAM,
+  which full screen and the synths need too. The player measured 1.1-1.8% of a core with the
+  demo's nine tracks, about 250 µs a wake: five times §8's budget, to look into.
 - **`sdk/examples/beat`:** a 128 BPM loop of four tracks (kick, clap, hats, a bass whose filter
   opens through the bar) and a window drawn for the moment it is seen: the kick flashes the
   background (`bmds_seq_last_hit()`, decaying), the clap lights the beat's box, the hats each

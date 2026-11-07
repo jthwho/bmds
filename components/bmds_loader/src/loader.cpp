@@ -77,6 +77,12 @@ namespace {
         // exchanges, Doom's BSP walk), mostly untouched, and a daemon's held it for good
         // (dropbear's 64 KB from boot, ~10 KB used: devplan/games.md §26).
         constexpr size_t InternalStackMaxBytes = 32 * 1024;
+        // More left free for a display program's stacks (BMDS_PROGRAM_DISPLAY): it goes full screen
+        // after it starts (~90 KB of internal RAM: the strip, the scan's descriptors) and often plays
+        // music beside it (a synth's real-time stack and stream, ~8 KB; FM's waveforms, 16 KB).
+        // BMDS Demo #1's stacks took that room first, and FM had to read its waveforms from flash
+        // (devplan/demo.md §10, 2026-11-07).
+        constexpr size_t DisplayReserveBytes = 128 * 1024;
 
         constinit StaticObject<ProcessTable> processes;
 
@@ -582,12 +588,12 @@ namespace {
         }
 
         // Where a program's task's stack goes. Stacks are hot: internal RAM if there is room to
-        // spare and it is no bigger than InternalStackMaxBytes. Not a built-in's (the shell's
-        // recursion budget is large).
-        MemSpace stackSpaceFor(size_t bytes, bool builtin) {
+        // spare (more for a @p display program's, DisplayReserveBytes) and it is no bigger than
+        // InternalStackMaxBytes. Not a built-in's (the shell's recursion budget is large).
+        MemSpace stackSpaceFor(size_t bytes, bool builtin, bool display) {
+                const size_t reserve = InternalReserveBytes + (display ? DisplayReserveBytes : 0);
                 return !builtin && bytes <= InternalStackMaxBytes &&
-                                       Memory::stats(MemSpace::Internal).largestFreeBlock >=
-                                               bytes + InternalReserveBytes
+                                       Memory::stats(MemSpace::Internal).largestFreeBlock >= bytes + reserve
                                ? MemSpace::Internal
                                : MemSpace::Psram;
         }
@@ -642,7 +648,8 @@ namespace {
                               path.data() + slash + 1);
                 config.name = name;
                 config.stackBytes = stackBytes;
-                config.stackSpace = stackSpaceFor(config.stackBytes, run.builtin != nullptr);
+                run.display = display;
+                config.stackSpace = stackSpaceFor(config.stackBytes, run.builtin != nullptr, display);
                 // Its starter's priority; the shells' for one the kernel starts (pid 1). A program
                 // thread's normal one, and its policy (devplan/processes.md §3.12).
                 const ProgramThread *starter = ProgramThread::ofCurrentTask();
@@ -1534,7 +1541,7 @@ int32_t ProgramThread::startThread(const bmds_thread_t *spec) {
         Task::Config config;
         config.name = pcTaskGetName(nullptr); // the program's name, as its first task's
         config.stackBytes = stackBytes;
-        config.stackSpace = stackSpaceFor(stackBytes, false);
+        config.stackSpace = stackSpaceFor(stackBytes, false, run->display);
         config.priority = RealTimeThreads::inherit(*t, this, normalPriority, false);
         const Error err = t->task.start(config, threadMain, t);
         if (err.isError()) {

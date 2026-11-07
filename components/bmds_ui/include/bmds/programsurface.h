@@ -30,6 +30,7 @@
 
 BMDS_NAMESPACE_BEGIN
 
+class Display;
 class Painter;
 class Ppa;
 class Surface;
@@ -238,6 +239,7 @@ class ProgramSurface final : public SwapChain {
                 Error  enterFullScreen();
                 Error  enterFullScreen(const VideoTiming &mode, bool own);
                 void   leaveFullScreen();
+                void            freeFullScreen(Display *d); // _fs freed once the scanout lets go of it
                 void            convert(); // the newest present into the scan surface
                 bool            convertWithPpa(int8_t index, const Rect *changed, const Rect *on, size_t count);
                 void            startPpa();

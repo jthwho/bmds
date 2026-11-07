@@ -2,6 +2,7 @@
 # application folder.
 name = "demo1"
 version = "1"
+revision = 3
 description = "BMDS Demo #1: a demoscene-style show of the system's graphics, sound and speech"
 title = "BMDS Demo #1"
 license = "MIT"
@@ -9,3 +10,6 @@ source_tree = "programs/demo1"
 license_files = ["../../LICENSE"]
 # It draws every frame: started away from the display's core (BMDS_PROGRAM_DISPLAY).
 display = true
+# Bytes of stack: about 10 KB used drawing; smaller than the default (32 KB) because a stack goes in
+# internal RAM while there is room, which full screen and the synths need too (devplan/demo.md §10).
+stack = 20480

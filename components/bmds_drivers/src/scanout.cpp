@@ -553,6 +553,19 @@ Error Scanout::show(Surface &surface, unsigned int timeoutMs) {
         return err.isOk() ? _switchResult : err;
 }
 
+// Before a surface is freed (a full-screen program's, as it ends). The scanout task reads the
+// pointers under _switchLock; a request is dropped first so a switch to it never starts (a show()
+// that timed out leaves its request behind). Found 2026-11-06: a panic in blockSent() reading a
+// freed surface after full-screen programs ended while another one's switch was pending.
+Error Scanout::forget(const Surface &surface) {
+        Surface *expected = const_cast<Surface *>(&surface);
+        (void)_request.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+        Mutex::Locker locker(_switchLock, WaitForever);
+        if (_fallback == &surface) _fallback = nullptr;
+        if (_surface == &surface || _nextSurface == &surface) return Error::InvalidState;
+        return Error::Ok;
+}
+
 Error Scanout::show(Surface &surface, const VideoTiming &timing, uint8_t lanes, unsigned int timeoutMs) {
         if (!_running) return Error::InvalidState;
         if (!surface.isStarted() || surface.width() != timing.hActive || surface.height() == 0 ||
@@ -875,7 +888,10 @@ void Scanout::supervise() {
                                 progressUs = esp_timer_get_time();
                                 continue;
                         }
-                        if (esp_timer_get_time() - _fallbackUs >= FallbackProbationUs) _fallback = nullptr;
+                        if (esp_timer_get_time() - _fallbackUs >= FallbackProbationUs) {
+                                Mutex::Locker locker(_switchLock, WaitForever);
+                                _fallback = nullptr;
+                        }
                 }
                 const bool stalled = _stalled.exchange(false, std::memory_order_acquire);
                 if (stalled || underran) {
@@ -1004,7 +1020,8 @@ void Scanout::resync(bool atFrameEnd) {
 // otherwise, or if the DMA won't stop, the whole DSI path is rebuilt for it. The old surface
 // comes back if that fails.
 void Scanout::switchSurface() {
-        Surface *next = _request.exchange(nullptr, std::memory_order_acq_rel);
+        Mutex::Locker locker(_switchLock, WaitForever); // forget() waits for it
+        Surface      *next = _request.exchange(nullptr, std::memory_order_acq_rel);
         if (next == nullptr) return;
         Surface          *old = _surface;
         const VideoTiming oldTiming = _config.timing;
@@ -1093,7 +1110,8 @@ void Scanout::switchSurface() {
 
 // A surface switched to that keeps stalling the stream: back to the one before.
 void Scanout::fallBack() {
-        Surface *next = _fallback;
+        Mutex::Locker locker(_switchLock, WaitForever);
+        Surface      *next = _fallback;
         _fallback = nullptr;
         if (next == nullptr ||
             (next == _surface && _fallbackTiming == _config.timing && _fallbackLanes == _config.lanes))
