@@ -8,29 +8,38 @@
  * libbmds3d's triangles (devplan/3d.md §12a). Vertices in 28.4 fixed point; a row is drawn where
  * its pixel centres' y is in [top, bottom), a pixel where its centre's x is in [left, right). Each
  * edge's first column per row is ceil((x - 8) / 16) of the edge's x at the row's centre, kept
- * exact by an integer DDA (a quotient and a remainder stepped per row), so two triangles sharing an
- * edge step it identically and meet without a gap or an overlap. Shades: flat, or the shade's
- * plane evaluated at each span's ends (clamped) and stepped in 16.16 between them.
+ * exact by integer stepping (bmds_3d_edge_t), so two triangles sharing an edge step it identically
+ * and meet without a gap or an overlap. Shades: flat, or the shade's plane evaluated at each span's
+ * start (clamped) and stepped in 16.16 along it. L8 spans are written inline (most are a few pixels:
+ * a call a row cost more than the pixels).
  */
 
 #include <stdint.h>
 #include <string.h>
 #include "3d_internal.h"
 
+/* @p n bytes of @p v at @p q: a short span (most are) by words, inline; a long one by memset. */
+static inline void fill8(uint8_t *q, int32_t n, uint8_t v) {
+        if (n >= 32) {
+                memset(q, v, (size_t)n);
+                return;
+        }
+        while (n > 0 && ((uintptr_t)q & 3u) != 0) {
+                *q++ = v;
+                --n;
+        }
+        const uint32_t w = v * 0x01010101u;
+        for (; n >= 4; n -= 4, q += 4) *(uint32_t *)(void *)q = w;
+        while (n-- > 0) *q++ = v;
+        return;
+}
+
 /* One span: columns [x0, x1) of a row, shade from @p s (16.16) by @p ds a pixel. */
 static void span(bmds_canvas_t *c, int32_t row, int32_t x0, int32_t x1, const bmds_3d_record_t *rec, int32_t s,
                  int32_t ds, uint32_t flat) {
         uint8_t      *p = c->pixels + (size_t)row * c->stride;
         const int32_t n = x1 - x0;
-        if (c->format == BMDS_PIXEL_L8) {
-                uint8_t *q = p + x0;
-                if (!rec->smooth) {
-                        memset(q, (int)flat, (size_t)n);
-                        return;
-                }
-                const uint32_t first = rec->first;
-                for (int32_t i = 0; i < n; ++i, s += ds) q[i] = (uint8_t)(first + (uint32_t)(s >> 16));
-        } else if (c->format == BMDS_PIXEL_RGB565) {
+        if (c->format == BMDS_PIXEL_RGB565) {
                 uint16_t *q = (uint16_t *)(void *)p + x0;
                 if (!rec->smooth) {
                         for (int32_t i = 0; i < n; ++i) q[i] = (uint16_t)flat;
@@ -108,14 +117,69 @@ uint32_t bmds_3d_triangle(bmds_canvas_t *c, const bmds_3d_area_t *area, const bm
                 bmds_3d_edge_init(&shorte, x0, y0, x1, y1, row);
         else
                 bmds_3d_edge_init(&shorte, x1, y1, x2, y2, row);
-        uint32_t pixels = 0;
-        int32_t  minx = area->ix1, maxx = area->ix0;
+        uint32_t      pixels = 0;
+        int32_t       minx = area->ix1, maxx = area->ix0;
+        const int32_t ax0 = area->ix0, ax1 = area->ix1;
+        if (c->format == BMDS_PIXEL_L8) {
+                /* L8 (the common case) in its own loop: no format, spans written inline. A plane
+                   small enough over the triangle's box (its values and steps under 2^30) is worked
+                   in 32 bits, else in 64. */
+                const int32_t xmin = x0 < x1 ? (x0 < x2 ? x0 : x2) : (x1 < x2 ? x1 : x2);
+                const int32_t xmax = x0 > x1 ? (x0 > x2 ? x0 : x2) : (x1 > x2 ? x1 : x2);
+                const int64_t wide = ((xmax - xmin) >> 4) + 2, tall = ((y2 - y0) >> 4) + 2;
+                const int     small = rec->smooth && (ia < 0 ? -ia : ia) * wide < (1 << 29) &&
+                                  (ib < 0 ? -ib : ib) * tall < (1 << 29) && ic > -(1 << 28) && ic < (1 << 28);
+                const int32_t ia32 = (int32_t)ia, ib32 = (int32_t)ib, ic32 = (int32_t)ic;
+                const int32_t top16 = ((int32_t)rec->top << 16) + 32768;
+                const uint8_t first = (uint8_t)rec->first;
+                uint8_t      *line = c->pixels + (size_t)row * c->stride;
+                for (int32_t y = row; y < end; ++y, line += c->stride) {
+                        if (y == mid && y != row) bmds_3d_edge_init(&shorte, x1, y1, x2, y2, y);
+                        const int32_t cl = bmds_3d_edge_column(&longe), cs = bmds_3d_edge_column(&shorte);
+                        int32_t       xl = long_left ? cl : cs, xr = long_left ? cs : cl;
+                        bmds_3d_edge_step(&longe);
+                        bmds_3d_edge_step(&shorte);
+                        if (xl < ax0) xl = ax0;
+                        if (xr > ax1) xr = ax1;
+                        if (xl >= xr) continue;
+                        const int32_t n = xr - xl;
+                        uint8_t      *q = line + xl;
+                        pixels += (uint32_t)n;
+                        if (xl < minx) minx = xl;
+                        if (xr > maxx) maxx = xr;
+                        if (!rec->smooth) {
+                                fill8(q, n, (uint8_t)flat);
+                                continue;
+                        }
+                        int32_t s, ds = step;
+                        if (small) {
+                                const int32_t s32 = ia32 * (xl - xa) + ib32 * (y - ya) + ic32;
+                                s = s32 < 32768 ? 32768 : s32 > top16 ? top16 : s32;
+                                const int32_t last = s + ds * (n - 1);
+                                if (last < 0 || last >= top16 + 32768) {
+                                        const int32_t want = last < 0 ? 32768 : top16;
+                                        ds = n > 1 ? (want - s) / (n - 1) : 0;
+                                }
+                        } else {
+                                const int64_t s64 = ia * (xl - xa) + ib * (y - ya) + ic;
+                                s = (int32_t)(s64 < 32768 ? 32768 : s64 > smax ? smax : s64);
+                                const int64_t last = (int64_t)s + (int64_t)ds * (n - 1);
+                                if (last < 0 || last >= ((int64_t)rec->top + 1) << 16) {
+                                        const int32_t want = last < 0 ? 32768 : top16;
+                                        ds = n > 1 ? (want - s) / (n - 1) : 0;
+                                }
+                        }
+                        for (int32_t i = 0; i < n; ++i, s += ds) q[i] = (uint8_t)(first + (uint32_t)(s >> 16));
+                }
+                if (pixels != 0) bmds_3d_include(bounds, minx, row, maxx, end);
+                return pixels;
+        }
         for (int32_t y = row; y < end; ++y) {
                 if (y == mid && y != row) bmds_3d_edge_init(&shorte, x1, y1, x2, y2, y);
                 const int32_t cl = bmds_3d_edge_column(&longe), cs = bmds_3d_edge_column(&shorte);
                 int32_t       xl = long_left ? cl : cs, xr = long_left ? cs : cl;
-                if (xl < area->ix0) xl = area->ix0;
-                if (xr > area->ix1) xr = area->ix1;
+                if (xl < ax0) xl = ax0;
+                if (xr > ax1) xr = ax1;
                 if (xl < xr) {
                         int32_t s = 0, ds = 0;
                         if (rec->smooth) {

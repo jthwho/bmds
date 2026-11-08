@@ -198,8 +198,42 @@ int bmds_canvas_remap(bmds_canvas_t *canvas, int32_t x, int32_t y, int32_t width
         const uint8_t  *tex = image->pixels;
         uint8_t        *line = canvas->pixels + (size_t)e[1] * canvas->stride + (size_t)e[0] * bpp;
         const uint16_t *from = table + (size_t)(e[1] - y) * table_stride + (size_t)(e[0] - x);
+        /* L8 with a power-of-two stride: the entries two at a time (below). */
+        const int pairs = bpp == 1 && is_pow2((int32_t)stride);
+        uint32_t  sshift = 0;
+        while (pairs && (1u << sshift) < stride) ++sshift;
+        const uint32_t moves = (vd << 8 | ud) * 0x10001u, low7 = moves & 0x7f7f7f7fu;
+        const uint32_t masks = (vm << 8 | um) * 0x10001u;
         for (int32_t row = e[1]; row < e[3]; ++row, line += canvas->stride, from += table_stride) {
                 const uint16_t *t = from;
+                if (pairs) {
+                        /* Two entries a load: u and v moved by byte-wise adds that wrap within each
+                           byte (the top bits' sum by xor: no carry crosses), masked, and the row by a
+                           shift. Bytes before a word boundary of the output (or the table) one at a
+                           time. */
+                        uint8_t *q = line;
+                        int32_t  k = n;
+#define REMAP_ONE() tex[((((uint32_t)(*t >> 8) + vd) & vm) << sshift) | (((uint32_t)(*t & 0xffu) + ud) & um)]
+                        while (k > 0 && (((uintptr_t)q & 3u) != 0 || ((uintptr_t)t & 3u) != 0)) {
+                                *q++ = REMAP_ONE();
+                                ++t, --k;
+                        }
+                        const uint32_t *w = (const uint32_t *)(const void *)t;
+                        for (; k >= 4; k -= 4, q += 4, w += 2) {
+                                const uint32_t a = w[0], b = w[1];
+                                const uint32_t ra = (((a & 0x7f7f7f7fu) + low7) ^ ((a ^ moves) & 0x80808080u)) & masks;
+                                const uint32_t rb = (((b & 0x7f7f7f7fu) + low7) ^ ((b ^ moves) & 0x80808080u)) & masks;
+                                const uint32_t p0 = tex[((ra >> 8 & 0xffu) << sshift) | (ra & 0xffu)];
+                                const uint32_t p1 = tex[((ra >> 24) << sshift) | (ra >> 16 & 0xffu)];
+                                const uint32_t p2 = tex[((rb >> 8 & 0xffu) << sshift) | (rb & 0xffu)];
+                                const uint32_t p3 = tex[((rb >> 24) << sshift) | (rb >> 16 & 0xffu)];
+                                *(uint32_t *)(void *)q = p0 | p1 << 8 | p2 << 16 | p3 << 24;
+                        }
+                        t = (const uint16_t *)(const void *)w;
+                        for (; k > 0; --k, ++t) *q++ = REMAP_ONE();
+#undef REMAP_ONE
+                        continue;
+                }
                 if (bpp == 1) {
 #define REMAP_L8() tex[(((uint32_t)(*t >> 8) + vd) & vm) * stride + (((uint32_t)(*t & 0xffu) + ud) & um)]
                         uint8_t *q = line;

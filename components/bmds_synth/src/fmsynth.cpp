@@ -20,6 +20,7 @@
 #include <new>
 #include <bmds/fmsynth.h>
 #include <bmds/memory.h>
+#include <bmds/placement.h>
 #include "fmtables.h"
 #include "synthmath.h"
 
@@ -181,6 +182,7 @@ struct FmSynth::State {
                 int32_t  mix[BlockFrames * 2];
                 int32_t  sum[BlockFrames];        // a channel's voices
                 uint8_t  order[SynthEngine::MaxVoices]; // the sounding voices by channel, a block's
+                uint8_t        live[SynthEngine::MaxVoices];  // the sounding voices (`sounding` of them), any order
                 uint32_t ages = 0;
                 uint32_t sounding = 0;
                 uint16_t voiceCount = 0;
@@ -218,7 +220,7 @@ namespace {
         // into the sum (additive), and its feedback (the average of its last two outputs, as the
         // chip's) into its own when @p Fb. The gains ramp to each tick's targets.
         template <bool Fb, bool Additive>
-        void renderVoice(State::Voice &v, int32_t *sum, const Segment *segments, size_t count) {
+        BMDS_HOT_ATTR void renderVoice(State::Voice &v, int32_t *sum, const Segment *segments, size_t count) {
                 State::Op     &mo = v.op[0];
                 State::Op     &co = v.op[1];
                 const int16_t *mw = mo.wave;
@@ -263,7 +265,7 @@ namespace {
 
         // A voice whose modulator is silent the whole block: its carrier alone (no modulation, nothing
         // added), the modulator's phase moved on and its feedback emptied.
-        void renderCarrier(State::Voice &v, int32_t *sum, const Segment *segments, size_t count) {
+        BMDS_HOT_ATTR void renderCarrier(State::Voice &v, int32_t *sum, const Segment *segments, size_t count) {
                 State::Op     &mo = v.op[0];
                 State::Op     &co = v.op[1];
                 const int16_t *cw = co.wave;
@@ -289,7 +291,7 @@ namespace {
         }
 
         // A voice silent the whole block: its phases moved on, nothing computed.
-        void skipVoice(State::Voice &v, const Segment *segments, size_t count) {
+        BMDS_HOT_ATTR void skipVoice(State::Voice &v, const Segment *segments, size_t count) {
                 uint32_t frames = 0;
                 for (size_t k = 0; k < count; ++k) frames += segments[k].frames;
                 for (State::Op &op : v.op) op.phase += op.inc * frames;
@@ -418,7 +420,7 @@ namespace {
 
         // The LFOs at @p frame: the chip's tremolo (3.7 Hz, the shallow depth, as DMX set it) and
         // vibrato (6.1 Hz, eight steps), and the modulation wheel's triangle at the vibrato's rate.
-        State::Lfo lfoAt(State &s, uint64_t frame) {
+        BMDS_HOT_ATTR State::Lfo lfoAt(State &s, uint64_t frame) {
                 // The chip's sample count, moved on from the last call's (frames only go forward), in
                 // 1/65536s, modulo the LFOs' common period: no 64-bit division.
                 if (frame >= s.lfoFrame) {
@@ -520,7 +522,7 @@ namespace {
 
         void quickRelease(State::Voice &v);
 
-        bool tickVoice(const State &s, State::Voice &v, const State::Lfo &lfo) {
+        BMDS_HOT_ATTR bool tickVoice(const State &s, State::Voice &v, const State::Lfo &lfo) {
                 const State::Channel &c = s.channels[v.channel];
                 for (int k = 0; k < 2; ++k) {
                         State::Op &op = v.op[k];
@@ -573,6 +575,25 @@ namespace {
                 return;
         }
 
+        // Voices sounding and not: each in `live` while it sounds, so a block visits those alone
+        // (scanning every voice's flag read a cache line a voice, each a miss beside a game).
+        void sound(State &s, State::Voice &v) {
+                v.active = true;
+                s.live[s.sounding++] = uint8_t(&v - s.voices);
+                return;
+        }
+
+        void silence(State &s, State::Voice &v) {
+                v.active = false;
+                const auto index = uint8_t(&v - s.voices);
+                for (uint32_t k = 0; k < s.sounding; ++k) {
+                        if (s.live[k] != index) continue;
+                        s.live[k] = s.live[--s.sounding];
+                        break;
+                }
+                return;
+        }
+
         // A voice for a note: a free one, else the quietest released one, else the oldest; never
         // one of the note's own (from @p firstAge on).
         State::Voice &allocate(State &s, uint32_t firstAge) {
@@ -591,8 +612,7 @@ namespace {
                         }
                 }
                 State::Voice &v = released != nullptr ? *released : *oldest;
-                v.active = false;
-                --s.sounding;
+                silence(s, v);
                 return v;
         }
 
@@ -614,9 +634,8 @@ namespace {
                         v.key = key;
                         v.velocity = velocity;
                         v.age = ++s.ages;
-                        v.active = true;
+                        sound(s, v);
                         v.keyOn = true;
-                        ++s.sounding;
                         v.pitch = (in.flags & Op2Bank::FixedPitch) != 0 ? float(in.fixedNote)
                                                                         : float(int(key) + bv.noteOffset);
                         if (k == 1) v.pitch += float(int(in.fineTune / 2) - 64) / 32.0f; // DMX's detune
@@ -732,7 +751,7 @@ namespace {
         // @p n frames (at most a block) from frame @p pos into @p out: each channel's voices summed,
         // then panned into the mix.
         // Returns the block's peak (the limiter's to know).
-        float renderBlock(State &s, float *out, uint64_t pos, size_t n, uint8_t channels) {
+        BMDS_HOT_ATTR float renderBlock(State &s, float *out, uint64_t pos, size_t n, uint8_t channels) {
                 std::memset(s.mix, 0, n * channels * sizeof(int32_t));
                 // The ticks in it: where, and the LFOs there.
                 constexpr size_t MaxTicks = FmSynth::BlockFrames / FmSynth::TickFrames + 1;
@@ -753,8 +772,7 @@ namespace {
                 uint8_t  pans = 0;
                 uint16_t first[MidiChannels + 1] = {};
                 uint16_t used = 0; // the channels with voices
-                for (size_t i = 0; i < s.voiceCount; ++i)
-                        if (s.voices[i].active) used = uint16_t(used | 1u << s.voices[i].channel);
+                for (uint32_t k = 0; k < s.sounding; ++k) used = uint16_t(used | 1u << s.voices[s.live[k]].channel);
                 for (int c = 0; c < MidiChannels; ++c) {
                         if ((used & (1u << c)) == 0) continue;
                         const int16_t l = channels == 2 ? s.channels[c].gainL : 0;
@@ -768,13 +786,12 @@ namespace {
                         }
                         panOf[c] = b;
                 }
-                for (size_t i = 0; i < s.voiceCount; ++i)
-                        if (s.voices[i].active) ++first[panOf[s.voices[i].channel] + 1];
+                for (uint32_t k = 0; k < s.sounding; ++k) ++first[panOf[s.voices[s.live[k]].channel] + 1];
                 for (int b = 0; b < pans; ++b) first[b + 1] += first[b];
                 uint16_t next[MidiChannels];
                 std::memcpy(next, first, sizeof(next));
-                for (size_t i = 0; i < s.voiceCount; ++i)
-                        if (s.voices[i].active) s.order[next[panOf[s.voices[i].channel]]++] = uint8_t(i);
+                for (uint32_t k = 0; k < s.sounding; ++k)
+                        s.order[next[panOf[s.voices[s.live[k]].channel]]++] = s.live[k];
                 for (int c = 0; c < pans; ++c) {
                         if (first[c] == first[c + 1]) continue;
                         std::memset(s.sum, 0, n * sizeof(int32_t));
@@ -818,10 +835,7 @@ namespace {
                                 } else {
                                         Renderers[v.fbShift != 0][v.additive](v, s.sum, segments, count);
                                 }
-                                if (!alive) {
-                                        v.active = false;
-                                        --s.sounding;
-                                }
+                                if (!alive) silence(s, v);
                         }
                         if (channels == 2) {
                                 const int32_t gl = panL[c];
@@ -859,11 +873,10 @@ Error FmSynth::open(const Op2Bank &bank, const Config &config) {
                 return Error::Invalid;
         _events = static_cast<Event *>(Memory::alloc(MemSpace::Psram, SynthEngine::QueueEvents * sizeof(Event)));
         if (_events == nullptr) return Error::NoMem;
+        // The state, touched once a block (a voice's two lines), not every sample: internal RAM (in
+        // the TCM it left no room for the waveforms, which every sample reads).
         const size_t bytes = sizeof(State) + c.maxVoices * sizeof(State::Voice);
-        // In the TCM when it has room (no cache between: a game's memory traffic on the other core,
-        // which the cores' shared L1 data cache feels, doesn't reach it), else internal RAM.
-        void *mem = Memory::alloc(MemSpace::Fast, bytes);
-        if (mem == nullptr) mem = Memory::alloc(MemSpace::Internal, bytes);
+        void        *mem = Memory::alloc(MemSpace::Internal, bytes);
         if (mem == nullptr) {
                 close();
                 return Error::NoMem;
@@ -872,15 +885,37 @@ Error FmSynth::open(const Op2Bank &bank, const Config &config) {
         State &s = *_state;
         s.voiceCount = c.maxVoices;
         s.voices = reinterpret_cast<State::Voice *>(static_cast<uint8_t *>(mem) + sizeof(State));
-        // The waveforms (8 × 2 KB) in internal RAM while playing, each from flash only without room
-        // for it: read from flash they go through the caches a drawing program's PSRAM traffic
-        // churns, and rendering stalled on them (FM took 35-40% of a core beside BMDS Demo #1,
-        // devplan/demo.md §10). A block each, so a fragmented heap still takes them. Given back by
+        // The waveforms, read every sample: the TCM for the bank's most used, as many as fit (each
+        // 2 KB; no cache between, so a game's memory traffic on the other core, which empties the
+        // cores' shared L1 data cache, can't make them miss: FM 365 → 228 µs a block for 16 voices
+        // beside a PSRAM copy, devplan/audio.md §26), the rest in internal RAM, each from flash only
+        // without room for it. A block each, so a fragmented heap still takes them. Given back by
         // close(): the service closes the synth after 5 s of quiet.
-        for (unsigned w = 0; w < 8; ++w) {
-                auto *copy =
-                        static_cast<int16_t *>(Memory::alloc(MemSpace::Internal, sizeof(FmTables::Waves.level[w])));
-                if (copy != nullptr) std::memcpy(copy, FmTables::Waves.level[w], sizeof(FmTables::Waves.level[w]));
+        uint32_t uses[8] = {};
+        for (size_t i = 0; i < Op2Bank::Instruments; ++i) {
+                const Op2Bank::Instrument in = bank.instrument(i);
+                const size_t              voices = (in.flags & Op2Bank::DoubleVoice) != 0 ? 2 : 1;
+                for (size_t v = 0; v < voices; ++v) {
+                        ++uses[in.voices[v].modulator.waveform & 7];
+                        ++uses[in.voices[v].carrier.waveform & 7];
+                }
+        }
+        unsigned byUse[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+        for (unsigned a = 1; a < 8; ++a) // most used first (insertion; ties by number)
+                for (unsigned b = a; b > 0 && uses[byUse[b]] > uses[byUse[b - 1]]; --b) {
+                        const unsigned t = byUse[b];
+                        byUse[b] = byUse[b - 1];
+                        byUse[b - 1] = t;
+                }
+        bool fast = true; // the TCM still taking them
+        for (const unsigned w : byUse) {
+                constexpr size_t waveBytes = sizeof(FmTables::Waves.level[0]);
+                auto *copy = fast ? static_cast<int16_t *>(Memory::alloc(MemSpace::Fast, waveBytes)) : nullptr;
+                if (copy == nullptr) {
+                        fast = false; // the next ones would fit no better
+                        copy = static_cast<int16_t *>(Memory::alloc(MemSpace::Internal, waveBytes));
+                }
+                if (copy != nullptr) std::memcpy(copy, FmTables::Waves.level[w], waveBytes);
                 _waves[w] = copy;
                 s.waves[w] = copy != nullptr ? copy : FmTables::Waves.level[w];
         }
@@ -995,7 +1030,7 @@ void FmSynth::apply(const Event &e, uint64_t frame) {
         return;
 }
 
-void FmSynth::render(float *out, size_t frames) {
+BMDS_HOT_ATTR void FmSynth::render(float *out, size_t frames) {
         const uint8_t channels = _config.channels;
         if (_state == nullptr) {
                 std::memset(out, 0, frames * channels * sizeof(float));

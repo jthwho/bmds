@@ -64,6 +64,7 @@ typedef struct bmds_3d_record_t {
                 uint32_t       vmask;       /* (height - 1) << log2(stride) */
                 uint32_t       vshift;      /* 16 - log2(stride): v (16.16) >> it, masked, is the row's offset */
                 float          tw, th;      /* the texture's size, for the uvs' wrapping */
+                float          itw, ith;    /* 1 / tw, 1 / th (exact: powers of two) */
 } bmds_3d_record_t;
 
 /** @brief A textured triangle's texture coordinates, in texels, and 1 / w (1: affine), as its `bmds_3d_tri_t`'s. */
@@ -132,6 +133,8 @@ struct bmds_3d_t {
                 uint32_t          sort_order; /* BMDS_3D_ORDER_... */
                 bmds_3d_tuv_t    *tuvs;       /* the textured triangles' coordinates (max_tris; the first
                                                  textured draw's) */
+                float            *envuv;      /* ENVMAP with normals: each vertex's u, v (max_vertices × 2; the
+                                                 first such draw's), worked out once a draw */
                 bmds_3d_helper_t *helper;     /* NULL: one core */
                 float             share;      /* with a helper: the top band's part of the rows, 0..1 */
 };
@@ -221,9 +224,13 @@ uint32_t bmds_3d_triangle_textured(bmds_canvas_t *canvas, const bmds_3d_area_t *
    a pixel), stepped by a whole number a row. The slope comes from one float division; stepping it
    adds integers only, so the x a row has is the same whichever row the stepping began on, and two
    triangles sharing an edge (both stepping it top to bottom, from the same two ends) get the same
-   columns: no gap, no overlap. */
+   columns: no gap, no overlap.
+
+   32 bits: inside the guard band (BMDS_3D_GUARD) an edge's x on any row it covers is within
+   ±32768 pixels (2^31 here) for viewports up to 13,000 pixels wide; only a step past its last row
+   (an edge under a pixel tall, its step up to 16 × its width) may wrap, unsigned, and isn't used. */
 typedef struct bmds_3d_edge_t {
-                int64_t x, step;
+                uint32_t x, step;
 } bmds_3d_edge_t;
 
 /* The edge (x0, y0)-(x1, y1), y1 > y0, at row @p row (its centre at row × 16 + 8). Inside the guard
@@ -231,8 +238,8 @@ typedef struct bmds_3d_edge_t {
 static inline void bmds_3d_edge_init(bmds_3d_edge_t *e, int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t row) {
         const float   f = (float)(x1 - x0) * 4096.0f / (float)(y1 - y0);
         const int32_t slope = f > 2.0e9f ? 2000000000 : f < -2.0e9f ? -2000000000 : (int32_t)f;
-        e->x = (int64_t)x0 * 4096 + (int64_t)(row * 16 + 8 - y0) * slope;
-        e->step = (int64_t)slope * 16;
+        e->x = (uint32_t)((int64_t)x0 * 4096 + (int64_t)(row * 16 + 8 - y0) * slope);
+        e->step = (uint32_t)slope * 16u;
         return;
 }
 
@@ -243,7 +250,7 @@ static inline void bmds_3d_edge_step(bmds_3d_edge_t *e) {
 
 /* The first pixel column whose centre is at or right of the edge: ceil((x − 8) / 16) in 28.4. */
 static inline int32_t bmds_3d_edge_column(const bmds_3d_edge_t *e) {
-        return (int32_t)((e->x + 32767) >> 16);
+        return (int32_t)(e->x + 32767u) >> 16; /* an arithmetic shift: floor */
 }
 
 /* The first row whose centre is at or below @p y (28.4). */

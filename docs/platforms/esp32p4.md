@@ -300,6 +300,38 @@ until silicon v3; then test again.
   took 12.3 ms to 10.1, but splitting its vertex transforms and triangle queueing (reads and
   writes of records in PSRAM, little arithmetic) gained 3%: the cores share one L1 data cache and
   contend for it. Split the arithmetic, not the copying.
+- **The TCM against the L1, for data read every sample** (2026-11-07, `devplan/audio.md` §26): the
+  TCM has no cache in front of it, so another core's traffic can't empty it, but a read there is
+  slower than an L1 hit. FM's waveforms (read every sample, ~38 lines an operator a block, missed
+  beside a busy core) in the TCM, with its voices' flags packed, took 32 voices 663 → 481 µs a
+  block under load; its mix and sum (written every sample, a few
+  lines that stay cached within a block) lost 5-10% there. Put in the TCM what is read all the
+  time and can't stay cached; leave what a block keeps hot in cached RAM. And a block's scan of
+  every voice's flag in cached RAM was a miss a voice beside a game: keep such flags packed.
+- **The L1 data cache's manual preload doesn't pay for small reads** (2026-11-07,
+  `devplan/audio.md` §22): `Cache_Start_L1_DCache_Preload()` of a wavetable voice's next ~128
+  bytes of samples while the voice before rendered, then `Cache_L1_DCache_Preload_Done()` and
+  `Cache_End_L1_DCache_Preload()`, made the synth 11% slower alone and 9% under load. It is one
+  preload at a time for the whole chip; ESP-IDF itself uses the L2's for a whole bounce buffer.
+- **The busy benches vary by launch** (2026-11-07): `synth.wavetable.voices busy=1` gave 866 to
+  1,151 µs for one build across launches, ~1% within one. Compare kernel changes over several
+  rounds after each flash.
+- **A task's block costs more than it looks** (2026-11-07, `devplan/demo.md` §8c): the presenter
+  waiting on a 2D-DMA fetch and then the PPA blocked twice a job, 60 times a frame; the task
+  switches and their critical sections took back most of what the fetch saved (core 1's presenter
+  57 → 55%). Waiting first on the longer job, after which the shorter is done and its wait doesn't
+  block, gave 57 → 41%.
+- **Whether a task has used the FPU or PIE** (2026-11-07, `devplan/processes.md` §3.12a): a task's
+  coprocessor save area (`pxPortGetCoprocArea(task, false, FPU_COPROC_IDX)`, at the top of its stack)
+  has `sa_enable`, a bit per coprocessor set by the port's trap on its first use and never cleared.
+  Its affinity alone doesn't say: a task created pinned (`xTaskCreateStaticPinnedToCore`, as the
+  loader places a program's first thread) looks the same as one pinned by a float, and only the
+  latter must stay. `Thread::pinCurrent()` reads the bits.
+- **Branches a candidate cost more than the candidates** (2026-11-07, `devplan/3d.md` §13): the
+  light table's search went outwards from a brightness choosing the nearer side each step; two
+  plain loops (up, then down) compare a fifth more candidates and take 23% less time on the board
+  (36 → 28 ms), half on the host. The same lesson as the spans': a few-pixel span's call and
+  checks cost more than its pixels.
 - **A program's timings move up to ~10% from one launch to the next** (found 2026-11-06,
   `devplan/3d.md` §13 step 3): the same `benchprog` binary, pinned to one core, ran a frame in 9.5
   ms on one launch and 10.5 on the next, while runs within a launch agreed to ~2%; probably where

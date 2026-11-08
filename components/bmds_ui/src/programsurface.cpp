@@ -737,10 +737,30 @@ void ProgramSurface::startPpa() {
         _clutStale.store(true, std::memory_order_release);
         Memory::free(_triple); // the CPU's table for 3x: not needed
         _triple = nullptr;
+        // The rows fetched into the strip by the 2D-DMA, so the CPU repeats them from internal RAM
+        // rather than wait on PSRAM (devplan/demo.md §8c). Without it, the CPU reads them itself.
+        if (_layout.scaleX >= 2) {
+                void *fetch = Memory::alloc(MemSpace::Psram, sizeof(BlitChain));
+                if (fetch != nullptr) {
+                        _fetch = ::new (fetch) BlitChain();
+                        const Error ferr = _fetch->start(BlitChain::Conversion::None, 1);
+                        if (ferr.isError()) {
+                                bmdsInfo("ProgramSurface: no 2D-DMA for the rows (%s): read by the CPU", ferr.desc());
+                                _fetch->~BlitChain();
+                                Memory::free(_fetch);
+                                _fetch = nullptr;
+                        }
+                }
+        }
         return;
 }
 
 void ProgramSurface::stopPpa() {
+        if (_fetch != nullptr) {
+                _fetch->~BlitChain(); // waits for a job under way
+                Memory::free(_fetch);
+                _fetch = nullptr;
+        }
         if (_ppa == nullptr) return;
         _ppa->~Ppa(); // waits for a job under way
         Memory::free(_ppa);
@@ -906,25 +926,91 @@ bool ProgramSurface::convertWithPpa(int8_t index, const Rect *changed, const Rec
         const Ppa::Picture screen{back, _fs->width(), _fs->height(), Ppa::Format::Rgb888};
         const size_t       half = _stripBytes / 2;
         const uint8_t     *buf = _buffers[index];
-        int                k = 0;
-        for (size_t i = 0; i < count && err.isOk(); ++i) {
-                const Rect    &r = changed[i];
-                const uint16_t width = on[i].width; // L8: a byte a pixel
-                const uint16_t perHalf = uint16_t(half / width > 0 ? half / width : 1);
-                for (uint16_t y = 0; y < r.height && err.isOk(); y = uint16_t(y + perHalf), k ^= 1) {
-                        const uint16_t rows = uint16_t(r.height - y < perHalf ? r.height - y : perHalf);
-                        uint8_t       *strip = _strip + size_t(k) * half;
-                        // This half's last job ended when the other half's started (one job at a time).
-                        for (uint16_t row = 0; row < rows; ++row)
-                                Pixels::repeat8(buf + size_t(r.y + y + row) * _stride + r.x, r.width,
-                                                strip + size_t(row) * width, l.scaleX);
-                        (void)esp_cache_msync(strip, size_t(rows) * width,
-                                              ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-                        const Ppa::Picture from{strip, width, rows, Ppa::Format::L8};
-                        err = _ppa->expand(from, Rect{0, 0, width, rows}, screen, on[i].x, uint16_t(on[i].y + y), false,
-                                           DrawTimeoutMs);
+        // The jobs: each rectangle in runs of the rows a half holds.
+        struct Job {
+                        size_t   i;    // the rectangle
+                        uint16_t y;    // its first row
+                        uint16_t rows; // 0: none (past the last)
+        };
+        const auto perHalfOf = [&](size_t i) {
+                return uint16_t(half / on[i].width > 0 ? half / on[i].width : 1);
+        };
+        const auto jobFrom = [&](size_t i, uint16_t y) {
+                for (; i < count; ++i, y = 0) {
+                        if (y >= changed[i].height) continue;
+                        const uint16_t perHalf = perHalfOf(i);
+                        return Job{i, y, uint16_t(changed[i].height - y < perHalf ? changed[i].height - y : perHalf)};
                 }
+                return Job{count, 0, 0};
+        };
+        // Fetched by the 2D-DMA when a rectangle's rows are whole 16-byte steps (PIE's, in place):
+        // into the end of the half's rows, repeated forward from there (the reads stay ahead of the
+        // writes); else read by the CPU from PSRAM.
+        const auto fetched = [&](const Job &j) {
+                return _fetch != nullptr && l.scaleX >= 2 && (changed[j.i].width & 15) == 0;
+        };
+        const auto tailOf = [&](const Job &j, int half_) {
+                return _strip + size_t(half_) * half + size_t(j.rows) * (on[j.i].width - changed[j.i].width);
+        };
+        const BlitChain::Picture frame{buf, uint16_t(_stride), _config.height, 1};
+        const auto               startFetch = [&](const Job &j, int half_) {
+                const Rect              &r = changed[j.i];
+                const BlitChain::Picture to{tailOf(j, half_), r.width, j.rows, 1};
+                // The lines the rows land in out of the CPU's cache, so it reads what the 2D-DMA
+                // wrote (rounded out to whole lines: the half is all written back, nothing lost).
+                const uintptr_t first = reinterpret_cast<uintptr_t>(to.data) & ~uintptr_t(63);
+                const uintptr_t last =
+                        (reinterpret_cast<uintptr_t>(to.data) + size_t(j.rows) * r.width + 63) & ~uintptr_t(63);
+                (void)esp_cache_msync(reinterpret_cast<void *>(first), last - first, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                Error e = _fetch->add(frame, r.x, uint16_t(r.y + j.y), to, 0, 0, r.width, j.rows);
+                if (e.isOk()) e = _fetch->submit();
+                return e;
+        };
+        int  k = 0;
+        Job  j = jobFrom(0, 0);
+        bool pending = false; // a fetch under way for j
+        if (j.rows != 0 && fetched(j)) {
+                err = startFetch(j, k);
+                pending = err.isOk();
         }
+        while (j.rows != 0 && err.isOk()) {
+                const Rect    &r = changed[j.i];
+                const uint16_t width = on[j.i].width; // L8: a byte a pixel
+                uint8_t       *strip = _strip + size_t(k) * half;
+                // This half's last job ended when the other half's started (one job at a time).
+                if (pending) {
+                        // The PPA's last job first: the fetch, started with it and far shorter, is
+                        // done by then, so this task blocks once a job, not twice (each block is two
+                        // switches; the PPA idles only while the rows are repeated, ~15 µs).
+                        err = _ppa->wait(DrawTimeoutMs);
+                        if (err.isOk()) err = _fetch->wait(DrawTimeoutMs);
+                        if (err.isError()) break;
+                        const uint8_t *in = tailOf(j, k);
+                        for (uint16_t row = 0; row < j.rows; ++row)
+                                Pixels::repeat8(in + size_t(row) * r.width, r.width, strip + size_t(row) * width,
+                                                l.scaleX);
+                } else {
+                        for (uint16_t row = 0; row < j.rows; ++row)
+                                Pixels::repeat8(buf + size_t(r.y + j.y + row) * _stride + r.x, r.width,
+                                                strip + size_t(row) * width, l.scaleX);
+                }
+                // Written back for the PPA.
+                (void)esp_cache_msync(strip, size_t(j.rows) * width,
+                                      ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+                const Ppa::Picture from{strip, width, j.rows, Ppa::Format::L8};
+                err = _ppa->expand(from, Rect{0, 0, width, j.rows}, screen, on[j.i].x, uint16_t(on[j.i].y + j.y), false,
+                                   DrawTimeoutMs);
+                // The other half is free now (expand() waited for its job): the next rows into it.
+                const Job next = jobFrom(j.i, uint16_t(j.y + j.rows));
+                k ^= 1;
+                pending = false;
+                if (err.isOk() && next.rows != 0 && fetched(next)) {
+                        err = startFetch(next, k);
+                        pending = err.isOk();
+                }
+                j = next;
+        }
+        if (_fetch != nullptr) (void)_fetch->wait(DrawTimeoutMs); // nothing writes the strip after this
         const Error done = _ppa->wait(DrawTimeoutMs); // before anything else touches the back buffer
         if (err.isError() || done.isError())
                 bmdsWarn("ProgramSurface: the PPA's expansion: %s", (err.isError() ? err : done).desc());

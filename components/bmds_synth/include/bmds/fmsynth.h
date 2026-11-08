@@ -81,8 +81,8 @@ class FmSynth : public SynthEngine {
         private:
                 void apply(const Event &event, uint64_t frame);
 
-                State         *_state = nullptr; // internal RAM: the voices, the channels, the mix
-                int16_t       *_waves[8] = {};   // the waveforms in internal RAM while open; nullptr: flash's
+                State         *_state = nullptr; // internal RAM: the voices, the channels
+                int16_t       *_waves[8] = {}; // the waveforms (the most used in the TCM) while open; nullptr: flash's
                 const Op2Bank *_bank = nullptr;
                 Config         _config;
                 Event         *_events = nullptr; // a ring in PSRAM, in frame order

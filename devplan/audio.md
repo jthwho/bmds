@@ -1988,6 +1988,31 @@ violin, 64-frame blocks (1,333 µs):
   of internal RAM. Per synth: its voices and channels and a 16 KB event queue, in PSRAM.
 
 
+### The wavetable beside a busy core (2026-11-07, the user's go-ahead): measured, nothing kept
+
+In demo1 the wavetable is 32-39% of core 1. `bench run synth.wavetable.voices busy=1`: 32 voices
+321 µs a block alone, ~935 under load. Profiled under load and resolved to instructions: 59% in the
+voice loop (`tsf_voice_run`), and in it most samples land just after the two sample loads
+(`input[pos]`, `input[nextPos]`) and the output's: the font's samples come from PSRAM (2-3 new
+lines a voice a block), and the other core's traffic leaves nothing of them cached. Tried, each
+flashed and run (the comparison that counts: four rounds each, one flash before and one after):
+
+| | 16 voices, busy | 32 voices, busy | alone |
+|---|---|---|---|
+| before | 478-487 µs | 932-939 | 169 / 321 |
+| the render path in IRAM, the math always inline, float copies of the pitch's doubles | 469-475 | 920-937 | 167 / 320 |
+| the voices' records in internal RAM (a single run) | 451 | 893 | |
+| the L1 data cache's own preload of the next voice's samples while one renders (a single run) | 515 | 1,017 | 185 / 356 |
+
+- **None kept:** 1-2%, within a launch's spread; not worth IRAM's 4.5 KB. A single launch of the
+  busy bench varies by up to 25% (866 to 1,151 µs for the same build), so only repeated runs over
+  flashes say anything here.
+- **The ROM's L1 preload (`Cache_Start_L1_DCache_Preload`) made it worse**, alone too: starting,
+  waiting for and ending a preload each voice costs more than the miss it hides.
+- **What is left:** the samples' latency from PSRAM. A smaller font in internal RAM isn't possible
+  (5.7 MB); the levers are where the synth runs (`demo.md` §10: on core 0 the drawing pays) and
+  how many voices sound.
+
 ## 23. MIDI over the network and as a USB device (design, 2026-10-20)
 
 The user's request (2026-10-20): MIDI over the network (RTP-MIDI), and the board as a USB MIDI
@@ -2904,6 +2929,39 @@ The user heard Bricks' and Doom's music through `system` to `fm` at a very low v
 - **The services' rings 256 → 1,024 events** (16 KB of PSRAM each): a file's start comes at once
   (each channel's program and controllers, a player's resets) while the synth and its stream open;
   the media player's first Freedoom song dropped 61 there.
+
+### FM beside a busy core, again (2026-11-07, the user's go-ahead)
+
+`demo.md` §10 left FM at 35-42% of core 1 in demo1's busiest section, "several times what its
+instructions should take", and the waveforms in internal RAM hadn't helped. Measured with
+`bench run synth.fm.voices busy=1` (each change flashed and run alone):
+
+| | 1 voice | 8 | 16 | 32 (29 sounding) |
+|---|---|---|---|---|
+| before, busy | 43 µs | 170 | 365 | 663 |
+| the voice loop, tick and block in IRAM (`BMDS_HOT_ATTR`) | 43 | 173 | 370 | 675 |
+| a sine in the TCM for every waveform (an experiment: the wrong sound) | 38 | 127 | 228 | |
+| the three most used waveforms in the TCM, the state in internal RAM | 60 | 180 | 318 | 510 |
+| and a list of the sounding voices | 48 | 166 | 298 | 481 |
+| the same without IRAM | | 198 | 353 | 569 |
+| alone (no load), before → after | 21.4 → 17.8 | 72 → 71 | 130 → 132 | 201 → 204 |
+
+- **What it waited on: the waveforms**, read every sample through the L1 data cache the other
+  core's traffic empties (~38 lines an operator a block). The TCM has no cache in front of it, so
+  it can't be emptied; it holds 8 KB, not 16. So the TCM now holds the waveforms the bank uses most
+  (counted at `open()`; DMX's and Freedoom's: sine, absolute sine, half sine, about three quarters of
+  the lookups), whole, the same loop reading them; the rest stay in internal RAM. The state (the
+  voices, read once a block) moved out of the TCM to make room.
+- **The state's cost in internal RAM was its scans:** each block looked at every voice's `active`
+  flag, a cache line a voice, a miss each beside a game (1 voice 43 → 60 µs). A list of the
+  sounding voices (`live`, a byte each) is visited instead; output identical (integer sums).
+- **The mix and sum in the TCM too: slower** (16 voices 318 → 352 µs, alone 132 → 140): a TCM read
+  is slower than an L1 hit, and these are written every sample, so they stay in the state. The TCM
+  is for what is read every sample and can't stay cached.
+- **IRAM for the code: kept, measured twice.** First alone it gained 5-10%; with the waveforms in
+  the TCM, taking it away cost 16% (16 voices 298 → 353 µs). 4.9 KB of internal RAM, always.
+- **In demo1 with FM** (`-F`, 60-90 s in): core 1 75% busy, FM 29% of it, the presenter 45%.
+  (`demo.md` §10 had FM at 35-42% in drop B, not this window: the bench is the comparison.)
 
 Step 5 (later): 4-operator voices and WOPL banks; PIE only if a measurement asks.
 

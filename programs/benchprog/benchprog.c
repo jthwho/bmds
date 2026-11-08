@@ -946,7 +946,11 @@ static int32_t pin_core(void) {
         s.size = sizeof(s);
         if (core == 0 || core == 1) {
                 s.cores = 1u << core;
-                if (bmds_sched(BMDS_SCHED_PIN, 0, &s) != 0) return -1;
+                if (bmds_sched(BMDS_SCHED_PIN, 0, &s) != 0) {
+                        /* Figures from the other core would pass for this one's: none. */
+                        fprintf(stderr, "benchprog: can't keep to core %ld\n", core);
+                        exit(1);
+                }
                 sched_yield(); /* onto it */
         }
         memset(&s, 0, sizeof(s));

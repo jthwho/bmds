@@ -199,6 +199,27 @@ TEST_CASE("Game texture maps: a lookup table, moved and wrapped, clipped") {
                                 CHECK(pic.at(x, y) == want);
                         }
         }
+        // L8 two entries at a time: every byte value, moves past the top bit, rows starting on
+        // either half of a word.
+        {
+                Image                 img(64, 32, BMDS_PIXEL_L8);
+                const int32_t         w = 37, h = 9, ts = 39;
+                std::vector<uint16_t> table(size_t(ts) * h);
+                uint32_t              x = 12345;
+                for (uint16_t &t : table) {
+                        x = x * 1664525u + 1013904223u;
+                        t = uint16_t(x >> 16);
+                }
+                Picture pic(48, 12, BMDS_PIXEL_L8, 0x11);
+                REQUIRE(bmds_canvas_remap(&pic.canvas, 3, 1, w, h, &img.image, table.data(), ts, 0x9c, 0xe1) == 0);
+                for (int32_t y = 0; y < h; ++y)
+                        for (int32_t c = 0; c < w; ++c) {
+                                CAPTURE(c);
+                                CAPTURE(y);
+                                const uint16_t t = table[size_t(y) * ts + c];
+                                CHECK(pic.at(3 + c, 1 + y) == img.wrapped((t & 0xff) + 0x9c, (t >> 8) + 0xe1));
+                        }
+        }
         Picture  pic(8, 8, BMDS_PIXEL_L8);
         Image    big(512, 4, BMDS_PIXEL_L8);
         uint16_t one = 0;

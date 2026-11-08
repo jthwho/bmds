@@ -517,6 +517,11 @@ The user approved (2026-10-15) a way to choose:
   yet, which is safe because none of its state is in a core's registers then. Pinned already:
   only its own core succeeds. All the cores: a no-op. musl's `sched_setaffinity` and
   `pthread_setaffinity_np` on the calling thread use it.
+  **Fixed 2026-11-07:** "pinned already" took in the loader's placement too, so a program's first
+  thread could never choose, though the call's documentation says a thread may until its first
+  float: `benchprog core=0` ran on core 1 whenever the loader had put it there, and said "core -1"
+  (`3d.md` §13). `Thread::pinCurrent()` now refuses only a task whose FPU or PIE was used (the bits
+  the port's trap sets in its save area, `sa_enable`, never cleared); one placed but clean moves.
 - **Display programs (2026-10-18, the user's decision):** a program whose note has
   `BMDS_PROGRAM_DISPLAY` (bit 0 of `flags`, appended) always starts on core 0, away from the
   display's presenters and scanout on core 1, whatever the load: a game sharing core 1 waits on

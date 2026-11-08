@@ -1315,6 +1315,30 @@ TEST_CASE("3d: light tables: the nearest colours, of the range given") {
                                 CHECK(distance(pal[got], want) == best);
                         }
         }
+        // Colours equally near (a coarse palette, with repeats): the lowest index, wherever the
+        // search meets them.
+        for (uint32_t seed : {3u, 4u, 6u}) {
+                CAPTURE(seed);
+                std::vector<uint32_t> coarse(256);
+                uint32_t              x = seed;
+                for (auto &c : coarse) {
+                        x = x * 1664525u + 1013904223u;
+                        c = x >> 8 & 0xe0e0e0u;
+                }
+                const uint32_t dark = 0x102030;
+                REQUIRE(bmds_3d_light_table(table.data(), coarse.data(), 0, 256, dark) == 0);
+                for (uint32_t s = 0; s < BMDS_3D_LIGHT_SHADES; ++s)
+                        for (uint32_t i = 0; i < 256; ++i) {
+                                const uint32_t want = shaded(coarse[i], dark, s);
+                                uint32_t       best = UINT32_MAX, lowest = 0;
+                                for (uint32_t c = 0; c < 256; ++c)
+                                        if (distance(coarse[c], want) < best)
+                                                best = distance(coarse[c], want), lowest = c;
+                                CAPTURE(s);
+                                CAPTURE(i);
+                                CHECK(table[s * 256 + i] == lowest);
+                        }
+        }
         // The full range at full light: each texel its own colour.
         REQUIRE(bmds_3d_light_table(table.data(), pal.data(), 0, 256, 0) == 0);
         for (uint32_t i = 0; i < 256; ++i) CHECK(pal[table[31 * 256 + i]] == pal[i]);

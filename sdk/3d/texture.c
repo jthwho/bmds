@@ -8,10 +8,12 @@
  * libbmds3d's textured triangles (devplan/3d.md §4f step 7, §13 step 4), L8: the rows and columns
  * exactly as bmds_3d_triangle()'s (the same edges, so the fill rule holds between textured and
  * untextured triangles), texture coordinates (and shades) as planes over the screen set up once a
- * triangle in floats, then stepped in 16.16 along each span. Affine by default; with
- * `BMDS_3D_PERSPECTIVE`, u / w, v / w and 1 / w are the planes and the span is exact every 16
- * pixels, affine between (one division a run). Texels fetched by mask (power-of-two textures
- * wrap), four pixels gathered into a word a store.
+ * triangle in floats, then in 16.16 integers: a span's start from the top vertex's pixel by whole
+ * pixels (wrapping arithmetic, as the textures wrap: any distance is exact), stepped along it.
+ * Affine by default; with `BMDS_3D_PERSPECTIVE`, u / w, v / w and 1 / w are the planes and the span
+ * is exact every 16 pixels, affine between (one division a run), unless the triangle's depths are
+ * so alike that affine is within a quarter texel of it (most of a far or small triangle's). Texels
+ * fetched by mask (power-of-two textures wrap), four pixels gathered into a word a store.
  */
 
 #include <math.h>
@@ -107,6 +109,12 @@ static const float reciprocal[17] = {0.0f,         1.0f,         1.0f / 2.0f,  1
 
 #define PERSPECTIVE_RUN 16
 
+/* Perspective's largest effect on a triangle drawn affine, in texels: its 1 / w at the vertices from
+   q_min to q_max (normalized, q_max 1) moves a point between them by at most (1 / q_min − 1) / 4 of
+   the way (e·t(1 − t) to first order, at the middle; less beyond), times the texels between them.
+   Below this, the triangle is drawn affine. */
+#define AFFINE_TEXELS 0.25f
+
 uint32_t bmds_3d_triangle_textured(bmds_canvas_t *c, const bmds_3d_area_t *area, const bmds_3d_record_t *rec,
                                    const bmds_3d_tri_t *t, const bmds_3d_tuv_t *uv, bmds_3d_bounds_t *bounds) {
         if (c->format != BMDS_PIXEL_L8) return 0;
@@ -128,17 +136,24 @@ uint32_t bmds_3d_triangle_textured(bmds_canvas_t *c, const bmds_3d_area_t *area,
         /* The planes, from the top vertex (pixels): u, v (u / w, v / w with perspective), 1 / w, the
            shade. u and v moved by whole turns of the texture to near 0 (the same texels), so 16.16
            holds them. */
-        const int   persp = rec->perspective;
+        int         persp = rec->perspective;
         const int   kind = rec->table == NULL ? 0 : rec->smooth ? 2 : 1;
         const int   order[3] = {i0, i1, i2};
         float       a[4][3]; /* u, v, q, s at each vertex, top first */
         const float umin = fminf(uv->u[0], fminf(uv->u[1], uv->u[2]));
         const float vmin = fminf(uv->v[0], fminf(uv->v[1], uv->v[2]));
-        const float uoff = floorf(umin / rec->tw) * rec->tw, voff = floorf(vmin / rec->th) * rec->th;
+        /* Whole turns (sizes are powers of two: the reciprocals exact). */
+        const float uoff = floorf(umin * rec->itw) * rec->tw, voff = floorf(vmin * rec->ith) * rec->th;
         float       qmax = 1.0f;
         if (persp) {
                 qmax = fmaxf(uv->q[0], fmaxf(uv->q[1], uv->q[2]));
                 if (!(qmax > 0.0f)) return 0;
+                /* Affine where perspective would move no texel by more than AFFINE_TEXELS. */
+                const float qmin = fminf(uv->q[0], fminf(uv->q[1], uv->q[2]));
+                const float umax = fmaxf(uv->u[0], fmaxf(uv->u[1], uv->u[2]));
+                const float vmax = fmaxf(uv->v[0], fmaxf(uv->v[1], uv->v[2]));
+                const float span = fmaxf(umax - umin, vmax - vmin);
+                if ((qmax - qmin) * span <= 4.0f * AFFINE_TEXELS * qmin) persp = 0; /* NaN: stays */
         }
         for (int k = 0; k < 3; ++k) {
                 const int   j = order[k];
@@ -176,8 +191,19 @@ uint32_t bmds_3d_triangle_textured(bmds_canvas_t *c, const bmds_3d_area_t *area,
                 f.light = rec->table + (shade << 8);
         }
         const uint32_t du = fixed16(gx[0]), dv = fixed16(gx[1]);
-        const float    smax = (float)rec->top + 0.5f;
         const int32_t  ds_step = (int32_t)fixed16(gx[3]);
+        /* Affine: u and v at the top vertex's pixel's centre (xa, ya) in 16.16, then by whole pixels
+           in wrapping integers (16.16 wraps at 65536 texels, a multiple of any texture's size). */
+        const int32_t  xa = x0 >> 4, ya = y0 >> 4;
+        const float    pxa = (float)xa + 0.5f - fx0, pya = (float)ya + 0.5f - fy0;
+        const uint32_t ua = fixed16(a[0][0] + gx[0] * pxa + gy[0] * pya);
+        const uint32_t va = fixed16(a[1][0] + gx[1] * pxa + gy[1] * pya);
+        const uint32_t duy = fixed16(gy[0]), dvy = fixed16(gy[1]);
+        /* The shade likewise, in 64 bits (held in the table per span; a sliver's gradients are
+           clamped). */
+        const int64_t sa = (int64_t)(int32_t)fixed16(a[3][0] + gx[3] * pxa + gy[3] * pya);
+        const int64_t dsy = (int32_t)fixed16(gy[3]);
+        const int64_t smin16 = 32768, smax16 = ((int64_t)rec->top << 16) + 32768;
 
         bmds_3d_edge_t longe, shorte;
         bmds_3d_edge_init(&longe, x0, y0, x2, y2, row);
@@ -198,16 +224,14 @@ uint32_t bmds_3d_triangle_textured(bmds_canvas_t *c, const bmds_3d_area_t *area,
                 bmds_3d_edge_step(&shorte);
                 if (xl >= xr) continue;
                 const int32_t n = xr - xl;
-                /* The first pixel's centre, from the top vertex. */
-                const float px = (float)xl + 0.5f - fx0, py = (float)y + 0.5f - fy0;
+                const int32_t ox = xl - xa, oy = y - ya; /* pixels from the top vertex's */
 
                 /* The shade: its plane at the first pixel, held in the table, stepped by its gradient;
                    re-stepped (one division) only when rounding would leave the table by the last. */
                 uint32_t s = 0, ds = 0;
                 if (kind == 2) {
-                        float sf = a[3][0] + gx[3] * px + gy[3] * py;
-                        sf = sf > 0.5f ? (sf < smax ? sf : smax) : 0.5f; /* NaN: the bottom */
-                        const int32_t s0 = (int32_t)(sf * 65536.0f);
+                        const int64_t sf = sa + (int64_t)ds_step * ox + dsy * oy;
+                        const int32_t s0 = (int32_t)(sf < smin16 ? smin16 : sf > smax16 ? smax16 : sf);
                         int32_t       d = ds_step;
                         const int64_t last = (int64_t)s0 + (int64_t)d * (n - 1);
                         if (last < 0 || last >= ((int64_t)rec->top + 1) << 16) {
@@ -219,11 +243,12 @@ uint32_t bmds_3d_triangle_textured(bmds_canvas_t *c, const bmds_3d_area_t *area,
                 }
                 uint8_t *q = line + xl;
                 if (!persp) {
-                        const uint32_t u = fixed16(a[0][0] + gx[0] * px + gy[0] * py);
-                        const uint32_t v = fixed16(a[1][0] + gx[1] * px + gy[1] * py);
+                        const uint32_t u = ua + du * (uint32_t)ox + duy * (uint32_t)oy;
+                        const uint32_t v = va + dv * (uint32_t)ox + dvy * (uint32_t)oy;
                         run(q, n, u, du, v, dv, s, ds, kind, &f);
                 } else {
                         /* Exact at each run's ends, PERSPECTIVE_RUN pixels apart; affine between. */
+                        const float px = (float)xl + 0.5f - fx0, py = (float)y + 0.5f - fy0;
                         float U = a[0][0] + gx[0] * px + gy[0] * py, V = a[1][0] + gx[1] * px + gy[1] * py;
                         float Q = a[2][0] + gx[2] * px + gy[2] * py;
                         float iq = 1.0f / (Q > 1e-6f ? Q : 1e-6f);

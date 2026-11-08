@@ -100,10 +100,11 @@ class Thread {
                  *
                  * ESP-IDF pins a task to its core the first time it uses the FPU or PIE (their
                  * registers are saved lazily, so its state stays in that core's); before that it
-                 * may run on either, and may be pinned anywhere. After: only its own core.
+                 * may run on either, and may be pinned anywhere, also when only placed on a core
+                 * (a program's first thread). After: only its own core.
                  *
-                 * @return `Ok`, `Invalid` (no such core), or `InvalidState` (pinned to the
-                 *         other already).
+                 * @return `Ok`, `Invalid` (no such core), or `InvalidState` (its FPU or PIE
+                 *         state on the other already).
                  * @blocking Moving: until the other core runs it (its next switch, a tick at most).
                  */
                 static Error pinCurrent(int core);

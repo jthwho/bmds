@@ -273,8 +273,11 @@ Plan: [`input.md`](input.md).
   `BMDS_3D_PERSPECTIVE` (exact every 16 pixels), the material grown at its end (old sizes still draw),
   `bmds_3d_light_table()` (exact nearest colours, a range of candidates, a fog colour), and in libbmdsgame
   `bmds_canvas_image()`, `bmds_canvas_texture_affine()` with `bmds_game_affine_rotozoom()`, and
-  `bmds_canvas_remap()`; `solids -t`/T, `render.textured` in `benchprog`. Next: its figures on the board;
-  the z-buffer left for later.
+  `bmds_canvas_remap()`; `solids -t`/T, `render.textured` in `benchprog`. Its figures on the board, then an
+  efficiency pass (§13, 2026-11-07, the user's go-ahead): PIE doesn't fit (spans ~7 pixels, texel gathers,
+  float vertices); per-row and per-triangle work cut instead: flat 10.3 → 9.1 ms, Gouraud 12.4 → 10.1,
+  textured 15.3 → 14.0, perspective 18.6 → 14.2 (affine where it is within a quarter texel), light tables
+  36 → 28 ms (and exact on ties); `benchprog core=` now always where asked. Next: the z-buffer, later.
 - [ ] The sequencer (`sequencer.md`, planned 2026-11-06 with the user): songs as patterns in the SDK
   (`bmds/seq.h`), played through scheduled MIDI and the game mixer, beat sync by heard time (frame times and
   a port's latency from the kernel), live control quantized to the grid, the synths' sound controllers
@@ -305,7 +308,10 @@ Plan: [`input.md`](input.md).
   sound made ahead; `-1`, `-s`, the icon; the rotozoomer and a textured cube (3D step 4). After the
   user's first watch: two voices in exchanges on the cues and a random chat over the credits, the music ducked under
   each line (`bmds_seq_fade()`), lines in turn, the speech mixer on the game's core with a lead of
-  silence (no underrun mid-line; fire 58 fps, solids 47). Next: FM's own cost per voice, the 3D split.
+  silence (no underrun mid-line; fire 58 fps, solids 47). Then (2026-11-07, the user's go-ahead): the
+  presenter's rows fetched by the 2D-DMA (`demo.md` §8c: 6.4 → 3.7 ms of CPU a frame, core 1 92 →
+  80% busy in the demo), FM's most used waveforms in the TCM and a list of its sounding voices
+  (`audio.md` §26: 32 voices beside a busy core 663 → 481-522 µs a block).
   Step 0 done (§8b, 2026-11-06): whole L8 frames full screen at 60 (the PPA's CLUT expands what the CPU
   repeats across; `Surface::beginWrite()`; the PPA claimed by one user at a time): 640×360 54 → 60 fps,
   the presenter's CPU 16.8 → 6.6 ms a frame; Doom's and Quake's cheaper too (`games.md` §27).

@@ -161,8 +161,35 @@ traffic, and it only has to write 1280×360 (the scan repeats rows).
 - **Later, if core 1 is wanted for drawing:** `repeat8` is still about a third of core 1 at
   640×360, nearly all of it reading the program's frame from PSRAM (~43 MB/s with the scan, the
   PPA and the program all at it): fetching rows into internal RAM by the 2D-DMA first would
-  hide it. Bigger strip halves would cut the ~30 PPA jobs a frame and their fixed cost, and the
+  hide it. **Done in §8c.** Bigger strip halves would cut the ~30 PPA jobs a frame and their fixed cost, and the
   strip's cache write-backs run with interrupts off.
+
+### 8c. Done: the rows fetched by the 2D-DMA (2026-11-07, the user's go-ahead)
+
+**Measured first** (`prof -c 1`, demo1 with the wavetable, 60-90 s in): core 1 92% busy, the
+presenter 57% of it and the wavetable 32%. Of the presenter: `repeat8` 64% (37% of the core),
+nearly all of it waiting on PSRAM for the program's frame; critical sections ~19% (cache
+write-backs, the 2D-DMA driver's connects, semaphores).
+
+**Built:** the rows a strip half takes are fetched by the 2D-DMA (`BlitChain`, one piece a job)
+into the half's end while the PPA expands the other half; the CPU repeats them forward in place
+from internal RAM (PIE's reads stay ahead of its writes when a row is whole 16-byte steps; other
+rectangles are read from PSRAM as before). The lines a fetch fills are invalidated just before it
+(the half is written back by then, so rounding out to whole lines loses nothing). Kept from the
+first try's lesson: wait for the PPA's last job before the fetch's. Waiting on the fetch first made
+two blocks a job, each two task switches and their critical sections, which ate most of the gain
+(the presenter 57 → 55% of core 1); after the PPA's ~300 µs job the fetch is done and its wait
+doesn't block.
+
+| | before | fetch, two waits | one wait | lines invalidated per fetch |
+|---|---|---|---|---|
+| `surface.present` demo_l8_640x360_full, system CPU a frame | 6,388 µs | 4,110 | 3,804 | 3,718 |
+| demo1, core 1 busy (presenter's share) | 92% (57%) | 89% (55%) | 80% (41%) | |
+
+Doom's whole-frame case 3.6 → 3.0 ms a frame, Quake's 4.4 → 3.5; all at 60. Screenshots of the
+boot's text and the tunnel pixel-exact. What's left of the presenter is per job (~30 PPA jobs and
+30 fetches a frame): the semaphores' blocks, the cache write-backs (interrupts off), the 2D-DMA
+driver's connects (~17 µs a job). Bigger halves would cut them, at internal RAM's cost.
 
 ## 9. Steps
 

@@ -55,6 +55,8 @@ static void make_textured(const bmds_3d_material_t *m, bmds_3d_record_t *rec) {
         rec->vshift = 16u - sshift;
         rec->tw = (float)t->width;
         rec->th = (float)t->height;
+        rec->itw = 1.0f / rec->tw;
+        rec->ith = 1.0f / rec->th;
         if (rec->table == NULL) return; /* top 0: the texels themselves */
         rec->top = BMDS_3D_LIGHT_SHADES - 1;
         /* Shades per vertex: Gouraud's lit (or fogged), and the unlit modes' fog; TEXTURED_FLAT's
@@ -195,18 +197,36 @@ static uint32_t depth_key(float depth) {
         return ~u;
 }
 
-/* Sorts @p n keys and their order, least significant byte first (stable); the results in *k, *o. */
+/* Sorts @p n keys and their order, least significant byte first (stable); the results in *k, *o.
+   The four bytes' counts in one pass over the keys; a byte the same in every key (the top of a
+   draw's rank, a depth's sign and exponent, often) needs no pass. Counts in 16 bits (2 KB of
+   stack): n is at most 65535 (the queue's limit). */
 static void radix(uint32_t **k, uint32_t **k2, uint16_t **o, uint16_t **o2, uint32_t n) {
-        for (int shift = 0; shift < 32; shift += 8) {
-                uint32_t count[257];
-                memset(count, 0, sizeof(count));
-                const uint32_t *a = *k;
-                for (uint32_t i = 0; i < n; ++i) ++count[((a[i] >> shift) & 0xffu) + 1];
-                for (int b = 0; b < 256; ++b) count[b + 1] += count[b];
+        uint16_t count[4][256];
+        memset(count, 0, sizeof(count));
+        const uint32_t *a = *k;
+        for (uint32_t i = 0; i < n; ++i) {
+                const uint32_t x = a[i];
+                ++count[0][x & 0xffu];
+                ++count[1][(x >> 8) & 0xffu];
+                ++count[2][(x >> 16) & 0xffu];
+                ++count[3][x >> 24];
+        }
+        for (int b = 0; b < 4; ++b) {
+                const uint32_t shift = 8u * (uint32_t)b;
+                uint16_t      *c = count[b];
+                if (c[((*k)[0] >> shift) & 0xffu] == n) continue; /* one value: already in order */
+                uint32_t at = 0;
+                for (int v = 0; v < 256; ++v) {
+                        const uint32_t m = c[v];
+                        c[v] = (uint16_t)at;
+                        at += m;
+                }
+                a = *k;
                 for (uint32_t i = 0; i < n; ++i) {
-                        const uint32_t at = count[(a[i] >> shift) & 0xffu]++;
-                        (*k2)[at] = a[i];
-                        (*o2)[at] = (*o)[i];
+                        const uint32_t to = c[(a[i] >> shift) & 0xffu]++;
+                        (*k2)[to] = a[i];
+                        (*o2)[to] = (*o)[i];
                 }
                 uint32_t *tk = *k;
                 *k = *k2, *k2 = tk;
@@ -320,17 +340,23 @@ static void push(bmds_3d_t *ctx, const int32_t *xy, const int16_t *s, const floa
    mesh's through @p mm, or the triangle's own, turned to the viewer) x and y, -1..1, across the
    texture's width and height (a sphere map). */
 static void envmap_uvs(const bmds_3d_mesh_t *mesh, const uint16_t *ix, const bmds_3d_vertex_t *const *p,
-                       const float *mm, int ortho, float tw, float th, float *uv) {
+                       const float *mm, int ortho, float tw, float th, float *cache, float *uv) {
         const float hu = tw * 0.5f, hv = th * 0.5f, su = hu - 0.5f, sv = hv - 0.5f;
         if (mesh->normals != NULL) {
+                /* Each vertex's once a draw (the cache's u is -1 until then; a u is at least 0.5). */
                 for (int k = 0; k < 3; ++k) {
-                        const float      *nn = mesh->normals + 3 * ix[k];
-                        const bmds_vec3_t n =
-                                bmds_vec3_normalize(bmds_vec3(mm[0] * nn[0] + mm[4] * nn[1] + mm[8] * nn[2],
-                                                              mm[1] * nn[0] + mm[5] * nn[1] + mm[9] * nn[2],
-                                                              mm[2] * nn[0] + mm[6] * nn[1] + mm[10] * nn[2]));
-                        uv[2 * k] = hu + n.x * su;
-                        uv[2 * k + 1] = hv - n.y * sv;
+                        float *c = cache + 2 * ix[k];
+                        if (c[0] < 0.0f) {
+                                const float      *nn = mesh->normals + 3 * ix[k];
+                                const bmds_vec3_t n =
+                                        bmds_vec3_normalize(bmds_vec3(mm[0] * nn[0] + mm[4] * nn[1] + mm[8] * nn[2],
+                                                                      mm[1] * nn[0] + mm[5] * nn[1] + mm[9] * nn[2],
+                                                                      mm[2] * nn[0] + mm[6] * nn[1] + mm[10] * nn[2]));
+                                c[0] = hu + n.x * su;
+                                c[1] = hv - n.y * sv;
+                        }
+                        uv[2 * k] = c[0];
+                        uv[2 * k + 1] = c[1];
                 }
                 return;
         }
@@ -382,6 +408,8 @@ int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3
         const float *mm = mv->m;
 
         if (!per_vertex) ctx->records[draw].smooth = 0; /* a shade a triangle: flat spans */
+        if (envmap && mesh->normals != NULL)            /* worked out on first use (envmap_uvs()) */
+                for (uint32_t v = 0; v < mesh->vertex_count; ++v) ctx->envuv[2 * v] = -1.0f;
         const int                ortho = ctx->projection.m[11] == 0.0f;
         const bmds_3d_viewport_t vp = bmds_3d_viewport(ctx);
 
@@ -446,7 +474,7 @@ int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3
                 float uv[6] = {0, 0, 0, 0, 0, 0};
                 if (textured) {
                         if (envmap)
-                                envmap_uvs(mesh, ix, p, mm, ortho, rec.tw, rec.th, uv);
+                                envmap_uvs(mesh, ix, p, mm, ortho, rec.tw, rec.th, ctx->envuv, uv);
                         else
                                 for (int k = 0; k < 3; ++k) {
                                         uv[2 * k] = mesh->uvs[2 * ix[k]] * rec.tw;

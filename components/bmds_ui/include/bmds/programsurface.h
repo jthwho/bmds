@@ -33,6 +33,7 @@ BMDS_NAMESPACE_BEGIN
 class Display;
 class Painter;
 class Ppa;
+class BlitChain;
 class Surface;
 
 /**
@@ -285,6 +286,7 @@ class ProgramSurface final : public SwapChain {
                 uint32_t         *_triple = nullptr;  // expandTriple()'s table: L8 full screen at 3 times (presenter's)
                 std::atomic<bool> _tripleStale{true}; // the palette changed since it was made
                 Ppa              *_ppa = nullptr;     // L8 at a whole scale full screen: the CLUT expands (presenter's)
+                BlitChain *_fetch = nullptr; // with it: the 2D-DMA bringing the rows into the strip (presenter's)
                 std::atomic<bool> _clutStale{true};   // the palette changed since the CLUT was loaded
                 size_t         _stripBytes = 0;
 

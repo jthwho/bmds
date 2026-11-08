@@ -91,6 +91,7 @@ void bmds_3d_destroy(bmds_3d_t *ctx) {
         bmds_mem_free(ctx->records);
         bmds_mem_free(ctx->ranked);
         bmds_mem_free(ctx->tuvs);
+        bmds_mem_free(ctx->envuv);
         bmds_mem_free(ctx);
         return;
 }
@@ -461,6 +462,10 @@ int bmds_3d_draw(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3d_mater
                         ctx->tuvs =
                                 (bmds_3d_tuv_t *)bmds_mem_alloc(ctx->max_tris * (uint32_t)sizeof(bmds_3d_tuv_t), 0, 0);
                         if (ctx->tuvs == NULL) return -BMDS_ENOMEM;
+                }
+                if (material->mode == BMDS_3D_ENVMAP && mesh->normals != NULL && ctx->envuv == NULL) {
+                        ctx->envuv = (float *)bmds_mem_alloc(ctx->max_vertices * 2u * (uint32_t)sizeof(float), 0, 0);
+                        if (ctx->envuv == NULL) return -BMDS_ENOMEM;
                 }
         }
         bmds_3d_ink_t ink;

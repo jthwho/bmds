@@ -10,6 +10,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/timers.h>
+#include <riscv/rvruntime-frames.h>
+#include <soc/soc_caps.h>
 #include <atomic>
 #include <bmds/assert.h>
 #include <bmds/detail/ticks.h>
@@ -119,15 +121,35 @@ Error Thread::start(const Config &config, Entry entry, void *arg) {
 }
 
 // The port's own (port.c), as its FPU and PIE traps pin a task: not in a header.
-extern "C" void vPortTaskPinToCore(StaticTask_t *task, int coreid);
+extern "C" void              vPortTaskPinToCore(StaticTask_t *task, int coreid);
+extern "C" RvCoprocSaveArea *pxPortGetCoprocArea(StaticTask_t *task, bool allocate, int coproc);
+
+namespace {
+
+        // Whether the calling task has used the FPU or PIE: the port's trap sets the coprocessor's
+        // bit in the task's save area on its first use (and pins it), and never clears it.
+        bool usedCoprocessor(TaskHandle_t self) {
+                const RvCoprocSaveArea *sa =
+                        pxPortGetCoprocArea(reinterpret_cast<StaticTask_t *>(self), false, FPU_COPROC_IDX);
+                uint32_t used = 1u << FPU_COPROC_IDX;
+#if SOC_CPU_HAS_PIE
+                used |= 1u << PIE_COPROC_IDX;
+#endif
+                return (uint32_t(sa->sa_enable) & used) != 0;
+        }
+
+} // namespace
 
 Error Thread::pinCurrent(int core) {
         if (core < 0 || core >= portNUM_PROCESSORS) return Error::Invalid;
         TaskHandle_t     self = xTaskGetCurrentTaskHandle();
         const BaseType_t pinned = xTaskGetCoreID(self);
-        if (pinned != tskNO_AFFINITY) return pinned == core ? Error::Ok : Error::InvalidState;
-        // Not pinned: it has never used the FPU or PIE, so none of its state is in a core's
-        // registers, and nothing pins it meanwhile (only its own FPU or PIE use would).
+        if (pinned == core) return Error::Ok;
+        // Pinned elsewhere by its FPU or PIE state: it must stay. Pinned only by placement (a
+        // program's first thread, coreForProgram()): it may still move, as an unpinned one.
+        if (pinned != tskNO_AFFINITY && usedCoprocessor(self)) return Error::InvalidState;
+        // None of its state is in a core's registers, and nothing pins it meanwhile (only its own
+        // FPU or PIE use would).
         vPortTaskPinToCore(reinterpret_cast<StaticTask_t *>(self), core);
         // On the other core: this one's scheduler won't run it again; the other takes it at
         // its next switch.
