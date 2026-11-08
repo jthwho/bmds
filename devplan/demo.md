@@ -35,6 +35,7 @@ Timed by the song's sections (cues), about 3½ minutes at 140 BPM, then it loops
 | 2 | **Plasma** | Classic sum-of-sines plasma, the colour comes only from cycling the palette; the drop changes the palette's whole mood | palette cycling [palette helpers] |
 | 3 | **Starfield to wireframe** | 3D stars rushing; they slow and gather into a wireframe BMDS logo that spins | 3D points and lines, depth cue [3D wire] |
 | 4 | **Tunnel** | Textured tunnel flying on a curve, turning with the mouse, its texture's palette cycling | lookup-table mapping [canvas remap] |
+| 4½ | **Bestagons** (added 2026-11-07, the user's) | A honeycomb of random colours, one flaring on each beat, moved only by its palette; pillars rising out of it in waves; a ball of hexagon tiles flying together and popping on the beat | palette, 2D-DMA, many small draws ordered on the ground [3D flat] |
 | 5 | **Solids** | A Gouraud torus knot and flat-shaded polyhedra orbiting, the light following the pointer, flashing on the snare | 3D lighting and ramps [3D flat, Gouraud] |
 | 6 | **Vector balls** | Hundreds of shaded ball sprites forming shapes (cube, sphere, the "B"), morphing on each bar | projection and depth sort, keyed blits [3D project, sort] |
 | 7 | **Fire and glow** | Fire rising from the bottom, additive glowing wireframes above it | saturating add in L8 [3D `ADD`, PIE] |
@@ -63,8 +64,8 @@ it exists, `sequencer.md` §4c):
   `CHANCE` variation, a clap on 2 and 4;
 - an **acid bassline** (Synth Bass 2 or Lead 2 sawtooth) with slides and a filter lane on 74;
 - an **arpeggiated lead** and a **pad** for the breakdowns;
-- sections: intro (8 bars), build (8), drop A (16), breakdown (8), build (8), drop B (16),
-  outro (8): ~3½ minutes.
+- sections: intro (8 bars), build (8), drop A (16), groove (8), hive (16), breakdown (8), build
+  (8), drop B (16), finale (8), outro (8): 104 bars, about 3 minutes.
 - **FM by default** (`/dev/midi`, the system synth), **`-w` or W** for the wavetable port,
   switched live at the next bar (notes cut on the old one, the song carries on).
 
@@ -473,3 +474,46 @@ run differs, and the APIs grown where the demo needs them (it's what a game woul
     is closed, so a failed open keeps it.
   - Measured again (the whole song; fps, a second's average): boot 60, copper 60, plasma 60, stars
     60, tunnel 59, fire 58, balls 59, solids 47, rotozoomer and cube 55 (47-61), credits 59.
+
+### The bestagons (2026-11-07, the user's request)
+
+- **`parts/hive.c`, "Bestagons"**, on a section of its own: `hive`, 16 bars after the groove (the
+  song 88 → 104 bars: kick, clap, hats, the plain bass, the lead, the pads and the hook; no bells).
+  Three phases by the bar:
+  - **0-4, a honeycomb all palette:** a 640×360 picture made at init (pointy-topped cells 22 pixels
+    to a corner, faces, bevels lit from the top left or shaded, gaps), each cell one of 8 colours at
+    random (a hash of its place and the run's seed; each colour three entries: face, lit bevel,
+    shaded bevel), copied in by the 2D-DMA (slot 3). Only the palette moves (the user's design): on
+    each beat one colour, never the last, flares bright and pale and eases back over about a second;
+    the 8 colours are spread round the wheel, shuffled and varied each run. The first version (a
+    spiral arm of 48 phases, cells popped by the CPU) gave way to it.
+  - **4-12, pillars:** 37 hexagonal prisms rising out of it (seen from straight above first: their
+    tops are the honeycomb), the camera tilting and circling, heights in waves, the bass lifting the
+    middle, a ring a beat on the kick, a ramp a ring. Each prism one draw, its bounds centred on
+    its base: the draws' order by centres is then by place on the ground, back to front for things
+    standing on a plane whatever their heights. Each draws only its top and the three sides that can
+    face the camera (one of six meshes, chosen by the side most towards it): 18 vertices and 10
+    triangles, nothing culled.
+  - **12-16, a Goldberg ball:** the dual of a twice-split icosahedron made at init (each vertex a
+    tile, each triangle's middle a corner; corners sorted round, pulled in for gaps, put on the
+    tile's plane): 150 hexagons and 12 pentagons, coloured by distance from the pentagons (a
+    breadth-first walk), three meshes whose positions are rewritten each frame: tiles fly in late
+    by a random delay, pop out in a band that turns round it on the beat, burst on a click, fly off
+    in the last half bar. A coarse core (80 triangles) shows through the gaps.
+- **Measured** (the part alone, the wavetable playing): the honeycomb 4.4 ms (the 2D-DMA's copy 2.7
+  of it: a fill costs the same, and the CPU waits for either), the pillars 9-11 ms, the ball 11-12;
+  57-60 fps with the overlay. Found: 61 pillars cost 13-16 ms. Not the draws (host: 61 draws and one
+  mesh of the same triangles cost the same) nor the vertices (18 instead of 30 a pillar saved 0.6
+  ms): in the show a triangle costs about twice the 3D bench's (~5 µs queued, the drawing by
+  rows), with core 1 full of the synth and the presenter and the PSRAM shared with the scanout.
+- **`-p PART`** holds the show on one part (numbered as the keys), the music playing and no boot:
+  for watching and timing one part. The keys 1-9 now reach the parts before the credits.
+- Speech slots 48 → 52 (four for the new section).
+- **The teapot burns in the fire instead** (the user's, after seeing it on the pillars): bars 0-1
+  of each eight the icosahedron, 2-3 the knot, 4-7 Newell's teapot, upright, turning and rocking,
+  drawn wire into the heat field at its hottest so flames rise off its edges. `teapot.bm3d` in the
+  app folder, made by `dist/demo1` with `bmds-mesh3d` (built by `$HOSTCC`) at detail 3 (648
+  triangles, 18 KB), loaded at init by `bmds_3d_model_load()`; no file, the knot burns on. Its
+  wire is the patches' grid lines: `bmds-mesh3d` now leaves out the sides inside a polygon (a
+  patch's quad's diagonal, an OBJ polygon's spokes), which the edge finder kept wherever the two
+  triangles weren't in one plane (all over a curved teapot). Same cost as the knot on the board.

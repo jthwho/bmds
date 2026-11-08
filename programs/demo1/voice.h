@@ -19,7 +19,7 @@
 #include <bmds/seq.h>
 
 /** @brief Lines kept at once. */
-#define VOICE_SLOTS 48
+#define VOICE_SLOTS 52
 
 /** @brief A slot's state. */
 enum {

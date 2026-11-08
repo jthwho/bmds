@@ -255,7 +255,8 @@ Plan: [`input.md`](input.md).
 - [ ] 3D for programs (`3d.md`, planned 2026-11-06 with the user): `libbmds3d` in the SDK, our own small API
   (not OpenGL): float transforms, fixed-point spans in PIE; points, wireframe, flat, Gouraud, textured and
   environment-mapped solids, L8 first (shade ramps, light tables, saturating `ADD`); a painter's sort, an
-  optional z-buffer; mesh generators and OBJ loading; palette helpers and canvas mapping in libbmdsgame.
+  optional z-buffer; mesh generators and models (our own `.bm3d`, converted from OBJ on the PC); palette
+  helpers and canvas mapping in libbmdsgame.
   Step 1 done (§13, 2026-11-06): `bmds/3d.h` and `libbmds3d` (math, contexts, made meshes with edges,
   wireframe and points with hidden lines and depth shading, projecting and sorting), host-tested, the `wire`
   example and `render.wire` bench on the board. Found: a 640×360 L8 frame changed whole presented at under 40
@@ -277,7 +278,13 @@ Plan: [`input.md`](input.md).
   efficiency pass (§13, 2026-11-07, the user's go-ahead): PIE doesn't fit (spans ~7 pixels, texel gathers,
   float vertices); per-row and per-triangle work cut instead: flat 10.3 → 9.1 ms, Gouraud 12.4 → 10.1,
   textured 15.3 → 14.0, perspective 18.6 → 14.2 (affine where it is within a quarter texel), light tables
-  36 → 28 ms (and exact on ties); `benchprog core=` now always where asked. Next: the z-buffer, later.
+  36 → 28 ms (and exact on ties); `benchprog core=` now always where asked. Step 5 done (§12d, §13,
+  2026-11-07): models in a binary format of our own (`bmds/3dfile.h`, `.bm3d`: sections, so textures,
+  materials and nodes can follow), `bmds_3d_model_load()` checking every offset, index and float before
+  use (host-tested, fuzzed), `bmds-mesh3d` on the PC (OBJ, Bézier patches), Newell's teapot made for
+  culled painter's drawing (648 triangles at detail 3, loaded in 3.6 ms), `solids -m`; a draw's triangles
+  sorted on 16 bits of its own depth (they tied on a float's top bits and flickered). Next: the hexagon and teapot scenes in the demo; the
+  z-buffer, later.
 - [ ] The sequencer (`sequencer.md`, planned 2026-11-06 with the user): songs as patterns in the SDK
   (`bmds/seq.h`), played through scheduled MIDI and the game mixer, beat sync by heard time (frame times and
   a port's latency from the kernel), live control quantized to the grid, the synths' sound controllers
@@ -311,7 +318,11 @@ Plan: [`input.md`](input.md).
   silence (no underrun mid-line; fire 58 fps, solids 47). Then (2026-11-07, the user's go-ahead): the
   presenter's rows fetched by the 2D-DMA (`demo.md` §8c: 6.4 → 3.7 ms of CPU a frame, core 1 92 →
   80% busy in the demo), FM's most used waveforms in the TCM and a list of its sounding voices
-  (`audio.md` §26: 32 voices beside a busy core 663 → 481-522 µs a block).
+  (`audio.md` §26: 32 voices beside a busy core 663 → 481-522 µs a block). The bestagons (2026-11-07, the
+  user's): a part on a 16-bar section of its own (the song 104 bars): a honeycomb of random colours, one
+  flaring on each beat, moved only by its palette, 37 hexagonal pillars rising out of it, a Goldberg ball of 162 tiles; Newell's teapot burning in
+  wire in the fire part (a `.bm3d` from the app folder); 9-12 ms, 57-60 fps;
+  `-p PART` holds the show on one part.
   Step 0 done (§8b, 2026-11-06): whole L8 frames full screen at 60 (the PPA's CLUT expands what the CPU
   repeats across; `Surface::beginWrite()`; the PPA claimed by one user at a time): 640×360 54 → 60 fps,
   the presenter's CPU 16.8 → 6.6 ms a frame; Doom's and Quake's cheaper too (`games.md` §27).

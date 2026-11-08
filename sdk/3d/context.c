@@ -141,6 +141,8 @@ int bmds_3d_set_light(bmds_3d_t *ctx, uint32_t index, const bmds_3d_light_t *lig
 
 int bmds_3d_set_order(bmds_3d_t *ctx, uint32_t order) {
         if (order > BMDS_3D_ORDER_TRIANGLES) return -BMDS_EINVAL;
+        /* Keys are made for the order at the draw: what is queued goes first under its own. */
+        if (order != ctx->sort_order && ctx->tri_count != 0) bmds_3d_flush(ctx);
         ctx->sort_order = order;
         return 0;
 }

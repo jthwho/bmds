@@ -52,19 +52,19 @@ static struct {
 /* Each track's pattern a section (-1: silent), in the order of the enums. */
 static const int8_t arrangement[SONG_SECTIONS][SONG_TRACKS] = {
         /*               kick clap hats bass lead pad1 pad2 pad3 crash melody bells */
-        [SONG_INTRO] = {0, -1, 0, -1, -1, 0, 0, 0, 0, -1, -1}, [SONG_BUILD] = {1, 0, 1, 0, -1, -1, -1, -1, 0, -1, -1},
-        [SONG_DROP_A] = {0, 0, 1, 0, 0, -1, -1, -1, 0, 0, -1}, [SONG_GROOVE] = {0, 0, 1, 1, 0, -1, -1, -1, 0, -1, -1},
-        [SONG_BREAK] = {-1, -1, 0, -1, -1, 0, 0, 0, 0, -1, 0}, [SONG_BUILD_2] = {1, 0, 1, 0, 0, -1, -1, -1, 0, -1, 0},
-        [SONG_DROP_B] = {0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0},     [SONG_FINALE] = {0, 0, 1, 1, 0, -1, -1, -1, 0, 0, 0},
-        [SONG_OUTRO] = {0, -1, 0, -1, -1, 0, 0, 0, 0, -1, 0},
+        [SONG_INTRO] = {0, -1, 0, -1, -1, 0, 0, 0, 0, -1, -1},  [SONG_BUILD] = {1, 0, 1, 0, -1, -1, -1, -1, 0, -1, -1},
+        [SONG_DROP_A] = {0, 0, 1, 0, 0, -1, -1, -1, 0, 0, -1},  [SONG_GROOVE] = {0, 0, 1, 1, 0, -1, -1, -1, 0, -1, -1},
+        [SONG_HIVE] = {0, 0, 1, 0, 0, 0, 0, 0, 0, 0, -1},       [SONG_BREAK] = {-1, -1, 0, -1, -1, 0, 0, 0, 0, -1, 0},
+        [SONG_BUILD_2] = {1, 0, 1, 0, 0, -1, -1, -1, 0, -1, 0}, [SONG_DROP_B] = {0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0},
+        [SONG_FINALE] = {0, 0, 1, 1, 0, -1, -1, -1, 0, 0, 0},   [SONG_OUTRO] = {0, -1, 0, -1, -1, 0, 0, 0, 0, -1, 0},
 };
 
 static const struct {
                 const char *cue;
                 uint32_t    bars;
 } section_info[SONG_SECTIONS] = {
-        {"intro", 8}, {"build", 8}, {"drop", 16},  {"groove", 8}, {"break", 8},
-        {"build", 8}, {"drop", 16}, {"finale", 8}, {"outro", 8},
+        {"intro", 8}, {"build", 8}, {"drop", 16}, {"groove", 8}, {"hive", 16},
+        {"break", 8}, {"build", 8}, {"drop", 16}, {"finale", 8}, {"outro", 8},
 };
 
 static bmds_seq_step_t note(uint32_t n, uint32_t velocity, uint32_t length, uint32_t flags) {

@@ -61,7 +61,7 @@ if(NOT TARGET bmds_crt)
                                    ${BMDS_SDK_DIR}/3d/context.c ${BMDS_SDK_DIR}/3d/wire.c
                                    ${BMDS_SDK_DIR}/3d/solid.c ${BMDS_SDK_DIR}/3d/raster.c
                                    ${BMDS_SDK_DIR}/3d/cores.c ${BMDS_SDK_DIR}/3d/texture.c
-                                   ${BMDS_SDK_DIR}/3d/light.c)
+                                   ${BMDS_SDK_DIR}/3d/light.c ${BMDS_SDK_DIR}/3d/model.c)
         set_target_properties(bmds_3d PROPERTIES OUTPUT_NAME bmds3d ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
         target_link_libraries(bmds_3d PUBLIC bmds_headers)
         target_compile_options(bmds_3d PRIVATE -O2 -Wall -Wextra -Werror)

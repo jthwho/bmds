@@ -92,6 +92,7 @@ add_executable(bmds_host_tests
         memorystream.cpp
         oss.cpp
         ${BMDS_ROOT}/sdk/crt/oss.c
+        fakefiles.cpp
         fakefonts.cpp
         fakememory.cpp
         3d.cpp
@@ -104,6 +105,12 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/3d/cores.c
         ${BMDS_ROOT}/sdk/3d/texture.c
         ${BMDS_ROOT}/sdk/3d/light.c
+        ${BMDS_ROOT}/sdk/3d/model.c
+        model3d.cpp
+        ${BMDS_ROOT}/sdk/tools/mesh3d/build.c
+        ${BMDS_ROOT}/sdk/tools/mesh3d/obj.c
+        ${BMDS_ROOT}/sdk/tools/mesh3d/bpt.c
+        ${BMDS_ROOT}/sdk/tools/mesh3d/write.c
         fontlibrary.cpp
         fonts.cpp
         game.cpp
@@ -211,6 +218,7 @@ target_compile_definitions(bmds_host_tests PRIVATE
         BMDS_TEST_LEAPSECONDS="${BMDS_ROOT}/thirdparty/tzdata/leap-seconds.list"
         BMDS_TEST_UPDATE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/update"
         BMDS_TEST_KEYS_DIR="${BMDS_ROOT}/keys"
+        BMDS_TEST_TEAPOT="${BMDS_ROOT}/thirdparty/teapot/teapot.bpt"
         BMDS_TEST_PKG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pkg")
 target_compile_definitions(bmds_host_tests PRIVATE LFS_NO_MALLOC LFS_NO_DEBUG LFS_NO_WARN LFS_NO_ERROR)
 target_compile_definitions(bmds_host_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS
@@ -290,6 +298,14 @@ bmds_target_options(bmds_host_tests)
 add_executable(bmds-elfcheck ${BMDS_ROOT}/tools/elfcheck/main.cpp hostmemory.cpp)
 target_link_libraries(bmds-elfcheck PRIVATE bmds_loader)
 bmds_target_options(bmds-elfcheck)
+
+# bmds-mesh3d: OBJ files and Bezier patches into .bm3d models (sdk/tools/mesh3d, devplan/3d.md
+# §12d), with libbmds3d's mesh code.
+file(GLOB BMDS_MESH3D_SOURCES ${BMDS_ROOT}/sdk/tools/mesh3d/*.c)
+add_executable(bmds-mesh3d ${BMDS_MESH3D_SOURCES} ${BMDS_ROOT}/sdk/3d/math.c ${BMDS_ROOT}/sdk/3d/mesh.c)
+target_include_directories(bmds-mesh3d PRIVATE ${BMDS_ROOT}/sdk/include)
+target_link_libraries(bmds-mesh3d PRIVATE m)
+bmds_target_options(bmds-mesh3d)
 
 # bmds-synthwav: a MIDI file rendered to WAV through the synths (tools/synthwav,
 # devplan/audio.md §26), with libbmdsgame's MIDI file walker.

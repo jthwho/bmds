@@ -170,3 +170,13 @@ target_compile_definitions(fontface_fuzz PRIVATE BMDS_STBTT_ASSERTS)
 target_compile_options(fontface_fuzz PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
 target_link_libraries(fontface_fuzz PRIVATE bmds_core)
 target_link_options(fontface_fuzz PRIVATE -fsanitize=fuzzer)
+
+# libbmds3d's models (devplan/3d.md §12d): sdk/3d's loader, and every mesh it accepts drawn on
+# libbmdsgame's canvas.
+set(SDK3D ${BMDS_ROOT}/sdk/3d)
+add_executable(model3d_fuzz model3d.cpp ${BMDS_ROOT}/tests/host/fakememory.cpp ${SDK3D}/model.c ${SDK3D}/math.c
+                            ${SDK3D}/mesh.c ${SDK3D}/context.c ${SDK3D}/wire.c ${SDK3D}/solid.c ${SDK3D}/raster.c
+                            ${SDK3D}/cores.c ${SDK3D}/texture.c ${SDK3D}/light.c ${BMDS_ROOT}/sdk/game/canvas.c)
+target_include_directories(model3d_fuzz PRIVATE ${BMDS_ROOT}/sdk/include ${BMDS_ROOT}/tests/host)
+target_compile_options(model3d_fuzz PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
+target_link_options(model3d_fuzz PRIVATE -fsanitize=fuzzer)

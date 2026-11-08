@@ -9,15 +9,19 @@
  * half-size field of heat, each cell a frame the average of the four below it less a little,
  * the bottom rows fed at random; heat is a palette ramp, black through red and yellow to white,
  * shown as 2×2 pixels; two fields, each frame's made from the last's. The shape (a wire
- * icosahedron, then the torus knot) is drawn by libbmds3d into the heat field itself as its hottest
- * value, so it burns: flames rise off its edges. On the beat (sync_t): the kick feeds the fire,
+ * icosahedron, the torus knot, then Newell's teapot) is drawn by libbmds3d into the heat field
+ * itself as its hottest value, so it burns: flames rise off its edges. The teapot is a `.bm3d`
+ * model in the program's folder (dist/demo1 makes it with bmds-mesh3d: its patches' grid lines,
+ * no diagonals); without it, the knot burns on. On the beat (sync_t): the kick feeds the fire,
  * the clap and the bass flare the shape; the pointer turns it, a click throws a fireball where it
  * is.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <bmds/3d.h>
+#include <bmds/app.h>
 #include <bmds/palette.h>
 #include "../demo.h"
 
@@ -34,7 +38,8 @@ static struct {
                 uint8_t       *heat[2]; /* CELLS_X × ROWS each: the last frame's and this one's */
                 int            now;     /* this frame's */
                 bmds_canvas_t  field;
-                bmds_3d_mesh_t shapes[SHAPES];
+                bmds_3d_mesh_t   shapes[SHAPES];
+                bmds_3d_model_t *teapot;             /* NULL: not there */
                 uint8_t        look[256];          /* heat to palette index */
                 uint8_t        noise[NOISE_CELLS]; /* a cell's cooling, 0..NOISE: the flames' flicker */
                 uint32_t       frames;
@@ -72,6 +77,12 @@ static int init(demo_t *demo) {
         int err = make(&s.shapes[0], BMDS_3D_SHAPE_ICOSPHERE, 1, 0, 1.6f, 0.0f);
         if (err == 0) err = make(&s.shapes[1], BMDS_3D_SHAPE_TORUS_KNOT, 72, 5, 1.7f, 0.32f);
         if (err < 0) return err;
+        const char *dir = bmds_app_dir();
+        char        path[256];
+        if (dir != NULL && (size_t)snprintf(path, sizeof(path), "%s/teapot.bm3d", dir) < sizeof(path)) {
+                const int e = bmds_3d_model_load(path, 0, &s.teapot);
+                if (e < 0) fprintf(stderr, "demo1: %s: %s\n", path, strerror(-e));
+        }
         /* Black, deep red, orange, yellow, white: the ramp; the coolest eighth black. */
         s.palette[0] = 0;
         bmds_palette_ramp(s.palette, RAMP_FIRST, 24, 0x000000, 0x400000);
@@ -179,10 +190,18 @@ static void frame(demo_t *demo, bmds_canvas_t *c, float t, float dt) {
         bmds_mat4_t view, model, turn;
         bmds_mat4_translation(&view, 0.0f, 0.4f, -7.0f);
         bmds_3d_set_view(ctx, &view);
+        /* Bars 0-1 of each eight the icosahedron, 2-3 the knot, 4-7 the teapot (or by the part's time). */
+        const float           bars = y->known ? (float)y->pos.bar : t / y->bar_seconds;
+        const int32_t         bar = (int32_t)bars % 8;
+        const bmds_3d_mesh_t *shape = &s.shapes[bar < 2 ? 0 : 1];
+        const int             teapot = bar >= 4 && s.teapot != NULL;
+        if (teapot) shape = bmds_3d_model_mesh(s.teapot, 0);
+        /* The teapot upright, turning and rocking a little; the others tumbling. */
         bmds_mat4_rotation_y(&model, t * 0.7f + s.yaw);
-        bmds_mat4_rotation_x(&turn, t * 0.43f + s.pitch);
-        bmds_mat4_multiply(&model, &model, &turn);
-        const float size = 1.0f + 0.15f * y->kick;
+        bmds_mat4_rotation_x(&turn, teapot ? 0.35f + 0.2f * dsin(t * 0.9f) + s.pitch : t * 0.43f + s.pitch);
+        bmds_mat4_multiply(&turn, &turn, &model);
+        model = turn;
+        const float size = (teapot ? 2.0f : 1.0f) * (1.0f + 0.15f * y->kick);
         bmds_mat4_scaling(&turn, size, size, size);
         bmds_mat4_multiply(&model, &model, &turn);
         bmds_3d_load(ctx, &model);
@@ -192,10 +211,7 @@ static void frame(demo_t *demo, bmds_canvas_t *c, float t, float dt) {
         m.mode = BMDS_3D_WIRE;
         m.flags = BMDS_3D_CULL_BACK;
         m.pixel = 150u + (uint32_t)(105.0f * (y->clap > y->bass ? y->clap : y->bass));
-        /* Bars 0-3 of each eight the icosahedron, 4-7 the knot (or by the part's time). */
-        const float bars = y->known ? (float)y->pos.bar : t / y->bar_seconds;
-        const int   which = ((int32_t)bars / 4) & 1;
-        (void)bmds_3d_draw(ctx, &s.shapes[which], &m);
+        (void)bmds_3d_draw(ctx, shape, &m);
         bmds_3d_end(ctx);
         if (s.burst_x >= 0) {
                 bmds_canvas_fill_ellipse(&s.field, s.burst_x, s.burst_y, 14, 12, 255);

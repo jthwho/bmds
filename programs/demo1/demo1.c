@@ -19,8 +19,9 @@
  * overlay (frames a second, the time a frame and its drawing, each core's busy share, the music's
  * place); Escape ends it.
  *
- *     demo1 [-w] [-F] [-n] [-1] [-s]   (-w: in a window; -F: FM, not the wavetable; -n: no music;
- *                                       -1: once, then exit; -s: silent, no speech either)
+ *     demo1 [-w] [-F] [-n] [-1] [-s] [-p PART]   (-w: in a window; -F: FM, not the wavetable;
+ *            -n: no music; -1: once, then exit; -s: silent, no speech either; -p: part PART
+ *            (as the keys number them) throughout, with the music, no boot)
  *
  * The music is on the wavetable unless its instruments can't be loaded (no SoundFont, or not
  * enough memory): then on FM.
@@ -29,6 +30,7 @@
 #include <math.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <bmds/game.h>
@@ -51,6 +53,7 @@ enum {
         P_PLASMA,
         P_STARS,
         P_TUNNEL,
+        P_HIVE,
         P_FIRE,
         P_BALLS,
         P_SOLIDS,
@@ -58,15 +61,15 @@ enum {
         P_CREDITS,
         P_BOOT
 };
-static const part_t *const parts[] = {&part_copper, &part_plasma, &part_stars, &part_tunnel,  &part_fire,
+static const part_t *const parts[] = {&part_copper, &part_plasma, &part_stars, &part_tunnel,  &part_hive, &part_fire,
                                       &part_balls,  &part_solids, &part_roto,  &part_credits, &part_boot};
 #define PARTS ((int)(sizeof(parts) / sizeof(parts[0])))
 
 /* The show's timeline: each section's part (song.h). */
 static const int timeline[SONG_SECTIONS] = {
-        [SONG_INTRO] = P_COPPER,  [SONG_BUILD] = P_PLASMA, [SONG_DROP_A] = P_STARS,
-        [SONG_GROOVE] = P_TUNNEL, [SONG_BREAK] = P_FIRE,   [SONG_BUILD_2] = P_BALLS,
-        [SONG_DROP_B] = P_SOLIDS, [SONG_FINALE] = P_ROTO,  [SONG_OUTRO] = P_CREDITS,
+        [SONG_INTRO] = P_COPPER, [SONG_BUILD] = P_PLASMA,  [SONG_DROP_A] = P_STARS,  [SONG_GROOVE] = P_TUNNEL,
+        [SONG_HIVE] = P_HIVE,    [SONG_BREAK] = P_FIRE,    [SONG_BUILD_2] = P_BALLS, [SONG_DROP_B] = P_SOLIDS,
+        [SONG_FINALE] = P_ROTO,  [SONG_OUTRO] = P_CREDITS,
 };
 
 /* ---- Lines on cues: an exchange picked at random for each section, its first turn said on its
@@ -103,6 +106,10 @@ static const cue_t cues[SONG_SECTIONS] = {
         [SONG_GROOVE] = {1,
                          LINES("Steer the tunnel with the mouse.|What mouse? You hid it.|Try anyway.",
                                "A tunnel from a lookup table.|Are we there yet?|It's a tunnel. We are never there.")},
+        [SONG_HIVE] = {1, LINES("Hexagons are the bestagons.|Says who?|Says the bees.",
+                                "Thirty seven pillars.|Sorted back to front.|Every frame.",
+                                "A ball of a hundred and sixty two tiles.|Twelve of them are pentagons.|Don't tell "
+                                "the bees.")},
         [SONG_BREAK] = {1, LINES("The music is synthesized live, on the same chip.|While it draws all this?|While it "
                                  "draws all this.",
                                  "Fire. In software.|No G P U was harmed.",
@@ -193,6 +200,7 @@ static void chat(char *text, size_t size) {
 static struct {
                 demo_t  demo;
                 int     part, next; /* shown, and asked for (-1: none) */
+                int     hold;       /* -p: the part shown throughout (-1: the show's) */
                 float   t;          /* seconds into the part */
                 int     paused, overlay;
                 int64_t last_ns;
@@ -520,7 +528,7 @@ static void update_sync(demo_t *d, int64_t at) {
                    last transition's style says; the next one's picked. */
                 if ((int32_t)y->pos.section != show.section) {
                         show.section = (int32_t)y->pos.section;
-                        show.next = timeline[show.section];
+                        if (show.hold < 0) show.next = timeline[show.section];
                         show.reveal = 1.0f;
                         if (show.style == STYLE_WHITE) pal_flash(&d->pal, 0xffffff, 0.9f, 3.0f);
                 }
@@ -716,7 +724,8 @@ int main(int argc, char **argv) {
         int opt;
         int music = 1;
         show.wavetable = 1;
-        while ((opt = getopt(argc, argv, "wFWn1s")) != -1) {
+        show.hold = -1;
+        while ((opt = getopt(argc, argv, "wFWn1sp:")) != -1) {
                 if (opt == 'w') {
                         config.flags &= ~BMDS_SURFACE_FULL_SCREEN;
                 } else if (opt == 'F') {
@@ -729,8 +738,10 @@ int main(int argc, char **argv) {
                         show.once = 1;
                 } else if (opt == 's') {
                         show.silent = 1;
+                } else if (opt == 'p' && atoi(optarg) >= 1 && atoi(optarg) <= PARTS) {
+                        show.hold = atoi(optarg) - 1;
                 } else {
-                        fprintf(stderr, "usage: demo1 [-w] [-F] [-n] [-1] [-s]\n");
+                        fprintf(stderr, "usage: demo1 [-w] [-F] [-n] [-1] [-s] [-p PART]\n");
                         return 2;
                 }
         }
@@ -777,7 +788,7 @@ int main(int argc, char **argv) {
                         return 1;
                 }
         }
-        show.next = P_BOOT;
+        show.next = show.hold >= 0 ? show.hold : P_BOOT;
         show.second_ns = now_ns();
         int64_t us[2];
         if (busy_now(us)) show.busy_us[0] = us[0], show.busy_us[1] = us[1];

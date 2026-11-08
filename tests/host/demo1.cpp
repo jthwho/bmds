@@ -89,7 +89,7 @@ TEST_CASE("demo1: the palette fades, flashes and cycles, the overlay's entries k
         CHECK(shown[PAL_ACCENT] == 0x40e0ff);
 }
 
-TEST_CASE("demo1: the song is a valid song, 88 bars at 140, its events in order") {
+TEST_CASE("demo1: the song is a valid song, 104 bars at 140, its events in order") {
         const bmds_seq_song_t *song = song_get();
         REQUIRE(song == song_get()); // made once
         bmds_seq_t *q = nullptr;
@@ -104,7 +104,7 @@ TEST_CASE("demo1: the song is a valid song, 88 bars at 140, its events in order"
         } seen;
         const int64_t bar = 16 * 107142857ll; // sixteen steps, each rounded to the ns as the sequencer does
         bmds_seq_schedule(
-                q, 88 * bar,
+                q, 104 * bar,
                 [](void *arg, int64_t ns, const uint8_t *b, uint32_t) {
                         Seen *x = static_cast<Seen *>(arg);
                         if (ns < x->last) ++x->out_of_order;
@@ -124,14 +124,14 @@ TEST_CASE("demo1: the song is a valid song, 88 bars at 140, its events in order"
         CHECK(seen.out_of_order == 0);
         CHECK(seen.doubled == 0);
         CHECK(seen.ons > 2000);
-        CHECK(seen.hook == 5 * 42); // drops A and B (16 bars each), the finale (8): the hook five times
+        CHECK(seen.hook == 7 * 42);  // drops A and B, the hive (16 bars each), the finale (8): seven times
         CHECK(seen.bells == 6 * 42); // the break, the build, drop B, the finale, the outro
         bmds_seq_position_t pos{};
         pos.size = sizeof(pos);
-        REQUIRE(bmds_seq_position(q, 88 * bar - 1, &pos) == 0);
+        REQUIRE(bmds_seq_position(q, 104 * bar - 1, &pos) == 0);
         CHECK(pos.section == SONG_OUTRO);
         CHECK(pos.loops == 0);
-        REQUIRE(bmds_seq_position(q, 88 * bar + 1, &pos) == 0);
+        REQUIRE(bmds_seq_position(q, 104 * bar + 1, &pos) == 0);
         CHECK(pos.section == SONG_INTRO);
         CHECK(pos.loops == 1);
         REQUIRE(bmds_seq_position(q, 16 * bar, &pos) == 0);

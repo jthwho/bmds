@@ -35,6 +35,7 @@ enum {
         SONG_BUILD,
         SONG_DROP_A,
         SONG_GROOVE,
+        SONG_HIVE,
         SONG_BREAK,
         SONG_BUILD_2,
         SONG_DROP_B,

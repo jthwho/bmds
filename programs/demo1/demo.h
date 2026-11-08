@@ -113,6 +113,7 @@ extern const part_t part_copper;
 extern const part_t part_plasma;
 extern const part_t part_stars;
 extern const part_t part_tunnel;
+extern const part_t part_hive;
 extern const part_t part_fire;
 extern const part_t part_balls;
 extern const part_t part_solids;

@@ -20,6 +20,7 @@
 #include <sys/soundcard.h>
 #include <bmds/errno.h>
 #include <bmds/sys.h>
+#include "fakefiles.h"
 #include "fakefonts.h"
 #include "fakememory.h"
 
@@ -116,6 +117,7 @@ namespace {
                 t.slot[BMDS_SYS_SYSCONF_SET] = reinterpret_cast<bmds_sys_fn_t>(sysconfSet);
                 FakeFonts::install(t.slot);
                 FakeMemory::install(t.slot); // libbmds3d's memory
+                FakeFiles::install(t.slot);  // its models' files
                 return t;
         }
 

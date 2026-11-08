@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+# @file      teapot-bpt
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Writes Newell's teapot as Bezier patches (.bpt, for sdk/tools/mesh3d) from freeglut's data
+# (thirdparty/teapot/fg_teapot_data.h, MIT): its 10 patches, the rim, body, lid and bottom turned
+# into four quadrants and the handle and spout mirrored, the classic 32. Every patch's front
+# (dP/du x dP/dv) is checked to face out, a mirrored copy's columns reversed to keep it so; the
+# knob's top is one point again (freeglut spreads it by 0.002). For drawing without back faces or a
+# depth buffer: the spout and handle cut where they enter the body, and Newell's gaps closed (the
+# ring round the lid, the spout's end): 36 patches.
+#
+#     tools/teapot-bpt [OUT.bpt]     (default: thirdparty/teapot/teapot.bpt)
+
+import math
+import os
+import re
+import sys
+
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+SOURCE = os.path.join(ROOT, 'thirdparty', 'teapot', 'fg_teapot_data.h')
+
+
+def block(text, name):
+    start = text.index(name)
+    return text[text.index('{', start):text.index('};', start)]
+
+
+def bernstein(t):
+    s = 1.0 - t
+    return [s * s * s, 3 * t * s * s, 3 * t * t * s, t * t * t], \
+           [-3 * s * s, 3 * s * s - 6 * t * s, 6 * t * s - 3 * t * t, 3 * t * t]
+
+
+def normal(patch, u, v):
+    """dP/du x dP/dv at (u, v): point 4 * row + column, the column along u."""
+    bu, du = bernstein(u)
+    bv, dv = bernstein(v)
+    pu = [0.0] * 3
+    pv = [0.0] * 3
+    for i in range(4):
+        for j in range(4):
+            c = patch[4 * i + j]
+            for k in range(3):
+                pu[k] += bv[i] * du[j] * c[k]
+                pv[k] += dv[i] * bu[j] * c[k]
+    return [pu[1] * pv[2] - pu[2] * pv[1], pu[2] * pv[0] - pu[0] * pv[2], pu[0] * pv[1] - pu[1] * pv[0]]
+
+
+def point(patch, u, v):
+    bu, _ = bernstein(u)
+    bv, _ = bernstein(v)
+    return tuple(sum(bv[i] * bu[j] * patch[4 * i + j][k] for i in range(4) for j in range(4)) for k in range(3))
+
+
+def segment(patch, a, b):
+    """The patch's part from v = a to v = b, as a patch (each column's cubic cut by de Casteljau)."""
+    def split(c, t):  # the cubic c (4 points) at t: its two halves
+        lerp = lambda p, q: tuple(p[k] + (q[k] - p[k]) * t for k in range(3))
+        ab, bc, cd = lerp(c[0], c[1]), lerp(c[1], c[2]), lerp(c[2], c[3])
+        abc, bcd = lerp(ab, bc), lerp(bc, cd)
+        m = lerp(abc, bcd)
+        return [c[0], ab, abc, m], [m, bcd, cd, c[3]]
+    columns = []
+    for j in range(4):
+        c = [patch[4 * i + j] for i in range(4)]
+        c = split(c, b)[0] if b < 1.0 else c
+        c = split(c, a / b)[1] if a > 0.0 else c
+        columns.append(c)
+    return [columns[j][i] for i in range(4) for j in range(4)]
+
+
+def reverse_columns(patch):
+    return [patch[4 * i + 3 - j] for i in range(4) for j in range(4)]
+
+
+def main():
+    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'thirdparty', 'teapot', 'teapot.bpt')
+    text = open(SOURCE).read()
+    indices = [int(x) for x in re.findall(r'\d+', block(text, 'patchdata_teapot'))]
+    numbers = [float(x) for x in re.findall(r'-?\d+\.\d+', block(text, 'cpdata_teapot'))]
+    points = [tuple(numbers[i:i + 3]) for i in range(0, len(numbers), 3)]
+    assert len(indices) == 160 and len(points) == 129
+    inputs = [[points[i] for i in indices[16 * p:16 * p + 16]] for p in range(10)]
+    # freeglut moves two of the lid's knob-top points 0.002 off its middle (for GL's evaluators):
+    # a row that close together is made one point again, the pinch it is in Newell's data, so the
+    # normal there is found inside the patch, not from a sliver's.
+    for patch in inputs:
+        for i in range(4):
+            row = patch[4 * i:4 * i + 4]
+            if max(abs(a[k] - b[k]) for a in row for b in row for k in range(3)) < 0.01:
+                patch[4 * i:4 * i + 4] = [row[0]] * 4
+
+    # The body's radius by height (its profile, patches 1 and 2 along their u = 0 edge, in the x-z
+    # plane), to tell what of the spout and handle lies inside it.
+    profile = sorted((point(inputs[p], 0.0, i / 200.0)[2], point(inputs[p], 0.0, i / 200.0)[0])
+                     for p in (1, 2) for i in range(201))
+
+    def inside(c):
+        x, y, z = c
+        if z <= profile[0][0] or z >= profile[-1][0]:
+            return False
+        for (z0, r0), (z1, r1) in zip(profile, profile[1:]):
+            if z0 <= z <= z1:
+                r = r0 if z1 == z0 else r0 + (r1 - r0) * (z - z0) / (z1 - z0)
+                return math.hypot(x, y) < r
+        return False
+
+    # Newell's spout and handle start inside the body: their hidden parts are cut off (the patch
+    # kept from where its cross-section last lies wholly inside), so the painter's sort has
+    # nothing hidden there to put in front at the joint.
+    def trim(patch, end):
+        def ring_inside(v):
+            return all(inside(point(patch, u / 8.0, v)) for u in range(9))
+        steps = [i / 1000.0 for i in range(1001)]
+        if end == 1:
+            steps.reverse()
+        cut = None
+        for v in steps:
+            if not ring_inside(v):
+                break
+            cut = v
+        if cut is None:
+            return patch
+        return segment(patch, cut, 1.0) if end == 0 else segment(patch, 0.0, cut)
+
+    inputs[8] = trim(inputs[8], 0)  # the spout's base
+    inputs[6] = trim(inputs[6], 0)  # the handle's top end
+    inputs[7] = trim(inputs[7], 1)  # its bottom end
+
+    # Seen without back faces, Newell's gaps show what is behind the pot: the ring between the
+    # lid's edge (radius 1.3) and the rim's inside (1.4) at height 2.4, and the spout's open end.
+    # Both closed by flat patches, turned or mirrored as their neighbours.
+    def arc(r, z):
+        return [(r, 0.0, z), (r, -0.56 * r, z), (0.56 * r, -r, z), (0.0, -r, z)]
+
+    ring = arc(1.3, 2.4) + arc(1.3 + 0.1 / 3, 2.4) + arc(1.3 + 0.2 / 3, 2.4) + arc(1.4, 2.4)
+    tip = inputs[9][12:16]  # the spout's end, at height 2.4, y <= 0
+    line = [(tip[0][0], 0.0, tip[0][2]), (tip[0][0], 0.0, tip[0][2]), (tip[3][0], 0.0, tip[3][2]),
+            (tip[3][0], 0.0, tip[3][2])]
+    cap = [tuple(a[k] + (b[k] - a[k]) * i / 3.0 for k in range(3)) for i in range(4) for a, b in zip(tip, line)]
+
+    # (patch, where its front is tested, outward there, made whole by): rim and body out from the
+    # axis or up, the knob tested at its top (its middle faces down and out), bottom down, the
+    # handle's and spout's y <= 0 halves towards -y, the closings up.
+    up, down, side = (0, 0, 1), (0, 0, -1), (0, -1, 0)
+    plan = [(inputs[0], (0.5, 0.5), up, 'turn'), (inputs[1], (0.5, 0.5), None, 'turn'),
+            (inputs[2], (0.5, 0.5), None, 'turn'), (inputs[3], (0.5, 0.1), up, 'turn'),
+            (inputs[4], (0.5, 0.5), up, 'turn'), (inputs[5], (0.5, 0.5), down, 'turn'),
+            (inputs[6], (0.5, 0.5), side, 'mirror'), (inputs[7], (0.5, 0.5), side, 'mirror'),
+            (inputs[8], (0.5, 0.5), side, 'mirror'), (inputs[9], (0.5, 0.5), side, 'mirror'),
+            (ring, (0.5, 0.5), up, 'turn'), (cap, (0.5, 0.5), up, 'mirror')]
+
+    patches = []
+    for patch, (u, v), out_dir, whole in plan:
+        n = normal(patch, u, v)
+        if out_dir is None:  # out from the axis
+            c = point(patch, u, v)
+            out_dir = (c[0], c[1], 0.0)
+        if sum(a * b for a, b in zip(n, out_dir)) < 0:
+            patch = reverse_columns(patch)
+        if whole == 'turn':
+            for q in range(4):  # turned a quarter about z each time: (x, y) -> (-y, x)
+                patches.append(patch)
+                patch = [(-y, x, z) for (x, y, z) in patch]
+        else:  # mirrored in y, columns reversed to keep the front outside
+            patches.append(patch)
+            patches.append(reverse_columns([(x, -y, z) for (x, y, z) in patch]))
+
+    with open(out, 'w') as f:
+        f.write('%d\n' % len(patches))
+        for patch in patches:
+            f.write('3 3\n')
+            for (x, y, z) in patch:
+                f.write('%g %g %g\n' % (x + 0.0, y + 0.0, z + 0.0))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -376,7 +376,10 @@ void bmds_3d_set_fog(bmds_3d_t *ctx, float near_z, float far_z);
                                         (separate objects never show through each other): the default. */
 #define BMDS_3D_ORDER_TRIANGLES 1u /**< Every triangle by its own depth (objects that pass through each other). */
 
-/** @brief Sets how the solids queued are ordered (`BMDS_3D_ORDER_...`). @return 0, or `-BMDS_EINVAL`. */
+/**
+ * @brief Sets how the solids queued from now on are ordered (`BMDS_3D_ORDER_...`); a change draws
+ *        what is queued already first, in its own order. @return 0, or `-BMDS_EINVAL`.
+ */
 int bmds_3d_set_order(bmds_3d_t *ctx, uint32_t order);
 
 /** @brief Lights a context has. */
@@ -501,6 +504,55 @@ typedef struct bmds_3d_stats_t {
 
 /** @brief Copies @p ctx's counters into @p stats (as much as its `size` holds). */
 void bmds_3d_stats(const bmds_3d_t *ctx, bmds_3d_stats_t *stats);
+
+/* ---- Models (.bm3d files) --------------------------------------------------------------------- */
+
+/**
+ * @brief A loaded model (devplan/3d.md §12d): the meshes of a `.bm3d` file (bmds/3dfile.h), made
+ *        from OBJ files or Bézier patches by `bmds-mesh3d` on the PC.
+ */
+typedef struct bmds_3d_model_t bmds_3d_model_t;
+
+/**
+ * @brief Loads the model in the file at @p path: one read into one allocation, then every offset
+ *        and index checked before a mesh points into it (a bad file is an error, never a crash).
+ * @param path      The file.
+ * @param mem_flags Where its arrays go (`BMDS_MEM_FAST`: internal RAM, cheaper to transform from).
+ * @param model     [out] The model; bmds_3d_model_free() frees it.
+ * @return 0; `-BMDS_EILSEQ` (not a well-formed `.bm3d`), `-BMDS_ENOTSUP` (a later version, or a
+ *         section or flag it requires that this library doesn't know), `-BMDS_ENOMEM`, the file's
+ *         errors (`-BMDS_ENOENT`...), `-BMDS_EINVAL` (NULL).
+ * @blocking Thread-safe (no state of its own).
+ */
+int bmds_3d_model_load(const char *path, uint32_t mem_flags, bmds_3d_model_t **model);
+
+/**
+ * @brief As bmds_3d_model_load(), from @p bytes at @p data used in place (no copy): 4-aligned,
+ *        kept unchanged until the model is freed (a model built into the program's read-only data).
+ * @return As bmds_3d_model_load(); `-BMDS_EINVAL` also for @p data not 4-aligned.
+ * @nonblocking Thread-safe (no state of its own); allocates the model's small record.
+ */
+int bmds_3d_model_load_memory(const void *data, uint32_t bytes, bmds_3d_model_t **model);
+
+/** @brief The meshes in @p model (0 for NULL). @nonblocking */
+uint32_t bmds_3d_model_mesh_count(const bmds_3d_model_t *model);
+
+/**
+ * @brief @p model's mesh @p index (in the file's order), to draw; it points into the model's memory
+ *        and lives as long as the model. A copy may be given edges (bmds_3d_mesh_edges()) and freed
+ *        with bmds_3d_mesh_free(), which frees only those. NULL past the last.
+ * @nonblocking
+ */
+const bmds_3d_mesh_t *bmds_3d_model_mesh(const bmds_3d_model_t *model, uint32_t index);
+
+/** @brief Mesh @p index's name (UTF-8), or NULL (none, or past the last). @nonblocking */
+const char *bmds_3d_model_mesh_name(const bmds_3d_model_t *model, uint32_t index);
+
+/** @brief The index of the first mesh named @p name, or `-BMDS_ENOENT`. @nonblocking */
+int32_t bmds_3d_model_find(const bmds_3d_model_t *model, const char *name);
+
+/** @brief Frees @p model (NULL is ignored); its meshes go with it. @nonblocking */
+void bmds_3d_model_free(bmds_3d_model_t *model);
 
 #ifdef __cplusplus
 }

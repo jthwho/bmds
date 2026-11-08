@@ -812,6 +812,35 @@ TEST_CASE("3d: draws ordered whole by default, triangles mixed on request") {
         CHECK(bmds_3d_set_order(s.ctx, 7) == -BMDS_EINVAL);
 }
 
+TEST_CASE("3d: a draw's triangles close in depth keep their order (keys over the draw's own depth)") {
+        // Two parallel triangles of one mesh, 0.01 apart at depth 6, the near one listed first; lit
+        // apart by their normals. Keys of a float's top 16 bits tied them (0.03 a step at 6).
+        Picture pic(32, 32, BMDS_PIXEL_L8);
+        Scene   s(&pic.canvas);
+        Mesh    m;
+        m.add(2, 30, -6.001f), m.add(30, 30, -6.001f), m.add(30, 2, -6.001f);
+        m.add(2, 30, -6.011f), m.add(30, 30, -6.011f), m.add(30, 2, -6.011f);
+        m.normals = {0, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0};
+        auto lit = material(BMDS_3D_GOURAUD, 0);
+        lit.ramp_first = 16;
+        lit.ramp_count = 32;
+        auto shade = [&](std::vector<uint16_t> tris) {
+                m.tri = tris;
+                const bmds_3d_mesh_t *mesh = m.mesh();
+                bmds_3d_mesh_bounds(&m.m);
+                REQUIRE(m.m.bounds[3] > 0.0f);
+                std::fill(pic.pixels.begin(), pic.pixels.end(), 0);
+                bmds_3d_begin(s.ctx);
+                REQUIRE(bmds_3d_draw(s.ctx, mesh, &lit) == 0);
+                bmds_3d_end(s.ctx);
+                return pic.l8(24, 24);
+        };
+        const uint8_t nearAlone = shade({0, 1, 2}), farAlone = shade({3, 4, 5});
+        REQUIRE(nearAlone != farAlone);
+        CHECK(shade({0, 1, 2, 3, 4, 5}) == nearAlone);
+        CHECK(shade({3, 4, 5, 0, 1, 2}) == nearAlone);
+}
+
 TEST_CASE("3d: two cores draw what one does, pixel for pixel") {
         const size_t before = FakeMemory::live();
         for (uint32_t format : {uint32_t(BMDS_PIXEL_L8), uint32_t(BMDS_PIXEL_RGB565)}) {

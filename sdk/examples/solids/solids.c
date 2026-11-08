@@ -18,7 +18,10 @@
  *
  * -s sets the picture's size (320x180: a quarter of the pixels, scaled 4 times on the screen).
  *
- *     solids [-F] [-t] [-f l8|565|888] [-s WIDTHxHEIGHT]
+ * -m FILE shows a model (a `.bm3d` file made by bmds-mesh3d, devplan/3d.md step 5) in the middle,
+ * all its meshes; S steps on to the shapes and back to it.
+ *
+ *     solids [-F] [-t] [-f l8|565|888] [-s WIDTHxHEIGHT] [-m FILE.bm3d]
  */
 
 #include <math.h>
@@ -59,7 +62,8 @@ typedef struct {
                 bmds_3d_t     *ctx;
                 bmds_3d_mesh_t cube, ball, facets, floor;
                 bmds_3d_mesh_t middle[SHAPES]; /* the torus, then the others S steps through */
-                int            shape;
+                int               shape, shapes;  /* shape SHAPES: the model */
+                bmds_3d_model_t  *model;
                 int               texture; /* 0: none; 1 lit; 2 chrome; 3 unlit, affine */
                 uint8_t           checker[TEXTURE_SIZE * TEXTURE_SIZE], sky[TEXTURE_SIZE * TEXTURE_SIZE];
                 bmds_game_image_t checker_image, sky_image;
@@ -88,7 +92,7 @@ static void on_event(bmds_game_t *game, const bmds_surface_event_t *e) {
         } else if (e->type == BMDS_EVENT_KEY && (e->flags & BMDS_KEY_DOWN) != 0) {
                 if (e->data[0] == KEY_ESCAPE) bmds_game_quit(game);
                 if (e->data[0] == KEY_SPACE) s->smooth = !s->smooth;
-                if (e->data[0] == KEY_S) s->shape = (s->shape + 1) % SHAPES;
+                if (e->data[0] == KEY_S) s->shape = (s->shape + 1) % s->shapes;
                 if (e->data[0] == KEY_T && s->format == BMDS_PIXEL_L8) s->texture = (s->texture + 1) % TEXTURE_MODES;
         } else if (e->type == BMDS_EVENT_POINTER && (int32_t)e->data[0] != BMDS_POINTER_GONE) {
                 /* The pointer's place, -1..1 each way: where the light comes from. */
@@ -214,7 +218,13 @@ static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
         bmds_3d_rotate(ctx, bmds_vec3(1, 0, 0), t * 0.6f);
         bmds_3d_rotate(ctx, bmds_vec3(0, 1, 0), t * 0.35f);
         const bmds_3d_material_t green = textured(s, solid(smooth, RAMP_GREEN, 0x50ff70));
-        (void)bmds_3d_draw(ctx, &s->middle[s->shape], &green);
+        if (s->shape < SHAPES) {
+                (void)bmds_3d_draw(ctx, &s->middle[s->shape], &green);
+        } else {
+                bmds_3d_scale(ctx, 1.4f, 1.4f, 1.4f); /* bmds-mesh3d --fit: radius 1 */
+                for (uint32_t i = 0; i < bmds_3d_model_mesh_count(s->model); ++i)
+                        (void)bmds_3d_draw(ctx, bmds_3d_model_mesh(s->model, i), &green);
+        }
 
         bmds_mat4_translation(&place, 2.4f, 0.0f, 0.0f);
         bmds_3d_load(ctx, &place);
@@ -278,8 +288,9 @@ int main(int argc, char **argv) {
         config.format = BMDS_PIXEL_L8;
         config.flags = BMDS_SURFACE_WHOLE;
         config.title = "Solids";
-        int opt;
-        while ((opt = getopt(argc, argv, "Ftf:s:")) != -1) {
+        const char *model = NULL;
+        int         opt;
+        while ((opt = getopt(argc, argv, "Ftf:s:m:")) != -1) {
                 if (opt == 'F') {
                         config.flags |= BMDS_SURFACE_FULL_SCREEN;
                 } else if (opt == 't') {
@@ -288,12 +299,14 @@ int main(int argc, char **argv) {
                         if (sscanf(optarg, "%ux%u", &config.width, &config.height) != 2 || config.width < 64 ||
                             config.height < 64 || config.width % 4 != 0)
                                 return 2;
+                } else if (opt == 'm') {
+                        model = optarg;
                 } else if (opt == 'f') {
                         config.format = strcmp(optarg, "565") == 0   ? BMDS_PIXEL_RGB565
                                         : strcmp(optarg, "888") == 0 ? BMDS_PIXEL_BGR24
                                                                      : BMDS_PIXEL_L8;
                 } else {
-                        fprintf(stderr, "usage: solids [-F] [-t] [-f l8|565|888] [-s WIDTHxHEIGHT]\n");
+                        fprintf(stderr, "usage: solids [-F] [-t] [-f l8|565|888] [-s WIDTHxHEIGHT] [-m FILE.bm3d]\n");
                         return 2;
                 }
         }
@@ -343,6 +356,23 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "solids: %s\n", strerror(-err));
                 return 1;
         }
+        s.shapes = SHAPES;
+        if (model != NULL) {
+                const int64_t t0 = now_ns();
+                err = bmds_3d_model_load(model, 0, &s.model);
+                if (err < 0) {
+                        fprintf(stderr, "solids: %s: %s\n", model, strerror(-err));
+                        return 1;
+                }
+                const int64_t t1 = now_ns();
+                uint32_t      triangles = 0;
+                for (uint32_t i = 0; i < bmds_3d_model_mesh_count(s.model); ++i)
+                        triangles += bmds_3d_model_mesh(s.model, i)->triangle_count;
+                printf("solids: %s: %u meshes, %u triangles, loaded in %.2f ms\n", model,
+                       (unsigned)bmds_3d_model_mesh_count(s.model), (unsigned)triangles, (double)(t1 - t0) / 1e6);
+                s.shapes = SHAPES + 1;
+                s.shape = SHAPES;
+        }
         bmds_mat4_t projection;
         bmds_mat4_perspective(&projection, 55.0f * PI / 180.0f, (float)config.width / (float)config.height, 0.5f,
                               100.0f);
@@ -360,6 +390,7 @@ int main(int argc, char **argv) {
         bmds_3d_mesh_free(&s.ball);
         for (int i = 0; i < SHAPES; ++i) bmds_3d_mesh_free(&s.middle[i]);
         bmds_3d_mesh_free(&s.cube);
+        bmds_3d_model_free(s.model);
         bmds_3d_destroy(s.ctx);
         if (err < 0) {
                 fprintf(stderr, "solids: %s\n", strerror(-err));

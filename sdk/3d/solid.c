@@ -388,6 +388,26 @@ int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3
         rec.key = depth_key(middle);
         uint32_t draw = add_record(ctx, &rec);
 
+        /* Ordered by draw, a triangle's key below its draw's rank has 16 bits: spread over the draw's
+           own depth (its bounds' centre ± radius in view space), not a float's top 16 bits (7 bits
+           of mantissa: 0.03 units at 6, so a spout's triangles and the body's beside it tied and
+           swapped as it turned). Without bounds, or ordered by triangle, the float's bits. */
+        float near_depth = 0.0f, key_scale = 0.0f;
+        if (ctx->sort_order == BMDS_3D_ORDER_DRAWS && mesh->bounds[3] > 0.0f) {
+                const float *c = mv->m;
+                float        s2 = 0.0f;
+                for (int col = 0; col < 3; ++col) {
+                        const float l2 = c[4 * col] * c[4 * col] + c[4 * col + 1] * c[4 * col + 1] +
+                                         c[4 * col + 2] * c[4 * col + 2];
+                        if (l2 > s2) s2 = l2;
+                }
+                const float r = mesh->bounds[3] * sqrtf(s2);
+                if (r > 0.0f && r < 1e30f) {
+                        near_depth = middle - r;
+                        key_scale = 65535.0f / (2.0f * r);
+                }
+        }
+
         const uint32_t mode = material->mode;
         const int      textured = rec.textured;
         const int      envmap = mode == BMDS_3D_ENVMAP;
@@ -540,7 +560,14 @@ int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3
                         ++ctx->stats.backfaces;
                         continue;
                 }
-                const uint32_t key = depth_key(depth);
+                uint32_t key;
+                if (key_scale > 0.0f) {
+                        float d = (depth - near_depth) * key_scale; /* 0 near .. 65535 far */
+                        d = d > 0.0f ? (d < 65535.0f ? d : 65535.0f) : 0.0f;
+                        key = (65535u - (uint32_t)d) << 16; /* far sorts first */
+                } else {
+                        key = depth_key(depth);
+                }
                 for (int k = 1; k + 1 < n; ++k) push(ctx, xy, sh, textured ? uvq : NULL, 0, k, k + 1, key, &draw);
         }
         return 0;

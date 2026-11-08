@@ -36,6 +36,10 @@ the host tests: they run for as long as one lets them.
 - **`http_fuzz`:** HTTP responses (`devplan/packages.md` §23), fed whole and in pieces: the same
   outcome however they arrive, progress on every call, views inside what was fed, no body longer
   than its length; lines as URLs, parsed, resolved against the first, built into a request.
+- **`model3d_fuzz`:** libbmds3d's models (`devplan/3d.md` §12d): any bytes as a `.bm3d` file; if
+  loaded, every index inside its mesh and every name found again, and every mesh drawn wire, flat,
+  Gouraud and environment-mapped; no fault, no read outside the file, no undefined behaviour, no
+  leak. Seeds: `tests/fuzz/make-model-seeds.sh DIR` (`bmds-mesh3d` from `build-host`).
 - **`soundfont_fuzz`:** SoundFonts (§22): load, play notes on every preset, the drums and across
   the keyboard with controllers and bends, render; every sample finite, no leak.
 
@@ -96,6 +100,13 @@ symbolizer), so the target ran ten inputs a second instead of 28,000.
 `ntp-seeds` holds the input layout (8 bytes cookie, 8 bytes T1, little-endian, then the packet):
 a good reply and a kiss-o'-death are enough for it to find the rest.
 
+```sh
+tests/fuzz/make-model-seeds.sh /mnt/data/tmp/models     # teapots and cubes made by bmds-mesh3d
+./model3d_fuzz -fork=3 -ignore_crashes=1 -max_len=16384 -max_total_time=900 \
+        -artifact_prefix=/mnt/data/tmp/ /mnt/data/tmp/mcorpus /mnt/data/tmp/models
+```
+
 A finding is fixed (a patch in `thirdparty/`, listed in its `README.md`), and the input is kept in
 `tests/host/audio/fuzz/`, `tests/host/synth/fuzz/` (fonts), `tests/host/synth/fuzz-midi/` or
 `tests/host/fonts/fuzz/` (TrueType), which the host tests replay.
+

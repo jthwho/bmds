@@ -56,6 +56,7 @@ anything, add it here, and give its licence a way onto the board.
 | Icon themes | MIT | |
 | md4c 0.5.2 (`thirdparty/md4c`) | MIT | in Preso |
 | BMDS's own programs (Lucky Duck, Blocks, angel, Preso, sshfs, ...) | MIT | |
+| Newell's teapot (freeglut's data, `thirdparty/teapot`) | MIT | in demo1 as `teapot.bm3d`, its licence installed with it (`LICENSE-freeglut`) |
 
 ## The web installer (`installer/`)
 
