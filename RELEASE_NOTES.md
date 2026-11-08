@@ -5,6 +5,34 @@ Each release has a section headed `## X.Y.Z` (the version in
 the update package, where the Updater shows it, and on the GitHub release; it refuses to make a
 release without one.
 
+## 0.2.0
+
+Update from 0.1.x with the Updater (or `update fetch`), or flash it from the web installer at
+https://jthwho.github.io/bmds/. Then `pkg update` and `pkg upgrade` bring the new packages.
+
+- **Preso**, presentations written in Markdown (Marp's format), joins the standard set and the
+  launcher (Office). Six retro themes, transitions, speaker notes and a timer over SSH, slides
+  scripted in AngelScript with animations and interactive pieces, live demos that run a program
+  mid-talk, kiosk mode, and `preso export` to PNG. Example decks are in `share/preso/examples`.
+- **BMDS Demo #1** (`pkg install demo1`): a demoscene-style show of the system's graphics, sound
+  and speech, all drawn live to its own song. It has a talking BIOS, copper bars, plasma, a
+  tunnel, fire with a shape burning in it, vector balls, solids, a textured cube and the
+  bestagons. `-p PART` holds it on one part.
+- **Formatting from the desktop.** A blank or unreadable card asks whether to format it; the
+  Format window and Files' File > Format Card... do what `mkfs` does, with a warning when BMDS's
+  settings are on the card.
+- **For programs (the SDK):** libbmds3d, a small 3D library (wireframes, flat, Gouraud and
+  textured solids, lights, made shapes, and `.bm3d` models made by `bmds-mesh3d` from OBJ or
+  Bezier patches); `bmds/seq.h`, a sequencer that plays songs through MIDI with beat sync; palette
+  helpers, pictures and speech in libbmdsgame. Synths can render ahead for programs that allow
+  latency, so music keeps time beside heavy drawing.
+- **Faster:** full-screen 8-bit pictures now go out at 60 fps through the PPA's colour table
+  (Doom takes less of the system's time too); the FM synth costs about a quarter less
+  beside a busy core.
+- `grep` takes `-E`, `-G` and `-e`.
+- **Fixed:** programs started from the desktop no longer take the serial console from its shell
+  (Ctrl-C there ended them); a full-screen program that exited could crash the system.
+
 ## 0.1.1
 
 A fix release. Update from 0.1.0 with the Updater (or `update fetch`), or flash it from the web

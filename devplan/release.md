@@ -305,3 +305,5 @@ is there and its links aren't (§6a), the system runs it once, before the deskto
    0.1.1 (2026-11-02) fixes what the first test of a blank card found: every boot crashed in
    both firmwares (the main task's stack, `docs/platforms/esp32p4.md` §5); with the fix the card
    booted and the first-run window installed the standard set from Pages.
+   0.2.0 (2026-11-08): Preso in the standard set, demo1, formatting from the desktop, libbmds3d
+   and the sequencer in the SDK.
