@@ -169,6 +169,34 @@ TEST_CASE("seq: position and hits, round the loop") {
         return;
 }
 
+TEST_CASE("seq: when a cue is heard, round the loop") {
+        const bmds_seq_song_t s = song(0.0f, 1);
+        bmds_seq_t           *q = nullptr;
+        REQUIRE(bmds_seq_make(&s, &q) == 0);
+        int64_t t = 0;
+        CHECK(bmds_seq_time_of(q, 1, 0, 0, 0, &t) == -BMDS_EAGAIN);
+        bmds_seq_start_at(q, 100 * Ms, 0);
+        // A bar is 2 s: main's beat 2 at 2 s + 1 s.
+        REQUIRE(bmds_seq_time_of(q, 1, 0, 2, 0, &t) == 0);
+        CHECK(t == 100 * Ms + 3000 * Ms);
+        // Its position says so the other way round.
+        bmds_seq_position_t pos{};
+        pos.size = sizeof(pos);
+        REQUIRE(bmds_seq_position(q, t, &pos) == 0);
+        CHECK(pos.section == 1);
+        CHECK(pos.beat == 2);
+        // Passed: the loop's next time round (2 s each); the intro isn't played again.
+        REQUIRE(bmds_seq_time_of(q, 1, 0, 2, t + 1, &t) == 0);
+        CHECK(t == 100 * Ms + 5000 * Ms);
+        CHECK(bmds_seq_time_of(q, 0, 0, 0, 200 * Ms, &t) == -BMDS_ENOENT);
+        // No such bar or beat.
+        CHECK(bmds_seq_time_of(q, 1, 1, 0, 0, &t) == -BMDS_EINVAL);
+        CHECK(bmds_seq_time_of(q, 1, 0, 4, 0, &t) == -BMDS_EINVAL);
+        CHECK(bmds_seq_time_of(q, 2, 0, 0, 0, &t) == -BMDS_EINVAL);
+        bmds_seq_close(q);
+        return;
+}
+
 TEST_CASE("seq: a bad song is refused") {
         bmds_seq_t     *q = nullptr;
         bmds_seq_song_t s = song(0.0f, -1);
@@ -207,6 +235,54 @@ TEST_CASE("seq: swing puts each odd step that part of a step late") {
                 ++ons;
         }
         CHECK(ons == 16);
+        for (size_t i = 1; i < all.size(); ++i) CHECK(all[i].ns >= all[i - 1].ns);
+        bmds_seq_close(q);
+        return;
+}
+
+TEST_CASE("seq: fades, in steps among the notes, a later one replacing what it overlaps") {
+        const bmds_seq_song_t s = song(0.0f, -1);
+        bmds_seq_t           *q = nullptr;
+        REQUIRE(bmds_seq_make(&s, &q) == 0);
+        bmds_seq_start_at(q, 0, 0);
+        CHECK(bmds_seq_fade(q, 1.5f, 100 * Ms, 0) == -BMDS_EINVAL);
+        CHECK(bmds_seq_fade(q, 0.5f, 100 * Ms, -1) == -BMDS_EINVAL);
+        // Down to a quarter (half the volume: 40 log10) from 0.5 s over 0.2 s: 5 steps of 40 ms.
+        REQUIRE(bmds_seq_fade(q, 0.25f, 500 * Ms, 200 * Ms) == 0);
+        std::vector<Event> all;
+        for (int64_t h = 20 * Ms; h <= 1000 * Ms; h += 20 * Ms) bmds_seq_schedule(q, h, collect, &all);
+        std::vector<Event> volumes;
+        for (size_t i = 0; i < all.size(); ++i) {
+                if (i > 0) CHECK(all[i].ns >= all[i - 1].ns);
+                if ((all[i].bytes[0] & 0xf0) == 0xb0 && all[i].bytes[1] == 7) volumes.push_back(all[i]);
+        }
+        REQUIRE(volumes.size() == 10); // two tracks a step
+        CHECK(volumes[0].ns == 540 * Ms);
+        CHECK(volumes[9].ns == 700 * Ms);
+        CHECK(volumes[8].bytes == std::vector<uint8_t>{0xb9, 7, 50});
+        CHECK(volumes[9].bytes == std::vector<uint8_t>{0xb0, 7, 50});
+
+        // Back up at 1.2 s over 0.4 s, but another at 1.3 s replaces its steps from then on.
+        REQUIRE(bmds_seq_fade(q, 1.0f, 1200 * Ms, 400 * Ms) == 0);
+        REQUIRE(bmds_seq_fade(q, 0.0f, 1300 * Ms, 0) == 0);
+        all.clear();
+        bmds_seq_schedule(q, 3000 * Ms, collect, &all);
+        volumes.clear();
+        for (const Event &e : all)
+                if ((e.bytes[0] & 0xf0) == 0xb0 && e.bytes[1] == 7) volumes.push_back(e);
+        REQUIRE(volumes.size() == 6); // 1.24 s, 1.28 s, then silence at 1.3 s
+        CHECK(volumes[1].bytes[2] > 50);
+        CHECK(volumes[4].ns == 1300 * Ms);
+        CHECK(volumes[5].bytes == std::vector<uint8_t>{0xb0, 7, 0});
+
+        // One asked for a time already sent goes at once, never before what was sent (a port
+        // refuses an event out of order); the offs and steps stay in order with it.
+        REQUIRE(bmds_seq_fade(q, 1.0f, 1000 * Ms, 0) == 0);
+        all.clear();
+        bmds_seq_schedule(q, 3500 * Ms, collect, &all);
+        REQUIRE(!all.empty());
+        CHECK(all[0].ns == 3000 * Ms - 1 * Ms); // the last sent: the bass's off before 3 s
+        CHECK(all[0].bytes == std::vector<uint8_t>{0xb9, 7, 100});
         for (size_t i = 1; i < all.size(); ++i) CHECK(all[i].ns >= all[i - 1].ns);
         bmds_seq_close(q);
         return;

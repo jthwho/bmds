@@ -111,6 +111,7 @@ namespace {
                         int64_t latencyNs() const override; // the service's, measured each period
 
                         void allowLatency(const void *owner, int64_t ns) override; // §27
+                        void cancel(const void *owner) override;                   // §27
 
                         Service              *service = nullptr;
                         MidiQueue             ring; // the router's lock pushes; the audio thread pops
@@ -144,6 +145,15 @@ namespace {
                         }
 
                         void allow(const void *owner, int64_t ns); // under the router's lock
+
+                        // @p owner cancelled: holding an allowance, its sound ahead is dropped (the
+                        // audio thread's next period). Under the router's lock.
+                        void cancelled(const void *owner) {
+                                if (_aheadNs.load(std::memory_order_relaxed) == 0) return;
+                                for (const Allowance &a : _allowances)
+                                        if (a.owner == owner) _cancel.store(true, std::memory_order_release);
+                                return;
+                        }
 
                         // With no port (the router calls allow() no more): every allowance gone.
                         void clearAllowances() {
@@ -196,6 +206,7 @@ namespace {
                         Error playAhead(Run &run, int64_t latencyNs);
                         bool  placeAhead(Run &run, int64_t heardNs, int64_t latencyNs, uint32_t frames);
                         void  rendered(Run &run, bool any, int64_t periodNs);
+                        void  dropAhead(Run &run);
                         void  audioMain(Run &run);
                         void play();
                         bool warm();
@@ -221,6 +232,8 @@ namespace {
                         std::atomic<uint32_t> _raised{0};    // ahead: times behind, raised
                         std::atomic<int32_t>  _latencyUs{0}; // an event's time to its sound: the last period's
                         std::atomic<int64_t>  _aheadNs{0};   // the latency allowed (ahead); 0: real time
+                        std::atomic<bool>     _cancel{false}; // ahead: an owner cancelled (cancelled())
+                        std::atomic<uint32_t> _cancels{0};    // ahead: sound dropped for a cancel
                         Allowance             _allowances[MaxAllowances];
 
                 public:
@@ -250,6 +263,11 @@ namespace {
 
         void Port::allowLatency(const void *owner, int64_t ns) {
                 service->allow(owner, ns);
+                return;
+        }
+
+        void Port::cancel(const void *owner) {
+                service->cancelled(owner);
                 return;
         }
 
@@ -404,6 +422,7 @@ namespace {
         // each event at its time plus @p latencyNs.
         Error Service::playAhead(Run &run, int64_t latencyNs) {
                 run.heardNs = 0;
+                _cancel.store(false, std::memory_order_relaxed); // one before this run is moot
                 uint32_t period = run.audio->status().periodFrames;
                 if (period == 0) period = DefaultPeriodFrames;
                 if (period > RtStream::MaxFrames) period = RtStream::MaxFrames;
@@ -421,6 +440,7 @@ namespace {
                 if (out == nullptr) return Error::NoMem;
                 const int64_t periodNs = static_cast<int64_t>(period) * 1'000'000'000 / run.rateHz;
                 while (running(run) && _aheadNs.load(std::memory_order_acquire) == latencyNs) {
+                        if (_cancel.exchange(false, std::memory_order_acquire)) dropAhead(run);
                         // When the frame about to be written is heard: after the mixer's next take
                         // (a period after its last, or now if it ran dry), the ring before it, then
                         // two DMA buffers.
@@ -458,12 +478,38 @@ namespace {
                         }
                         rendered(run, any, periodNs);
                 }
+                // A cancel just before the allowance went (a program stopping its music, then closing
+                // its fd) is acted on still: what was made ahead isn't played out.
+                if (_cancel.exchange(false, std::memory_order_acquire) && err.isOk()) dropAhead(run);
                 if (run.behind) {
                         Thread::setCurrentPriority(AudioPriority);
                         run.behind = false;
                 }
                 Memory::free(out);
                 return err;
+        }
+
+        // An owner cancelled (a stop, a seek): what was rendered and isn't heard yet is thrown away,
+        // with the events waiting to be placed (every sender's: they share the sound), and the voices
+        // silenced at once (all sound off on every channel), so the next sound is the program's new
+        // one, not the old a latency later. The heard time is found again from the empty ring.
+        void Service::dropAhead(Run &run) {
+                (void)run.audio->drop();
+                MidiEvent e;
+                while (port.ring.pop(e)) {}
+                for (uint8_t channel = 0; channel < 16; ++channel) {
+                        SynthEngine::Event se;
+                        se.frame = run.synthFrame > run.lastEventFrame ? run.synthFrame : run.lastEventFrame;
+                        se.length = 3;
+                        se.data[0] = static_cast<uint8_t>(0xb0 | channel);
+                        se.data[1] = 120; // all sound off
+                        se.data[2] = 0;
+                        (void)run.synthHandle->write(ByteSpan(reinterpret_cast<const uint8_t *>(&se), sizeof(se)),
+                                                     WaitForever);
+                }
+                run.heardNs = 0;
+                _cancels.fetch_add(1, std::memory_order_relaxed);
+                return;
         }
 
         // The events for the @p frames about to be rendered, the first heard at @p heardNs: each at
@@ -674,6 +720,7 @@ namespace {
                 s.peakVoices = _peakVoices.load();
                 s.aheadMs = static_cast<uint32_t>(_aheadNs.load() / 1'000'000);
                 s.raised = _raised.load();
+                s.cancels = _cancels.load();
                 return s;
         }
 

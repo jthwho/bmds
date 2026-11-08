@@ -1428,7 +1428,7 @@ typedef struct bmds_crypto_op_t {
 #define BMDS_SCHED_FIFO 1u  /**< Real time at `priority` 1-99. */
 #define BMDS_SCHED_RR 2u    /**< Real time at `priority` 1-99, round robin (as `FIFO`: see `sched`). */
 #define BMDS_SCHED_BATCH 3u /**< As `OTHER`. */
-#define BMDS_SCHED_IDLE 5u  /**< As `OTHER`. */
+#define BMDS_SCHED_IDLE 5u  /**< Below `OTHER`: runs on the time normal threads leave (2026-11-07; as `OTHER` before). */
 /** @brief Or'ed into a policy: threads and processes it starts begin as `OTHER`. */
 #define BMDS_SCHED_RESET_ON_FORK 0x40000000u
 

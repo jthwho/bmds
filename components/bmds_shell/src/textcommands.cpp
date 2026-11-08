@@ -409,14 +409,29 @@ int TextCommands::wc(CommandContext &ctx) {
 
 int TextCommands::grep(CommandContext &ctx) {
         const Args args = ctx.args();
-        bool       ignoreCase = false, invert = false, countOnly = false, numbers = false, quiet = false, fixed = false;
-        size_t     i = 1;
+        bool       ignoreCase = false, invert = false, countOnly = false, numbers = false, quiet = false, fixed = false,
+             extended = false;
+        // The patterns: each -e's (a line matching any is selected), else the first operand.
+        constexpr size_t MaxPatterns = 8;
+        StringView       patterns[MaxPatterns];
+        size_t           count = 0;
+        size_t           i = 1;
         for (; i < args.size() && args[i][0] == '-' && args[i][1] != '\0'; ++i) {
                 if (StringView(args[i]) == "--") {
                         ++i;
                         break;
                 }
                 for (const char *o = args[i] + 1; *o != '\0'; ++o) {
+                        if (*o == 'e') { // -e PATTERN, or -ePATTERN
+                                const char *p = o[1] != '\0' ? o + 1 : ++i < args.size() ? args[i] : nullptr;
+                                if (p == nullptr) return ctx.usage();
+                                if (count == MaxPatterns) {
+                                        ctx.eprintf("grep: at most %u patterns\n", static_cast<unsigned>(MaxPatterns));
+                                        return Shell::ExitUsage;
+                                }
+                                patterns[count++] = p;
+                                break;
+                        }
                         switch (*o) {
                                 case 'i': ignoreCase = true; break;
                                 case 'v': invert = true; break;
@@ -424,21 +439,33 @@ int TextCommands::grep(CommandContext &ctx) {
                                 case 'n': numbers = true; break;
                                 case 'q': quiet = true; break;
                                 case 'F': fixed = true; break;
+                                case 'E':
+                                        extended = true;
+                                        fixed = false;
+                                        break;
+                                case 'G':
+                                        extended = false;
+                                        fixed = false;
+                                        break;
                                 default: return ctx.usage();
                         }
                 }
         }
-        if (i >= args.size()) return ctx.usage();
-        const StringView pattern = args[i++];
-        const Args       files = args.mid(i);
-        if (!fixed) {
-                Error err = Regex::check(pattern);
-                if (err == Error::NotSupported) {
-                        ctx.eprintf("grep: unsupported pattern: %s\n", pattern.data());
+        if (count == 0) {
+                if (i >= args.size()) return ctx.usage();
+                patterns[count++] = args[i++];
+        }
+        const Args files = args.mid(i);
+        Regex      res[MaxPatterns];
+        for (size_t k = 0; k < count && !fixed; ++k) {
+                const Error err = res[k].compile(patterns[k], (extended ? Regex::Extended : Regex::Basic) |
+                                                                      (ignoreCase ? Regex::IgnoreCase : 0u));
+                if (err == Error::Invalid) {
+                        ctx.eprintf("grep: %s: %s\n", patterns[k].data(), res[k].errorText());
                         return Shell::ExitUsage;
                 }
                 if (err.isError()) {
-                        ctx.eprintf("grep: invalid pattern: %s\n", pattern.data());
+                        ctx.eprintf("grep: %s\n", err.desc());
                         return Shell::ExitUsage;
                 }
         }
@@ -463,8 +490,11 @@ int TextCommands::grep(CommandContext &ctx) {
                         }
                         ++lineNo;
                         bool match = false;
-                        if (fixed) {
-                                if (!ignoreCase) {
+                        for (size_t pi = 0; pi < count && !match; ++pi) {
+                                const StringView pattern = patterns[pi];
+                                if (!fixed) {
+                                        match = res[pi].search(line.data());
+                                } else if (!ignoreCase) {
                                         match = line.view().contains(pattern);
                                 } else {
                                         // Case-folding fixed search: try each position.
@@ -480,8 +510,6 @@ int TextCommands::grep(CommandContext &ctx) {
                                                 match = k == pattern.size();
                                         }
                                 }
-                        } else {
-                                match = Regex::search(pattern, line, ignoreCase);
                         }
                         if (match == invert) continue;
                         ++selected;
@@ -520,8 +548,8 @@ int TextCommands::grep(CommandContext &ctx) {
 
 BMDS_SHELL_COMMAND(cat, TextCommands::cat, "[file]...", "Copy files (or standard input) to standard output")
 BMDS_SHELL_COMMAND(echo, TextCommands::echo, "[-neE] [word]...", "Print the words, separated by spaces")
-BMDS_SHELL_COMMAND(grep, TextCommands::grep, "[-civnqF] pattern [file]...",
-                   "Print the lines of files (or standard input) that match a basic regular expression")
+BMDS_SHELL_COMMAND(grep, TextCommands::grep, "[-civnqEFG] [-e pattern]... | pattern [file]...",
+                   "Print the lines of files (or standard input) that match a regular expression")
 BMDS_SHELL_COMMAND(head, TextCommands::head, "[-n count | -c bytes] [file]...",
                    "Print the first lines (10), or bytes, of files")
 BMDS_SHELL_COMMAND(wc, TextCommands::wc, "[-lwc] [file]...", "Count lines, words and bytes of files")

@@ -50,6 +50,7 @@ namespace SynthServices {
                         uint32_t peakVoices = 0;  ///< The most at once, since boot.
                         uint32_t aheadMs = 0;     ///< The latency allowed it, rendering ahead (0: real time).
                         uint32_t raised = 0;      ///< Ahead: times its ring ran low and it went above drawing.
+                        uint32_t cancels = 0;     ///< Ahead: times an owner cancelled and its sound ahead was dropped.
         };
 
         /**

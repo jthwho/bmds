@@ -58,6 +58,15 @@ void pal_flash(pal_t *pal, uint32_t rgb, float strength, float per_second) {
         return;
 }
 
+void pal_veil(pal_t *pal, uint32_t rgb, float amount) {
+        amount = amount < 0.0f ? 0.0f : amount > 1.0f ? 1.0f : amount;
+        if (amount == pal->veil && rgb == pal->veil_rgb) return;
+        pal->veil = amount;
+        pal->veil_rgb = rgb;
+        pal->changed = 1;
+        return;
+}
+
 const uint32_t *pal_update(pal_t *pal, float dt) {
         int fading = pal->fade_seconds > 0.0f && pal->fade < pal->fade_seconds;
         if (fading) {
@@ -80,6 +89,8 @@ const uint32_t *pal_update(pal_t *pal, float dt) {
         if (pal->flash > 0.0f)
                 bmds_palette_mix_rgb(pal->shown, pal->shown, PAL_PARTS, pal->flash_rgb,
                                      (uint32_t)(pal->flash * 256.0f));
+        if (pal->veil > 0.0f)
+                bmds_palette_mix_rgb(pal->shown, pal->shown, PAL_PARTS, pal->veil_rgb, (uint32_t)(pal->veil * 256.0f));
         memcpy(pal->shown + PAL_PARTS, pal->base + PAL_PARTS, (256 - PAL_PARTS) * sizeof(uint32_t));
         pal->changed = 0;
         return pal->shown;

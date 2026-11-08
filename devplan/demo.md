@@ -348,3 +348,101 @@ where the SDK already had what they need (textures, step 6, not needed yet: the 
   59, stars 60, tunnel 59, fire 51, balls 56, solids 41; no underrun, no late period or event. Fire
   and solids are their drawing's now (18.4 and 23.2 ms on core 0); FM's own cost (31-42 % of core
   1) still matters, since at 60 fps the presenter takes 57 % of it: profiled per voice next.
+
+### Step 6 (part): the boot, the credits, speech on cues, transitions (2026-11-07)
+
+The user's ask: every remaining piece, the BIOS screen talking, random phrases and details so each
+run differs, and the APIs grown where the demo needs them (it's what a game would need too).
+
+- **The boot (`parts/boot.c`, part 0):** a 1990s BIOS screen whose facts are the board's own
+  (`bmds_system_info()`: board, chip revision, cores and clock, serial number, host name;
+  `bmds_mem_info()`: PSRAM counted up as it is "tested", internal RAM), six checks of 26 picked
+  at random ("Calibrating the flux capacitor ...... 1.21 GW"), and a voice picked each run (en-US
+  or en-GB, pitch and speed varied) that greets, reports the memory, remarks on two of the checks
+  and signs off, each from a pool. A line that talks waits (1.5 s at most) for its speech. DEL
+  asks for SETUP, which it refuses aloud. Its script over, the show starts the music, and the
+  song's first beat tears the screen into the intro.
+- **The credits (`parts/credits.c`, part 9, the outro):** a starfield, the roll (who, the music and
+  the synth playing it, the libraries, the chip's parts, four greetings of eleven at random), each
+  heading read out as it reaches the middle (two speech slots in turn, the next made while one
+  plays), and the system's numbers live under it.
+- **Lines on cues (`demo1.c`):** a pool for each section ("Not one pixel of this picture moves.
+  Only the palette does.", "This is an E S P 32 P 4. 360 megahertz. No G P U."); one picked as the
+  section before starts, made by the speech thread, placed on its beat with `bmds_game_play_at()`
+  at the time `bmds_seq_time_of()` gives, or not said if made too late.
+- **Transitions:** in the last half beat before a section (`bmds_seq_time_of()` again) the part
+  goes, and the next is revealed over 0.35 s: a fade through black, a white flash, blinds, or a
+  tear (rows thrown sideways), picked at random each time; the boot always tears.
+- **Speech (`voice.c`):** libbmdsgame's mixer opened ahead (250 ms, `BMDS_GAME_AUDIO_AHEAD`: no
+  deadline beside the drawing, as the synth's), a thread that says lines into sounds
+  (`bmds_game_sound_speak()`), slots the show owns; a sound a voice may still read is kept until
+  the mixer lets it go.
+- **Options:** `-1` plays the song once and exits; `-s` is silent (no speech); key 0 is the boot.
+- **The SDK grown for it** (static libraries, no ABI): `BMDS_GAME_AUDIO_AHEAD` and `latency_ms`,
+  `bmds_game_audio_latency_ns()`, `bmds_game_play_at()` (to the frame, host-tested),
+  `bmds_game_sound_speak()` (`games.md`); `bmds_seq_time_of()` (`sequencer.md`). In the kernel:
+  a cancel (`BMDS_MIDI_CANCEL`) by a program that allowed latency now drops what the synth made
+  ahead for it and silences its voices (`audio.md` §27), so M and W stop the music at once.
+- **The rotozoomer and the cube (`parts/roto.c`, part 8, the finale):** a 128×128 picture (the
+  logo on a checker of two ramps) turned and zoomed, a texel for each 2×2 pixels as the tunnel
+  draws (9.5 ms; full-screen `bmds_canvas_texture_affine()` was 16 ms, its 256×256 texture 21);
+  from bar 4 it dims and a cube flies in, `TEXTURED_FLAT` with perspective through a light table,
+  its faces a 64×64 plasma made each frame (`bmds_canvas_image()`), a small cube of the logo going
+  round it.
+- **Found on the board:**
+  - The boot drew all its text each frame (a system call a string: 10.5 ms); now each line is drawn
+    once into its own picture when it changes, which the 2D-DMA copies out (5.0 ms, core 0 20 %).
+    The credits likewise: their lines drawn once into keyed images (37 → 7.5 ms).
+  - The game mixer ahead at `SCHED_FIFO` 1 took 13 % of core 1 above the presenter while silent,
+    and speech made beside the drawing took half its core: fire fell 48 → 25 fps. Fixed in
+    libbmdsgame (`games.md` §28) and with `SCHED_IDLE` (`processes.md`); speakers stay open.
+  - Only en-US is on this board (the others are the speech-voices package): a voice not there
+    falls back to the system's.
+- **Measured** (the whole song with FM and speech, the overlay on; fps): boot 59, copper 60, plasma
+  56, stars 58, tunnel 57, fire 48, balls 58, solids 40, rotozoomer 60, the cube 38, credits 60.
+  The solids and the cube wait for their band on core 1, which the presenter and FM fill (93-99 %):
+  FM's own cost is next, then the 3D split.
+- **After the user's first watch** (speech that glitched and talked over itself; ideas):
+  - The glitches were the speech stream's underruns mid-line and at each line's start: its mixer
+    now keeps to the game's core, leads with silence and stays awake between lines (`games.md`
+    §28). Lines said in turn no longer overlap: `voice_queue()` plays a line after the last one
+    played ends (the boot's lines, its SETUP refusal, the credits' headings); the screen goes on.
+  - The music ducks under every line (to 0.5, -6 dB, over 120 ms before it; back up over 0.6 s,
+    0.3 s after it unless another line follows; 0.3 was too much, the user's second watch): `bmds_seq_fade()` (`sequencer.md`). The
+    limiter that had caught 5 frames in a run now catches none.
+  - Two voices talk over the show: one low and slow (pitch 55-70 %, speed 85-95 %), one higher and
+    quicker (115-130 %, 100-110 %; 150-180 % was hard to follow), picked each run. Each cue is now an exchange of up to four turns
+    from a pool ("Two hundred and sixteen balls." "Sorted every frame." "Every frame?" "Every
+    frame."), either one starting.
+  - The credits' headings were cut off: the next heading was asked for in the other slot while the
+    line there still waited in the queue, and asking stops a slot's line. The headings are no
+    longer read; the duo chat over the credits instead (the outro's cue, made during the finale):
+    two bits of 32 at random (8-bit machines, retro computing, graphics, films, programmers'
+    jokes: "Did you blow on the cartridge?" "There is no cartridge." "Then what have I been
+    blowing on?") and one sign-off of five, eight turns at most in slots of their own. A cue
+    whose beat comes while the chat still talks (round the loop) is queued after it; `-1` exits
+    once the song is over and the chat said.
+  - The flux capacitor's remark says "jigga watts", as the film does.
+  - The music plays on the wavetable by default (`-F` for FM): a thread during the boot opens a
+    synth fd of the wavetable's own (`audio_synth`), which loads its SoundFont into the system's
+    cache, and the music waits for its answer; if it can't load (no font, no memory), or the port
+    can't be opened, FM plays instead.
+  - The user's wavetable run lost its speech halfway: lines are made at `SCHED_IDLE`, and beside
+    the wavetable (raised above the presenter 200-1000 times a run) and the fire part, a section's
+    three lines took 12 s, after their cue. Each section now has its own slots (48 in all), asked
+    three sections ahead and freed two after, made oldest request first; a whole run then places
+    every cue, round the loop too. PSRAM free with the wavetable's font and the lines: 2.6 MB at its
+    lowest. The user's next run still went quiet halfway: the speech thread was on core 1, which
+    the presenter (52 %) and the wavetable (38 %) fill, and got 10 % of it; made in the order asked,
+    once behind it made lines whose cue had passed, and never caught up. Now a section whose cue
+    passes unsaid has its lines dropped at once (made or not), and the thread keeps to the game's
+    core, where the drawing waits each frame (38 % idle there, 11 % on core 1, in the same run):
+    over two loops it kept up and waited for work.
+  - Stuck notes on the wavetable: `bmds_seq_fade()` sent events out of time order, which the port
+    refused, and the player dropped the note-offs after them (`sequencer.md`).
+  - BMDS is said "Bum Doss" (the text is respelled for speech only), and "Bare metal. Do stuff."
+    became "Look! It's bare metal, doing stuff!".
+  - A voice not installed is remembered and not tried again; a speaker is opened before the oldest
+    is closed, so a failed open keeps it.
+  - Measured again (the whole song; fps, a second's average): boot 60, copper 60, plasma 60, stars
+    60, tunnel 59, fire 58, balls 59, solids 47, rotozoomer and cube 55 (47-61), credits 59.

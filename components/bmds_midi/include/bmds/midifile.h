@@ -131,7 +131,11 @@ class MidiFile final : public Stream, private MidiSink {
                  */
                 Error setAllowedLatency(int64_t ns);
 
-                /** @brief Throws away what it scheduled and hasn't sent (`BMDS_MIDI_CANCEL`). */
+                /**
+                 * @brief Throws away what it scheduled and hasn't sent (`BMDS_MIDI_CANCEL`); with a
+                 *        latency allowed, a synth rendering ahead for it drops what it made and
+                 *        isn't heard yet, and silences its voices (`MidiSink::cancel()`).
+                 */
                 void cancelScheduled();
 
                 Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override;

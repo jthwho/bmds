@@ -259,8 +259,12 @@ Error MidiFile::setAllowedLatency(int64_t ns) {
 }
 
 void MidiFile::cancelScheduled() {
-        Mutex::Locker lock(midiClock->lock, WaitForever);
-        _scheduled.clear();
+        {
+                Mutex::Locker lock(midiClock->lock, WaitForever);
+                _scheduled.clear();
+        }
+        // What was sent ahead to a synth rendering ahead for it is dropped there too (§27).
+        if (_allowedNs.load(std::memory_order_relaxed) != 0) Midi::router().cancel(this);
         return;
 }
 

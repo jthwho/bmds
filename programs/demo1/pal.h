@@ -30,6 +30,8 @@ typedef struct {
                 float    flash;              /* 0..1, decaying */
                 float    flash_decay;        /* a second's fraction lost */
                 uint32_t flash_rgb;
+                float    veil; /* 0..1: veil_rgb over everything (a transition), held until changed */
+                uint32_t veil_rgb;
                 int      changed; /* shown differs from what was last given out */
 } pal_t;
 
@@ -47,6 +49,9 @@ void pal_rotate(pal_t *pal, uint32_t first, uint32_t count, int32_t steps);
 
 /** @brief Mixes @p rgb over everything by @p strength (0..1), losing @p per_second of it a second. */
 void pal_flash(pal_t *pal, uint32_t rgb, float strength, float per_second);
+
+/** @brief Mixes @p rgb over everything by @p amount (0..1), held until set again (0: none). */
+void pal_veil(pal_t *pal, uint32_t rgb, float amount);
 
 /**
  * @brief Moves the fade and the flash on by @p dt seconds and makes the palette shown.

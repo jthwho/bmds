@@ -90,6 +90,7 @@ void bmds_3d_destroy(bmds_3d_t *ctx) {
         bmds_mem_free(ctx->order);
         bmds_mem_free(ctx->records);
         bmds_mem_free(ctx->ranked);
+        bmds_mem_free(ctx->tuvs);
         bmds_mem_free(ctx);
         return;
 }
@@ -302,11 +303,39 @@ void bmds_3d_screen(const bmds_3d_viewport_t *vp, bmds_3d_vertex_t *v) {
 }
 
 int bmds_3d_check_material(const bmds_3d_material_t *m) {
-        if (m == NULL || m->size < sizeof(bmds_3d_material_t)) return -BMDS_EINVAL;
-        if (m->mode < BMDS_3D_POINTS || m->mode > BMDS_3D_GOURAUD) return -BMDS_EINVAL;
-        if ((m->flags & ~(BMDS_3D_CULL_BACK | BMDS_3D_DEPTH_CUE | BMDS_3D_UNLIT)) != 0) return -BMDS_EINVAL;
+        /* An older source's material (before `texture`) is whole as far as it goes. */
+        if (m == NULL || m->size < BMDS_3D_MATERIAL_SIZE_1) return -BMDS_EINVAL;
+        if (m->mode < BMDS_3D_POINTS || m->mode > BMDS_3D_ENVMAP) return -BMDS_EINVAL;
+        if ((m->flags & ~(BMDS_3D_CULL_BACK | BMDS_3D_DEPTH_CUE | BMDS_3D_UNLIT | BMDS_3D_PERSPECTIVE)) != 0)
+                return -BMDS_EINVAL;
         if (m->point_size > MAX_POINT_SIZE) return -BMDS_EINVAL;
         return 0;
+}
+
+/* Whether @p v is a power of two (1 included). */
+static int is_pow2(uint32_t v) {
+        return v != 0 && (v & (v - 1)) == 0;
+}
+
+int bmds_3d_check_texture(const bmds_3d_material_t *m) {
+        const bmds_game_image_t *t = m->texture;
+        if (t == NULL || t->pixels == NULL || t->format != BMDS_PIXEL_L8 || t->width <= 0 || t->height <= 0)
+                return -BMDS_EINVAL;
+        if (!is_pow2((uint32_t)t->width) || !is_pow2((uint32_t)t->height) || !is_pow2(t->stride) ||
+            t->stride < (uint32_t)t->width || t->stride > 65536u)
+                return -BMDS_EINVAL;
+        const int lit = (m->mode == BMDS_3D_TEXTURED_FLAT || m->mode == BMDS_3D_TEXTURED_GOURAUD) &&
+                        (m->flags & BMDS_3D_UNLIT) == 0;
+        if ((lit || (m->flags & BMDS_3D_DEPTH_CUE) != 0) && m->light_table == NULL) return -BMDS_EINVAL;
+        return 0;
+}
+
+void bmds_3d_full_material(const bmds_3d_material_t *m, bmds_3d_material_t *out) {
+        const size_t n = m->size < sizeof(*out) ? m->size : sizeof(*out);
+        memset(out, 0, sizeof(*out));
+        memcpy(out, m, n);
+        out->size = sizeof(*out);
+        return;
 }
 
 static uint32_t rgb_pixel(uint32_t format, uint32_t r, uint32_t g, uint32_t b) {
@@ -411,13 +440,29 @@ static void draw_wire(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3d_
         return;
 }
 
-int bmds_3d_draw(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3d_material_t *material) {
+int bmds_3d_draw(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3d_material_t *given) {
         int e = check_mesh(mesh);
-        if (e == 0) e = bmds_3d_check_material(material);
+        if (e == 0) e = bmds_3d_check_material(given);
         if (e < 0) return e;
         if (ctx->target == NULL) return -BMDS_EINVAL;
         if (mesh->vertex_count > ctx->max_vertices) return -BMDS_ENOSPC;
-        const int     solid = material->mode == BMDS_3D_FLAT || material->mode == BMDS_3D_GOURAUD;
+        bmds_3d_material_t whole;
+        bmds_3d_full_material(given, &whole);
+        const bmds_3d_material_t *material = &whole;
+        const int                 solid = material->mode >= BMDS_3D_FLAT;
+        if (bmds_3d_is_textured(material->mode)) {
+                if (ctx->target->format != BMDS_PIXEL_L8) return -BMDS_ENOSYS;
+                if (material->mode != BMDS_3D_ENVMAP && mesh->uvs == NULL) return -BMDS_EINVAL;
+                e = bmds_3d_check_texture(material);
+                if (e < 0) return e;
+                if (ctx->tuvs == NULL) {
+                        /* Allocated once, at the first textured draw: programs without textures pay
+                           nothing for them. */
+                        ctx->tuvs =
+                                (bmds_3d_tuv_t *)bmds_mem_alloc(ctx->max_tris * (uint32_t)sizeof(bmds_3d_tuv_t), 0, 0);
+                        if (ctx->tuvs == NULL) return -BMDS_ENOMEM;
+                }
+        }
         bmds_3d_ink_t ink;
         if (!solid) {
                 e = bmds_3d_ink(ctx, material, &ink);

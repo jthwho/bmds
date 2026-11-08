@@ -12,9 +12,13 @@
  * closing the window ends it. On L8 the shades are palette ramps (bmds/palette.h); with -f 565 or
  * 888 the same scene in RGB. The frame's time and counters show at the top.
  *
+ * T (or -t) steps through textures (L8 only, devplan/3d.md step 4): a procedural checker of glowing
+ * tiles lit per vertex through a light table, perspective-correct; everything chrome (ENVMAP, a
+ * made-up sky and ground); the checker unlit and affine (the PS1's swim, on the near faces).
+ *
  * -s sets the picture's size (320x180: a quarter of the pixels, scaled 4 times on the screen).
  *
- *     solids [-F] [-f l8|565|888] [-s WIDTHxHEIGHT]
+ *     solids [-F] [-t] [-f l8|565|888] [-s WIDTHxHEIGHT]
  */
 
 #include <math.h>
@@ -34,7 +38,10 @@
 #define KEY_ESCAPE 0x00070029u
 #define KEY_SPACE 0x0007002cu
 #define KEY_S 0x00070016u
+#define KEY_T 0x00070017u
 #define SHAPES 6
+#define TEXTURE_MODES 4 /* none, lit, chrome, unlit and affine */
+#define TEXTURE_SIZE 64
 
 /* L8: a background, text, the floor, and four ramps of RAMP. */
 #define INK_BACKGROUND 0
@@ -44,12 +51,19 @@
 #define RAMP_GREEN (RAMP_RED + RAMP)
 #define RAMP_BLUE (RAMP_GREEN + RAMP)
 #define RAMP_GOLD (RAMP_BLUE + RAMP)
+/* The textures' colours: a warm ramp and a cool one, 24 each, after the four ramps. */
+#define TEX_WARM (RAMP_GOLD + RAMP)
+#define TEX_COOL (TEX_WARM + 24)
 
 typedef struct {
                 bmds_3d_t     *ctx;
                 bmds_3d_mesh_t cube, ball, facets, floor;
                 bmds_3d_mesh_t middle[SHAPES]; /* the torus, then the others S steps through */
                 int            shape;
+                int               texture; /* 0: none; 1 lit; 2 chrome; 3 unlit, affine */
+                uint8_t           checker[TEXTURE_SIZE * TEXTURE_SIZE], sky[TEXTURE_SIZE * TEXTURE_SIZE];
+                bmds_game_image_t checker_image, sky_image;
+                uint8_t           light_table[BMDS_3D_LIGHT_TABLE_SIZE];
                 uint32_t       format;
                 uint32_t       palette[256];
                 int            palette_set, smooth;
@@ -75,6 +89,7 @@ static void on_event(bmds_game_t *game, const bmds_surface_event_t *e) {
                 if (e->data[0] == KEY_ESCAPE) bmds_game_quit(game);
                 if (e->data[0] == KEY_SPACE) s->smooth = !s->smooth;
                 if (e->data[0] == KEY_S) s->shape = (s->shape + 1) % SHAPES;
+                if (e->data[0] == KEY_T && s->format == BMDS_PIXEL_L8) s->texture = (s->texture + 1) % TEXTURE_MODES;
         } else if (e->type == BMDS_EVENT_POINTER && (int32_t)e->data[0] != BMDS_POINTER_GONE) {
                 /* The pointer's place, -1..1 each way: where the light comes from. */
                 s->light_x = 2.0f * (float)(int32_t)e->data[0] / (float)bmds_game_width(game) - 1.0f;
@@ -99,6 +114,56 @@ static bmds_3d_material_t solid(uint32_t mode, uint32_t ramp, uint32_t rgb) {
         m.ramp_count = RAMP;
         m.rgb = rgb;
         return m;
+}
+
+/* @p m textured as the T key says (L8; otherwise as it is). */
+static bmds_3d_material_t textured(const state_t *s, bmds_3d_material_t m) {
+        if (s->texture == 0 || s->format != BMDS_PIXEL_L8) return m;
+        m.light_table = s->light_table;
+        if (s->texture == 1) {
+                m.mode = BMDS_3D_TEXTURED_GOURAUD;
+                m.flags |= BMDS_3D_PERSPECTIVE;
+                m.texture = &s->checker_image;
+        } else if (s->texture == 2) {
+                m.mode = BMDS_3D_ENVMAP;
+                m.flags |= BMDS_3D_PERSPECTIVE;
+                m.texture = &s->sky_image;
+        } else {
+                m.mode = BMDS_3D_TEXTURED;
+                m.texture = &s->checker_image;
+        }
+        return m;
+}
+
+/* The textures, made here: a checker of glowing tiles, warm and cool; and a sky over a ground,
+   with a sun, for chrome (seen as the view-space normal: up is the sky, the middle faces us). */
+static void make_textures(state_t *s) {
+        for (int y = 0; y < TEXTURE_SIZE; ++y) {
+                for (int x = 0; x < TEXTURE_SIZE; ++x) {
+                        const int tx = x & 15, ty = y & 15;
+                        const int dx = tx < 8 ? 7 - tx : tx - 8, dy = ty < 8 ? 7 - ty : ty - 8;
+                        const int glow = 23 - (dx * dx + dy * dy) * 23 / 98; /* bright in the tile's middle */
+                        const int warm = ((x >> 4) + (y >> 4)) & 1;
+                        s->checker[y * TEXTURE_SIZE + x] = (uint8_t)((warm ? TEX_WARM : TEX_COOL) + glow);
+                        const float fx = (float)x / (TEXTURE_SIZE - 1) * 2.0f - 1.0f;
+                        const float fy = (float)y / (TEXTURE_SIZE - 1) * 2.0f - 1.0f;
+                        const float sun = (fx + 0.35f) * (fx + 0.35f) + (fy + 0.45f) * (fy + 0.45f);
+                        int         v;
+                        if (sun < 0.03f)
+                                v = TEX_WARM + 23;
+                        else if (fy < 0.05f) /* the sky, lighter towards the horizon */
+                                v = TEX_COOL + 8 + (int)((fy + 1.0f) * 15.0f);
+                        else /* the ground, darker below */
+                                v = TEX_WARM + 14 - (int)(fy * 13.0f);
+                        s->sky[y * TEXTURE_SIZE + x] = (uint8_t)v;
+                }
+        }
+        static const bmds_game_image_t base = {NULL, TEXTURE_SIZE, TEXTURE_SIZE, TEXTURE_SIZE, BMDS_PIXEL_L8, 0, 0};
+        s->checker_image = base;
+        s->checker_image.pixels = s->checker;
+        s->sky_image = base;
+        s->sky_image.pixels = s->sky;
+        return;
 }
 
 static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
@@ -141,14 +206,14 @@ static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
         bmds_mat4_translation(&place, -2.4f, 0.0f, 0.0f);
         bmds_3d_load(ctx, &place);
         bmds_3d_rotate(ctx, bmds_vec3(1, 1, 0.3f), t * 0.8f);
-        const bmds_3d_material_t red = solid(BMDS_3D_FLAT, RAMP_RED, 0xff5040);
+        const bmds_3d_material_t red = textured(s, solid(BMDS_3D_FLAT, RAMP_RED, 0xff5040));
         (void)bmds_3d_draw(ctx, &s->cube, &red);
 
         bmds_mat4_identity(&place);
         bmds_3d_load(ctx, &place);
         bmds_3d_rotate(ctx, bmds_vec3(1, 0, 0), t * 0.6f);
         bmds_3d_rotate(ctx, bmds_vec3(0, 1, 0), t * 0.35f);
-        const bmds_3d_material_t green = solid(smooth, RAMP_GREEN, 0x50ff70);
+        const bmds_3d_material_t green = textured(s, solid(smooth, RAMP_GREEN, 0x50ff70));
         (void)bmds_3d_draw(ctx, &s->middle[s->shape], &green);
 
         bmds_mat4_translation(&place, 2.4f, 0.0f, 0.0f);
@@ -159,7 +224,12 @@ static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
 
         bmds_mat4_translation(&place, 3.0f * cosf(t * 0.9f), 1.2f + 0.3f * sinf(t * 2.3f), 3.0f * sinf(t * 0.9f));
         bmds_3d_load(ctx, &place);
-        const bmds_3d_material_t gold = solid(smooth, RAMP_GOLD, 0xffd040);
+        bmds_3d_material_t gold = solid(smooth, RAMP_GOLD, 0xffd040);
+        if (s->texture != 0 && l8) { /* a chrome ball in every textured mode */
+                gold.mode = BMDS_3D_ENVMAP;
+                gold.flags |= BMDS_3D_PERSPECTIVE;
+                gold.texture = &s->sky_image;
+        }
         (void)bmds_3d_draw(ctx, &s->ball, &gold);
         bmds_3d_end(ctx);
 
@@ -177,9 +247,10 @@ static void on_draw(bmds_game_t *game, bmds_canvas_t *c) {
                 s->frames = 0;
                 s->second_ns = now;
         }
-        snprintf(s->status, sizeof(s->status), "%u fps  draw %.2f ms  frame %.1f ms  %u triangles  %u pixels  %s",
+        static const char *const textures[TEXTURE_MODES] = {"", "  textured", "  chrome", "  unlit affine"};
+        snprintf(s->status, sizeof(s->status), "%u fps  draw %.2f ms  frame %.1f ms  %u triangles  %u pixels  %s%s",
                  (unsigned)s->fps, (double)s->draw_ms, (double)s->period_ms, (unsigned)st.triangles,
-                 (unsigned)st.pixels, s->smooth ? "Gouraud" : "flat");
+                 (unsigned)st.pixels, s->smooth ? "Gouraud" : "flat", textures[l8 ? s->texture : 0]);
         bmds_canvas_text(c, BMDS_GAME_FONT_DEFAULT, 4, 2, s->status, l8 ? INK_TEXT : bmds_canvas_pixel(c, 0xc0c8d0));
         bmds_canvas_damage_all(c);
         return;
@@ -208,9 +279,11 @@ int main(int argc, char **argv) {
         config.flags = BMDS_SURFACE_WHOLE;
         config.title = "Solids";
         int opt;
-        while ((opt = getopt(argc, argv, "Ff:s:")) != -1) {
+        while ((opt = getopt(argc, argv, "Ftf:s:")) != -1) {
                 if (opt == 'F') {
                         config.flags |= BMDS_SURFACE_FULL_SCREEN;
+                } else if (opt == 't') {
+                        s.texture = 1;
                 } else if (opt == 's') {
                         if (sscanf(optarg, "%ux%u", &config.width, &config.height) != 2 || config.width < 64 ||
                             config.height < 64 || config.width % 4 != 0)
@@ -220,7 +293,7 @@ int main(int argc, char **argv) {
                                         : strcmp(optarg, "888") == 0 ? BMDS_PIXEL_BGR24
                                                                      : BMDS_PIXEL_L8;
                 } else {
-                        fprintf(stderr, "usage: solids [-F] [-f l8|565|888] [-s WIDTHxHEIGHT]\n");
+                        fprintf(stderr, "usage: solids [-F] [-t] [-f l8|565|888] [-s WIDTHxHEIGHT]\n");
                         return 2;
                 }
         }
@@ -239,6 +312,12 @@ int main(int argc, char **argv) {
                 bmds_palette_ramp(s.palette, first, lit + 1, 0x080808, colours[i]);
                 bmds_palette_ramp(s.palette, first + lit, RAMP - lit, colours[i], 0xfff0e0);
         }
+        /* The textures' ramps, and the light table over every entry but the background, text and
+           floor (a few milliseconds; a program whose palette changes builds it again). */
+        bmds_palette_ramp3(s.palette, TEX_WARM, 24, 0x200800, 0xe04010, 0xffe080);
+        bmds_palette_ramp3(s.palette, TEX_COOL, 24, 0x000820, 0x1060e0, 0xc0f0ff);
+        make_textures(&s);
+        (void)bmds_3d_light_table(s.light_table, s.palette, RAMP_RED, 256 - RAMP_RED, 0);
 
         /* The scratch in PSRAM: internal RAM for it (BMDS_MEM_FAST, ~10% faster) left the kernel too
            little to go full screen (3d.md §13, step 3). */

@@ -102,6 +102,8 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/3d/solid.c
         ${BMDS_ROOT}/sdk/3d/raster.c
         ${BMDS_ROOT}/sdk/3d/cores.c
+        ${BMDS_ROOT}/sdk/3d/texture.c
+        ${BMDS_ROOT}/sdk/3d/light.c
         fontlibrary.cpp
         fonts.cpp
         game.cpp
@@ -113,6 +115,8 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/game/mix.c
         ${BMDS_ROOT}/sdk/game/smf.c
         ${BMDS_ROOT}/sdk/game/palette.c
+        ${BMDS_ROOT}/sdk/game/texmap.c
+        texmap.cpp
         palette.cpp
         demo1.cpp
         seq.cpp

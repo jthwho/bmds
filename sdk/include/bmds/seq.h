@@ -154,6 +154,17 @@ typedef struct bmds_seq_position_t {
  */
 int bmds_seq_position(const bmds_seq_t *seq, int64_t time_ns, bmds_seq_position_t *pos);
 
+/**
+ * @brief Sets @p time_ns to when the start of beat @p beat of bar @p bar of section @p section
+ *        is heard, the first time at or after @p after_ns (the loop counted): what
+ *        bmds_seq_position() answers, the other way round, to put a sound, a line or a picture on
+ *        a cue ahead of it (`bmds_game_play_at()`).
+ * @return 0, or `-BMDS_EINVAL` (no such section, bar or beat), `-BMDS_EAGAIN` (not playing),
+ *         `-BMDS_ENOENT` (passed, and not played again).
+ */
+int bmds_seq_time_of(const bmds_seq_t *seq, uint32_t section, uint32_t bar, uint32_t beat, int64_t after_ns,
+                     int64_t *time_ns);
+
 /** @brief A note heard (bmds_seq_hits()). */
 typedef struct bmds_seq_hit_t {
                 int64_t  time_ns; /**< When it is heard. */
@@ -177,6 +188,24 @@ uint32_t bmds_seq_hits(bmds_seq_t *seq, int64_t from_ns, int64_t to_ns, uint32_t
  * @return 0, or `-BMDS_ENOENT` (none among the last 512).
  */
 int bmds_seq_last_hit(bmds_seq_t *seq, int64_t time_ns, uint32_t track, bmds_seq_hit_t *hit);
+
+/**
+ * @brief Moves the song's loudness to @p gain (0 to 1 of its own, as an amplitude) from when
+ *        @p at_ns is heard, over @p over_ns: to duck the music under a line said
+ *        (`bmds_game_play_at()` at the same time) and bring it back after. Each track's volume
+ *        (controller 7, its own and its lanes') is sent scaled, in steps of 40 ms, among the notes
+ *        and at their times; a synth moves the notes sounding with it.
+ *
+ *        A fade replaces those asked for before it that would be heard from @p at_ns on, and
+ *        starts from where they left the song then. A time already sent is sent at once (late).
+ *        The gain lasts through bmds_seq_stop() and bmds_seq_play() (its fades pending are dropped
+ *        by a stop, the gain then their last). Any thread.
+ * @param at_ns When it starts, heard (0: as soon as the song can be).
+ * @return 0, or `-BMDS_EINVAL` (@p gain or @p over_ns out of range), `-BMDS_ENOSPC` (64 steps
+ *         pending: try again once some are heard).
+ * @nonblocking
+ */
+int bmds_seq_fade(bmds_seq_t *seq, float gain, int64_t at_ns, int64_t over_ns);
 
 #ifdef __cplusplus
 }

@@ -17,40 +17,6 @@
 #include <string.h>
 #include "3d_internal.h"
 
-/* An edge on successive rows: its x at the row's centre in 28.4 scaled by 4096 (so 1 is 1/65536 of
-   a pixel), stepped by a whole number a row. The slope comes from one float division; stepping it
-   adds integers only, so the x a row has is the same whichever row the stepping began on, and two
-   triangles sharing an edge (both stepping it top to bottom, from the same two ends) get the same
-   columns: no gap, no overlap. */
-typedef struct {
-                int64_t x, step;
-} edge_t;
-
-/* The edge (x0, y0)-(x1, y1), y1 > y0, at row @p row (its centre at row × 16 + 8). Inside the guard
-   band |dx| / dy × 4096 fits 32 bits. */
-static void edge_init(edge_t *e, int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t row) {
-        const float   f = (float)(x1 - x0) * 4096.0f / (float)(y1 - y0);
-        const int32_t slope = f > 2.0e9f ? 2000000000 : f < -2.0e9f ? -2000000000 : (int32_t)f;
-        e->x = (int64_t)x0 * 4096 + (int64_t)(row * 16 + 8 - y0) * slope;
-        e->step = (int64_t)slope * 16;
-        return;
-}
-
-static inline void edge_step(edge_t *e) {
-        e->x += e->step;
-        return;
-}
-
-/* The first pixel column whose centre is at or right of the edge: ceil((x − 8) / 16) in 28.4. */
-static inline int32_t edge_column(const edge_t *e) {
-        return (int32_t)((e->x + 32767) >> 16);
-}
-
-/* The first row whose centre is at or below @p y (28.4). */
-static int32_t first_row(int32_t y) {
-        return (y - 8 + 15) >> 4; /* an arithmetic shift: floor */
-}
-
 /* One span: columns [x0, x1) of a row, shade from @p s (16.16) by @p ds a pixel. */
 static void span(bmds_canvas_t *c, int32_t row, int32_t x0, int32_t x1, const bmds_3d_record_t *rec, int32_t s,
                  int32_t ds, uint32_t flat) {
@@ -101,7 +67,7 @@ uint32_t bmds_3d_triangle(bmds_canvas_t *c, const bmds_3d_area_t *area, const bm
         if (cross == 0 || y2 == y0) return 0;
         const int long_left = cross > 0; /* the middle vertex right of the long edge */
 
-        int32_t row = first_row(y0), mid = first_row(y1), end = first_row(y2);
+        int32_t row = bmds_3d_first_row(y0), mid = bmds_3d_first_row(y1), end = bmds_3d_first_row(y2);
         if (row < area->iy0) row = area->iy0;
         if (end > area->iy1) end = area->iy1;
         if (row >= end) return 0;
@@ -135,18 +101,18 @@ uint32_t bmds_3d_triangle(bmds_canvas_t *c, const bmds_3d_area_t *area, const bm
         const int64_t ic = s0f > 2.0e9f ? 2000000000 : s0f < -2.0e9f ? -2000000000 : (int32_t)s0f;
         const int64_t smax = ((int64_t)rec->top << 16) + 32768;
 
-        edge_t longe, shorte;
-        edge_init(&longe, x0, y0, x2, y2, row);
+        bmds_3d_edge_t longe, shorte;
+        bmds_3d_edge_init(&longe, x0, y0, x2, y2, row);
         const int on_upper = row < mid;
         if (on_upper)
-                edge_init(&shorte, x0, y0, x1, y1, row);
+                bmds_3d_edge_init(&shorte, x0, y0, x1, y1, row);
         else
-                edge_init(&shorte, x1, y1, x2, y2, row);
+                bmds_3d_edge_init(&shorte, x1, y1, x2, y2, row);
         uint32_t pixels = 0;
         int32_t  minx = area->ix1, maxx = area->ix0;
         for (int32_t y = row; y < end; ++y) {
-                if (y == mid && y != row) edge_init(&shorte, x1, y1, x2, y2, y);
-                const int32_t cl = edge_column(&longe), cs = edge_column(&shorte);
+                if (y == mid && y != row) bmds_3d_edge_init(&shorte, x1, y1, x2, y2, y);
+                const int32_t cl = bmds_3d_edge_column(&longe), cs = bmds_3d_edge_column(&shorte);
                 int32_t       xl = long_left ? cl : cs, xr = long_left ? cs : cl;
                 if (xl < area->ix0) xl = area->ix0;
                 if (xr > area->ix1) xr = area->ix1;
@@ -170,8 +136,8 @@ uint32_t bmds_3d_triangle(bmds_canvas_t *c, const bmds_3d_area_t *area, const bm
                         if (xl < minx) minx = xl;
                         if (xr > maxx) maxx = xr;
                 }
-                edge_step(&longe);
-                edge_step(&shorte);
+                bmds_3d_edge_step(&longe);
+                bmds_3d_edge_step(&shorte);
         }
         if (pixels != 0) bmds_3d_include(bounds, minx, row, maxx, end);
         return pixels;

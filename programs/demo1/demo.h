@@ -48,6 +48,13 @@ typedef struct {
                 void (*event)(demo_t *demo, const bmds_surface_event_t *event);
 } part_t;
 
+/** @brief The show's own figures, for the credits (demo1.c, a second at a time). */
+typedef struct {
+                uint32_t fps;
+                float    busy[2]; /* each core, percent */
+                float    draw_ms; /* a frame's drawing, smoothed */
+} figures_t;
+
 struct demo_t {
                 bmds_game_t *game;
                 bmds_3d_t   *ctx; /* the parts' 3D: two cores, a 60° perspective at 16:9 */
@@ -55,7 +62,31 @@ struct demo_t {
                 int32_t      pointer_x, pointer_y; /* the picture's pixels; -1: none */
                 int          button;               /* the left button held */
                 sync_t       sync;
+                bmds_seq_t  *seq;       /* the music (NULL: none yet, or none) */
+                int64_t      seen_ns;   /* when this frame is seen (BMDS_CLOCK_MONOTONIC) */
+                int          wavetable; /* the music on the wavetable, not FM */
+                int          boot_done; /* the boot part's: its script has ended (the music may start) */
+                figures_t    figures;
+                /* The two who talk over the show (the BIOS has its own voice): low and slow, high
+                   and quick, picked each run. */
+                bmds_game_speak_t duo[2];
 };
+
+/** @brief A random number (xorshift, seeded from the hardware: each run differs). */
+uint32_t demo_rand(void);
+
+/** @brief A random number in [0, @p n). */
+static inline uint32_t demo_rand_below(uint32_t n) {
+        return n == 0 ? 0 : demo_rand() % n;
+}
+
+/** @brief A random number in [0, 1). */
+static inline float demo_frand(void) {
+        return (float)(demo_rand() >> 8) * (1.0f / 16777216.0f);
+}
+
+/** @brief Shuffles @p count indices into @p order (0 .. count - 1, each once). */
+void demo_shuffle(uint32_t *order, uint32_t count);
 
 /** @brief Entries in the sine table: a turn. */
 #define DEMO_SINES 4096
@@ -85,5 +116,8 @@ extern const part_t part_tunnel;
 extern const part_t part_fire;
 extern const part_t part_balls;
 extern const part_t part_solids;
+extern const part_t part_roto;
+extern const part_t part_boot;
+extern const part_t part_credits;
 
 #endif // DEMO1_DEMO_H

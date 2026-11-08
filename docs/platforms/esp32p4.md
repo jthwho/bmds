@@ -196,6 +196,14 @@ until silicon v3; then test again.
   two private pages with `esp_async_memcpy()` (32 KB transfers, a zero page as the bss's source)
   took ~8 ms against the CPU's 2.1 ms. The steps after it ran ~0.6 ms faster with the caches left
   alone, which doesn't pay for it (2026-10-19, `devplan/programs.md` §19).
+- **A whole 640×360 L8 picture copied PSRAM to PSRAM by the CPU, each frame, is ~5 ms** beside a
+  full-screen presenter (demo1's boot: 10.5 ms a frame with it, 5.0 with the 2D-DMA copying it,
+  `bmds_game_dma_copy()`, core 0 66 % → 20 %). The 2D-DMA, unlike the AXI-GDMA above, wins for
+  a picture a frame: it runs while the CPU draws (2026-11-07, `devplan/demo.md` step 6).
+- **Texture lookups at every pixel of the screen are memory-bound:** a full-screen rotozoom
+  (`bmds_canvas_texture_affine()`, ~9 instructions a pixel) took 21 ms with a 64 KB texture, 16 ms
+  with 16 KB, beside FM and the presenter (the shared L1 data cache); a texel for each 2×2
+  pixels, two rows of word stores, 9.5 ms (2026-11-07, `devplan/3d.md` step 4).
 - **Internal RAM's uncached alias** (`CACHE_LL_L2MEM_NON_CACHE_ADDR`) is no way to skip a
   write-back: writing a full-screen strip through it took twice as long (5.7 ms against 2.8 with
   the write-back, `display.expand`).
@@ -654,6 +662,15 @@ until silicon v3; then test again.
   their stacks took internal RAM while it looked free, and FM later found no 2 KB block for its
   waveforms. demo1's stacks now go to PSRAM (its drawing times unchanged); with full screen and FM
   playing, 35 KB of internal RAM stays free (lowest 32 KB), against 18.5 (lowest 5.6) before.
+- **A thread with no deadline belongs on the busy drawing core, not the "free" one** (2026-11-07,
+  `devplan/games.md` §28): libbmdsgame's ahead mixer (the game's priority, a 170 ms ring) was put
+  on the core the game doesn't run on. That core holds the presenter (4) and a synth rendering
+  ahead (raised to 6), so the mixer went without for the ring's whole length mid-line: the
+  speech crackled. On the game's own core at the same priority, FreeRTOS's time slicing (1 kHz
+  tick) gives it the CPU within a tick or two of being ready, and the drawing loses only the
+  mixing. It can't float between cores: its first floating point pins it (above). A stream that
+  starts after silence plays from its first period, so a writer with no deadline writes a lead of
+  silence first.
 
 ## 4d. The full-speed USB PHYs (`devplan/audio.md` §23)
 

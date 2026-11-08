@@ -12,7 +12,10 @@
 
 #include <doctest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <set>
@@ -493,6 +496,7 @@ namespace {
         struct Mesh {
                         std::vector<float>    pos;
                         std::vector<float>    normals;
+                        std::vector<float>    uvs;
                         std::vector<uint16_t> tri;
                         bmds_3d_mesh_t        m{};
 
@@ -507,6 +511,7 @@ namespace {
                                 m.vertex_count = uint32_t(pos.size() / 3);
                                 m.positions = pos.data();
                                 m.normals = normals.empty() ? nullptr : normals.data();
+                                m.uvs = uvs.empty() ? nullptr : uvs.data();
                                 m.triangle_count = uint32_t(tri.size() / 3);
                                 m.triangles = tri.data();
                                 return &m;
@@ -1011,5 +1016,520 @@ TEST_CASE("3d: two cores with a queue too small for a draw: the same triangles, 
         CHECK(counted[0][0] == counted[1][0]);
         CHECK(counted[0][1] == counted[1][1]);
         CHECK(counted[0][2] == counted[1][2]);
+        CHECK(FakeMemory::live() == before);
+}
+
+// ---- Step 4: textures (devplan/3d.md §13) ------------------------------------------------------
+
+namespace {
+
+        // An L8 texture, w × h (powers of two), each texel 1 + (x + w·y) % 255: never 0, and
+        // telling where it came from while w·h <= 255.
+        struct Texture {
+                        std::vector<uint8_t> texels;
+                        bmds_game_image_t    image{};
+
+                        Texture(int32_t w, int32_t h, uint32_t stride = 0) {
+                                if (stride == 0) stride = uint32_t(w);
+                                texels.assign(size_t(stride) * h, 0);
+                                for (int32_t y = 0; y < h; ++y)
+                                        for (int32_t x = 0; x < w; ++x)
+                                                texels[size_t(y) * stride + x] = uint8_t(1 + (x + w * y) % 255);
+                                image.pixels = texels.data();
+                                image.stride = stride;
+                                image.width = w;
+                                image.height = h;
+                                image.format = BMDS_PIXEL_L8;
+                        }
+        };
+
+        bmds_3d_material_t textured(uint32_t mode, const bmds_game_image_t *t, const uint8_t *table = nullptr,
+                                    uint32_t flags = 0) {
+                bmds_3d_material_t m = material(mode, 0, flags);
+                m.texture = t;
+                m.light_table = table;
+                return m;
+        }
+
+        // A palette of distinct colours, entry 0 black.
+        std::vector<uint32_t> palette(unsigned seed) {
+                std::mt19937          rng(seed);
+                std::vector<uint32_t> p(256, 0);
+                for (size_t i = 1; i < 256; ++i) p[i] = rng() & 0xffffffu;
+                return p;
+        }
+
+        uint32_t distance(uint32_t a, uint32_t b) {
+                const int dr = int(a >> 16 & 0xff) - int(b >> 16 & 0xff), dg = int(a >> 8 & 0xff) - int(b >> 8 & 0xff),
+                          db = int(a & 0xff) - int(b & 0xff);
+                return uint32_t(3 * dr * dr + 4 * dg * dg + 2 * db * db);
+        }
+
+        // The pixels @p mesh covers drawn whole with @p m on a 64 × 52 L8 canvas (orthographic).
+        std::set<std::pair<int32_t, int32_t>> covered(Mesh &mesh, const bmds_3d_material_t &m) {
+                Picture pic(64, 52, BMDS_PIXEL_L8);
+                Scene   s(&pic.canvas);
+                bmds_3d_begin(s.ctx);
+                REQUIRE(bmds_3d_draw(s.ctx, mesh.mesh(), &m) == 0);
+                bmds_3d_end(s.ctx);
+                return pic.lit();
+        }
+
+} // namespace
+
+TEST_CASE("3d: textured triangles fill exactly the pixels flat ones do") {
+        const size_t before = FakeMemory::live();
+        {
+                Texture              tex(16, 16);
+                const auto           pal = palette(5);
+                std::vector<uint8_t> table(BMDS_3D_LIGHT_TABLE_SIZE);
+                REQUIRE(bmds_3d_light_table(table.data(), pal.data(), 1, 255, 0) == 0);
+                const bmds_3d_material_t modes[] = {
+                        textured(BMDS_3D_TEXTURED, &tex.image),
+                        textured(BMDS_3D_TEXTURED, &tex.image, nullptr, BMDS_3D_PERSPECTIVE),
+                        textured(BMDS_3D_TEXTURED, &tex.image, table.data()),
+                        textured(BMDS_3D_TEXTURED_FLAT, &tex.image, table.data()),
+                        textured(BMDS_3D_TEXTURED_GOURAUD, &tex.image, table.data(), BMDS_3D_PERSPECTIVE),
+                        textured(BMDS_3D_ENVMAP, &tex.image),
+                };
+                // A jittered grid of quads (sub-pixel corners), its uvs across several turns.
+                Mesh                                  grid;
+                std::mt19937                          rng(9);
+                std::uniform_real_distribution<float> jitter(-1.3f, 1.3f);
+                const int                             n = 8;
+                for (int j = 0; j <= n; ++j)
+                        for (int i = 0; i <= n; ++i) {
+                                grid.add(6.0f + 6.0f * float(i) + (i % n != 0 ? jitter(rng) : 0.0f),
+                                         5.0f + 5.0f * float(j) + (j % n != 0 ? jitter(rng) : 0.0f));
+                                grid.uvs.insert(grid.uvs.end(), {0.37f * float(i) - 1.0f, 0.29f * float(j)});
+                        }
+                for (int j = 0; j < n; ++j)
+                        for (int i = 0; i < n; ++i) {
+                                const uint16_t v = uint16_t(j * (n + 1) + i);
+                                grid.face(v, uint16_t(v + 1), uint16_t(v + n + 2));
+                                grid.face(v, uint16_t(v + n + 2), uint16_t(v + n + 1));
+                        }
+                const auto flat = covered(grid, material(BMDS_3D_FLAT, 1, BMDS_3D_UNLIT));
+                CHECK(flat.size() > 1500);
+                for (const auto &m : modes) {
+                        CAPTURE(m.mode);
+                        CAPTURE(m.flags);
+                        CHECK(covered(grid, m) == flat);
+                }
+
+                // A torus in perspective, back faces culled, some of it through the near plane.
+                for (const auto &m0 : modes) {
+                        CAPTURE(m0.mode);
+                        CAPTURE(m0.flags);
+                        std::set<std::pair<int32_t, int32_t>> lit[2];
+                        for (int k = 0; k < 2; ++k) {
+                                Picture    pic(96, 64, BMDS_PIXEL_L8);
+                                bmds_3d_t *ctx = nullptr;
+                                REQUIRE(bmds_3d_create(nullptr, &ctx) == 0);
+                                bmds_3d_set_target(ctx, &pic.canvas);
+                                bmds_mat4_t p, v;
+                                bmds_mat4_perspective(&p, Pi / 3.0f, 1.5f, 0.5f, 50.0f);
+                                bmds_mat4_look_at(&v, bmds_vec3(0, 0.3f, 1.4f), bmds_vec3(0, 0, 0), bmds_vec3(0, 1, 0));
+                                bmds_3d_set_projection(ctx, &p);
+                                bmds_3d_set_view(ctx, &v);
+                                bmds_3d_shape_t shape{};
+                                shape.size = sizeof(shape);
+                                shape.kind = BMDS_3D_SHAPE_TORUS;
+                                bmds_3d_mesh_t torus{};
+                                REQUIRE(bmds_3d_mesh_make(&shape, 0, &torus) == 0);
+                                auto m = k == 0 ? material(BMDS_3D_FLAT, 1, BMDS_3D_UNLIT) : m0;
+                                m.flags |= BMDS_3D_CULL_BACK;
+                                bmds_3d_begin(ctx);
+                                REQUIRE(bmds_3d_draw(ctx, &torus, &m) == 0);
+                                bmds_3d_end(ctx);
+                                bmds_3d_stats_t st{};
+                                st.size = sizeof(st);
+                                bmds_3d_stats(ctx, &st);
+                                CHECK(st.clipped > 0);
+                                lit[k] = pic.lit();
+                                bmds_3d_mesh_free(&torus);
+                                bmds_3d_destroy(ctx);
+                        }
+                        CHECK(lit[0].size() > 500);
+                        CHECK(lit[0] == lit[1]);
+                }
+        }
+        CHECK(FakeMemory::live() == before);
+}
+
+TEST_CASE("3d: textures wrap, both ways, and are clipped with their triangles") {
+        Texture tex(8, 8);
+        auto    expect = [](int32_t x, int32_t y) {
+                return uint8_t(1 + (x & 7) + 8 * (y & 7));
+        };
+        for (uint32_t flags : {0u, uint32_t(BMDS_3D_PERSPECTIVE)}) {
+                CAPTURE(flags);
+                SUBCASE("a quad two turns across, from -1 to 1") {
+                        Picture pic(32, 32, BMDS_PIXEL_L8);
+                        Scene   s(&pic.canvas);
+                        Mesh    quad; // one texel a pixel
+                        quad.add(0, 0), quad.add(16, 0), quad.add(16, 16), quad.add(0, 16);
+                        quad.uvs = {-1, -1, 1, -1, 1, 1, -1, 1};
+                        quad.face(0, 1, 2), quad.face(0, 2, 3);
+                        const auto m = textured(BMDS_3D_TEXTURED, &tex.image, nullptr, flags);
+                        bmds_3d_begin(s.ctx);
+                        REQUIRE(bmds_3d_draw(s.ctx, quad.mesh(), &m) == 0);
+                        bmds_3d_end(s.ctx);
+                        for (int32_t y = 0; y < 32; ++y)
+                                for (int32_t x = 0; x < 32; ++x) {
+                                        CAPTURE(x);
+                                        CAPTURE(y);
+                                        CHECK(pic.l8(x, y) == (x < 16 && y < 16 ? expect(x, y) : 0));
+                                }
+                }
+                SUBCASE("a quad far past the guard band: clipped, its uvs with it") {
+                        Picture           pic(32, 32, BMDS_PIXEL_L8);
+                        const bmds_rect_t clip = {4, 2, 20, 26};
+                        bmds_canvas_set_clip(&pic.canvas, &clip);
+                        Scene s(&pic.canvas);
+                        Mesh  quad;
+                        quad.add(-3000, -2000), quad.add(5000, -2000), quad.add(5000, 4000), quad.add(-3000, 4000);
+                        // One texel a pixel: u = x / 8 turns.
+                        quad.uvs = {-375, -250, 625, -250, 625, 500, -375, 500};
+                        quad.face(0, 1, 2), quad.face(0, 2, 3);
+                        const auto m = textured(BMDS_3D_TEXTURED, &tex.image, nullptr, flags);
+                        bmds_3d_begin(s.ctx);
+                        REQUIRE(bmds_3d_draw(s.ctx, quad.mesh(), &m) == 0);
+                        bmds_3d_end(s.ctx);
+                        bmds_3d_stats_t st{};
+                        st.size = sizeof(st);
+                        bmds_3d_stats(s.ctx, &st);
+                        CHECK(st.clipped > 0);
+                        for (int32_t y = 0; y < 32; ++y)
+                                for (int32_t x = 0; x < 32; ++x) {
+                                        CAPTURE(x);
+                                        CAPTURE(y);
+                                        const bool in = x >= 4 && x < 24 && y >= 2 && y < 28;
+                                        CHECK(pic.l8(x, y) == (in ? expect(x, y) : 0));
+                                }
+                }
+        }
+        SUBCASE("a stride wider than the texture") {
+                Texture wide(8, 8, 32);
+                Picture pic(16, 16, BMDS_PIXEL_L8);
+                Scene   s(&pic.canvas);
+                Mesh    quad;
+                quad.add(0, 0), quad.add(16, 0), quad.add(16, 16), quad.add(0, 16);
+                quad.uvs = {0, 0, 2, 0, 2, 2, 0, 2};
+                quad.face(0, 1, 2), quad.face(0, 2, 3);
+                const auto m = textured(BMDS_3D_TEXTURED, &wide.image);
+                bmds_3d_begin(s.ctx);
+                REQUIRE(bmds_3d_draw(s.ctx, quad.mesh(), &m) == 0);
+                bmds_3d_end(s.ctx);
+                for (int32_t y = 0; y < 16; ++y)
+                        for (int32_t x = 0; x < 16; ++x) CHECK(pic.l8(x, y) == expect(x, y));
+        }
+}
+
+TEST_CASE("3d: a floor through the near plane, perspective-correct within a texel") {
+        // Seen from 1 up, looking ahead and down; the floor reaches behind the eye.
+        const int32_t W = 96, H = 64;
+        const float   fovy = Pi / 3.0f, aspect = float(W) / float(H);
+        Texture       tex(8, 8);
+        Picture       pic(W, H, BMDS_PIXEL_L8);
+        bmds_3d_t    *ctx = nullptr;
+        REQUIRE(bmds_3d_create(nullptr, &ctx) == 0);
+        bmds_3d_set_target(ctx, &pic.canvas);
+        bmds_mat4_t       p, v, inv;
+        const bmds_vec3_t eye = bmds_vec3(0.3f, 1.0f, 0.2f);
+        bmds_mat4_perspective(&p, fovy, aspect, 0.2f, 60.0f);
+        bmds_mat4_look_at(&v, eye, bmds_vec3(0.8f, 0, -3), bmds_vec3(0, 1, 0));
+        REQUIRE(bmds_mat4_invert_affine(&inv, &v) == 0);
+        bmds_3d_set_projection(ctx, &p);
+        bmds_3d_set_view(ctx, &v);
+        Mesh floor; // y = 0, x and z -10..10, facing up; a texel a unit
+        floor.add(-10, 0, -10), floor.add(-10, 0, 10), floor.add(10, 0, 10), floor.add(10, 0, -10);
+        floor.uvs = {0, 0, 0, 2.5f, 2.5f, 2.5f, 2.5f, 0};
+        floor.face(0, 1, 2), floor.face(0, 2, 3);
+        const auto m = textured(BMDS_3D_TEXTURED, &tex.image, nullptr, BMDS_3D_PERSPECTIVE);
+        bmds_3d_begin(ctx);
+        REQUIRE(bmds_3d_draw(ctx, floor.mesh(), &m) == 0);
+        bmds_3d_end(ctx);
+        bmds_3d_stats_t st{};
+        st.size = sizeof(st);
+        bmds_3d_stats(ctx, &st);
+        CHECK(st.clipped > 0);
+        const float ty = std::tan(fovy * 0.5f);
+        int         checked = 0;
+        for (int32_t y = 0; y < H; ++y)
+                for (int32_t x = 0; x < W; ++x) {
+                        // The ray through the pixel's centre, to y = 0.
+                        const float       nx = (float(x) + 0.5f) / float(W) * 2.0f - 1.0f;
+                        const float       ny = 1.0f - (float(y) + 0.5f) / float(H) * 2.0f;
+                        const bmds_vec3_t d =
+                                bmds_mat4_transform_vector(&inv, bmds_vec3(nx * ty * aspect, ny * ty, -1));
+                        if (!(d.y < -0.05f)) continue; // near the horizon: texels smaller than pixels
+                        const float t = -eye.y / d.y, wx = eye.x + t * d.x, wz = eye.z + t * d.z;
+                        if (std::fabs(wx) > 9.5f || std::fabs(wz) > 9.5f || t > 6.0f) continue;
+                        const float u = wx + 10.0f, w = wz + 10.0f;
+                        const int   got = pic.l8(x, y) - 1, gu = got % 8, gv = got / 8;
+                        auto        off = [](float want, int have) {
+                                const int k = (int(std::floor(want)) - have) & 7;
+                                return std::min(k, 8 - k);
+                        };
+                        CAPTURE(x);
+                        CAPTURE(y);
+                        CHECK(got >= 0);
+                        CHECK(off(u, gu) <= 1);
+                        CHECK(off(w, gv) <= 1);
+                        ++checked;
+                }
+        CHECK(checked > 1500);
+        bmds_3d_destroy(ctx);
+}
+
+TEST_CASE("3d: light tables: the nearest colours, of the range given") {
+        const auto           pal = palette(17);
+        std::vector<uint8_t> table(BMDS_3D_LIGHT_TABLE_SIZE);
+        auto                 shaded = [](uint32_t rgb, uint32_t dark, uint32_t s) {
+                uint32_t out = 0;
+                for (int c = 16; c >= 0; c -= 8) {
+                        const uint32_t a = dark >> c & 0xff, b = rgb >> c & 0xff;
+                        out |= ((a * (31 - s) + b * s + 15) / 31) << c;
+                }
+                return out;
+        };
+        struct Case {
+                        uint32_t first, count, dark;
+        };
+        for (const Case k : {Case{0, 256, 0}, Case{16, 64, 0}, Case{1, 255, 0x204060}, Case{200, 1, 0}}) {
+                CAPTURE(k.first);
+                CAPTURE(k.count);
+                REQUIRE(bmds_3d_light_table(table.data(), pal.data(), k.first, k.count, k.dark) == 0);
+                for (uint32_t s = 0; s < BMDS_3D_LIGHT_SHADES; ++s)
+                        for (uint32_t i = 0; i < 256; ++i) {
+                                const uint8_t  got = table[s * 256 + i];
+                                const uint32_t want = shaded(pal[i], k.dark, s);
+                                uint32_t       best = UINT32_MAX;
+                                for (uint32_t c = k.first; c < k.first + k.count; ++c)
+                                        best = std::min(best, distance(pal[c], want));
+                                CAPTURE(s);
+                                CAPTURE(i);
+                                CHECK(got >= k.first);
+                                CHECK(got < k.first + k.count);
+                                CHECK(distance(pal[got], want) == best);
+                        }
+        }
+        // The full range at full light: each texel its own colour.
+        REQUIRE(bmds_3d_light_table(table.data(), pal.data(), 0, 256, 0) == 0);
+        for (uint32_t i = 0; i < 256; ++i) CHECK(pal[table[31 * 256 + i]] == pal[i]);
+        // Bad ranges.
+        CHECK(bmds_3d_light_table(table.data(), pal.data(), 0, 0, 0) == -BMDS_EINVAL);
+        CHECK(bmds_3d_light_table(table.data(), pal.data(), 200, 57, 0) == -BMDS_EINVAL);
+        CHECK(bmds_3d_light_table(nullptr, pal.data(), 0, 256, 0) == -BMDS_EINVAL);
+}
+
+TEST_CASE("3d: textured lighting through the table: full light, none, per vertex, chrome") {
+        // A grey palette: entry i is (i, i, i); the table over all of it.
+        std::vector<uint32_t> grey(256);
+        for (uint32_t i = 0; i < 256; ++i) grey[i] = i * 0x010101u;
+        std::vector<uint8_t> table(BMDS_3D_LIGHT_TABLE_SIZE);
+        REQUIRE(bmds_3d_light_table(table.data(), grey.data(), 0, 256, 0) == 0);
+        Texture tex(16, 16);
+        Mesh    quad; // facing the viewer
+        quad.add(4, 28, 0), quad.add(28, 28, 0), quad.add(28, 4, 0), quad.add(4, 4, 0);
+        quad.uvs = {0, 1, 1, 1, 1, 0, 0, 0};
+        quad.face(0, 1, 2), quad.face(0, 2, 3);
+        auto draw = [&](Picture &pic, float light, float ambient, const bmds_3d_material_t &m) {
+                Scene           s(&pic.canvas);
+                bmds_3d_light_t sun{sizeof(sun), BMDS_3D_LIGHT_DIRECTIONAL, BMDS_3D_LIGHT_VIEW, 0, 0, 1, light};
+                REQUIRE(bmds_3d_set_light(s.ctx, 0, &sun) == 0);
+                bmds_3d_set_ambient(s.ctx, ambient);
+                bmds_3d_begin(s.ctx);
+                REQUIRE(bmds_3d_draw(s.ctx, quad.mesh(), &m) == 0);
+                bmds_3d_end(s.ctx);
+        };
+        Picture straight(32, 32, BMDS_PIXEL_L8);
+        draw(straight, 1.0f, 0.0f, textured(BMDS_3D_TEXTURED, &tex.image));
+        for (uint32_t mode : {uint32_t(BMDS_3D_TEXTURED_FLAT), uint32_t(BMDS_3D_TEXTURED_GOURAUD)}) {
+                CAPTURE(mode);
+                quad.normals = {0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1};
+                Picture full(32, 32, BMDS_PIXEL_L8), half(32, 32, BMDS_PIXEL_L8), none(32, 32, BMDS_PIXEL_L8);
+                draw(full, 1.0f, 0.0f, textured(mode, &tex.image, table.data()));
+                draw(half, 0.5f, 0.0f, textured(mode, &tex.image, table.data()));
+                draw(none, 0.0f, 0.0f, textured(mode, &tex.image, table.data()));
+                CHECK(full.pixels == straight.pixels); // shade 31: each texel itself (grey: exact)
+                for (const auto &q : straight.lit()) {
+                        CHECK(none.l8(q.first, q.second) == 0);
+                        const int t = straight.l8(q.first, q.second);
+                        // 0.5 × 31 = 15.5 → shade 15 or 16 of 31.
+                        CHECK(std::abs(int(half.l8(q.first, q.second)) - t * 31 / 62) <= t / 31 + 1);
+                }
+                quad.normals.clear();
+        }
+        // TEXTURED with the table and DEPTH_CUE: darker with distance, never brighter than the texel.
+        {
+                Picture pic(32, 32, BMDS_PIXEL_L8);
+                Scene   s(&pic.canvas);
+                bmds_3d_set_fog(s.ctx, -10.0f, 10.0f); // the quad at depth 0: half way
+                const auto m = textured(BMDS_3D_TEXTURED, &tex.image, table.data(), BMDS_3D_DEPTH_CUE);
+                bmds_3d_begin(s.ctx);
+                REQUIRE(bmds_3d_draw(s.ctx, quad.mesh(), &m) == 0);
+                bmds_3d_end(s.ctx);
+                int darker = 0;
+                for (const auto &q : straight.lit()) {
+                        CHECK(pic.l8(q.first, q.second) <= straight.l8(q.first, q.second));
+                        darker += pic.l8(q.first, q.second) < straight.l8(q.first, q.second);
+                }
+                CHECK(darker > 100);
+        }
+        // ENVMAP on a sphere seen head on: its middle shows the texture's middle, its left the left.
+        {
+                Picture     pic(64, 64, BMDS_PIXEL_L8);
+                Scene       s(&pic.canvas);
+                bmds_mat4_t deep; // the whole sphere between near and far
+                bmds_mat4_ortho(&deep, 0.0f, 64.0f, 64.0f, 0.0f, -100.0f, 100.0f);
+                bmds_3d_set_projection(s.ctx, &deep);
+                bmds_3d_shape_t shape{};
+                shape.size = sizeof(shape);
+                shape.kind = BMDS_3D_SHAPE_SPHERE;
+                shape.segments = 48;
+                shape.rings = 32;
+                shape.radius = 28.0f;
+                bmds_3d_mesh_t ball{};
+                REQUIRE(bmds_3d_mesh_make(&shape, 0, &ball) == 0);
+                bmds_mat4_t at;
+                bmds_mat4_translation(&at, 32, 32, 0);
+                bmds_3d_load(s.ctx, &at);
+                const auto m = textured(BMDS_3D_ENVMAP, &tex.image); // both halves, the near one last
+                bmds_3d_begin(s.ctx);
+                REQUIRE(bmds_3d_draw(s.ctx, &ball, &m) == 0);
+                bmds_3d_end(s.ctx);
+                // Texel (x, y) is 1 + x + 16 y: (u, v) from the pixel back.
+                auto uv = [&](int32_t x, int32_t y) {
+                        return std::pair<int, int>((pic.l8(x, y) - 1) % 16, (pic.l8(x, y) - 1) / 16);
+                };
+                CHECK(std::abs(uv(32, 32).first - 8) <= 1);
+                CHECK(std::abs(uv(32, 32).second - 8) <= 1);
+                CHECK(uv(6, 32).first <= 3);   // the left edge: normal -x
+                CHECK(uv(57, 32).first >= 12); // the right: +x
+                // y down on this canvas (a mirroring projection): the normal's view y follows it.
+                CHECK(std::abs(uv(32, 6).second - 8) >= 4);
+                bmds_3d_mesh_free(&ball);
+        }
+}
+
+TEST_CASE("3d: materials of the older size still draw; textured ones checked") {
+        const size_t before = FakeMemory::live();
+        {
+                Picture a(32, 32, BMDS_PIXEL_L8), b(32, 32, BMDS_PIXEL_L8);
+                Mesh    quad;
+                quad.add(4, 28, 0), quad.add(28, 28, 0), quad.add(28, 4, 0), quad.add(4, 4, 0);
+                quad.face(0, 1, 2), quad.face(0, 2, 3);
+                auto m = material(BMDS_3D_FLAT, 0, 0);
+                m.ramp_first = 32;
+                m.ramp_count = 32;
+                // What a source built before step 4 passes: the struct up to point_size.
+                bmds_3d_material_t old = m;
+                old.size = uint32_t(offsetof(bmds_3d_material_t, point_size) + sizeof(uint32_t));
+                old.texture = reinterpret_cast<const bmds_game_image_t *>(uintptr_t(1)); // beyond its size: not read
+                {
+                        Scene s(&a.canvas);
+                        bmds_3d_begin(s.ctx);
+                        REQUIRE(bmds_3d_draw(s.ctx, quad.mesh(), &m) == 0);
+                        bmds_3d_end(s.ctx);
+                }
+                {
+                        Scene s(&b.canvas);
+                        bmds_3d_begin(s.ctx);
+                        REQUIRE(bmds_3d_draw(s.ctx, quad.mesh(), &old) == 0);
+                        CHECK(bmds_3d_lines(s.ctx, quad.pos.data(), 4, 1, &old) == 0);
+                        bmds_3d_end(s.ctx);
+                }
+                CHECK(!a.lit().empty());
+                CHECK(a.pixels == b.pixels);
+                old.size -= 4;
+                Scene s(&b.canvas);
+                CHECK(bmds_3d_draw(s.ctx, quad.mesh(), &old) == -BMDS_EINVAL);
+
+                // Textured materials: what they need.
+                Texture              tex(16, 16), odd(12, 16), tall(16, 16, 24);
+                std::vector<uint8_t> table(BMDS_3D_LIGHT_TABLE_SIZE, 0);
+                quad.uvs = {0, 1, 1, 1, 1, 0, 0, 0};
+                auto t = textured(BMDS_3D_TEXTURED, &tex.image);
+                CHECK(bmds_3d_draw(s.ctx, quad.mesh(), &t) == 0);
+                t.flags = 0x10; // unknown
+                CHECK(bmds_3d_draw(s.ctx, quad.mesh(), &t) == -BMDS_EINVAL);
+                t = textured(BMDS_3D_TEXTURED, &odd.image);
+                CHECK(bmds_3d_draw(s.ctx, quad.mesh(), &t) == -BMDS_EINVAL); // width not a power of two
+                t = textured(BMDS_3D_TEXTURED, &tall.image);
+                CHECK(bmds_3d_draw(s.ctx, quad.mesh(), &t) == -BMDS_EINVAL); // stride not a power of two
+                t = textured(BMDS_3D_TEXTURED, nullptr);
+                CHECK(bmds_3d_draw(s.ctx, quad.mesh(), &t) == -BMDS_EINVAL);
+                t = textured(BMDS_3D_TEXTURED_FLAT, &tex.image); // lit: needs a table
+                CHECK(bmds_3d_draw(s.ctx, quad.mesh(), &t) == -BMDS_EINVAL);
+                t.flags = BMDS_3D_UNLIT; // unlit: doesn't
+                CHECK(bmds_3d_draw(s.ctx, quad.mesh(), &t) == 0);
+                t = textured(BMDS_3D_TEXTURED, &tex.image, nullptr, BMDS_3D_DEPTH_CUE); // fog: needs one
+                CHECK(bmds_3d_draw(s.ctx, quad.mesh(), &t) == -BMDS_EINVAL);
+                t.light_table = table.data();
+                CHECK(bmds_3d_draw(s.ctx, quad.mesh(), &t) == 0);
+                t = textured(BMDS_3D_ENVMAP + 1, &tex.image);
+                CHECK(bmds_3d_draw(s.ctx, quad.mesh(), &t) == -BMDS_EINVAL);
+                quad.uvs.clear();
+                t = textured(BMDS_3D_TEXTURED, &tex.image);
+                CHECK(bmds_3d_draw(s.ctx, quad.mesh(), &t) == -BMDS_EINVAL); // no uvs
+                t = textured(BMDS_3D_ENVMAP, &tex.image);
+                CHECK(bmds_3d_draw(s.ctx, quad.mesh(), &t) == 0); // needs none
+                bmds_3d_end(s.ctx);
+                // Not yet on RGB565 or BGR24.
+                for (uint32_t format : {uint32_t(BMDS_PIXEL_RGB565), uint32_t(BMDS_PIXEL_BGR24)}) {
+                        Picture pic(32, 32, format);
+                        Scene   rs(&pic.canvas);
+                        CHECK(bmds_3d_draw(rs.ctx, quad.mesh(), &t) == -BMDS_ENOSYS);
+                }
+        }
+        CHECK(FakeMemory::live() == before);
+}
+
+TEST_CASE("3d: two cores draw textured solids as one does, a queue flushed along the way") {
+        const size_t         before = FakeMemory::live();
+        Texture              tex(32, 32);
+        const auto           pal = palette(23);
+        std::vector<uint8_t> table(BMDS_3D_LIGHT_TABLE_SIZE);
+        REQUIRE(bmds_3d_light_table(table.data(), pal.data(), 1, 255, 0) == 0);
+        std::vector<uint8_t> pictures[2];
+        for (uint32_t cores = 1; cores <= 2; ++cores) {
+                Picture          pic(96, 64, BMDS_PIXEL_L8);
+                bmds_3d_t       *ctx = nullptr;
+                bmds_3d_config_t config{};
+                config.size = sizeof(config);
+                config.cores = cores;
+                config.max_triangles = 100;
+                REQUIRE(bmds_3d_create(&config, &ctx) == 0);
+                bmds_3d_set_target(ctx, &pic.canvas);
+                bmds_mat4_t p, v;
+                bmds_mat4_perspective(&p, Pi / 3.0f, 1.5f, 0.5f, 50.0f);
+                bmds_mat4_look_at(&v, bmds_vec3(0, 1, 5), bmds_vec3(0, 0, 0), bmds_vec3(0, 1, 0));
+                bmds_3d_set_projection(ctx, &p);
+                bmds_3d_set_view(ctx, &v);
+                bmds_3d_shape_t shape{};
+                shape.size = sizeof(shape);
+                shape.kind = BMDS_3D_SHAPE_TORUS;
+                bmds_3d_mesh_t torus{};
+                REQUIRE(bmds_3d_mesh_make(&shape, 0, &torus) == 0);
+                const uint32_t modes[] = {BMDS_3D_TEXTURED_GOURAUD, BMDS_3D_TEXTURED_FLAT, BMDS_3D_ENVMAP};
+                for (int f = 0; f < 6; ++f) {
+                        std::fill(pic.pixels.begin(), pic.pixels.end(), 0);
+                        bmds_mat4_t r;
+                        bmds_mat4_rotation_x(&r, 0.3f * float(f));
+                        bmds_3d_load(ctx, &r);
+                        const auto m = textured(modes[f % 3], &tex.image, table.data(),
+                                                BMDS_3D_CULL_BACK | (f & 1 ? BMDS_3D_PERSPECTIVE : 0));
+                        bmds_3d_begin(ctx);
+                        REQUIRE(bmds_3d_draw(ctx, &torus, &m) == 0);
+                        bmds_3d_end(ctx);
+                        CHECK(!pic.lit().empty());
+                        pictures[cores - 1].insert(pictures[cores - 1].end(), pic.pixels.begin(), pic.pixels.end());
+                }
+                bmds_3d_mesh_free(&torus);
+                bmds_3d_destroy(ctx);
+        }
+        CHECK(pictures[0] == pictures[1]);
         CHECK(FakeMemory::live() == before);
 }

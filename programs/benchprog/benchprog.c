@@ -1007,11 +1007,157 @@ static int run_solids(void) {
         return err;
 }
 
+/* ---- libbmds3d's textures (devplan/3d.md §13, step 4): the same torus textured, 640x360 L8 ---- */
+
+struct textured_run {
+                bmds_3d_t         *ctx;
+                bmds_3d_mesh_t     torus;
+                bmds_3d_material_t material;
+                bmds_canvas_t     *canvas;
+                bmds_game_image_t  texture;
+                uint32_t          *palette;
+                uint8_t           *table;
+                uint16_t          *lookup;
+                int                what; /* the 2D cases: 0 the light table, 1 a rotozoom, 2 a remap */
+};
+
+static int textured_sample(void *arg, double *out) {
+        struct textured_run *r = arg;
+        const int64_t        t0 = bmds_bench_now_ns();
+        for (int f = 0; f < WIRE_FRAMES; ++f) {
+                bmds_3d_begin(r->ctx);
+                bmds_mat4_t identity;
+                bmds_mat4_identity(&identity);
+                bmds_3d_load(r->ctx, &identity);
+                bmds_3d_rotate(r->ctx, bmds_vec3(1, 0.5f, 0), 0.05f * (float)f);
+                (void)bmds_3d_draw(r->ctx, &r->torus, &r->material);
+                bmds_3d_end(r->ctx);
+        }
+        *out = (double)(bmds_bench_now_ns() - t0) / 1e6 / WIRE_FRAMES;
+        return 0;
+}
+
+/* The 2D pieces: a light table built; the whole canvas rotozoomed; the whole canvas remapped. */
+static int texmap_sample(void *arg, double *out) {
+        struct textured_run *r = arg;
+        bmds_canvas_t       *c = r->canvas;
+        const int            frames = r->what == 0 ? 4 : WIRE_FRAMES;
+        const int64_t        t0 = bmds_bench_now_ns();
+        for (int f = 0; f < frames; ++f) {
+                if (r->what == 0) {
+                        (void)bmds_3d_light_table(r->table, r->palette, (uint32_t)f, 256u - (uint32_t)f, 0);
+                } else if (r->what == 1) {
+                        bmds_game_affine_t map;
+                        bmds_game_affine_rotozoom(&map, 0, 0, (float)c->width * 0.5f, (float)c->height * 0.5f, 0.0f,
+                                                  0.0f, 0.1f * (float)f, 1.5f + 0.02f * (float)f);
+                        (void)bmds_canvas_texture_affine(c, 0, 0, c->width, c->height, &r->texture, &map);
+                } else {
+                        (void)bmds_canvas_remap(c, 0, 0, c->width, c->height, &r->texture, r->lookup,
+                                                (uint32_t)c->width, (uint32_t)f, (uint32_t)f * 3u);
+                }
+        }
+        *out = (double)(bmds_bench_now_ns() - t0) / 1e6 / frames;
+        c->damage_count = 0;
+        return 0;
+}
+
+static int run_textured(void) {
+        struct textured_run r;
+        memset(&r, 0, sizeof(r));
+        /* w=, h=: the canvas; tex=: the texture's side (a power of two, 64); texfast=1: the texture
+           in internal RAM; cores=2: the helper draws a band. */
+        const int32_t w = (int32_t)bmds_bench_param_long(&bench, "w", 640),
+                      h = (int32_t)bmds_bench_param_long(&bench, "h", 360);
+        const uint32_t side = (uint32_t)bmds_bench_param_long(&bench, "tex", 64);
+        const int      texfast = bmds_bench_param_long(&bench, "texfast", 0) != 0;
+        if (w < 16 || h < 16 || w > 1280 || h > 720 || side < 2 || side > 256 || (side & (side - 1)) != 0) return 2;
+        uint8_t      *pixels = malloc((size_t)(w * h));
+        uint8_t      *texels = bmds_mem_alloc(side * side, 64, texfast ? BMDS_MEM_FAST : 0);
+        bmds_canvas_t canvas;
+        r.palette = malloc(256 * sizeof(uint32_t));
+        r.table = malloc(BMDS_3D_LIGHT_TABLE_SIZE);
+        r.lookup = malloc((size_t)(w * h) * sizeof(uint16_t));
+        const bmds_3d_config_t config = {.size = sizeof(config),
+                                         .max_vertices = 1300,
+                                         .max_triangles = 1200,
+                                         .cores = (uint32_t)bmds_bench_param_long(&bench, "cores", 1)};
+        printf("textured: on core %d\n", (int)pin_core());
+        if (pixels == NULL || texels == NULL || r.palette == NULL || r.table == NULL || r.lookup == NULL ||
+            bmds_canvas_init(&canvas, pixels, (uint32_t)w, w, h, BMDS_PIXEL_L8) != 0 ||
+            bmds_3d_create(&config, &r.ctx) != 0) {
+                printf("textured: no memory\n");
+                return 1;
+        }
+        memset(pixels, 0, (size_t)(w * h));
+        r.canvas = &canvas;
+        /* A palette of ramps; a texture of tiles across it; a tunnel's table (distance, angle). */
+        for (uint32_t i = 0; i < 256; ++i)
+                r.palette[i] = ((i * 37u) & 0xffu) << 16 | ((i * 91u) & 0xffu) << 8 | ((i * 53u + 40u) & 0xffu);
+        for (uint32_t y = 0; y < side; ++y)
+                for (uint32_t x = 0; x < side; ++x)
+                        texels[y * side + x] = (uint8_t)(((x ^ y) * 7u + (x >> 3) * 16u) & 0xffu);
+        for (int32_t y = 0; y < h; ++y)
+                for (int32_t x = 0; x < w; ++x) {
+                        const float    dx = (float)x - (float)w * 0.5f, dy = (float)y - (float)h * 0.5f;
+                        const float    d = sqrtf(dx * dx + dy * dy) + 1.0f;
+                        const uint32_t u = (uint32_t)(int32_t)(atan2f(dy, dx) * (128.0f / 3.14159265f)) & 0xffu;
+                        const uint32_t v = (uint32_t)(4096.0f / d) & 0xffu;
+                        r.lookup[(size_t)y * (size_t)w + (size_t)x] = (uint16_t)(u | v << 8);
+                }
+        r.texture = (bmds_game_image_t){texels, side, (int32_t)side, (int32_t)side, BMDS_PIXEL_L8, 0, 0};
+        int                   err = bmds_3d_light_table(r.table, r.palette, 0, 256, 0);
+        const bmds_3d_shape_t shape = {sizeof(shape), BMDS_3D_SHAPE_TORUS, 48, 24, 2.0f, 0.8f, 0, 0, 0};
+        if (err == 0) err = bmds_3d_mesh_make(&shape, 0, &r.torus);
+        bmds_mat4_t p, v;
+        bmds_mat4_perspective(&p, 1.047f, (float)w / (float)h, 0.5f, 100.0f);
+        bmds_mat4_look_at(&v, bmds_vec3(0, 1, 6.5f), bmds_vec3(0, 0, 0), bmds_vec3(0, 1, 0));
+        bmds_3d_set_target(r.ctx, &canvas);
+        bmds_3d_set_projection(r.ctx, &p);
+        bmds_3d_set_view(r.ctx, &v);
+        static const struct {
+                        const char *name;
+                        uint32_t    mode, flags;
+                        int         table;
+        } cases[] = {
+                {"torus_textured_ms", BMDS_3D_TEXTURED, 0, 0},
+                {"torus_textured_persp_ms", BMDS_3D_TEXTURED, BMDS_3D_PERSPECTIVE, 0},
+                {"torus_textured_flat_ms", BMDS_3D_TEXTURED_FLAT, 0, 1},
+                {"torus_textured_gouraud_ms", BMDS_3D_TEXTURED_GOURAUD, 0, 1},
+                {"torus_textured_gouraud_persp_ms", BMDS_3D_TEXTURED_GOURAUD, BMDS_3D_PERSPECTIVE, 1},
+                {"torus_envmap_ms", BMDS_3D_ENVMAP, 0, 0},
+        };
+        for (size_t k = 0; k < sizeof(cases) / sizeof(cases[0]) && err == 0; ++k) {
+                memset(&r.material, 0, sizeof(r.material));
+                r.material.size = sizeof(r.material);
+                r.material.mode = cases[k].mode;
+                r.material.flags = BMDS_3D_CULL_BACK | cases[k].flags;
+                r.material.texture = &r.texture;
+                r.material.light_table = cases[k].table ? r.table : NULL;
+                err = bmds_bench_measure(&bench, cases[k].name, "ms", BMDS_BENCH_LOWER, textured_sample, &r);
+        }
+        bmds_3d_stats_t st = {.size = sizeof(st)};
+        bmds_3d_stats(r.ctx, &st);
+        printf("textured: %u triangles queued, %u drawn, %u pixels a frame\n", (unsigned)st.triangles,
+               (unsigned)st.drawn, (unsigned)st.pixels);
+        static const char *const names2d[3] = {"light_table_ms", "rotozoom_ms", "remap_ms"};
+        for (r.what = 0; r.what < 3 && err == 0; ++r.what)
+                err = bmds_bench_measure(&bench, names2d[r.what], "ms", BMDS_BENCH_LOWER, texmap_sample, &r);
+        bmds_3d_mesh_free(&r.torus);
+        bmds_3d_destroy(r.ctx);
+        free(r.lookup);
+        free(r.table);
+        free(r.palette);
+        bmds_mem_free(texels);
+        free(pixels);
+        return err;
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
-                fprintf(stderr, "usage: benchprog "
-                                "syscall|launch|sleep|pipe|loopback|synth|midi|images|surface|draw|render|wire|solids "
-                                "[KEY=VALUE...]\n");
+                fprintf(stderr,
+                        "usage: benchprog "
+                        "syscall|launch|sleep|pipe|loopback|synth|midi|images|surface|draw|render|wire|solids|textured "
+                        "[KEY=VALUE...]\n");
                 return 2;
         }
         self = argv[0];
@@ -1031,6 +1177,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "render") == 0) return run_render();
         if (strcmp(what, "wire") == 0) return run_wire();
         if (strcmp(what, "solids") == 0) return run_solids();
+        if (strcmp(what, "textured") == 0) return run_textured();
         fprintf(stderr, "benchprog: %s: no such benchmark\n", what);
         return 2;
 }

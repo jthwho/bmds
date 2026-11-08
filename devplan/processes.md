@@ -445,8 +445,11 @@ kernel priorities for them under the drivers', and a precise sleep for real-time
 `sched_setscheduler`, `sched_getscheduler`, `sched_setparam`, `sched_getparam` (the calling
 thread for pid 0, as glibc: musl's are `ENOSYS` stubs, patched), `sched_get_priority_min`/`max`,
 `sched_rr_get_interval`, `sched_yield` (which yielded nothing before), `sched_getaffinity` and
-`sched_getcpu` (`nproc` was 1). Policies `SCHED_OTHER`, `SCHED_BATCH`, `SCHED_IDLE` (all the
-normal priority) and `SCHED_FIFO`, `SCHED_RR` at 1-99, with `SCHED_RESET_ON_FORK`.
+`sched_getcpu` (`nproc` was 1). Policies `SCHED_OTHER`, `SCHED_BATCH` (the normal priority),
+`SCHED_IDLE` (kernel priority 1, below every normal thread, inherited by its threads as the
+real-time ones: since 2026-11-07, when demo1's speech thread making lines ahead took half the
+drawing's core at the normal priority; it was the normal priority before) and `SCHED_FIFO`,
+`SCHED_RR` at 1-99, with `SCHED_RESET_ON_FORK`.
 
 **One system call, appended:** `sched(uint32_t op, int32_t tid, bmds_sched_t *param)` (113):
 `BMDS_SCHED_GET` fills `param` (policy, priority, the cores it may run on, the core it is on, the

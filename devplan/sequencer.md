@@ -255,3 +255,35 @@ thread, no locks on the drawing thread.
   frame (`bmds_seq_hits()` since the last frame) lift their steps, and the position and both
   latencies in text. Space stops and plays. Run on the board: in time by eye; the ear's check is
   the user's.
+
+### `bmds_seq_time_of()` (2026-11-07, demo1's step 6)
+
+The other way round from `bmds_seq_position()`: when the start of a section's bar and beat is
+heard, the first time at or after a moment, the loop counted (`-BMDS_ENOENT` for a section passed
+that the loop doesn't come back to). It puts what isn't a note on a cue ahead of it: demo1 places
+spoken lines with `bmds_game_play_at()` and begins each transition half a beat before the next
+section. Host-tested against `bmds_seq_position()` and round the loop.
+
+### `bmds_seq_fade()` (2026-11-07, demo1's speech)
+
+`bmds_seq_fade(seq, gain, at_ns, over_ns)`: the song's loudness to `gain` (an amplitude, 0-1 of its
+own) from a heard moment over a time, to duck the music under a line said at that moment and bring
+it back. Each track's controller 7 (the track's volume, or its lane's last) is sent scaled by
+√gain (GM's curve is 40 log10, so the amplitude follows), in 40 ms steps, merged among the notes at
+their times by the scheduler (between steps too, before the horizon passes them). Steps wait in a
+64-entry list under the seq's lock; a fade replaces the steps from its start on and starts from
+where they left the gain, so "down for a line, up after it" twice in a row stays down between.
+A stop drops the pending steps, keeping their target. The FM and wavetable synths move the notes
+sounding with controller 7. Host-tested: the steps' times and values, a later fade cutting one, in
+pieces as in one.
+
+**Found by ear: stuck notes on the wavetable** (2026-11-07). A port takes a writer's timed events in
+time order and refuses one out of it (`MidiFile::schedule()`, `Invalid`); the player's `flush()`
+took any error but `EAGAIN` for a port gone and dropped the rest of its write, up to 32 events. The
+first fades sent a step before an off due a millisecond earlier, and a fade asked for a time
+already sent at that time, behind later ones: seven a pass, found by playing the whole song through
+the wavetable on the host with TimGM6mb. Each lost note-offs; TinySoundFont starts a voice for each
+note-on and an off ends the oldest, so a looped instrument held its note to the end (FM retriggers
+a key's voice, which mostly hid it). Now every event goes through one gate that never sends before
+the last one (a late fade goes at once), offs and fade steps are merged in time order, and
+`flush()` skips an event refused instead of the rest. On the board: 0 refused in a whole run.

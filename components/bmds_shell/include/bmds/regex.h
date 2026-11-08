@@ -12,42 +12,56 @@
 #include <bmds/error.h>
 #include <bmds/stringview.h>
 
+#include <sys/types.h> // newlib's regex.h needs off_t first
+#include <regex.h>
+
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief A subset of POSIX basic regular expressions (what `grep` takes).
+ * @brief A POSIX regular expression, basic (what `grep` takes) or extended (`grep -E`): the C
+ *        library's `regcomp()` and `regexec()` (newlib's on the board), compiled once and matched
+ *        line after line.
  *
- * Supported: literal characters, `.`, `*` (after an atom), `^` at the start,
- * `$` at the end, bracket expressions `[abc]`, `[a-z]`, `[^...]`, and `\`
- * before one of `.*[]^$\/-` to make it literal. Everything else that BRE
- * gives meaning to (`\{m,n\}`, `\(...\)`, back-references, character
- * classes like `[:alpha:]`, GNU `\<` `\w` ...) is rejected by `check()`
- * rather than matched literally, so supporting it later changes no
- * existing pattern's meaning.
- *
- * Matching is a small backtracking matcher: no allocation, recursion depth
- * bounded by the pattern length.
+ * Basic: `.`, `*`, `^`, `$`, brackets with ranges and classes (`[[:alpha:]]`), `\(...\)`,
+ * `\{m,n\}`, back-references. Extended adds `+`, `?`, `|`, `(...)` and `{m,n}` unescaped.
  *
  * @par Thread Safety
- * Stateless; reentrant.
+ * One object per thread; matching does not change it.
  */
-namespace Regex {
+class Regex {
+        public:
+                /** @brief compile()'s flags. */
+                enum Flag : unsigned int {
+                        Basic = 0,      ///< A basic expression (BRE).
+                        Extended = 1,   ///< An extended expression (ERE).
+                        IgnoreCase = 2, ///< Letters compared case-insensitively.
+                };
 
-        /**
-         * @brief Checks that @p pattern is well-formed and supported.
-         * @return `Ok`, `Invalid` (malformed: unterminated `[`, trailing `\`),
-         *         or `NotSupported`.
-         */
-        Error check(StringView pattern);
+                Regex() = default;
+                ~Regex();
+                Regex(const Regex &) = delete;
+                Regex &operator=(const Regex &) = delete;
 
-        /**
-         * @brief Returns true if @p pattern matches anywhere in @p text.
-         * @param pattern    A pattern that passed `check()`.
-         * @param text       The text (one line, without its newline).
-         * @param ignoreCase Compare letters case-insensitively (ASCII).
-         */
-        bool search(StringView pattern, StringView text, bool ignoreCase);
+                /**
+                 * @brief Compiles @p pattern (any earlier one freed).
+                 * @return `Ok`, `Invalid` (malformed: an unterminated `[`, a trailing `\`, ...) with
+                 *         its reason in errorText(), or `NoMem`.
+                 */
+                Error compile(StringView pattern, unsigned int flags);
 
-} // namespace Regex
+                /**
+                 * @brief Returns true if the compiled pattern matches anywhere in @p text (one line,
+                 *        without its newline, NUL-terminated). False before a compile().
+                 */
+                bool search(const char *text) const;
+
+                /** @brief Why the last compile() failed ("" if it didn't). */
+                const char *errorText() const { return _error; }
+
+        private:
+                regex_t _re{};
+                bool    _compiled = false;
+                char    _error[64] = {};
+};
 
 BMDS_NAMESPACE_END

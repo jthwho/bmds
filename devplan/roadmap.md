@@ -268,7 +268,13 @@ Plan: [`input.md`](input.md).
   record (slower), the helper sharing the vertex work (3%: the cores share one L1). Experiments (§13): a
   canvas in internal RAM no faster than PSRAM (bands not built); at 320×180 `solids` runs at 60 (45 at
   640×360). The cost is per triangle (~1,100 cycles), not pixels; the per-triangle work (edges without
-  divisions, kept: the same speed) moved it ±2%: no single step left to remove.
+  divisions, kept: the same speed) moved it ±2%: no single step left to remove. Step 4 built, host-tested
+  (§13, 2026-11-07): L8 `TEXTURED`, `TEXTURED_FLAT`, `TEXTURED_GOURAUD`, `ENVMAP`, affine or
+  `BMDS_3D_PERSPECTIVE` (exact every 16 pixels), the material grown at its end (old sizes still draw),
+  `bmds_3d_light_table()` (exact nearest colours, a range of candidates, a fog colour), and in libbmdsgame
+  `bmds_canvas_image()`, `bmds_canvas_texture_affine()` with `bmds_game_affine_rotozoom()`, and
+  `bmds_canvas_remap()`; `solids -t`/T, `render.textured` in `benchprog`. Next: its figures on the board;
+  the z-buffer left for later.
 - [ ] The sequencer (`sequencer.md`, planned 2026-11-06 with the user): songs as patterns in the SDK
   (`bmds/seq.h`), played through scheduled MIDI and the game mixer, beat sync by heard time (frame times and
   a port's latency from the kernel), live control quantized to the grid, the synths' sound controllers
@@ -292,6 +298,14 @@ Plan: [`input.md`](input.md).
   measured in esp32p4.md §4c; FM's waveforms now in internal RAM while it plays (not its cost). Then
   the synth renders ahead (`audio.md` §27, `BMDS_MIDI_ALLOW_LATENCY`, ABI appended): with FM, plasma
   59, stars 60, tunnel 59, fire 51, balls 56, solids 41, no underrun; next, FM's own cost per voice.
+  Step 6 in part (§10, 2026-11-07): the boot (a BIOS that talks, its facts the board's, its checks and
+  lines picked at random), the credits (headings read out, live numbers), a line on each section's cue
+  placed on the beat, transitions (fade, flash, blinds, tear); libbmdsgame's mixer ahead with
+  `bmds_game_play_at()` and `bmds_game_sound_speak()`, `bmds_seq_time_of()`; a cancel drops a synth's
+  sound made ahead; `-1`, `-s`, the icon; the rotozoomer and a textured cube (3D step 4). After the
+  user's first watch: two voices in exchanges on the cues and a random chat over the credits, the music ducked under
+  each line (`bmds_seq_fade()`), lines in turn, the speech mixer on the game's core with a lead of
+  silence (no underrun mid-line; fire 58 fps, solids 47). Next: FM's own cost per voice, the 3D split.
   Step 0 done (§8b, 2026-11-06): whole L8 frames full screen at 60 (the PPA's CLUT expands what the CPU
   repeats across; `Surface::beginWrite()`; the PPA claimed by one user at a time): 640×360 54 → 60 fps,
   the presenter's CPU 16.8 → 6.6 ms a frame; Doom's and Quake's cheaper too (`games.md` §27).

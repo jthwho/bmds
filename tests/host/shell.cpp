@@ -68,7 +68,7 @@ namespace {
                 {"cat", "[-]", "cat", bmds::TextCommands::cat},
                 {"echo", "[-neE] [word]...", "echo", bmds::TextCommands::echo},
                 {"fail", "", "Exit with 42", runFail},
-                {"grep", "[-civnqF] pattern", "grep", bmds::TextCommands::grep},
+                {"grep", "[-civnqEFG] [-e pattern]... | pattern", "grep", bmds::TextCommands::grep},
                 {"head", "[-n count]", "head", bmds::TextCommands::head},
                 {"help", "[command]", "List commands", Shell::runHelp},
                 {"interrupted", "", "Gets interrupted", runInterrupted},
@@ -318,9 +318,23 @@ TEST_CASE("Text commands") {
                 CHECK(g("grep -iF BAN") == "Banana\n");
                 CHECK(g("grep -q cherry") == "");
                 CHECK(g("grep zzz", Shell::ExitFailure) == "");
-                CHECK(g("grep 'a\\(b\\)'", Shell::ExitUsage) == "grep: unsupported pattern: a\\(b\\)\n");
-                CHECK(g("grep '[abc'", Shell::ExitUsage) == "grep: invalid pattern: [abc\n");
-                CHECK(g("grep", Shell::ExitUsage) == "usage: grep [-civnqF] pattern\n");
+                // Basic: groups, intervals and classes; -E: extended.
+                CHECK(g("grep 'a\\(na\\)\\{2\\}'") == "Banana\n");
+                CHECK(g("grep '[[:upper:]]'") == "Banana\n");
+                CHECK(g("grep 'p|c'", Shell::ExitFailure) == "");
+                CHECK(g("grep -E 'pp|rr'") == "apple\ncherry\n");
+                CHECK(g("grep -E '^(d|B)'") == "Banana\ndate\n");
+                CHECK(g("grep -E 'p{2}l?e'") == "apple\n");
+                CHECK(g("grep -E '(an)+a$'") == "Banana\n");
+                CHECK(g("grep -iE '^b|^D'") == "Banana\ndate\n");
+                CHECK(g("grep -EF 'a.a'", Shell::ExitFailure) == "");
+                CHECK(g("grep -e pp -e rr") == "apple\ncherry\n");
+                CHECK(g("grep -i -eBAN -e '^d'") == "Banana\ndate\n");
+                CHECK(g("grep -F -e a.a -e err") == "cherry\n");
+                CHECK(g("grep -e -x", Shell::ExitFailure) == ""); // a pattern starting with -
+                CHECK(g("grep -e", Shell::ExitUsage).rfind("usage:", 0) == 0);
+                CHECK(g("grep '[abc'", Shell::ExitUsage).rfind("grep: [abc: ", 0) == 0); // the library's reason
+                CHECK(g("grep", Shell::ExitUsage) == "usage: grep [-civnqEFG] [-e pattern]... | pattern\n");
         }
 }
 

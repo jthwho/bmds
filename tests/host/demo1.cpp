@@ -59,6 +59,18 @@ TEST_CASE("demo1: the palette fades, flashes and cycles, the overlay's entries k
         CHECK(shown[10] == 0xff0000);
         CHECK(pal_update(&pal, 0.016f) == nullptr);
 
+        // A veil: held at its amount until set again; the overlay's kept.
+        pal_veil(&pal, 0x000000, 0.5f);
+        shown = pal_update(&pal, 0.5f);
+        REQUIRE(shown != nullptr);
+        CHECK(shown[10] == 0x7f0000);
+        CHECK(shown[PAL_PANEL] == 0x101820);
+        CHECK(pal_update(&pal, 0.5f) == nullptr); // nothing moved
+        pal_veil(&pal, 0x000000, 0.0f);
+        shown = pal_update(&pal, 0.016f);
+        REQUIRE(shown != nullptr);
+        CHECK(shown[10] == 0xff0000);
+
         // Cycling: entries move, the overlay's don't, and the edge of the parts' range holds.
         std::vector<uint32_t> ramp(PAL_PARTS);
         for (uint32_t i = 0; i < PAL_PARTS; ++i) ramp[i] = i;

@@ -11,6 +11,7 @@
 #ifndef BMDS_3D_INTERNAL_H
 #define BMDS_3D_INTERNAL_H
 
+#include <stddef.h>
 #include <bmds/3d.h>
 
 /** @brief The shades a shaded RGB draw steps through (an L8 one: its ramp's length). */
@@ -54,7 +55,29 @@ typedef struct bmds_3d_record_t {
                 uint32_t key;                        /* the draw's depth key (its centre), for BMDS_3D_ORDER_DRAWS */
                 uint32_t rank; /* its place far to near among the queued draws (bmds_3d_flush()) */
                 uint32_t shades[BMDS_3D_RGB_SHADES]; /* RGB565, BGR24: each shade's pixel */
+                /* Textured modes (bmds_3d_triangle_textured()). */
+                uint8_t        textured;    /* 1: drawn from the texture */
+                uint8_t        perspective; /* BMDS_3D_PERSPECTIVE */
+                const uint8_t *texels;      /* the texture's first texel */
+                const uint8_t *table;       /* the light table (top 31), or NULL: texels straight */
+                uint32_t       umask;       /* width - 1 */
+                uint32_t       vmask;       /* (height - 1) << log2(stride) */
+                uint32_t       vshift;      /* 16 - log2(stride): v (16.16) >> it, masked, is the row's offset */
+                float          tw, th;      /* the texture's size, for the uvs' wrapping */
 } bmds_3d_record_t;
+
+/** @brief A textured triangle's texture coordinates, in texels, and 1 / w (1: affine), as its `bmds_3d_tri_t`'s. */
+typedef struct bmds_3d_tuv_t {
+                float u[3], v[3], q[3];
+} bmds_3d_tuv_t;
+
+/** @brief The material's size before `texture` was appended: what older sources fill. */
+#define BMDS_3D_MATERIAL_SIZE_1 ((uint32_t)offsetof(bmds_3d_material_t, texture))
+
+/** @brief Whether @p mode is a textured one. */
+static inline int bmds_3d_is_textured(uint32_t mode) {
+        return mode >= BMDS_3D_TEXTURED && mode <= BMDS_3D_ENVMAP;
+}
 
 /** @brief A light in view space, for the draw at hand. */
 typedef struct bmds_3d_view_light_t {
@@ -107,6 +130,8 @@ struct bmds_3d_t {
                 uint32_t          max_records, record_count;
                 uint16_t         *ranked;     /* the records far to near, for the sort (max_records) */
                 uint32_t          sort_order; /* BMDS_3D_ORDER_... */
+                bmds_3d_tuv_t    *tuvs;       /* the textured triangles' coordinates (max_tris; the first
+                                                 textured draw's) */
                 bmds_3d_helper_t *helper;     /* NULL: one core */
                 float             share;      /* with a helper: the top band's part of the rows, 0..1 */
 };
@@ -137,6 +162,15 @@ int bmds_3d_ink(const bmds_3d_t *ctx, const bmds_3d_material_t *material, bmds_3
 
 /** @brief Checks @p material's fields this version knows. @return 0, or `-BMDS_EINVAL`. */
 int bmds_3d_check_material(const bmds_3d_material_t *material);
+
+/**
+ * @brief Checks a textured @p material's texture (L8, powers of two) and that it has the light
+ *        table its lighting needs. @return 0, or `-BMDS_EINVAL`.
+ */
+int bmds_3d_check_texture(const bmds_3d_material_t *material);
+
+/** @brief Copies @p material (checked) into @p out, the fields its `size` leaves out zero. */
+void bmds_3d_full_material(const bmds_3d_material_t *material, bmds_3d_material_t *out);
 
 /** @brief Draws the segment @p a - @p b (clipped in 3D, then to @p area). @return 1 if any of it was drawn. */
 int bmds_3d_segment(bmds_3d_t *ctx, const bmds_3d_area_t *area, const bmds_3d_ink_t *ink, const bmds_3d_vertex_t *a,
@@ -173,6 +207,49 @@ void bmds_3d_flush(bmds_3d_t *ctx);
 /** @brief Draws @p tri with @p record inside @p area of @p canvas. @return the pixels written. */
 uint32_t bmds_3d_triangle(bmds_canvas_t *canvas, const bmds_3d_area_t *area, const bmds_3d_record_t *record,
                           const bmds_3d_tri_t *tri, bmds_3d_bounds_t *bounds);
+
+/**
+ * @brief Draws the textured @p tri (coordinates @p uv) with @p record inside @p area of @p canvas
+ *        (L8): the same pixels bmds_3d_triangle() fills. @return the pixels written.
+ */
+uint32_t bmds_3d_triangle_textured(bmds_canvas_t *canvas, const bmds_3d_area_t *area, const bmds_3d_record_t *record,
+                                   const bmds_3d_tri_t *tri, const bmds_3d_tuv_t *uv, bmds_3d_bounds_t *bounds);
+
+/* ---- Triangles' edges (raster.c, texture.c) ---------------------------------------------------- */
+
+/* An edge on successive rows: its x at the row's centre in 28.4 scaled by 4096 (so 1 is 1/65536 of
+   a pixel), stepped by a whole number a row. The slope comes from one float division; stepping it
+   adds integers only, so the x a row has is the same whichever row the stepping began on, and two
+   triangles sharing an edge (both stepping it top to bottom, from the same two ends) get the same
+   columns: no gap, no overlap. */
+typedef struct bmds_3d_edge_t {
+                int64_t x, step;
+} bmds_3d_edge_t;
+
+/* The edge (x0, y0)-(x1, y1), y1 > y0, at row @p row (its centre at row × 16 + 8). Inside the guard
+   band |dx| / dy × 4096 fits 32 bits. */
+static inline void bmds_3d_edge_init(bmds_3d_edge_t *e, int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t row) {
+        const float   f = (float)(x1 - x0) * 4096.0f / (float)(y1 - y0);
+        const int32_t slope = f > 2.0e9f ? 2000000000 : f < -2.0e9f ? -2000000000 : (int32_t)f;
+        e->x = (int64_t)x0 * 4096 + (int64_t)(row * 16 + 8 - y0) * slope;
+        e->step = (int64_t)slope * 16;
+        return;
+}
+
+static inline void bmds_3d_edge_step(bmds_3d_edge_t *e) {
+        e->x += e->step;
+        return;
+}
+
+/* The first pixel column whose centre is at or right of the edge: ceil((x − 8) / 16) in 28.4. */
+static inline int32_t bmds_3d_edge_column(const bmds_3d_edge_t *e) {
+        return (int32_t)((e->x + 32767) >> 16);
+}
+
+/* The first row whose centre is at or below @p y (28.4). */
+static inline int32_t bmds_3d_first_row(int32_t y) {
+        return (y - 8 + 15) >> 4; /* an arithmetic shift: floor */
+}
 
 /** @brief Adds the rectangle (x0, y0)-(x1, y1) to @p bounds. */
 void bmds_3d_include(bmds_3d_bounds_t *bounds, int32_t x0, int32_t y0, int32_t x1, int32_t y1);

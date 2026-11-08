@@ -615,7 +615,7 @@ TEST_CASE("Game sound: the mixer's voices, gains, loops, stops, stealing") {
         CHECK(out[15] == doctest::Approx(0.25f));
         uint32_t            lg = 0;
         const int32_t       slot = bmds_game_mixer_voice(&m, loop, &lg);
-        bmds_game_command_t stop = {BMDS_GAME_COMMAND_STOP, uint32_t(slot), lg, nullptr, 0, 0, 0, 0, 0};
+        bmds_game_command_t stop = {BMDS_GAME_COMMAND_STOP, uint32_t(slot), lg, nullptr, 0, 0, 0, 0, 0, 0};
         REQUIRE(bmds_game_mixer_push(&m, &stop) == 0);
         bmds_game_mixer_run(&m, out, 8, 2);
         CHECK(out[0] < 0.25f);
@@ -640,7 +640,7 @@ TEST_CASE("Game sound: the mixer's voices, gains, loops, stops, stealing") {
         CHECK(bmds_game_mixer_voice(&m, first, &g) == -1);
         CHECK(bmds_game_mixer_play(&m, &mono, 1.0f, 0.0f, 0) == -BMDS_EBUSY);
         // Paused: silence, nothing moves.
-        bmds_game_command_t pause = {BMDS_GAME_COMMAND_PAUSE, 0, 0, nullptr, 0, 0, 0, 1.0f, 0};
+        bmds_game_command_t pause = {BMDS_GAME_COMMAND_PAUSE, 0, 0, nullptr, 0, 0, 0, 1.0f, 0, 0};
         bmds_game_mixer_push(&m, &pause);
         bmds_game_mixer_run(&m, out, 8, 2);
         CHECK(out[0] == 0.0f);
@@ -648,6 +648,42 @@ TEST_CASE("Game sound: the mixer's voices, gains, loops, stops, stealing") {
         bmds_game_mixer_init(&m);
         for (uint32_t i = 0; i < BMDS_GAME_COMMANDS; ++i) bmds_game_mixer_push(&m, &pause);
         CHECK(bmds_game_mixer_play(&m, &mono, 1.0f, 0.0f, 0) == -BMDS_EAGAIN);
+}
+
+TEST_CASE("Game sound: a sound played for later starts on its frame") {
+        bmds_game_mixer_t m;
+        bmds_game_mixer_init(&m);
+        const int16_t     ones[4] = {16384, 16384, 16384, 16384};
+        bmds_game_sound_t mono = {ones, 4, 1};
+        float             out[8 * 2];
+        // 1000 Hz: a frame a millisecond. Heard 10 ms after this period's start: frame 2 of the next.
+        const int64_t start = 1'000'000'000;
+        REQUIRE(bmds_game_mixer_play_at(&m, &mono, 1.0f, 0.0f, 0, start + 10'000'000) >= 0);
+        bmds_game_mixer_run_at(&m, out, 8, 2, start, 1000);
+        for (float x : out) CHECK(x == 0.0f);
+        bmds_game_mixer_run_at(&m, out, 8, 2, start + 8'000'000, 1000);
+        CHECK(out[2] == 0.0f);
+        CHECK(out[3] == 0.0f);
+        CHECK(out[4] == doctest::Approx(0.5f));
+        CHECK(out[10] == doctest::Approx(0.5f));
+        CHECK(out[12] == 0.0f); // its 4 frames, from frame 2
+        // Already past, or no time known: at once.
+        REQUIRE(bmds_game_mixer_play_at(&m, &mono, 1.0f, 0.0f, 0, start) >= 0);
+        bmds_game_mixer_run_at(&m, out, 8, 2, start + 16'000'000, 1000);
+        CHECK(out[0] == doctest::Approx(0.5f));
+        REQUIRE(bmds_game_mixer_play_at(&m, &mono, 1.0f, 0.0f, 0, start + 99'000'000) >= 0);
+        bmds_game_mixer_run(&m, out, 8, 2);
+        CHECK(out[0] == doctest::Approx(0.5f));
+        // Stopped before it starts: ends unheard.
+        const int32_t v = bmds_game_mixer_play_at(&m, &mono, 1.0f, 0.0f, 0, start + 60'000'000);
+        bmds_game_mixer_run_at(&m, out, 8, 2, start + 24'000'000, 1000);
+        uint32_t            g = 0;
+        const int32_t       slot = bmds_game_mixer_voice(&m, v, &g);
+        bmds_game_command_t stop = {BMDS_GAME_COMMAND_STOP, uint32_t(slot), g, nullptr, 0, 0, 0, 0, 0, 0};
+        REQUIRE(bmds_game_mixer_push(&m, &stop) == 0);
+        bmds_game_mixer_run_at(&m, out, 8, 2, start + 32'000'000, 1000);
+        CHECK(bmds_game_mixer_voice(&m, v, &g) == -1);
+        for (float x : out) CHECK(x == 0.0f);
 }
 
 TEST_CASE("Game sound: resampling") {

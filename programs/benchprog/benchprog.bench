@@ -67,6 +67,11 @@ Exec=benchprog solids
 Tags=quick
 Help=libbmds3d's solids: a 2304-triangle torus queued, sorted and drawn flat and Gouraud, 640x360 L8 in PSRAM
 
+[Bench render.textured]
+Exec=benchprog textured
+Tags=quick
+Help=libbmds3d's textures: the same torus textured (affine, perspective, lit flat and Gouraud through a light table, chrome); a light table built; a 640x360 rotozoom and tunnel remap (libbmdsgame), L8 in PSRAM
+
 [Bench kernel.pipe]
 Exec=benchprog pipe
 Tags=quick

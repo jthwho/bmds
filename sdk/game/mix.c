@@ -40,6 +40,11 @@ static float clamp(float v, float lo, float hi) {
 
 int32_t bmds_game_mixer_play(bmds_game_mixer_t *mixer, const bmds_game_sound_t *sound, float volume, float pan,
                              uint32_t flags) {
+        return bmds_game_mixer_play_at(mixer, sound, volume, pan, flags, 0);
+}
+
+int32_t bmds_game_mixer_play_at(bmds_game_mixer_t *mixer, const bmds_game_sound_t *sound, float volume, float pan,
+                                uint32_t flags, int64_t at_ns) {
         if (sound == NULL || sound->samples == NULL || sound->frames == 0 ||
             (sound->channels != 1 && sound->channels != 2))
                 return -BMDS_EINVAL;
@@ -65,12 +70,20 @@ int32_t bmds_game_mixer_play(bmds_game_mixer_t *mixer, const bmds_game_sound_t *
                                  sound->channels,
                                  clamp(volume, 0.0f, 1.0f),
                                  clamp(pan, -1.0f, 1.0f),
-                                 flags};
+                                 flags,
+                                 at_ns};
         if (bmds_game_mixer_push(mixer, &c) != 0) return -BMDS_EAGAIN;
         mixer->given[slot] = generation;
         mixer->started[slot] = mixer->plays++;
         mixer->looping[slot] = (flags & BMDS_GAME_PLAY_LOOP) != 0;
         return (int32_t)(generation << SLOT_BITS | (uint32_t)slot);
+}
+
+int bmds_game_mixer_idle(const bmds_game_mixer_t *mixer) {
+        if (LOAD(mixer->head) != mixer->tail) return 0;
+        for (uint32_t i = 0; i < BMDS_GAME_VOICES; ++i)
+                if (mixer->voices[i].generation != 0) return 0;
+        return 1;
 }
 
 int32_t bmds_game_mixer_voice(const bmds_game_mixer_t *mixer, int32_t voice, uint32_t *generation) {
@@ -110,6 +123,11 @@ static void apply(bmds_game_mixer_t *m, const bmds_game_command_t *c) {
                         v->pan = c->pan;
                         v->loop = (c->flags & BMDS_GAME_PLAY_LOOP) != 0;
                         v->stopping = 0;
+                        v->delay = 0;
+                        if (c->at_ns != 0 && m->heard_ns != 0 && c->at_ns > m->heard_ns) {
+                                const int64_t d = (c->at_ns - m->heard_ns) * (int64_t)m->rate / 1000000000;
+                                v->delay = d > 0x7fffffff ? 0x7fffffffu : (uint32_t)d;
+                        }
                         targets(m, v, &v->left, &v->right); /* a sound's start is its own */
                         break;
                 case BMDS_GAME_COMMAND_SET:
@@ -128,21 +146,41 @@ static void apply(bmds_game_mixer_t *m, const bmds_game_command_t *c) {
 }
 
 void bmds_game_mixer_run(bmds_game_mixer_t *mixer, float *out, uint32_t frames, uint32_t channels) {
+        bmds_game_mixer_run_at(mixer, out, frames, channels, 0, 0);
+        return;
+}
+
+void bmds_game_mixer_run_at(bmds_game_mixer_t *mixer, float *out, uint32_t frames, uint32_t channels, int64_t heard_ns,
+                            uint32_t rate) {
+        mixer->heard_ns = rate != 0 ? heard_ns : 0;
+        mixer->rate = rate;
         const uint32_t head = LOAD(mixer->head);
         for (uint32_t t = mixer->tail; t != head; ++t) apply(mixer, &mixer->commands[t % BMDS_GAME_COMMANDS]);
         STORE(mixer->tail, head);
         memset(out, 0, sizeof(float) * frames * channels);
         if (mixer->paused || frames == 0) return;
-        const float scale = 1.0f / 32768.0f, step = 1.0f / (float)frames;
+        const float scale = 1.0f / 32768.0f;
         for (uint32_t s = 0; s < BMDS_GAME_VOICES; ++s) {
                 bmds_game_voice_t *v = &mixer->voices[s];
                 if (v->generation == 0) continue;
+                /* Not started yet: waits; stopped meanwhile, it ends unheard. */
+                if (v->delay != 0 && v->stopping) {
+                        end_voice(mixer, s);
+                        continue;
+                }
+                if (v->delay >= frames) {
+                        v->delay -= frames;
+                        continue;
+                }
+                const uint32_t first = v->delay;
+                v->delay = 0;
                 float to_left, to_right;
                 targets(mixer, v, &to_left, &to_right);
+                const float step = 1.0f / (float)(frames - first);
                 const float dl = (to_left - v->left) * step, dr = (to_right - v->right) * step;
                 float       l = v->left, r = v->right;
                 uint32_t    p = v->position;
-                for (uint32_t i = 0; i < frames; ++i) {
+                for (uint32_t i = first; i < frames; ++i) {
                         if (p >= v->frames) {
                                 if (!v->loop) break;
                                 p = 0;

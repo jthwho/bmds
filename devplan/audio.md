@@ -3050,3 +3050,14 @@ As designed, with three things the board found:
 - `synth status` says `ahead 250 ms` or `real time`, and how often it was raised; with demo1
   gone, the allowance goes with its fd and `fm` is real-time again (checked: a note from `midi
   send` played as a real-time client).
+- **A cancel drops what was made ahead (2026-11-07).** `BMDS_MIDI_CANCEL` cleared only the fd's
+  queue in the MIDI clock: a synth rendering ahead for it played on for up to its latency (demo1's
+  M and W keys, a game stopping its music). Now `MidiFile::cancelScheduled()` tells the router
+  (`MidiRouter::cancel()` → `MidiSink::cancel(owner)`, every sink); a synth holding that owner's
+  allowance drops its ring (`AudioFile::drop()`), the events waiting to be placed (every sender's:
+  they share one sound) and silences its voices (all sound off on each channel), then finds the
+  heard time again from the empty ring. `synth status` counts them (`cancels`). The real-time path
+  ignores it, as nothing is ahead there. Found on the board: a program stopping its music cancels
+  and closes its fd at once, the close takes the allowance back, and the audio thread left its
+  ahead loop before its next period saw the cancel (`cancels 0`, the ring played out); a cancel
+  still pending as the loop ends is now acted on there.

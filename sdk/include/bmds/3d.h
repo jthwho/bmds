@@ -22,9 +22,13 @@
  * (lit solids, `BMDS_3D_DEPTH_CUE`) uses, on L8, a ramp of palette entries from dark (`ramp_first`)
  * to bright (`ramp_first + ramp_count - 1`); on RGB565 and BGR24, `rgb` in 32 levels from black.
  *
- * Solids (`BMDS_3D_FLAT`, `BMDS_3D_GOURAUD`) are queued by bmds_3d_draw() and drawn far to near by
- * bmds_3d_end() (the painter's algorithm: by draw, then by triangle, unless bmds_3d_set_order() says
- * otherwise); points, lines and wire draw at once.
+ * Textured solids (`BMDS_3D_TEXTURED`, `_TEXTURED_FLAT`, `_TEXTURED_GOURAUD`, `_ENVMAP`; L8 only for
+ * now, `-BMDS_ENOSYS` on RGB565 and BGR24) fetch an L8 `texture`'s texels and light them through a
+ * light table (bmds_3d_light_table(): `table[shade][texel]`, Doom's COLORMAP).
+ *
+ * Solids (`BMDS_3D_FLAT`, `BMDS_3D_GOURAUD`, the textured modes) are queued by bmds_3d_draw() and
+ * drawn far to near by bmds_3d_end() (the painter's algorithm: by draw, then by triangle, unless
+ * bmds_3d_set_order() says otherwise); points, lines and wire draw at once.
  *
  * Not thread-safe: a context is one thread's. Two contexts may draw on two bands of one canvas.
  */
@@ -253,13 +257,35 @@ void bmds_3d_mesh_bounds(bmds_3d_mesh_t *mesh);
 #define BMDS_3D_WIRE 2u    /**< The edges as lines. */
 #define BMDS_3D_FLAT 3u    /**< Filled, one shade a triangle, lit by its own facing. */
 #define BMDS_3D_GOURAUD 4u /**< Filled, shades between the vertices', lit by the mesh's normals. */
+#define BMDS_3D_TEXTURED                                                                                               \
+        5u /**< `texture` by the mesh's uvs, unlit: the texel itself, or through `light_table` at full
+                light (a remap); with DEPTH_CUE, through `light_table` by distance. L8 only. */
+#define BMDS_3D_TEXTURED_FLAT 6u /**< `texture` through `light_table`, lit per triangle (as FLAT). L8 only. */
+#define BMDS_3D_TEXTURED_GOURAUD                                                                                       \
+        7u /**< `texture` through `light_table`, lit per vertex by the mesh's normals (as GOURAUD).
+                L8 only. */
+#define BMDS_3D_ENVMAP                                                                                                 \
+        8u /**< `texture` by uvs from the view-space normals (a sphere map, "matcap": chrome), unlit as
+                TEXTURED is; without normals, each triangle's own. L8 only. */
 
 /** @brief `bmds_3d_material_t::flags`. */
 #define BMDS_3D_CULL_BACK 0x1u /**< Back faces not drawn (wire: only edges of a front face). */
 #define BMDS_3D_DEPTH_CUE 0x2u /**< Shaded by distance: bright at the fog's near, dark at its far. */
 #define BMDS_3D_UNLIT 0x4u     /**< Solids: no lights; `pixel`, or the ramp by distance with DEPTH_CUE. */
+#define BMDS_3D_PERSPECTIVE                                                                                            \
+        0x8u /**< Textured modes: the texture perspective-correct, exact every 16 pixels and affine
+                  between (Quake's way). Without it, affine across each triangle (the PS1's swim). */
 
-/** @brief How a mesh is drawn. */
+/** @brief Shades in a light table (bmds_3d_light_table()): 0 the darkest, 31 the texel's own colour. */
+#define BMDS_3D_LIGHT_SHADES 32u
+
+/** @brief A light table's bytes: `table[shade * 256 + texel]`. */
+#define BMDS_3D_LIGHT_TABLE_SIZE (BMDS_3D_LIGHT_SHADES * 256u)
+
+/**
+ * @brief How a mesh is drawn. Fields were appended (`texture`, `light_table`, step 4): a material
+ *        whose `size` ends before them is accepted and drawn as before (they read as NULL).
+ */
 typedef struct bmds_3d_material_t {
                 uint32_t size;       /**< `sizeof(bmds_3d_material_t)`. */
                 uint32_t mode;       /**< `BMDS_3D_POINTS`... */
@@ -269,7 +295,33 @@ typedef struct bmds_3d_material_t {
                 uint32_t ramp_first; /**< Shaded, L8: the ramp's darkest palette index, */
                 uint32_t ramp_count; /**< and its length (1-256; first + count at most 256). */
                 uint32_t point_size; /**< `BMDS_3D_POINTS`: pixels square (0: 1). */
+                /** Textured modes: an L8 image whose width, height and stride are powers of two (stride
+                    at most 65536), wrapped (u, v 0..1 across it, by mask); a canvas wrapped by
+                    bmds_canvas_image() works. Read at bmds_3d_end(): keep it until then. Internal
+                    RAM (`BMDS_MEM_FAST`) makes its fetches cheaper when it fits. */
+                const bmds_game_image_t *texture;
+                /** Textured modes: bmds_3d_light_table()'s `BMDS_3D_LIGHT_TABLE_SIZE` bytes, which lit
+                    modes and DEPTH_CUE need; NULL: texels straight. Read at bmds_3d_end(). */
+                const uint8_t *light_table;
 } bmds_3d_material_t;
+
+/**
+ * @brief Fills @p table (`BMDS_3D_LIGHT_TABLE_SIZE` bytes) for textured L8 drawing, as Doom's
+ *        COLORMAP: `table[shade * 256 + i]` is the palette index nearest (weighted 3, 4, 2 for red,
+ *        green, blue, as bmds_game_image_load()) to @p palette[i]'s colour at that shade: @p dark at
+ *        shade 0, the colour itself at `BMDS_3D_LIGHT_SHADES - 1`, in even steps between. Only
+ *        entries @p first to @p first + @p count - 1 are chosen (the rest reserved: text, a
+ *        background). Exact nearest colours, searched in the candidates sorted by brightness;
+ *        about 36 ms for 256 entries on the board: build tables at a scene's start, not a frame.
+ * @param table   [out] The table.
+ * @param palette 256 colours, 0xRRGGBB.
+ * @param first   The first candidate entry.
+ * @param count   Candidates (1 to 256 - @p first).
+ * @param dark    0xRRGGBB at shade 0: black (0), or a fog's colour.
+ * @return 0, or `-BMDS_EINVAL` (NULL, an empty or too long range).
+ * @nonblocking Thread-safe (no state of its own); allocates nothing (~4 KB of stack).
+ */
+int bmds_3d_light_table(uint8_t *table, const uint32_t *palette, uint32_t first, uint32_t count, uint32_t dark);
 
 /* ---- Contexts --------------------------------------------------------------------------------- */
 
@@ -395,8 +447,12 @@ void bmds_3d_end(bmds_3d_t *ctx);
 /**
  * @brief Draws @p mesh through the model, view and projection matrices with @p material: points,
  *        lines and wire at once; solids queued for bmds_3d_end() (with the lights as they are now).
- * @return 0, or `-BMDS_EINVAL` (a bad mesh or material, no target), `-BMDS_ENOSPC` (more vertices
- *         than `max_vertices`).
+ *        A textured solid's texture and light table are read at bmds_3d_end(): keep them till then.
+ * @return 0, or `-BMDS_EINVAL` (a bad mesh or material, no target; a textured mode without the
+ *         mesh's uvs, a usable texture, or the light table it needs), `-BMDS_ENOSPC` (more vertices
+ *         than `max_vertices`), `-BMDS_ENOSYS` (a textured mode on RGB565 or BGR24),
+ *         `-BMDS_ENOMEM` (the first textured draw's texture coordinates: `max_triangles` × 36 bytes,
+ *         allocated once).
  */
 int bmds_3d_draw(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3d_material_t *material);
 

@@ -13,6 +13,7 @@
  * before now + the latency + the lookahead, each event sent its latency early.
  */
 
+#include <math.h>
 #include <pthread.h>
 #include <sched.h>
 #include <stddef.h>
@@ -34,6 +35,8 @@
 #define DEFAULT_LOOKAHEAD_MS 80u
 #define DEFAULT_LATENCY_US 15000
 #define GAP_NS 1000000ll /* a note ends this much before its length, so the next can start clean */
+#define FADE_POINTS 64u
+#define FADE_STEP_NS 40000000ll /* a fade's steps (a synth's volume jumps: small ones) */
 
 typedef struct {
                 int64_t  start_ns; /* from the song's start */
@@ -46,6 +49,11 @@ typedef struct {
                 int64_t heard_ns;
                 uint8_t channel, note;
 } pending_off_t;
+
+typedef struct {
+                int64_t heard_ns;
+                float   gain;
+} fade_point_t;
 
 struct bmds_seq_t {
                 const bmds_seq_song_t *song;
@@ -61,6 +69,13 @@ struct bmds_seq_t {
                 int           ended;
                 pending_off_t offs[MAX_OFFS];
                 uint32_t      off_count;
+                int64_t       sent_ns;           /* the last event's time: none goes before it (the port refuses it) */
+                uint8_t       level[MAX_TRACKS]; /* each track's own volume: its track's, or its lane's last */
+                /* The fades (bmds_seq_fade()): their steps pending, by time, and the gain sent last
+                   (both under the lock). */
+                fade_point_t fades[FADE_POINTS];
+                uint32_t     fade_count;
+                float        gain;
                 /* The port and the thread. */
                 int32_t   fd;
                 bmds_midi_event_t out[BATCH]; /* a wake's events, written together */
@@ -143,6 +158,8 @@ int bmds_seq_make(const bmds_seq_song_t *song, bmds_seq_t **out) {
         q->length_ns = at;
         q->loop_ns = song->loop_section >= 0 ? q->times[song->loop_section].start_ns : at;
         q->fd = -1;
+        q->gain = 1.0f;
+        for (uint32_t t = 0; t < song->track_count; ++t) q->level[t] = (uint8_t)song->tracks[t].volume;
         pthread_mutex_init(&q->lock, NULL);
         *out = q;
         return 0;
@@ -185,6 +202,24 @@ int bmds_seq_position(const bmds_seq_t *q, int64_t time_ns, bmds_seq_position_t 
         return 0;
 }
 
+int bmds_seq_time_of(const bmds_seq_t *q, uint32_t section, uint32_t bar, uint32_t beat, int64_t after_ns,
+                     int64_t *time_ns) {
+        if (time_ns == NULL || section >= q->song->section_count) return -BMDS_EINVAL;
+        if (!q->playing) return -BMDS_EAGAIN;
+        const section_time_t *st = &q->times[section];
+        const int64_t         into = ((int64_t)bar * q->bpb + beat) * q->spb * st->step_ns;
+        if (beat >= q->bpb || into >= (int64_t)st->steps * st->step_ns) return -BMDS_EINVAL;
+        int64_t t = q->start_ns + st->start_ns + into;
+        if (t < after_ns) {
+                /* Passed: next time round, if the loop comes back to it. */
+                if (q->song->loop_section < 0 || section < (uint32_t)q->song->loop_section) return -BMDS_ENOENT;
+                const int64_t round = q->length_ns - q->loop_ns;
+                t += (after_ns - t + round - 1) / round * round;
+        }
+        *time_ns = t;
+        return 0;
+}
+
 /* ---- The scheduler ---------------------------------------------------------------------------- */
 
 void bmds_seq_start_at(bmds_seq_t *q, int64_t start_ns, int64_t latency_ns) {
@@ -192,12 +227,23 @@ void bmds_seq_start_at(bmds_seq_t *q, int64_t start_ns, int64_t latency_ns) {
         q->latency_ns = latency_ns;
         q->section = q->step = q->loops = 0;
         q->origin_ns = start_ns;
+        q->sent_ns = 0;
         q->ended = 0;
         q->off_count = 0;
         pthread_mutex_lock(&q->lock);
         q->hit_count = 0;
         pthread_mutex_unlock(&q->lock);
         q->playing = 1;
+        return;
+}
+
+/* An event, never before the last one sent: a port takes its events in time order and refuses one
+   out of it (`midifile.cpp`), and one refused lost the rest of its write (notes held for good). */
+static void send(bmds_seq_t *q, int64_t heard_ns, const uint8_t *bytes, uint32_t length, bmds_seq_emit_t emit,
+                 void *arg) {
+        if (heard_ns < q->sent_ns) heard_ns = q->sent_ns;
+        q->sent_ns = heard_ns;
+        emit(arg, heard_ns, bytes, length);
         return;
 }
 
@@ -217,7 +263,7 @@ static void emit_offs(bmds_seq_t *q, int64_t heard_ns, bmds_seq_emit_t emit, voi
         uint32_t n = 0;
         while (n < q->off_count && q->offs[n].heard_ns <= heard_ns) {
                 const uint8_t off[3] = {(uint8_t)(0x80u | q->offs[n].channel), q->offs[n].note, 0};
-                emit(arg, q->offs[n].heard_ns, off, 3);
+                send(q, q->offs[n].heard_ns, off, 3, emit, arg);
                 ++n;
         }
         if (n != 0) {
@@ -225,6 +271,70 @@ static void emit_offs(bmds_seq_t *q, int64_t heard_ns, bmds_seq_emit_t emit, voi
                 q->off_count -= n;
         }
         return;
+}
+
+/* Track @p t's volume as the song's gain has it (an amplitude: the volume curve's 40 log10, so
+   the controller scaled by its square root). */
+static uint8_t scaled(const bmds_seq_t *q, uint32_t t, float gain) {
+        const float v = (float)q->level[t] * sqrtf(gain) + 0.5f;
+        return (uint8_t)(v > 127.0f ? 127.0f : v);
+}
+
+/* The fades' steps heard before @p until_ns, in order: each track's volume at each. */
+static void emit_fades(bmds_seq_t *q, int64_t until_ns, bmds_seq_emit_t emit, void *arg) {
+        for (;;) {
+                pthread_mutex_lock(&q->lock);
+                if (q->fade_count == 0 || q->fades[0].heard_ns >= until_ns) {
+                        pthread_mutex_unlock(&q->lock);
+                        return;
+                }
+                const fade_point_t p = q->fades[0];
+                memmove(q->fades, q->fades + 1, (q->fade_count - 1) * sizeof(fade_point_t));
+                --q->fade_count;
+                q->gain = p.gain;
+                pthread_mutex_unlock(&q->lock);
+                for (uint32_t t = 0; t < q->song->track_count; ++t) {
+                        const uint8_t cc[3] = {(uint8_t)(0xb0u | q->song->tracks[t].channel), 7, scaled(q, t, p.gain)};
+                        send(q, p.heard_ns, cc, 3, emit, arg); /* asked late: at once */
+                }
+        }
+}
+
+/* The note-offs and the fades' steps heard at or before @p until_ns, merged in time order (an off
+   first at a tie). */
+static void emit_due(bmds_seq_t *q, int64_t until_ns, bmds_seq_emit_t emit, void *arg) {
+        for (;;) {
+                pthread_mutex_lock(&q->lock);
+                const int64_t fade = q->fade_count != 0 ? q->fades[0].heard_ns : INT64_MAX;
+                pthread_mutex_unlock(&q->lock);
+                if (fade > until_ns) break;
+                emit_offs(q, fade, emit, arg);
+                emit_fades(q, fade + 1, emit, arg);
+        }
+        emit_offs(q, until_ns, emit, arg);
+        return;
+}
+
+int bmds_seq_fade(bmds_seq_t *q, float gain, int64_t at_ns, int64_t over_ns) {
+        if (q == NULL || !(gain >= 0.0f && gain <= 1.0f) || over_ns < 0) return -BMDS_EINVAL;
+        if (at_ns == 0) at_ns = now_ns() + q->latency_ns + q->lookahead_ns;
+        uint32_t steps = (uint32_t)(over_ns / FADE_STEP_NS);
+        if (steps == 0) steps = 1;
+        pthread_mutex_lock(&q->lock);
+        uint32_t n = 0;
+        while (n < q->fade_count && q->fades[n].heard_ns < at_ns) ++n;
+        if (n == FADE_POINTS) {
+                pthread_mutex_unlock(&q->lock);
+                return -BMDS_ENOSPC;
+        }
+        if (steps > FADE_POINTS - n) steps = FADE_POINTS - n; /* fewer, bigger steps */
+        const float from = n != 0 ? q->fades[n - 1].gain : q->gain;
+        for (uint32_t i = 1; i <= steps; ++i)
+                q->fades[n++] = (fade_point_t){at_ns + over_ns * (int64_t)i / (int64_t)steps,
+                                               from + (gain - from) * (float)i / (float)steps};
+        q->fade_count = n;
+        pthread_mutex_unlock(&q->lock);
+        return 0;
 }
 
 static void hit(bmds_seq_t *q, int64_t heard_ns, uint32_t track, uint8_t note, uint8_t velocity) {
@@ -243,7 +353,7 @@ void bmds_seq_schedule(bmds_seq_t *q, int64_t horizon_ns, bmds_seq_emit_t emit, 
                 const int64_t             swing = (q->step & 1u) != 0 ? (int64_t)((float)st->step_ns * song->swing) : 0;
                 const int64_t             at = q->origin_ns + (int64_t)q->step * st->step_ns + swing;
                 if (at >= horizon_ns) break;
-                emit_offs(q, at, emit, arg);
+                emit_due(q, at, emit, arg);
                 for (uint32_t t = 0; t < song->track_count; ++t) {
                         const int8_t p = sec->patterns[t];
                         if (p < 0) continue;
@@ -254,8 +364,11 @@ void bmds_seq_schedule(bmds_seq_t *q, int64_t horizon_ns, bmds_seq_emit_t emit, 
                         for (uint32_t l = 0; l < pat->lane_count; ++l) {
                                 const uint8_t v = pat->lanes[l].values[i];
                                 if (v > 127) continue;
-                                const uint8_t cc[3] = {(uint8_t)(0xb0u | ch), pat->lanes[l].controller, v};
-                                emit(arg, at, cc, 3);
+                                const uint8_t controller = pat->lanes[l].controller;
+                                if (controller == 7) q->level[t] = v; /* the gain applies to it too */
+                                const uint8_t cc[3] = {(uint8_t)(0xb0u | ch), controller,
+                                                       controller == 7 ? scaled(q, t, q->gain) : v};
+                                send(q, at, cc, 3, emit, arg);
                         }
                         const bmds_seq_step_t *n = &pat->notes[i];
                         if (n->velocity == 0) continue;
@@ -264,7 +377,7 @@ void bmds_seq_schedule(bmds_seq_t *q, int64_t horizon_ns, bmds_seq_emit_t emit, 
                         uint32_t velocity = n->velocity + ((n->flags & BMDS_SEQ_ACCENT) != 0 ? 24u : 0u);
                         if (velocity > 127) velocity = 127;
                         const uint8_t on[3] = {(uint8_t)(0x90u | ch), (uint8_t)note, (uint8_t)velocity};
-                        emit(arg, at, on, 3);
+                        send(q, at, on, 3, emit, arg);
                         const int64_t length = (int64_t)(n->length != 0 ? n->length : 1) * st->step_ns;
                         add_off(q, at + (length > 2 * GAP_NS ? length - GAP_NS : length / 2), ch, (uint8_t)note);
                         hit(q, at, t, (uint8_t)note, (uint8_t)velocity);
@@ -284,6 +397,7 @@ void bmds_seq_schedule(bmds_seq_t *q, int64_t horizon_ns, bmds_seq_emit_t emit, 
                         }
                 }
         }
+        emit_due(q, horizon_ns - 1, emit, arg); /* those between the steps, before the next */
         return;
 }
 
@@ -329,6 +443,8 @@ static void flush(bmds_seq_t *q) {
                         done += (uint32_t)r / sizeof(bmds_midi_event_t);
                 } else if (r == -BMDS_EAGAIN && !LOAD(q->stop)) {
                         (void)bmds_sleep(5000000);
+                } else if (r == -BMDS_EINVAL) {
+                        ++done; /* that one refused (out of order, say): the rest still sent */
                 } else {
                         break; /* a port gone: what is left is dropped */
                 }
@@ -449,7 +565,8 @@ int bmds_seq_play(bmds_seq_t *q, int64_t start_ns) {
                 const bmds_seq_track_t *k = &q->song->tracks[t];
                 const uint8_t           ch = (uint8_t)k->channel;
                 const uint8_t           pc[2] = {(uint8_t)(0xc0u | ch), (uint8_t)k->program};
-                const uint8_t           vol[3] = {(uint8_t)(0xb0u | ch), 7, (uint8_t)k->volume};
+                q->level[t] = (uint8_t)k->volume;
+                const uint8_t           vol[3] = {(uint8_t)(0xb0u | ch), 7, scaled(q, t, q->gain)};
                 const uint8_t           pan[3] = {(uint8_t)(0xb0u | ch), 10, (uint8_t)k->pan};
                 if (ch != 9) send_event(q, q->latency_ns, pc, 2);
                 send_event(q, q->latency_ns, vol, 3);
@@ -484,6 +601,10 @@ void bmds_seq_stop(bmds_seq_t *q) {
                 all_channels(q, 123, 0); /* all notes off */
                 all_channels(q, 120, 0); /* all sound off */
         }
+        pthread_mutex_lock(&q->lock); /* the fades pending dropped, the gain where they went */
+        if (q->fade_count != 0) q->gain = q->fades[q->fade_count - 1].gain;
+        q->fade_count = 0;
+        pthread_mutex_unlock(&q->lock);
         q->playing = 0;
         return;
 }

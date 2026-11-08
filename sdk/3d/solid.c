@@ -19,9 +19,9 @@
 #define GUARD BMDS_3D_GUARD
 #define MAX_POLY 9 /* a triangle through six planes */
 
-/* A vertex being clipped: clip space, and its shade. */
+/* A vertex being clipped: clip space, its shade, and its texture coordinates (texels). */
 typedef struct {
-                float x, y, z, w, s;
+                float x, y, z, w, s, u, v;
 } clip_vertex_t;
 
 /* ---- Records and lights ----------------------------------------------------------------------- */
@@ -31,9 +31,45 @@ static uint32_t rgb_pixel(uint32_t format, uint32_t r, uint32_t g, uint32_t b) {
         return r << 16 | g << 8 | b;
 }
 
+/* log2 of @p v, a power of two. */
+static uint32_t log2_of(uint32_t v) {
+        uint32_t n = 0;
+        while (v > 1u) v >>= 1, ++n;
+        return n;
+}
+
+/* A textured draw's record (the material checked by bmds_3d_check_texture()): shades 0-31 through
+   the light table, or none (texels straight). */
+static void make_textured(const bmds_3d_material_t *m, bmds_3d_record_t *rec) {
+        const bmds_game_image_t *t = m->texture;
+        const uint32_t           mode = m->mode, sshift = log2_of(t->stride);
+        const int                lit =
+                (mode == BMDS_3D_TEXTURED_FLAT || mode == BMDS_3D_TEXTURED_GOURAUD) && (m->flags & BMDS_3D_UNLIT) == 0;
+        const int fog = (m->flags & BMDS_3D_DEPTH_CUE) != 0;
+        rec->textured = 1;
+        rec->perspective = (m->flags & BMDS_3D_PERSPECTIVE) != 0;
+        rec->texels = t->pixels;
+        rec->table = m->light_table;
+        rec->umask = (uint32_t)t->width - 1u;
+        rec->vmask = ((uint32_t)t->height - 1u) << sshift;
+        rec->vshift = 16u - sshift;
+        rec->tw = (float)t->width;
+        rec->th = (float)t->height;
+        if (rec->table == NULL) return; /* top 0: the texels themselves */
+        rec->top = BMDS_3D_LIGHT_SHADES - 1;
+        /* Shades per vertex: Gouraud's lit (or fogged), and the unlit modes' fog; TEXTURED_FLAT's
+           a triangle. */
+        rec->smooth = mode == BMDS_3D_TEXTURED_GOURAUD ? (lit || fog) : mode != BMDS_3D_TEXTURED_FLAT && fog;
+        return;
+}
+
 static int make_record(const bmds_3d_t *ctx, const bmds_3d_material_t *m, bmds_3d_record_t *rec) {
         const uint32_t format = ctx->target->format;
         memset(rec, 0, sizeof(*rec));
+        if (bmds_3d_is_textured(m->mode)) {
+                make_textured(m, rec);
+                return 0;
+        }
         if ((m->flags & BMDS_3D_UNLIT) != 0 && (m->flags & BMDS_3D_DEPTH_CUE) == 0) {
                 rec->first = m->pixel;
                 rec->shades[0] = m->pixel;
@@ -138,6 +174,8 @@ static int clip_polygon(const clip_vertex_t *in, int n, uint32_t planes, clip_ve
                                 v->z = a->z + (b->z - a->z) * t;
                                 v->w = a->w + (b->w - a->w) * t;
                                 v->s = a->s + (b->s - a->s) * t;
+                                v->u = a->u + (b->u - a->u) * t;
+                                v->v = a->v + (b->v - a->v) * t;
                         }
                 }
                 n = m;
@@ -182,8 +220,11 @@ uint32_t bmds_3d_raster_queue(bmds_3d_t *ctx, const bmds_3d_area_t *area, const 
                               bmds_3d_bounds_t *bounds, uint32_t *drawn) {
         uint32_t pixels = 0;
         for (uint32_t i = 0; i < n; ++i) {
-                const bmds_3d_tri_t *t = &ctx->tris[order[i]];
-                const uint32_t       px = bmds_3d_triangle(ctx->target, area, &ctx->records[t->draw], t, bounds);
+                const bmds_3d_tri_t    *t = &ctx->tris[order[i]];
+                const bmds_3d_record_t *rec = &ctx->records[t->draw];
+                const uint32_t          px = rec->textured ? bmds_3d_triangle_textured(ctx->target, area, rec, t,
+                                                                                       &ctx->tuvs[order[i]], bounds)
+                                                           : bmds_3d_triangle(ctx->target, area, rec, t, bounds);
                 if (px != 0) ++*drawn;
                 pixels += px;
         }
@@ -240,9 +281,10 @@ static uint32_t add_record(bmds_3d_t *ctx, const bmds_3d_record_t *rec) {
         return ctx->record_count++;
 }
 
-/* Queues the triangle @p a, @p b, @p c (28.4, shades 8.8) at @p key with record @p *draw. */
-static void push(bmds_3d_t *ctx, const int32_t *xy, const int16_t *s, int i0, int i1, int i2, uint32_t key,
-                 uint32_t *draw) {
+/* Queues the triangle @p i0, @p i1, @p i2 of @p xy (28.4), @p s (shades 8.8) and @p uvq (u, v, 1 / w
+   each; NULL: untextured) at @p key with record @p *draw. */
+static void push(bmds_3d_t *ctx, const int32_t *xy, const int16_t *s, const float *uvq, int i0, int i1, int i2,
+                 uint32_t key, uint32_t *draw) {
         if (ctx->tri_count == ctx->max_tris) {
                 /* Drawn now; this draw's record kept for the rest of it. */
                 const bmds_3d_record_t rec = ctx->records[*draw];
@@ -260,9 +302,47 @@ static void push(bmds_3d_t *ctx, const int32_t *xy, const int16_t *s, int i0, in
                 t->s[k] = s[idx[k]];
         }
         t->draw = (uint16_t)*draw;
+        if (uvq != NULL) {
+                bmds_3d_tuv_t *c = &ctx->tuvs[ctx->tri_count];
+                for (int k = 0; k < 3; ++k) {
+                        c->u[k] = uvq[3 * idx[k]];
+                        c->v[k] = uvq[3 * idx[k] + 1];
+                        c->q[k] = uvq[3 * idx[k] + 2];
+                }
+        }
         ctx->keys[ctx->tri_count] = key;
         ++ctx->tri_count;
         ++ctx->stats.triangles;
+        return;
+}
+
+/* ENVMAP's coordinates for triangle @p ix (vertices @p p): each vertex's view-space normal (the
+   mesh's through @p mm, or the triangle's own, turned to the viewer) x and y, -1..1, across the
+   texture's width and height (a sphere map). */
+static void envmap_uvs(const bmds_3d_mesh_t *mesh, const uint16_t *ix, const bmds_3d_vertex_t *const *p,
+                       const float *mm, int ortho, float tw, float th, float *uv) {
+        const float hu = tw * 0.5f, hv = th * 0.5f, su = hu - 0.5f, sv = hv - 0.5f;
+        if (mesh->normals != NULL) {
+                for (int k = 0; k < 3; ++k) {
+                        const float      *nn = mesh->normals + 3 * ix[k];
+                        const bmds_vec3_t n =
+                                bmds_vec3_normalize(bmds_vec3(mm[0] * nn[0] + mm[4] * nn[1] + mm[8] * nn[2],
+                                                              mm[1] * nn[0] + mm[5] * nn[1] + mm[9] * nn[2],
+                                                              mm[2] * nn[0] + mm[6] * nn[1] + mm[10] * nn[2]));
+                        uv[2 * k] = hu + n.x * su;
+                        uv[2 * k + 1] = hv - n.y * sv;
+                }
+                return;
+        }
+        const bmds_vec3_t a = bmds_vec3(p[0]->vx, p[0]->vy, p[0]->vz);
+        bmds_vec3_t n = bmds_vec3_normalize(bmds_vec3_cross(bmds_vec3_sub(bmds_vec3(p[1]->vx, p[1]->vy, p[1]->vz), a),
+                                                            bmds_vec3_sub(bmds_vec3(p[2]->vx, p[2]->vy, p[2]->vz), a)));
+        const bmds_vec3_t eye = ortho ? bmds_vec3(0, 0, 1) : bmds_vec3_scale(a, -1.0f);
+        if (bmds_vec3_dot(n, eye) < 0.0f) n = bmds_vec3_scale(n, -1.0f);
+        for (int k = 0; k < 3; ++k) {
+                uv[2 * k] = hu + n.x * su;
+                uv[2 * k + 1] = hv - n.y * sv;
+        }
         return;
 }
 
@@ -282,7 +362,12 @@ int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3
         rec.key = depth_key(middle);
         uint32_t draw = add_record(ctx, &rec);
 
-        const int            unlit = (material->flags & BMDS_3D_UNLIT) != 0;
+        const uint32_t mode = material->mode;
+        const int      textured = rec.textured;
+        const int      envmap = mode == BMDS_3D_ENVMAP;
+        const int      persp = rec.perspective;
+        /* TEXTURED and ENVMAP take no light (their shades are fog's, if any). */
+        const int            unlit = (material->flags & BMDS_3D_UNLIT) != 0 || mode == BMDS_3D_TEXTURED || envmap;
         const int            fog = (material->flags & BMDS_3D_DEPTH_CUE) != 0;
         const int            cull = (material->flags & BMDS_3D_CULL_BACK) != 0;
         const float          top = (float)rec.top;
@@ -357,8 +442,21 @@ int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3
                         shade[0] = shade[1] = shade[2] = i * top;
                 }
 
+                /* The texture's coordinates, in texels. */
+                float uv[6] = {0, 0, 0, 0, 0, 0};
+                if (textured) {
+                        if (envmap)
+                                envmap_uvs(mesh, ix, p, mm, ortho, rec.tw, rec.th, uv);
+                        else
+                                for (int k = 0; k < 3; ++k) {
+                                        uv[2 * k] = mesh->uvs[2 * ix[k]] * rec.tw;
+                                        uv[2 * k + 1] = mesh->uvs[2 * ix[k] + 1] * rec.th;
+                                }
+                }
+
                 int32_t xy[2 * MAX_POLY];
                 int16_t sh[MAX_POLY];
+                float   uvq[3 * MAX_POLY];
                 int     n = 3;
                 if (any == 0) {
                         /* Inside the guard band: placed already (bmds_3d_screen()). */
@@ -366,12 +464,17 @@ int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3
                                 xy[2 * k] = p[k]->fx;
                                 xy[2 * k + 1] = p[k]->fy;
                                 sh[k] = shade_fixed(shade[k]);
+                                uvq[3 * k] = uv[2 * k];
+                                uvq[3 * k + 1] = uv[2 * k + 1];
+                                uvq[3 * k + 2] = persp ? 1.0f / p[k]->cw : 1.0f;
                         }
                 } else {
                         clip_vertex_t poly[MAX_POLY];
                         for (int k = 0; k < 3; ++k) {
                                 poly[k].x = p[k]->cx, poly[k].y = p[k]->cy, poly[k].z = p[k]->cz, poly[k].w = p[k]->cw;
                                 poly[k].s = shade[k];
+                                poly[k].u = uv[2 * k];
+                                poly[k].v = uv[2 * k + 1];
                         }
                         n = clip_polygon(poly, 3, any, poly);
                         if (n < 3) continue;
@@ -391,6 +494,9 @@ int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3
                                 else
                                         xy[2 * k] = bmds_3d_fixed(sx), xy[2 * k + 1] = bmds_3d_fixed(sy);
                                 sh[k] = shade_fixed(poly[k].s);
+                                uvq[3 * k] = poly[k].u;
+                                uvq[3 * k + 1] = poly[k].v;
+                                uvq[3 * k + 2] = persp ? inv : 1.0f;
                         }
                         if (bad) continue;
                 }
@@ -407,7 +513,7 @@ int bmds_3d_queue_solid(bmds_3d_t *ctx, const bmds_3d_mesh_t *mesh, const bmds_3
                         continue;
                 }
                 const uint32_t key = depth_key(depth);
-                for (int k = 1; k + 1 < n; ++k) push(ctx, xy, sh, 0, k, k + 1, key, &draw);
+                for (int k = 1; k + 1 < n; ++k) push(ctx, xy, sh, textured ? uvq : NULL, 0, k, k + 1, key, &draw);
         }
         return 0;
 }

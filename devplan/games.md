@@ -1352,3 +1352,45 @@ conversion (`demo.md` §8b has the profile). Now, for L8 at a whole scale:
   build's `repeat8` wrote a byte at a time at 3× and cost Doom 3 ms more than the old path:
   word stores fixed it. Colours checked against the CPU path (`wire`), a cycling palette
   (`surfdemo -f l8 -F`), and full screen entered and left over and over (the bench's cases).
+
+## 28. Sounds ahead, on time, and speech (2026-11-07, `demo.md` step 6)
+
+What BMDS Demo #1 needed from libbmdsgame's sound, for any game whose sounds are planned (a music
+game, a cutscene, a demo):
+
+- **`BMDS_GAME_AUDIO_AHEAD`** (`bmds_game_audio_config_t::flags`, with `latency_ms` appended; an
+  older `size` still opens real time): the mixer writes an ordinary buffered stream, a period at a
+  time, instead of a real-time client's period on its deadline, so it never preempts drawing for
+  a deadline (the synth's lesson, `audio.md` §27). Its thread runs at the game's priority on the
+  game's core (below); the heard time of each period is the synth's estimate (the mixer's next take, the ring,
+  two DMA buffers), eased and found again after an underrun.
+- **`bmds_game_play_at(..., at_ns)`:** a sound heard at a moment, to the frame: the voice is taken
+  at once and waits its frames in the mixer (a stop before then ends it unheard). Real time, the
+  mixer knows each period's `play_ns` from `audio_cycle`; ahead, its estimate. A time already past
+  starts it at once. `bmds_game_audio_latency_ns()` says how far ahead to ask.
+- **`bmds_game_sound_speak(audio, text, how, sound)`:** text to a sound at the mixer's rate
+  (`audio_speak`, 16 kHz, resampled), voice, speed, pitch, volume and markup as `say` takes them;
+  made in the caller's thread (about a sixth of a core while speaking), so a game makes its lines
+  on a thread of its own ahead of time. Any thread: it reads only the mixer's rate.
+- **`bmds_game_speaker_t`** (`_open`, `_say`, `_close`): a voice kept open for line after line;
+  opening one is ~0.2 s and 1 MB, so `bmds_game_sound_speak()` is now a speaker opened, used once
+  and closed.
+- Tested on the host: the mixer's scheduled start (a frame's accuracy, a past time, no time, a stop
+  before the start). On the board: demo1's boot and cues.
+- **Found on the board** (`tasks` during demo1's credits): the ahead mixer at `SCHED_FIFO` 1 (kernel
+  priority 7, above the presenter at 4) took 13 % of core 1 doing nothing, writing silence each
+  5 ms; with speech making on the drawing's core besides, the fire part fell from 48 to 25 fps.
+  Now it runs at the game's priority, writes four periods a time, and sleeps while no voice plays
+  and nothing is asked (a condition the play calls signal): 145 ms of CPU in a whole run. The speech
+  thread a game makes lines on belongs below its drawing: `SCHED_IDLE` now means that
+  (`processes.md` §3.12; it was the normal priority).
+- **Found by ear** (the user: "glitching when speaking"), counted with a log of the stream's
+  underruns: on the other core, below the presenter (4) and FM rendering ahead (6), the mixer went
+  without for the ring's whole 170 ms mid-line (queued 0-960 frames at each count), and a line after
+  silence started with 5 ms queued. Now it keeps to the game's core, time-sliced with the drawing at
+  its priority (back within a tick); starting dry it writes half the ring of silence first (the
+  timeline measured after, so `play_at` still lands); it stays awake 0.5 s after the last sound, so
+  lines close together share a stream; and it is woken once per four-period write, not each period.
+  A whole run: every underrun left is the stream running dry while idle (counted by the device as
+  one), and the demo's rates rose (fire 48 → 58 fps, solids 40 → 47, the cube 38 → ~48: core 1 no
+  longer wakes it each 5 ms).

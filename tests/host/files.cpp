@@ -42,7 +42,7 @@ namespace {
                 {"cp", "[-r] source... target", "", bmds::FileCommands::cp},
                 {"df", "[-h]", "", bmds::FsCommands::df},
                 {"echo", "[-neE] [word]...", "", bmds::TextCommands::echo},
-                {"grep", "[-civnqF] pattern [file]...", "", bmds::TextCommands::grep},
+                {"grep", "[-civnqEFG] [-e pattern]... | pattern [file]...", "", bmds::TextCommands::grep},
                 {"head", "[-n count | -c bytes] [file]...", "", bmds::TextCommands::head},
                 {"hexdump", "[-C] [file]", "", bmds::FileCommands::hexdump},
                 {"ln", "-s [-f] target name | -s [-f] target... dir", "", bmds::FileCommands::ln},

@@ -2,6 +2,7 @@
 # (devplan/bench.md §4f, §12), with its descriptor and the MIDI file midi.decode plays.
 name = "benchprog"
 version = "1"
+revision = 2
 description = "Benchmarks of the system as programs see it, run by the bench command"
 title = "System benchmarks"
 category = "System"

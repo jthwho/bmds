@@ -54,7 +54,13 @@ namespace RealTimeThreads {
                         return policy == BMDS_SCHED_FIFO || policy == BMDS_SCHED_RR;
                 }
 
+                // SCHED_IDLE: below every normal thread, so it runs only on time they leave (a
+                // program's background work: speech made ahead, a level loaded), above the idle task.
+                constexpr unsigned IdlePriority = 1;
+
                 unsigned priorityLocked(const ProgramThread &t) {
+                        if (t.policy == BMDS_SCHED_IDLE)
+                                return t.normalPriority < IdlePriority ? t.normalPriority : IdlePriority;
                         if (!isRealTime(t.policy) || state->budget.isThrottled()) return t.normalPriority;
                         return RealTimeBudget::kernelPriority(t.rtPriority, CONFIG_BMDS_PROGRAM_RT_PRIORITY_LOW,
                                                               CONFIG_BMDS_PROGRAM_RT_PRIORITY_HIGH);
@@ -146,7 +152,8 @@ namespace RealTimeThreads {
                 Mutex::Locker locker(state->lock, WaitForever);
                 child.normalPriority = static_cast<uint8_t>(normalPriority);
                 child.resetOnFork = exec && parent != nullptr && parent->resetOnFork;
-                if (parent != nullptr && isRealTime(parent->policy) && (exec || !parent->resetOnFork)) {
+                if (parent != nullptr && (isRealTime(parent->policy) || parent->policy == BMDS_SCHED_IDLE) &&
+                    (exec || !parent->resetOnFork)) {
                         child.policy = parent->policy;
                         child.rtPriority = parent->rtPriority;
                 } else {

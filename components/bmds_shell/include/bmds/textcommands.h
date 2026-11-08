@@ -23,7 +23,7 @@ namespace TextCommands {
 
         int cat(CommandContext &ctx);  ///< `cat [file]...`: copy files (`-`, or none: stdin) to stdout.
         int echo(CommandContext &ctx); ///< `echo [-neE] [word]...`, as bash's.
-        int grep(CommandContext &ctx); ///< `grep [-civnqF] pattern [file]...`: select lines.
+        int grep(CommandContext &ctx); ///< `grep [-civnqEFG] [-e pattern]... | pattern [file]...`: select lines.
         int head(CommandContext &ctx); ///< `head [-n count] [file]...`: the first lines.
         int wc(CommandContext &ctx);   ///< `wc [-lwc] [file]...`: count lines, words, bytes.
 

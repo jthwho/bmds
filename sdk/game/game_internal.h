@@ -80,6 +80,7 @@ typedef struct bmds_game_command_t {
                 float          volume; /* PLAY, SET, VOLUME */
                 float          pan;    /* PLAY, SET; PAUSE: 1 paused */
                 uint32_t       flags;
+                int64_t        at_ns; /* PLAY: when it is heard (BMDS_CLOCK_MONOTONIC); 0: at once */
 } bmds_game_command_t;
 
 /** @brief A voice, the mixer thread's. */
@@ -93,6 +94,7 @@ typedef struct bmds_game_voice_t {
                 float          left, right; /* the gains now */
                 int            loop;
                 int            stopping; /* fading to nothing: then free */
+                uint32_t       delay;    /* frames of silence before its start (bmds_game_play_at()) */
 } bmds_game_voice_t;
 
 /**
@@ -104,6 +106,8 @@ typedef struct bmds_game_mixer_t {
                 bmds_game_voice_t voices[BMDS_GAME_VOICES];
                 float             volume;
                 int               paused;
+                int64_t           heard_ns; /* when this period's first frame is heard (0: unknown) */
+                uint32_t          rate;     /* the period's rate */
                 /* Both: the queue (head written by the game, tail by the mixer), what has ended. */
                 bmds_game_command_t commands[BMDS_GAME_COMMANDS];
                 uint32_t            head, tail;
@@ -125,11 +129,25 @@ int bmds_game_mixer_push(bmds_game_mixer_t *mixer, const bmds_game_command_t *co
 int32_t bmds_game_mixer_play(bmds_game_mixer_t *mixer, const bmds_game_sound_t *sound, float volume, float pan,
                              uint32_t flags);
 
+/** @brief `bmds_game_play_at()` on @p mixer: heard at @p at_ns (0: at once). */
+int32_t bmds_game_mixer_play_at(bmds_game_mixer_t *mixer, const bmds_game_sound_t *sound, float volume, float pan,
+                                uint32_t flags, int64_t at_ns);
+
+/** @brief The mixer's thread: true when no voice plays and no command waits (nothing to mix). */
+int bmds_game_mixer_idle(const bmds_game_mixer_t *mixer);
+
 /** @brief Returns @p voice's slot and generation if it may still play (else -1). */
 int32_t bmds_game_mixer_voice(const bmds_game_mixer_t *mixer, int32_t voice, uint32_t *generation);
 
 /** @brief The mixer's period: the commands queued, then @p frames × @p channels samples into @p out. */
 void bmds_game_mixer_run(bmds_game_mixer_t *mixer, float *out, uint32_t frames, uint32_t channels);
+
+/**
+ * @brief bmds_game_mixer_run() for a period whose first frame is heard at @p heard_ns (0:
+ *        unknown: sounds start at once) at @p rate: a sound played for later starts on its frame.
+ */
+void bmds_game_mixer_run_at(bmds_game_mixer_t *mixer, float *out, uint32_t frames, uint32_t channels, int64_t heard_ns,
+                            uint32_t rate);
 
 /**
  * @brief Resamples @p frames × @p channels samples at @p from Hz to @p to Hz (linearly) into

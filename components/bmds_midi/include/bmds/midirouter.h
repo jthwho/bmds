@@ -71,6 +71,17 @@ class MidiSink {
                         return;
                 }
 
+                /**
+                 * @brief @p owner threw away what it scheduled (`BMDS_MIDI_CANCEL`): a sink holding
+                 *        its allowance (allowLatency()) drops the sound it made ahead and isn't heard
+                 *        yet, and silences its voices. Others ignore it. @nonblocking (under the
+                 *        router's lock)
+                 */
+                virtual void cancel(const void *owner) {
+                        (void)owner;
+                        return;
+                }
+
         protected:
                 constexpr MidiSink() = default;
                 ~MidiSink() = default;
@@ -243,6 +254,12 @@ class MidiRouter {
                  * @nonblocking
                  */
                 void allowLatency(uint8_t number, bool asSource, const void *owner, int64_t ns);
+
+                /**
+                 * @brief Tells every sink that @p owner cancelled what it scheduled (`MidiSink::
+                 *        cancel()`): those it allowed latency act on it. @nonblocking
+                 */
+                void cancel(const void *owner);
 
                 /**
                  * @brief An event to port @p destination's destination alone.

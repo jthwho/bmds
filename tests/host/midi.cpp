@@ -63,12 +63,18 @@ namespace {
                                 allowedBy = owner;
                                 allowedNs = ns;
                         }
+                        void cancel(const void *owner) override {
+                                cancelledBy = owner;
+                                ++cancels;
+                        }
 
                         std::vector<MidiEvent> events;
                         int                    kicked = 0;
                         bool                   gone = false;
                         const void            *allowedBy = nullptr; // the last allowLatency()'s
                         int64_t                allowedNs = -1;
+                        const void            *cancelledBy = nullptr; // the last cancel()'s
+                        int                    cancels = 0;
 
                 private:
                         size_t _room;
@@ -306,6 +312,18 @@ TEST_CASE("MidiRouter: a latency allowed reaches where events go now, and nowher
         router.allowLatency(9, false, &owner, 80'000'000); // no such port: all told 0
         CHECK(fm.allowedNs == 0);
         CHECK(wavetable.allowedNs == 0);
+}
+
+TEST_CASE("MidiRouter: a cancel reaches every sink, with its owner") {
+        MidiRouter router;
+        Collector  fm, wavetable;
+        const int  owner = 0;
+        (void)router.addPort(MidiRouter::Kind::System, MidiRouter::Destination, "fm", &fm).value();
+        (void)router.addPort(MidiRouter::Kind::System, MidiRouter::Destination, "wavetable", &wavetable).value();
+        router.cancel(&owner);
+        CHECK(fm.cancels == 1);
+        CHECK(fm.cancelledBy == &owner);
+        CHECK(wavetable.cancels == 1); // each decides: only a sink holding its allowance acts
 }
 
 TEST_CASE("MidiRouter: connections by name") {

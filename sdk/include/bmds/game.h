@@ -271,6 +271,64 @@ void bmds_canvas_damage_clear(bmds_canvas_t *canvas);
  */
 void bmds_canvas_copy(bmds_canvas_t *to, const bmds_canvas_t *from, const bmds_rect_t *rects, uint32_t count);
 
+/**
+ * @brief Makes @p image show @p rect of @p canvas (NULL: all of it; cut to the canvas), its pixels
+ *        in place: last frame's plasma as this frame's texture, a feedback blit, a part of a canvas
+ *        as a sprite. Unkeyed. The image is valid while the canvas's pixels are.
+ * @return 0, or `-BMDS_EINVAL` (NULL, or the rectangle has no pixels on the canvas).
+ * @nonblocking Not thread-safe (as the canvas).
+ */
+int bmds_canvas_image(const bmds_canvas_t *canvas, const bmds_rect_t *rect, bmds_game_image_t *image);
+
+/**
+ * @brief An affine map from a canvas's pixels to an image's texels (bmds_canvas_texture_affine()),
+ *        16.16 fixed point texels. A plain value, filled by the caller (or by
+ *        bmds_game_affine_rotozoom()); it never gains fields.
+ */
+typedef struct bmds_game_affine_t {
+                int32_t u, v;         /**< The texel at the rectangle's first pixel (its top-left one). */
+                int32_t du_dx, dv_dx; /**< Added a pixel to the right. */
+                int32_t du_dy, dv_dy; /**< Added a row down. */
+} bmds_game_affine_t;
+
+/**
+ * @brief Sets @p map for a rectangle whose top-left pixel is (@p x, @p y) so that the screen point
+ *        (@p cx, @p cy) (pixels; a pixel's centre is +0.5) shows texel point (@p u, @p v), the
+ *        texture turned clockwise by @p angle radians and @p zoom pixels a texel: a rotozoomer.
+ * @nonblocking Thread-safe.
+ */
+void bmds_game_affine_rotozoom(bmds_game_affine_t *map, int32_t x, int32_t y, float cx, float cy, float u, float v,
+                               float angle, float zoom);
+
+/**
+ * @brief Fills @p width × @p height pixels of @p canvas from (@p x, @p y) with @p image's texels by
+ *        the affine @p map, wrapped (the image's width and height powers of two; any stride): each
+ *        pixel (x + i, y + j) is the texel at (`u + i·du_dx + j·du_dy`, `v + i·dv_dx + j·dv_dy`) >> 16,
+ *        masked. Rotozoomers (one call), floors and ceilings (a call a row, each with its own scale),
+ *        scrolling planes. Clipped; the key isn't applied (every pixel is written); damage recorded.
+ *        Fixed point, no division or branch a pixel; L8 four pixels a store, RGB565 two.
+ * @return 0, or `-BMDS_EINVAL` (NULL, formats that differ, a size not a power of two).
+ * @nonblocking Not thread-safe (as the canvas).
+ * @hotpath
+ */
+int bmds_canvas_texture_affine(bmds_canvas_t *canvas, int32_t x, int32_t y, int32_t width, int32_t height,
+                               const bmds_game_image_t *image, const bmds_game_affine_t *map);
+
+/**
+ * @brief Fills @p width × @p height pixels of @p canvas from (@p x, @p y) by a lookup table: each
+ *        pixel's entry in @p table (@p table_stride entries a row, the first for (x, y)) is a texel
+ *        of @p image, u in its low byte and v in its high one, moved by (@p du, @p dv) and wrapped
+ *        (width and height powers of two, at most 256). Tunnels, lenses, twirls: the table made once
+ *        (a distance and an angle a pixel), the motion in @p du, @p dv. Clipped; the key isn't
+ *        applied; damage recorded.
+ * @return 0, or `-BMDS_EINVAL` (NULL, formats that differ, a size not a power of two or over 256).
+ * @nonblocking Not thread-safe (as the canvas).
+ * @hotpath
+ */
+int bmds_canvas_remap(bmds_canvas_t *canvas, int32_t x, int32_t y, int32_t width, int32_t height,
+                      const bmds_game_image_t *image, const uint16_t *table, uint32_t table_stride, uint32_t du,
+                      uint32_t dv);
+
 /** @brief A running game (`bmds_game_run()`'s, given to its callbacks). */
 typedef struct bmds_game_t bmds_game_t;
 
@@ -384,11 +442,23 @@ uint32_t bmds_game_height(const bmds_game_t *game);
 /** @brief The sound (effects and music) of a game. */
 typedef struct bmds_game_audio_t bmds_game_audio_t;
 
+/**
+ * @brief `bmds_game_audio_config_t::flags`: the effects mixed ahead into an ordinary buffered
+ *        stream, `latency_ms` before they are heard, instead of a real-time client's period at a
+ *        time. Its thread then needs no deadline, so it doesn't preempt drawing (devplan/audio.md
+ *        §27); a sound is heard that much after `bmds_game_play()`, or exactly when asked with
+ *        `bmds_game_play_at()` (a beat, a cue). For games whose sounds are planned (a demo, music
+ *        games, speech on cue), not for a shot answering a key.
+ */
+#define BMDS_GAME_AUDIO_AHEAD 1u
+
 /** @brief How `bmds_game_audio_open()` plays. */
 typedef struct bmds_game_audio_config_t {
                 uint32_t size;          /**< `sizeof(bmds_game_audio_config_t)`. */
-                uint32_t period_frames; /**< The mixer's period (its latency's step); 0: 256. */
-                uint32_t flags;         /**< 0. */
+                uint32_t period_frames; /**< The mixer's period (its latency's step); 0: 256 (ahead: the device's). */
+                uint32_t flags;         /**< `BMDS_GAME_AUDIO_AHEAD`, or 0. */
+                uint32_t latency_ms;    /**< `BMDS_GAME_AUDIO_AHEAD`'s: 20 to 1000 (0: 100); about this, a power of
+                                             two of frames. Appended: a smaller `size` reads as 0. */
 } bmds_game_audio_config_t;
 
 /**
@@ -404,6 +474,13 @@ void bmds_game_audio_close(bmds_game_audio_t *audio);
 
 /** @brief Returns the device's rate, which loaded sounds are at. */
 uint32_t bmds_game_audio_rate(const bmds_game_audio_t *audio);
+
+/**
+ * @brief Returns the nanoseconds from `bmds_game_play()` to the sound's being heard, about: a
+ *        period or two real time, the latency asked for ahead (the mixer's last measure). Plan
+ *        `bmds_game_play_at()` at least this far ahead to have it heard on time. Any thread.
+ */
+int64_t bmds_game_audio_latency_ns(const bmds_game_audio_t *audio);
 
 /** @brief Pauses (@p paused not 0) or resumes the effects and the music: while inactive, say. */
 void bmds_game_audio_pause(bmds_game_audio_t *audio, int paused);
@@ -429,6 +506,59 @@ int bmds_game_sound_load(bmds_game_audio_t *audio, const char *path, bmds_game_s
 /** @brief Loads a sound from @p length bytes at @p data (one built in), as `bmds_game_sound_load()`. */
 int bmds_game_sound_load_memory(bmds_game_audio_t *audio, const void *data, uint32_t length, bmds_game_sound_t *sound);
 
+/** @brief `bmds_game_speak_t::flags`: Pico's markup in the text obeyed (`<pitch level='140'>`,
+ *         `<break time='300ms'/>`, `<speed level='60'>`...), not read out. */
+#define BMDS_GAME_SPEAK_MARKUP 1u
+
+/** @brief How `bmds_game_sound_speak()` says it (zeros: the system's voice as it is). */
+typedef struct bmds_game_speak_t {
+                uint32_t    size;   /**< `sizeof(bmds_game_speak_t)`. */
+                const char *voice;  /**< `"en-US"`, `"en-GB"`, `"de-DE"`... (`say -v ?`); NULL: the system's. */
+                uint32_t    speed;  /**< Percent, 20 to 500 (0: 100). */
+                uint32_t    pitch;  /**< Percent, 50 to 200 (0: 100). */
+                uint32_t    volume; /**< Percent, 1 to 500 (0: 100, as loud as it goes unclipped). */
+                uint32_t    flags;  /**< `BMDS_GAME_SPEAK_MARKUP`, or 0. */
+} bmds_game_speak_t;
+
+/**
+ * @brief Says @p text (UTF-8) into @p sound, at @p audio's rate, mono, to play like any other
+ *        (`bmds_game_play_at()` puts a line on a beat). The speech is made in the calling thread,
+ *        about a sixth of a second of a core per second said, after about 0.2 s opening the voice:
+ *        make lines ahead, on a thread of the game's when it draws meanwhile; a game saying many
+ *        keeps a speaker (bmds_game_speaker_open()). @p how NULL: the defaults. Any thread (it only reads @p audio's rate). Free it with bmds_game_sound_free().
+ * @return 0, or `-BMDS_ENOSYS` (no speech in this system), `-BMDS_ENOENT` (no such voice),
+ *         `-BMDS_EBUSY` (four voices speaking), `-BMDS_ENOMEM`, `-BMDS_EINVAL` (nothing said).
+ * @blocking
+ */
+int bmds_game_sound_speak(bmds_game_audio_t *audio, const char *text, const bmds_game_speak_t *how,
+                          bmds_game_sound_t *sound);
+
+/**
+ * @brief A voice kept open to say line after line (bmds_game_speaker_say()): opening one costs
+ *        about 0.2 s of a core and 1 MB while open, so a game that talks keeps one for each way
+ *        it speaks (at most four at once in the system) instead of bmds_game_sound_speak() a line.
+ */
+typedef struct bmds_game_speaker_t bmds_game_speaker_t;
+
+/**
+ * @brief Opens a speaker that says as @p how says (NULL: the system's voice as it is).
+ * @return 0, or as bmds_game_sound_speak().
+ * @blocking (the voice opened)
+ */
+int bmds_game_speaker_open(const bmds_game_speak_t *how, bmds_game_speaker_t **speaker);
+
+/**
+ * @brief Says @p text (UTF-8) into @p sound at @p audio's rate, mono, in the calling thread (as
+ *        bmds_game_sound_speak(), without opening a voice). A speaker is one thread's at a time.
+ * @return 0, or `-BMDS_ENOMEM`, `-BMDS_EINVAL` (nothing said), the speech fd's errors.
+ * @blocking
+ */
+int bmds_game_speaker_say(bmds_game_speaker_t *speaker, bmds_game_audio_t *audio, const char *text,
+                          bmds_game_sound_t *sound);
+
+/** @brief Closes @p speaker (NULL: nothing). The sounds it made are the caller's still. */
+void bmds_game_speaker_close(bmds_game_speaker_t *speaker);
+
 /** @brief Frees a loaded sound and empties it (an empty one: nothing). No voice may be playing it. */
 void bmds_game_sound_free(bmds_game_sound_t *sound);
 
@@ -443,6 +573,16 @@ void bmds_game_sound_free(bmds_game_sound_t *sound);
  */
 int32_t bmds_game_play(bmds_game_audio_t *audio, const bmds_game_sound_t *sound, float volume, float pan,
                        uint32_t flags);
+
+/**
+ * @brief bmds_game_play(), heard at @p at_ns (`BMDS_CLOCK_MONOTONIC`) to the frame: on a beat
+ *        (bmds_seq_position()'s times are when music is heard), with a picture (`bmds_game_frame_ns()`).
+ *        A time already past, or nearer than the latency (bmds_game_audio_latency_ns()), starts it
+ *        at once. The voice is taken now; stopped before its time, it ends unheard.
+ * @return As bmds_game_play().
+ */
+int32_t bmds_game_play_at(bmds_game_audio_t *audio, const bmds_game_sound_t *sound, float volume, float pan,
+                          uint32_t flags, int64_t at_ns);
 
 /** @brief Changes a voice's volume and pan (over a period: no click). Ended: nothing. */
 void bmds_game_voice_set(bmds_game_audio_t *audio, int32_t voice, float volume, float pan);

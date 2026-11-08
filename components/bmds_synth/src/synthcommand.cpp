@@ -124,11 +124,12 @@ namespace {
                 if (s.aheadMs != 0)
                         std::snprintf(mode, sizeof(mode), "ahead %lu ms", static_cast<unsigned long>(s.aheadMs));
                 ctx.printf("%s: midi%u, %s, %s; %lu events, %lu dropped; started %lu times, %lu late periods, "
-                           "raised %lu times; voices %lu at most\n",
+                           "raised %lu times, %lu cancels; voices %lu at most\n",
                            name, static_cast<unsigned>(s.port), s.playing ? "playing" : "idle", mode,
                            static_cast<unsigned long>(s.events), static_cast<unsigned long>(s.dropped),
                            static_cast<unsigned long>(s.starts), static_cast<unsigned long>(s.late),
-                           static_cast<unsigned long>(s.raised), static_cast<unsigned long>(s.peakVoices));
+                           static_cast<unsigned long>(s.raised), static_cast<unsigned long>(s.cancels),
+                           static_cast<unsigned long>(s.peakVoices));
                 return;
         }
 

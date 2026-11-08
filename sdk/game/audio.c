@@ -15,6 +15,7 @@
 
 #include <pthread.h>
 #include <sched.h>
+#include <stddef.h>
 #include <string.h>
 #include "game_internal.h"
 
@@ -25,6 +26,13 @@
 #define MAX_SOUND_SECONDS 600
 #define MUSIC_FRAMES 1024 /* a music write */
 #define MUSIC_RING_MS 250 /* its stream's queue */
+#define AHEAD_DEFAULT_MS 100 /* BMDS_GAME_AUDIO_AHEAD without a latency */
+#define AHEAD_MIN_MS 20
+#define AHEAD_MAX_MS 1000
+#define REANCHOR_NS 20000000 /* ahead: the heard time found again past this */
+#define EASE_SHIFT 5         /* ahead: a period's 1/32 of the way to the measurement */
+#define AHEAD_PERIODS 4      /* ahead: the device's periods a write */
+#define AWAKE_NS 500000000ll /* ahead: silence written this long after the last sound, before sleeping */
 
 struct bmds_game_audio_t {
                 bmds_game_mixer_t mixer;
@@ -35,6 +43,12 @@ struct bmds_game_audio_t {
                 int               quit;
                 int32_t           error; /* the mixer thread's, if it stopped */
                 int32_t           core;  /* the audio threads', or -1 (anywhere) */
+                uint32_t          ahead_ms;   /* BMDS_GAME_AUDIO_AHEAD's latency; 0: real time */
+                uint32_t          period;     /* ahead: frames a write */
+                uint32_t          ring;       /* ahead: the stream's ring, frames */
+                int32_t           latency_us; /* a sound's play to its being heard (LOAD/STORE: 32 bits) */
+                pthread_mutex_t   idle_lock;  /* ahead: the mixer's thread sleeps while nothing plays */
+                pthread_cond_t    idle_wake;
                 /* The music. */
                 pthread_t thread_music;
                 int       music_running;
@@ -74,6 +88,7 @@ static void keep_to(int32_t core) {
 }
 
 static void *mixer_thread(void *arg) __attribute__((noinline));
+static void *ahead_thread(void *arg) __attribute__((noinline));
 static void *music_thread(void *arg) __attribute__((noinline));
 
 static void *mixer_entry(void *arg) {
@@ -100,25 +115,184 @@ static void *mixer_thread(void *arg) {
                         STORE(a->error, r);
                         break;
                 }
-                bmds_game_mixer_run(&a->mixer, c.out, c.frames, c.channels);
+                int64_t now = 0;
+                (void)bmds_clock_get(BMDS_CLOCK_MONOTONIC, &now);
+                if (c.play_ns > now) STORE(a->latency_us, (int32_t)((c.play_ns - now) / 1000));
+                bmds_game_mixer_run_at(&a->mixer, c.out, c.frames, c.channels, c.play_ns, c.rate);
         }
         return NULL;
 }
 
+/* BMDS_GAME_AUDIO_AHEAD: an ordinary stream, a period at a time, its writes blocking; each period
+   told when it is heard (devplan/audio.md §27's way: the mixer's next take after the ring, then two
+   DMA buffers; a timeline eased towards that, found again after an underrun). */
+static void *ahead_thread(void *arg) {
+        /* The game's priority, not real time: the ring is its margin, and above the display's work
+           it took the presenter's time for nothing (13 % of a core idle, at 7: demo.md step 6). */
+        bmds_game_audio_t *a = arg;
+        const uint32_t     frames = a->period * AHEAD_PERIODS;
+        float             *out = bmds_mem_alloc(sizeof(float) * 2 * frames, BMDS_MEM_ALIGN, 0);
+        if (out == NULL) {
+                STORE(a->error, -BMDS_ENOMEM);
+                return NULL;
+        }
+        const int64_t period_ns = (int64_t)frames * 1000000000 / a->rate;
+        int64_t       heard = 0;
+        uint32_t      underruns = 0;
+        int           dry = 1;    /* the stream ran dry (or never started) */
+        int64_t       quiet = -1; /* writes of silence since the last sound (-1: sounding) */
+        while (!LOAD(a->quit)) {
+                /* Nothing playing, nothing asked, for a while: asleep until a sound is (the stream
+                   runs dry; the heard time is found again as it starts). Awake a little longer
+                   first, so lines close together don't each start a dry stream. */
+                if (bmds_game_mixer_idle(&a->mixer)) {
+                        if (quiet < 0) quiet = 0;
+                        if (quiet * period_ns >= AWAKE_NS) {
+                                pthread_mutex_lock(&a->idle_lock);
+                                while (!LOAD(a->quit) && bmds_game_mixer_idle(&a->mixer))
+                                        pthread_cond_wait(&a->idle_wake, &a->idle_lock);
+                                pthread_mutex_unlock(&a->idle_lock);
+                                heard = 0;
+                                dry = 1;
+                                quiet = -1;
+                                continue;
+                        }
+                        ++quiet;
+                } else {
+                        quiet = -1;
+                }
+                /* Starting dry: half the ring of silence first. The stream plays from its first
+                   period, and this thread (no deadline: the game's priority) may not be back for
+                   tens of ms; each gap was a click at a line's start (demo.md step 6). The timeline
+                   is measured after it, so a time asked is still kept. */
+                if (dry) {
+                        dry = 0;
+                        memset(out, 0, sizeof(float) * 2 * frames);
+                        for (uint32_t lead = 0; lead + frames <= a->ring / 2 && !LOAD(a->quit); lead += frames)
+                                if (bmds_write(a->fd, out, (uint32_t)(sizeof(float) * 2 * frames)) <= 0) break;
+                }
+                bmds_audio_status_t st;
+                memset(&st, 0, sizeof(st));
+                st.size = sizeof(st);
+                int64_t now = 0;
+                (void)bmds_clock_get(BMDS_CLOCK_MONOTONIC, &now);
+                if (bmds_audio_status(a->fd, &st) == 0) {
+                        int64_t next =
+                                st.timestamp_ns != 0 && st.queued_frames != 0 ? st.timestamp_ns + period_ns : now;
+                        if (next < now) next = now;
+                        const int64_t measured =
+                                next + (int64_t)st.queued_frames * 1000000000 / a->rate + 2 * period_ns;
+                        const int64_t off = measured - heard;
+                        if (heard == 0 || st.underruns != underruns || off > REANCHOR_NS || off < -REANCHOR_NS)
+                                heard = measured;
+                        else
+                                heard += off / (1 << EASE_SHIFT);
+                        underruns = st.underruns;
+                }
+                STORE(a->latency_us, heard > now ? (int32_t)((heard - now) / 1000) : 0);
+                bmds_game_mixer_run_at(&a->mixer, out, frames, 2, heard, a->rate);
+                const uint32_t bytes = (uint32_t)(sizeof(float) * 2 * frames);
+                for (uint32_t done = 0; done < bytes && !LOAD(a->quit);) {
+                        const int32_t w = bmds_write(a->fd, (const uint8_t *)out + done, bytes - done);
+                        if (w <= 0) {
+                                if (w == -BMDS_EINTR) continue;
+                                STORE(a->error, w < 0 ? w : -BMDS_EIO);
+                                bmds_mem_free(out);
+                                return NULL;
+                        }
+                        done += (uint32_t)w;
+                }
+                heard += period_ns;
+        }
+        bmds_mem_free(out);
+        return NULL;
+}
+
+static void *ahead_entry(void *arg) {
+        keep_to(((bmds_game_audio_t *)arg)->core);
+        return ahead_thread(arg);
+}
+
+/* The power of two at most @p frames, at least 512. */
+static uint32_t ring_below(uint32_t frames) {
+        uint32_t r = 512;
+        while (r * 2 <= frames) r *= 2;
+        return r;
+}
+
+/* BMDS_GAME_AUDIO_AHEAD's stream and thread on @p a's open fd. */
+static int open_ahead(bmds_game_audio_t *a, uint32_t period_frames) {
+        bmds_audio_status_t st;
+        memset(&st, 0, sizeof(st));
+        st.size = sizeof(st);
+        int err = bmds_audio_status(a->fd, &st);
+        if (err < 0) return err;
+        a->rate = st.device_rate != 0 ? st.device_rate : 48000;
+        a->channels = 2;
+        a->period = period_frames != 0 ? period_frames : st.period_frames != 0 ? st.period_frames : DEFAULT_PERIOD;
+        a->ring = ring_below((uint32_t)((uint64_t)a->ahead_ms * a->rate / 1000));
+        if (a->ring < 2 * AHEAD_PERIODS * a->period) a->ring = ring_below(4 * AHEAD_PERIODS * a->period);
+        pthread_mutex_init(&a->idle_lock, NULL);
+        pthread_cond_init(&a->idle_wake, NULL);
+        bmds_audio_config_t want;
+        memset(&want, 0, sizeof(want));
+        want.size = sizeof(want);
+        want.format = BMDS_AUDIO_F32LE;
+        want.channels = 2;
+        want.rate = a->rate;
+        want.ring_frames = a->ring;
+        want.start_frames = a->period;                /* plays at once; the ring fills as the mixer outruns it */
+        want.wake_frames = a->period * AHEAD_PERIODS; /* a write's worth: woken once for it */
+        bmds_audio_config_t got;
+        memset(&got, 0, sizeof(got));
+        got.size = sizeof(got);
+        err = bmds_audio_config(a->fd, &want, &got);
+        if (err < 0) return err;
+        a->latency_us = (int32_t)((int64_t)a->ring * 1000000 / a->rate);
+        /* The game's core, beside its thread at its priority (time sliced: back within a tick or
+           two). On the other, below the presenter and a synth rendering ahead there, it went
+           without for the ring's whole 170 ms, the line playing (demo.md step 6). */
+        a->core = game_core();
+        if (pthread_create(&a->thread, NULL, ahead_entry, a) != 0) return -BMDS_ENOMEM;
+        return 0;
+}
+
 int bmds_game_audio_open(const bmds_game_audio_config_t *config, bmds_game_audio_t **audio) {
-        if (audio == NULL || (config != NULL && config->size < sizeof(bmds_game_audio_config_t))) return -BMDS_EINVAL;
+        if (audio == NULL || (config != NULL && config->size < offsetof(bmds_game_audio_config_t, latency_ms)))
+                return -BMDS_EINVAL;
         *audio = NULL;
+        const uint32_t flags = config != NULL ? config->flags : 0;
+        if ((flags & ~BMDS_GAME_AUDIO_AHEAD) != 0) return -BMDS_EINVAL;
+        uint32_t ahead_ms = 0;
+        if ((flags & BMDS_GAME_AUDIO_AHEAD) != 0) {
+                ahead_ms = config->size >= sizeof(bmds_game_audio_config_t) && config->latency_ms != 0
+                                   ? config->latency_ms
+                                   : AHEAD_DEFAULT_MS;
+                if (ahead_ms < AHEAD_MIN_MS) ahead_ms = AHEAD_MIN_MS;
+                if (ahead_ms > AHEAD_MAX_MS) ahead_ms = AHEAD_MAX_MS;
+        }
         bmds_game_audio_t *a = bmds_mem_alloc(sizeof(*a), BMDS_MEM_ALIGN, 0);
         if (a == NULL) return -BMDS_ENOMEM;
         memset(a, 0, sizeof(*a));
         bmds_game_mixer_init(&a->mixer);
         a->music_out = -1;
         a->music_decoder = -1;
+        a->ahead_ms = ahead_ms;
         a->fd = bmds_open("/dev/dsp", BMDS_O_WRITE);
         if (a->fd < 0) {
                 const int err = a->fd;
                 bmds_mem_free(a);
                 return err;
+        }
+        if (ahead_ms != 0) {
+                const int err = open_ahead(a, config->period_frames);
+                if (err != 0) {
+                        bmds_close(a->fd);
+                        bmds_mem_free(a);
+                        return err;
+                }
+                *audio = a;
+                return 0;
         }
         bmds_audio_config_t want;
         memset(&want, 0, sizeof(want));
@@ -147,11 +321,25 @@ int bmds_game_audio_open(const bmds_game_audio_config_t *config, bmds_game_audio
         return 0;
 }
 
+/* Ahead: wakes the mixer's thread for what was just asked (nothing: real time). */
+static void wake(bmds_game_audio_t *a) {
+        if (a->ahead_ms == 0) return;
+        pthread_mutex_lock(&a->idle_lock);
+        pthread_cond_signal(&a->idle_wake);
+        pthread_mutex_unlock(&a->idle_lock);
+        return;
+}
+
 void bmds_game_audio_close(bmds_game_audio_t *audio) {
         if (audio == NULL) return;
         bmds_game_music_stop(audio);
         STORE(audio->quit, 1);
+        wake(audio);
         pthread_join(audio->thread, NULL);
+        if (audio->ahead_ms != 0) {
+                pthread_cond_destroy(&audio->idle_wake);
+                pthread_mutex_destroy(&audio->idle_lock);
+        }
         bmds_close(audio->fd);
         bmds_mem_free(audio);
         return;
@@ -161,9 +349,16 @@ uint32_t bmds_game_audio_rate(const bmds_game_audio_t *audio) {
         return audio->rate;
 }
 
+int64_t bmds_game_audio_latency_ns(const bmds_game_audio_t *audio) {
+        if (audio == NULL) return 0;
+        const int64_t ns = (int64_t)LOAD(((bmds_game_audio_t *)audio)->latency_us) * 1000;
+        return ns > 0 ? ns : (int64_t)DEFAULT_PERIOD * 3 * 1000000000 / (audio->rate != 0 ? audio->rate : 48000);
+}
+
 void bmds_game_audio_pause(bmds_game_audio_t *audio, int paused) {
-        const bmds_game_command_t c = {BMDS_GAME_COMMAND_PAUSE, 0, 0, NULL, 0, 0, 0.0f, paused ? 1.0f : 0.0f, 0};
+        const bmds_game_command_t c = {BMDS_GAME_COMMAND_PAUSE, 0, 0, NULL, 0, 0, 0.0f, paused ? 1.0f : 0.0f, 0, 0};
         (void)bmds_game_mixer_push(&audio->mixer, &c);
+        wake(audio);
         const int32_t out = LOAD(audio->music_out);
         if (out >= 0) (void)bmds_audio_control(out, paused ? BMDS_AUDIO_PAUSE : BMDS_AUDIO_RESUME, 0);
         return;
@@ -178,14 +373,25 @@ void bmds_game_audio_volume(bmds_game_audio_t *audio, float volume) {
                                        0,
                                        volume < 0.0f ? 0.0f : volume > 1.0f ? 1.0f : volume,
                                        0.0f,
+                                       0,
                                        0};
         (void)bmds_game_mixer_push(&audio->mixer, &c);
+        wake(audio);
         return;
 }
 
 int32_t bmds_game_play(bmds_game_audio_t *audio, const bmds_game_sound_t *sound, float volume, float pan,
                        uint32_t flags) {
-        return bmds_game_mixer_play(&audio->mixer, sound, volume, pan, flags);
+        const int32_t voice = bmds_game_mixer_play(&audio->mixer, sound, volume, pan, flags);
+        wake(audio);
+        return voice;
+}
+
+int32_t bmds_game_play_at(bmds_game_audio_t *audio, const bmds_game_sound_t *sound, float volume, float pan,
+                          uint32_t flags, int64_t at_ns) {
+        const int32_t voice = bmds_game_mixer_play_at(&audio->mixer, sound, volume, pan, flags, at_ns);
+        wake(audio);
+        return voice;
 }
 
 static void voice_command(bmds_game_audio_t *audio, int32_t voice, uint32_t type, float volume, float pan) {
@@ -204,8 +410,10 @@ static void voice_command(bmds_game_audio_t *audio, int32_t voice, uint32_t type
                                        pan < -1.0f  ? -1.0f
                                        : pan > 1.0f ? 1.0f
                                                     : pan,
+                                       0,
                                        0};
         (void)bmds_game_mixer_push(&audio->mixer, &c);
+        wake(audio);
         return;
 }
 
@@ -322,6 +530,118 @@ int bmds_game_sound_load_memory(bmds_game_audio_t *audio, const void *data, uint
         if (audio == NULL || data == NULL || sound == NULL) return -BMDS_EINVAL;
         memset(sound, 0, sizeof(*sound));
         return load_sound(audio, -1, data, length, sound);
+}
+
+/* Speech's samples read into @p pcm (grown), @p frames so far: what fd @p fd has made. A read of 0
+   is the end once the text's NUL is written (@p final), else only nothing made yet. */
+static int read_speech(int32_t fd, int16_t **pcm, uint32_t *frames, uint32_t *capacity, int final, int *done) {
+        for (;;) {
+                if (*frames == *capacity) {
+                        const uint32_t more = *capacity + *capacity / 2 + 4096;
+                        if (more > (uint32_t)MAX_SOUND_SECONDS * 16000u) return -BMDS_ERANGE;
+                        int16_t *grown = bmds_mem_realloc(*pcm, more * sizeof(int16_t), 0);
+                        if (grown == NULL) return -BMDS_ENOMEM;
+                        *pcm = grown;
+                        *capacity = more;
+                }
+                const int32_t n = bmds_read(fd, *pcm + *frames, (*capacity - *frames) * (uint32_t)sizeof(int16_t));
+                if (n < 0) return n;
+                if (n == 0) {
+                        *done = final;
+                        return 0;
+                }
+                *frames += (uint32_t)n / sizeof(int16_t);
+                if (*frames < *capacity) return 0; /* all it had: more text may be wanted */
+        }
+}
+
+struct bmds_game_speaker_t {
+                int32_t  fd;
+                uint32_t rate; /* its samples' */
+                int16_t *pcm;  /* a line's samples, kept to the next (grown, never shrunk) */
+                uint32_t capacity;
+};
+
+int bmds_game_speaker_open(const bmds_game_speak_t *how, bmds_game_speaker_t **speaker) {
+        if (speaker == NULL || (how != NULL && how->size < sizeof(*how))) return -BMDS_EINVAL;
+        *speaker = NULL;
+        if (how != NULL && (how->flags & ~BMDS_GAME_SPEAK_MARKUP) != 0) return -BMDS_EINVAL;
+        if (!bmds_sys_has(BMDS_SYS_AUDIO_SPEAK)) return -BMDS_ENOSYS;
+        bmds_speak_config_t c;
+        memset(&c, 0, sizeof(c));
+        c.size = sizeof(c);
+        c.flags = BMDS_O_CLOEXEC;
+        if (how != NULL) {
+                c.voice = how->voice;
+                c.speed = how->speed;
+                c.pitch = how->pitch;
+                c.volume = how->volume;
+                if ((how->flags & BMDS_GAME_SPEAK_MARKUP) != 0) c.flags |= BMDS_SPEAK_MARKUP;
+        }
+        bmds_game_speaker_t *s = bmds_mem_alloc(sizeof(*s), BMDS_MEM_ALIGN, 0);
+        if (s == NULL) return -BMDS_ENOMEM;
+        memset(s, 0, sizeof(*s));
+        s->fd = bmds_audio_speak(&c);
+        if (s->fd < 0) {
+                const int err = s->fd;
+                bmds_mem_free(s);
+                return err;
+        }
+        bmds_speak_info_t info;
+        memset(&info, 0, sizeof(info));
+        info.size = sizeof(info);
+        s->rate = bmds_audio_speak_info(s->fd, &info) == 0 && info.rate != 0 ? info.rate : 16000;
+        *speaker = s;
+        return 0;
+}
+
+void bmds_game_speaker_close(bmds_game_speaker_t *speaker) {
+        if (speaker == NULL) return;
+        bmds_close(speaker->fd);
+        bmds_mem_free(speaker->pcm);
+        bmds_mem_free(speaker);
+        return;
+}
+
+int bmds_game_speaker_say(bmds_game_speaker_t *speaker, bmds_game_audio_t *audio, const char *text,
+                          bmds_game_sound_t *sound) {
+        if (speaker == NULL || audio == NULL || text == NULL || sound == NULL) return -BMDS_EINVAL;
+        memset(sound, 0, sizeof(*sound));
+        uint32_t frames = 0;
+        int      done = 0, err = 0;
+        /* The text and its NUL (the last sentence said); what doesn't fit waits for a read. */
+        const uint32_t length = (uint32_t)strlen(text) + 1;
+        for (uint32_t put = 0; err == 0 && put < length;) {
+                const int32_t w = bmds_write(speaker->fd, (const uint8_t *)text + put, length - put);
+                if (w > 0)
+                        put += (uint32_t)w;
+                else if (w == -BMDS_EAGAIN || w == 0)
+                        err = read_speech(speaker->fd, &speaker->pcm, &frames, &speaker->capacity, 0, &done);
+                else
+                        err = w;
+        }
+        while (err == 0 && !done) err = read_speech(speaker->fd, &speaker->pcm, &frames, &speaker->capacity, 1, &done);
+        if (err == 0 && frames == 0) err = -BMDS_EINVAL;
+        if (err != 0) return err;
+        const uint32_t n = bmds_game_resampled(frames, speaker->rate, audio->rate);
+        int16_t       *out = bmds_mem_alloc(n * sizeof(int16_t), BMDS_MEM_ALIGN, 0);
+        if (out == NULL) return -BMDS_ENOMEM;
+        bmds_game_resample(speaker->pcm, frames, 1, speaker->rate, audio->rate, out);
+        sound->samples = out;
+        sound->frames = n;
+        sound->channels = 1;
+        return 0;
+}
+
+int bmds_game_sound_speak(bmds_game_audio_t *audio, const char *text, const bmds_game_speak_t *how,
+                          bmds_game_sound_t *sound) {
+        if (audio == NULL || text == NULL || sound == NULL) return -BMDS_EINVAL;
+        memset(sound, 0, sizeof(*sound));
+        bmds_game_speaker_t *speaker = NULL;
+        int                  err = bmds_game_speaker_open(how, &speaker);
+        if (err == 0) err = bmds_game_speaker_say(speaker, audio, text, sound);
+        bmds_game_speaker_close(speaker);
+        return err;
 }
 
 void bmds_game_sound_free(bmds_game_sound_t *sound) {

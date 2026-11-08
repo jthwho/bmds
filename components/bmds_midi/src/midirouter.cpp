@@ -325,6 +325,13 @@ void MidiRouter::allowLatency(uint8_t number, bool asSource, const void *owner, 
         return;
 }
 
+void MidiRouter::cancel(const void *owner) {
+        Mutex::Locker lock(_lock, WaitForever);
+        for (size_t i = 0; i < MaxPorts; ++i)
+                if (_ports[i].used && _ports[i].sink != nullptr) _ports[i].sink->cancel(owner);
+        return;
+}
+
 Error MidiRouter::deliver(uint8_t destination, const MidiEvent &event) {
         MidiSink *kick = nullptr;
         {
