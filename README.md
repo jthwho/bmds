@@ -2,6 +2,9 @@
 
 ![The BMDS desktop: a terminal, the file manager and the system monitor](docs/images/desktop.png)
 
+▶ **[Watch the walkthrough video](https://youtu.be/4rS0EzuAcG8)**: a tour of BMDS running on the
+board.
+
 BMDS turns the [Olimex ESP32-P4-PC](https://www.olimex.com/Products/IoT/ESP32-P4/ESP32-P4-PC/open-source-hardware),
 a small board with a 360 MHz dual-core RISC-V chip and no radio, into a self-contained personal
 computer. Plug in an HDMI monitor, a USB keyboard and mouse, an SD card and Ethernet, and you get a
