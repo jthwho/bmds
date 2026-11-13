@@ -23,7 +23,8 @@ Error Task::start(const Config &config, Entry entry, void *arg) {
         // A stack stays on the heap: IDF's cache-disabling paths judge a stack by its address.
         Memory::Options stackOptions;
         stackOptions.heapOnly = true;
-        auto *stack = static_cast<StackType_t *>(Memory::alloc(config.stackSpace, config.stackBytes, stackOptions));
+        auto *stack = static_cast<StackType_t *>(
+                Memory::alloc(config.stackSpace, config.guardBytes + config.stackBytes, stackOptions));
         if (tcb == nullptr || stack == nullptr) {
                 Memory::free(tcb);
                 Memory::free(stack);
@@ -35,13 +36,15 @@ Error Task::start(const Config &config, Entry entry, void *arg) {
         // ESP-IDF stack depth is in bytes (StackType_t is uint8_t).
         _tcb = tcb;
         _stack = stack;
+        _guardBytes = config.guardBytes;
         // A static task's handle is its TCB. Known before it exists: the task
         // may run on the other core, and even end and be stopped, before the
         // create call returns.
         _handle = reinterpret_cast<TaskHandle_t>(tcb);
         TaskList::add(_listed, tcb);
         const TaskHandle_t handle = xTaskCreateStaticPinnedToCore(
-                entry, config.name, config.stackBytes / sizeof(StackType_t), arg, config.priority, stack, tcb, core);
+                entry, config.name, config.stackBytes / sizeof(StackType_t), arg, config.priority,
+                stack + config.guardBytes / sizeof(StackType_t), tcb, core);
         BMDS_ASSERT(handle == reinterpret_cast<TaskHandle_t>(tcb));
         (void)handle;
         TaskList::setLive(_listed);
@@ -62,6 +65,7 @@ Error Task::stop() {
         Memory::free(_tcb);
         _handle = nullptr;
         _stack = nullptr;
+        _guardBytes = 0;
         _tcb = nullptr;
         return Error::Ok;
 }

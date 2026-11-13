@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <bmds/config.h>
@@ -44,6 +45,12 @@ class Task {
                                 unsigned int priority = 1;                    ///< FreeRTOS priority.
                                 int          core = AnyCore;                  ///< Core affinity, or `AnyCore`.
                                 MemSpace     stackSpace = MemSpace::Internal; ///< Where the stack lives.
+                                /**
+                                 * @brief Bytes allocated below the stack, outside its bounds: room
+                                 *        for an overrun the stack guard catches late (and its trap
+                                 *        frame) to land in memory the task owns (devplan/programs.md §21).
+                                 */
+                                size_t guardBytes = 0;
                 };
 
                 constexpr Task() = default;
@@ -99,6 +106,14 @@ class Task {
                 /** @brief Returns the FreeRTOS handle, or null. */
                 TaskHandle_t handle() const { return _handle; }
 
+                /** @brief The stack's lowest address (the guard's bound), or 0 if not running. */
+                uintptr_t stackBottom() const {
+                        return _stack != nullptr ? reinterpret_cast<uintptr_t>(_stack) + _guardBytes : 0;
+                }
+
+                /** @brief The gap below the stack (`Config::guardBytes`). */
+                size_t guardBytes() const { return _guardBytes; }
+
                 /**
                  * @brief Blocks the calling task for @p delayMs.
                  * @blocking
@@ -111,7 +126,8 @@ class Task {
         private:
                 TaskHandle_t   _handle = nullptr;
                 StaticTask_t  *_tcb = nullptr;
-                StackType_t   *_stack = nullptr;
+                StackType_t   *_stack = nullptr; // the allocation: the gap, then the stack
+                size_t         _guardBytes = 0;
                 TaskList::Node _listed; // in the task list (`TaskList`) while it runs
 };
 

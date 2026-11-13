@@ -1218,7 +1218,7 @@ typedef struct bmds_thread_t {
                 int32_t           *tid;   /**< Where its id goes before it runs, or NULL. */
 } bmds_thread_t;
 
-/** @brief The smallest stack `thread_start` gives a thread: system calls run on it. */
+/** @brief The smallest stack `thread_start` gives a thread (a smaller request is raised; the kernel may give more): system calls run on it. */
 #define BMDS_THREAD_STACK_MIN 8192u
 
 /** @brief `futex` operations. */

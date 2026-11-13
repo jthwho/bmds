@@ -78,6 +78,7 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
   - [x] 5: program threads: pthreads through musl (slots 53-57: thread start/exit/kill/clear, futex), signals per thread.
   - [x] 6: real-time threads (§3.12): `SCHED_FIFO`/`SCHED_RR` per thread (slot 113, `sched`), a band of kernel priorities under the drivers, Linux's 95 % budget, precise sleeps for them on a GPTimer; `sched_yield`, `sched_getaffinity`, `sched_getcpu`.
 - [x] Shared program images and an image cache (`programs.md` §14): `exec` from memory (phase (a), 2026-10-06); code pages shared between instances through the MMU (phase (b), 2026-10-19: BusyBox 653 → 264 KB a further instance, ten `busybox true` 0.22 → 0.13 s). The link gathers what the loader patches at the image's end (phase (c), 2026-10-19: BusyBox 6 → 8 of 9 pages shared, ~287 → ~156 KB a further instance, a launch 11-12 → 8.5 ms).
+- [x] Program faults end the program, not the system (`programs.md` §21, 2026-11-13): a crash in a loaded program's own code (a bad pointer, an illegal instruction, `ebreak`, a stack overflow the hardware guard catches) ends its process as killed by `SIGSEGV`/`SIGILL`/`SIGTRAP` (139/132/133) with one log line, instead of a panic and a reboot; 1 KB below every program stack takes the guard's late overrun; program stacks are at least 12 KB (system calls measured to 7.3 KB, `CONFIG_BMDS_STACK_PROBE`). Faults in kernel code (a bad pointer handed to a system call included) still panic. Later: `EFAULT` for bad pointers at the slot boundary; the shell's words for a killed foreground command.
   - [x] MMU spike (aliases, caches, DMA) and design.
   - [x] (a) The image cache with plain copies (`programs.md` §14.1): `exec` from memory, without the card.
   - [x] (b) Shared pages through the MMU window.
@@ -219,8 +220,9 @@ Plan: [`input.md`](input.md).
   paced; `expandTriple()`), the card through the VFS 4.9 → 10.1 MB/s (a 64 KB bounce buffer),
   keyed blits 3.7-5.5× in L8 and BGR24. The mutex's fast path done (§21, the user's go-ahead): a
   pair 2.8 → 0.38 µs with priority inheritance kept (a per-task count of the mutexes that raised
-  it; checked in `kernel.sync`), `getppid()` 5.4 → 3.0 µs; pipes' ring 16 KB (253 MB/s). Next:
-  the hardware stack guard's cost (the user's call); then Quake.
+  it; checked in `kernel.sync`), `getppid()` 5.4 → 3.0 µs; pipes' ring 16 KB (253 MB/s). The
+  hardware stack guard's cost measured (§22: ~65 cycles an interrupt, ~4% of a switch; kept on,
+  the user's decision). Next: Quake.
 - [x] Settings, the control panel (`controlpanel.md`, planned 2026-10-16, the user's request):
   the one place to change every sysconf setting graphically, laid out like the Mac's System
   Settings (groups with icons on the left, the group's page on the right). Changes apply and

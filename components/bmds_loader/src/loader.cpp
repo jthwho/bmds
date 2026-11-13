@@ -6,6 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  */
 
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -38,6 +39,7 @@
 #include <bmds/processtable.h>
 #include <bmds/profiler.h>
 #include <bmds/program.h>
+#include <bmds/programfault.h>
 #include <bmds/programimage.h>
 #include <bmds/pty.h>
 #include <bmds/staticobject.h>
@@ -70,6 +72,15 @@ BMDS_DEBUG(Loader)
 BMDS_NAMESPACE_BEGIN
 
 namespace {
+
+        // The smallest stack a program's task or thread gets, whatever its note or thread_start
+        // asks: its system calls run on it, and one overflowing there is a panic, not a fault the
+        // program dies of. Measured with CONFIG_BMDS_STACK_PROBE over every kind of program
+        // (devplan/programs.md §21 step d): 7,264 bytes at most (image_encode; text_draw 7,248),
+        // so 12 KB leaves ~4.7 KB for slots not measured and an interrupt's frame on top.
+        constexpr size_t ProgramStackFloor = 12 * 1024;
+        static_assert(ProgramStackFloor >= BMDS_THREAD_STACK_MIN, "the floor only raises requests");
+        static_assert(ProgramStackFloor % 16 == 0 && ProgramFault::GuardBytes % 16 == 0, "stacks stay aligned");
 
         // Internal RAM left free when a program's stack goes there.
         constexpr size_t InternalReserveBytes = 64 * 1024;
@@ -482,6 +493,9 @@ namespace {
         void programMain(void *arg) {
                 Running       &run = *static_cast<Running *>(arg);
                 ProgramThread &thread = run.main;
+                // Where a fault in program code restarts the task to end it (faults.cpp): below the
+                // port's coprocessor save area and TLS at the stack's top, which stay intact.
+                thread.entrySp = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
                 enterTask(thread);
                 thread.leave(); // stopped or killed before it ran; then into program code
                 using Entry = int32_t (*)(const bmds_sys_t *, int32_t, char **, char **);
@@ -494,6 +508,7 @@ namespace {
         // A thread the program started (thread_start): its entry with its thread pointer.
         void threadMain(void *arg) {
                 ProgramThread &thread = *static_cast<ProgramThread *>(arg);
+                thread.entrySp = reinterpret_cast<uintptr_t>(__builtin_frame_address(0)); // as programMain's
                 enterTask(thread);
                 thread.leave();
                 // The kernel has no thread-local storage (Loader::begin() checks): tp is the program's.
@@ -647,7 +662,10 @@ namespace {
                 std::snprintf(name, sizeof(name), "%.*s", static_cast<int>(path.size() - slash - 1),
                               path.data() + slash + 1);
                 config.name = name;
-                config.stackBytes = stackBytes;
+                // A program's stack holds its kernel calls too: never smaller than the floor; a gap
+                // below it takes what the stack guard catches late (devplan/programs.md §21).
+                config.stackBytes = run.builtin != nullptr ? stackBytes : std::max(stackBytes, ProgramStackFloor);
+                config.guardBytes = run.builtin != nullptr ? 0 : ProgramFault::GuardBytes;
                 run.display = display;
                 config.stackSpace = stackSpaceFor(config.stackBytes, run.builtin != nullptr, display);
                 // Its starter's priority; the shells' for one the kernel starts (pid 1). A program
@@ -1507,7 +1525,7 @@ int32_t ProgramThread::startThread(const bmds_thread_t *spec) {
         uint32_t stackBytes = spec->stack_size != 0 ? spec->stack_size : BMDS_DEFAULT_STACK_SIZE;
         if (stackBytes > BMDS_MAX_STACK_SIZE) return -BMDS_EINVAL;
         if (stackBytes < BMDS_THREAD_STACK_MIN) stackBytes = BMDS_THREAD_STACK_MIN;
-        stackBytes = (stackBytes + 15u) & ~15u;
+        stackBytes = std::max<uint32_t>((stackBytes + 15u) & ~15u, ProgramStackFloor);
         void *memory = Memory::alloc(MemSpace::Psram, sizeof(ProgramThread));
         if (memory == nullptr) return -BMDS_ENOMEM;
         auto *t = new (memory) ProgramThread;
@@ -1541,6 +1559,7 @@ int32_t ProgramThread::startThread(const bmds_thread_t *spec) {
         Task::Config config;
         config.name = pcTaskGetName(nullptr); // the program's name, as its first task's
         config.stackBytes = stackBytes;
+        config.guardBytes = ProgramFault::GuardBytes;
         config.stackSpace = stackSpaceFor(stackBytes, false, run->display);
         config.priority = RealTimeThreads::inherit(*t, this, normalPriority, false);
         const Error err = t->task.start(config, threadMain, t);

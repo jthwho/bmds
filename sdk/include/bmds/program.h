@@ -89,7 +89,7 @@ extern "C" {
 typedef struct bmds_program_note {
                 uint32_t size;        /**< sizeof(bmds_program_note_t) as built. */
                 uint32_t abi_version; /**< The `BMDS_ABI_VERSION` it was built against. */
-                uint32_t stack_size;  /**< Bytes of stack it needs; 0 for `BMDS_DEFAULT_STACK_SIZE`. */
+                uint32_t stack_size;  /**< Stack it needs, its system calls' too; 0: `BMDS_DEFAULT_STACK_SIZE`. */
                 uint32_t flags;       /**< `BMDS_PROGRAM_*` (unknown bits are refused). */
 } bmds_program_note_t;
 

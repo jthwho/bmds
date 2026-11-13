@@ -4482,6 +4482,85 @@ static int net_watch_test(int count) {
         return 0;
 }
 
+/*
+ * faults KIND [thread]: a program that faults, one way per KIND (devplan/programs.md §21).
+ * Each ends the program as killed by the fault's signal: SIGSEGV (139) for recurse, null,
+ * nullw, reserved and jump; SIGILL (132) for ill; SIGTRAP (133) for ebreak.
+ * misaligned doesn't fault (the P4 does misaligned loads itself) and exits 0. With `thread`,
+ * the fault happens on a second thread while the first waits: the whole process ends.
+ * bigframe overflows the stack by more than the gap below it in one step, and syscall hands
+ * write() an address in a PMA hole, so the kernel faults reading it inside the call: both must
+ * panic the board (as before the hook). Run them only on purpose.
+ */
+static volatile uint32_t fault_sink;
+
+__attribute__((noinline)) static uint32_t fault_recurse(uint32_t depth) {
+        volatile uint8_t pad[256];
+        pad[0] = (uint8_t)depth;
+        return fault_recurse(depth + 1) + pad[0];
+}
+
+/* One 64 KB frame, twice the default stack: SP lands far past the gap in one step. */
+__attribute__((noinline)) static uint32_t fault_recurse_huge(uint32_t depth) {
+        volatile uint8_t pad[65536];
+        pad[0] = (uint8_t)depth;
+        return pad[0];
+}
+
+static int fault_now(const char *kind) {
+        printf("faults: %s\n", kind);
+        fflush(stdout);
+        if (strcmp(kind, "recurse") == 0) {
+                fault_sink = fault_recurse(0);
+        } else if (strcmp(kind, "bigframe") == 0) {
+                fault_sink = fault_recurse_huge(0);
+        } else if (strcmp(kind, "null") == 0) {
+                fault_sink = *(volatile uint32_t *)0;
+        } else if (strcmp(kind, "nullw") == 0) {
+                *(volatile uint32_t *)0 = 1;
+        } else if (strcmp(kind, "reserved") == 0) {
+                /* Between flash data (0x44000000) and PSRAM (0x48000000): a PMA entry blocks it. */
+                fault_sink = *(volatile uint32_t *)0x46000000u;
+        } else if (strcmp(kind, "jump") == 0) {
+                void (*volatile f)(void) = (void (*)(void))0;
+                f();
+        } else if (strcmp(kind, "ill") == 0) {
+                __asm__ volatile("unimp");
+        } else if (strcmp(kind, "misaligned") == 0) {
+                static uint32_t words[2] = {0x11223344u, 0x55667788u};
+                uint32_t        v;
+                __asm__ volatile("lw %0, 1(%1)" : "=r"(v) : "r"(words));
+                printf("faults: misaligned load read %08x (handled by the hardware)\n", (unsigned)v);
+                return 0;
+        } else if (strcmp(kind, "syscall") == 0) {
+                (void)write(1, (const void *)0x46000000u, 16);
+        } else if (strcmp(kind, "ebreak") == 0) {
+                __asm__ volatile("ebreak");
+        } else {
+                fprintf(stderr, "faults: recurse|bigframe|syscall|null|nullw|reserved|jump|ill|misaligned|ebreak "
+                                "[thread]\n");
+                return 2;
+        }
+        printf("faults: %s didn't fault\n", kind);
+        return 1;
+}
+
+static void *fault_thread(void *arg) {
+        return (void *)(intptr_t)fault_now((const char *)arg);
+}
+
+static int faults_test(int argc, char **argv) {
+        const char *kind = argc > 2 ? argv[2] : "";
+        if (argc > 3 && strcmp(argv[3], "thread") == 0) {
+                pthread_t t;
+                void     *r = NULL;
+                CHECK(pthread_create(&t, NULL, fault_thread, (void *)kind) == 0);
+                CHECK(pthread_join(t, &r) == 0);
+                return (int)(intptr_t)r;
+        }
+        return fault_now(kind);
+}
+
 int main(int argc, char **argv) {
         if (argc < 2) {
                 fprintf(stderr,
@@ -4490,12 +4569,13 @@ int main(int argc, char **argv) {
                         "threads|"
                         "threadspin|filetype|audio|decode|rt|midi|synth|speech|mididecode|hog|stats|tasks|"
                         "procs|"
-                        "system|notify|expand|image|fonts|net|netwatch|rtnet|sched|ptp|netfs [arg]\n");
+                        "system|notify|expand|image|fonts|net|netwatch|rtnet|sched|ptp|netfs|faults [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
         const char *arg = argc > 2 ? argv[2] : "0";
         if (strcmp(what, "status") == 0) return atoi(arg);
+        if (strcmp(what, "faults") == 0) return faults_test(argc, argv);
         if (strcmp(what, "audio") == 0) return audio();
         if (strcmp(what, "decode") == 0) return decode(arg);
         if (strcmp(what, "rt") == 0) return rt();

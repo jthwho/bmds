@@ -874,6 +874,57 @@ until silicon v3; then test again.
   own ELF knows nothing at `0x4fc...`, and the stack dump below it held an earlier boot's frames
   (PSRAM keeps its contents over a software reset).
 
+## 5a. Traps, the PMP and the stack guard (`devplan/programs.md` §21)
+
+Learned 2026-11-13 with a spike (wrappers that logged and fell through) and `progtest faults`.
+
+- **IDF locks all 16 PMP entries at boot, in every application configuration** (MEMPROT on or
+  off, debug mode too): `esp_cpu_configure_region_protection()`, `cpu_region_protect.c`. Locked
+  entries bind M-mode and can't change until reset, so nothing is left for per-process
+  protection; the PMA's 16 entries are likewise IDF's. Everything runs in M-mode.
+- **A trap handler that returns resumes the program.** `vectors.S` sends unhandled exceptions to
+  `panic_from_exception` (`.equ` for `xt_unhandled_exception`) and the panic interrupts (the stack
+  guard, the interrupt watchdog, cache errors) to `panic_from_isr` (`panicHandler`), both with the
+  saved frame (`RvExcFrame`, 0x94 bytes of fields, 160 pushed). If either returns, the registers,
+  `mepc` included, are restored from the frame and `mret` runs. `-Wl,--wrap` reaches both (the
+  `.equ` relocates against the real symbol; checked in the disassembly), before IDF stalls the
+  other core. Shown by resuming past an `ebreak`.
+  - **SP is not restored from the frame** (`vectors.S` pops it by its size: "MTVEC and SP are
+    assumed to be unmodified"), **nor is `mstatus`**: to resume on another stack, point `mepc` at
+    a stub, pass the new SP in a register (`a0`), and clear `mstatus.MPIE` in the handler, so
+    that `mret` leaves interrupts off until the stub has moved SP (`faults.cpp`).
+  - **The top of a task's stack isn't free:** the port puts the coprocessor (FPU, PIE) save area
+    and the TLS block there (`pxPortInitialiseStack()`). A fresh SP for a task is the one its
+    entry function began with, not `pxEndOfStack`.
+- **What the faults look like** (frame values, at the wrapper):
+
+  | Fault | `mcause` | `mtval` |
+  |---|---|---|
+  | load from 0, from 0x46000000 (a PMA hole) | 5, load access fault | the address |
+  | store to 0 | 7, store access fault | the address |
+  | call through a null pointer | 1, instruction access fault | 0; `mepc` 0, the caller in `ra` |
+  | `unimp` | 2, illegal instruction | **0**: the P4 doesn't record the instruction |
+  | `ebreak` (`c.ebreak`) | 3 | 0 |
+  | stack guard | 27 (`ETS_ASSIST_DEBUG_INUM`, after `vectors.S` takes 16 off the CLIC's 43) | 0 |
+
+  Address 0 faults: the first PMA entry blocks 0x0-0x20000000. **Misaligned loads don't trap**:
+  the hardware does them (an `lw` at offset 1 read the right bytes).
+- **The stack guard's interrupt goes to both cores.** It is one interrupt source
+  (`ETS_ASSIST_DEBUG_INTR_SOURCE`), routed to the same interrupt number on each core by
+  `esp_hw_stack_guard_init()`, level-triggered. Both cores enter `panicHandler` together; IDF
+  parks the one that didn't fire (`esp_hw_stack_guard_get_fired_cpu()`, `busy_wait()`). Printing
+  from both at once interleaves the output character by character. A handler that recovers must
+  clear the latched status (`assist_debug_hal_sp_int_clear()`, public in `hal/assist_debug_hal.h`)
+  and let the other core return.
+- **The guard is asynchronous, and it pushes the frame below the stack.** The bound is the task's
+  `pxStack` exactly. A recursion of 272-byte frames ran one more call (its stores below the bound
+  included) before the interrupt was taken: SP was 544 bytes below the bound, then the trap pushed
+  its 160 bytes below that (704 bytes in all, into whatever lies under the stack); other runs
+  stopped 288-304 bytes past. A frame larger than whatever slack lies below goes past it in one
+  instruction. BMDS keeps 1 KB below program stacks for this (`devplan/programs.md` §21). GCC 15's
+  `-fstack-clash-protection` works on RISC-V but probes in 4 KB steps.
+- **Cost:** ~65 cycles an interrupt (`devplan/bench.md` §22).
+
 ## 6. The ROM
 
 - **Has:** miniz's `tdefl` (PNG writing) and `tinfl` (inflate: PNG decoding, through

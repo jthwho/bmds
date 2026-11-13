@@ -190,6 +190,7 @@ add_executable(bmds_host_tests
         pty.cpp
         screenconsole.cpp
         shell.cpp
+        programfault.cpp
         signals.cpp
         span.cpp
         speech.cpp

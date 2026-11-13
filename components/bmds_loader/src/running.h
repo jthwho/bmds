@@ -114,6 +114,16 @@ struct ProgramThread final : ProcessOwner {
                 uint8_t  normalPriority = 0;  // its kernel priority without a real-time policy
                 uint32_t throttled = 0;       // times held back by the real-time budget
                 bool     begun = false;       // it has run: its task exists, a real-time one is counted
+                // Program faults (devplan/programs.md §21, faults.cpp):
+                uintptr_t entrySp = 0; // SP as its kernel entry began: 0 until then (a fault is the kernel's)
+                struct Fault {
+                                uint32_t cause = 0; // mcause, or the stack guard's interrupt
+                                uint32_t pc = 0;    // mepc
+                                uint32_t value = 0; // mtval: the address, for an access fault
+                                uint32_t ra = 0;    // the caller, for a jump to a bad address
+                                uint32_t sp = 0;    // SP at the trap: an overflow's depth
+                                int      signal = 0;
+                } fault; // written by the trap hook, read once by the exit it sends the thread to
 
                 /** @brief The calling task's record (a program thread's: system calls only). */
                 static ProgramThread &self() { return *ProcessOwner::current()->thread; }
@@ -299,10 +309,36 @@ FutexTable &programFutexes();
  * @par Thread Safety
  * The program thread's own task only.
  */
+#if CONFIG_BMDS_STACK_PROBE
+/**
+ * @brief The measurement build's stack probe (`CONFIG_BMDS_STACK_PROBE`,
+ *        stackprobe.cpp): how deep each slot goes on a program's stack.
+ */
+namespace StackProbe {
+        /** @brief Paints @p thread's stack below @p top (the slot's entry SP). */
+        void enter(ProgramThread &thread, uintptr_t top);
+        /** @brief Finds how deep the call went below @p top and records it for @p slot. */
+        void leave(ProgramThread &thread, uintptr_t top, const char *slot);
+} // namespace StackProbe
+#endif
+
 class KernelCall {
         public:
+#if CONFIG_BMDS_STACK_PROBE
+                __attribute__((always_inline)) KernelCall(const char *slot = __builtin_FUNCTION())
+                    : _thread(ProgramThread::self()), _slot(slot),
+                      _top(reinterpret_cast<uintptr_t>(__builtin_frame_address(0))) {
+                        StackProbe::enter(_thread, _top);
+                        _thread.enter();
+                }
+                ~KernelCall() {
+                        _thread.leave();
+                        StackProbe::leave(_thread, _top, _slot);
+                }
+#else
                 KernelCall() : _thread(ProgramThread::self()) { _thread.enter(); }
                 ~KernelCall() { _thread.leave(); }
+#endif
                 KernelCall(const KernelCall &) = delete;
                 KernelCall &operator=(const KernelCall &) = delete;
 
@@ -317,6 +353,10 @@ class KernelCall {
 
         private:
                 ProgramThread &_thread;
+#if CONFIG_BMDS_STACK_PROBE
+                const char *_slot;
+                uintptr_t   _top;
+#endif
 };
 
 BMDS_NAMESPACE_END

@@ -960,3 +960,53 @@ a piece depended on how the two threads' timing fell. The ring is 16 KB now
 | `kernel.syscall` `getppid()` (the process table's mutex) | 5.44 µs | **3.02 µs** |
 | `kernel.sync` 3 counts, held briefly | 216,000 /s | **648,000 /s** |
 | `kernel.pipe` | 195 MB/s | **253 MB/s** (16 KB ring) |
+
+## 22. The hardware stack guard's cost (2026-11-13)
+
+`bench.md` §18 left `CONFIG_ESP_SYSTEM_HW_STACK_GUARD` unmeasured; `programs.md` §21 (program
+faults ending the program) builds on it, so it was measured before deciding.
+
+**What it does:** at every interrupt's entry and exit (and so at every task switch, which is an
+interrupt here), `portasm.S` stops the debug assist's stack-pointer monitor, writes the new
+stack's bounds and starts it again: per entry or exit, two loads and four stores to the
+`ASSIST_DEBUG` registers, with a `mhartid` branch. Uncached peripheral accesses, so their
+latency, not the instruction count, is the cost.
+
+**How:** three runs of the same benchmarks on the user's board, with the desktop up and nothing
+else open, `tools/bmds-bench run --no-peer 'kernel.*' programs.launch storage.sd.read fs.lookup
+cpu.coremark surface.present games.doom.timedemo`:
+- A: guard on, 0.2.0+42c4d994 as installed, up 1 day 18 hours;
+- B: guard off, `build-noguard` (a copy of `sdkconfig` with only the guard turned off; same
+  sources), installed by `bmds-update --force`, run just after its boot;
+- A': guard on again, `build/` from the same tree, run just after its boot.
+
+A and A' agree (`kernel.switch` 11.50/11.45 µs same core, 8.61/8.64 µs across cores), so B vs A'
+is the guard.
+
+| | guard off (B) | guard on (A') | |
+|---|---:|---:|---:|
+| `kernel.switch` across cores, a round trip | 8.28 µs ±1.5% | 8.64 µs ±0.5% | **+0.36 µs (+4.4%)** |
+| `kernel.switch` same core, a round trip | 11.04 µs ±7.9% noisy | 11.45 µs ±0.5% | +0.41 µs (+3.7%) |
+| `surface.present` system time a frame (8 cases) | | | **+0.4 to +4.1%**, every case (median ~+1.2%) |
+| `kernel.syscall`, `kernel.clock`, `fs.lookup`, `programs.launch` | | | within ±4%, either way |
+| `storage.sd.read` (6 sizes) | | | +0.1 to +4% (on faster: noise) |
+| `cpu.coremark` | 1,064 /s | 1,062 /s | -0.2% |
+| `games.doom.timedemo` | 72.44 fps | 72.22 fps | -0.3% |
+
+- **About 65 cycles an interrupt** (0.18 µs at 360 MHz): a switch round trip is two cross-core
+  interrupts. That is ~4% of a switch, and nothing at the level of a whole program: CoreMark and
+  Doom's timedemo don't see it, the display paths' system time (interrupt-heavy: the scan, the
+  2D-DMA's strips) by about 1%.
+- **Noise, not the guard:** `kernel.locks`' mutex pairs (B 9% slower), `kernel.sleep`'s
+  `other_late_us` (±19%), `quake_l8_320x240_full_present_us` (+40% in A', 72-128 µs across
+  earlier runs). `kernel.sync` was 17-33% *lower* with the guard off (`sem1_ops_per_s` 9,773 vs
+  12,984 and 12,999, all tight): contended semaphores from both cores depend on how the two
+  cores' timing falls (as §21's pipe did), so a faster switch can lose throughput there. Not a
+  cost, and not chased.
+- **Kept on** (the user's decision, 2026-11-13): it costs ~1% of the display's system time and
+  nothing measurable elsewhere, and it is what lets `programs.md` §21 end a program whose stack
+  overflows instead of letting the overflow corrupt memory unseen.
+
+**Found on the way:** `net.loopback` fails (`Input/output error`, `net.ip.heap_failed` +8 and
++9) in both A and B, after 1 day 18 hours up and just after a boot: lwIP's heap runs out during
+the benchmark. Not the guard; it passed in §13 (26 MB/s). To look into.

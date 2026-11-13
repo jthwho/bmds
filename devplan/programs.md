@@ -188,7 +188,7 @@ Everything in §4 and §6's headers, the `exec` rules (§13: `#!` as the shell's
 
 ## 11. Open questions
 
-- A fault hook that turns a program's crash into a status instead of a reboot (IDF's panic handler is not designed for resuming).
+- A fault hook that turns a program's crash into a status instead of a reboot: designed in §21 (IDF's exception path does resume if its handler returns).
 - The framebuffer restored at exit (Phase 6), as the console's modes are now.
 - Two programs in one pipeline that both change the console's modes each restore what they saw at their start: the later one to end wins. Rare; a per-job save in the shell would fix it if it matters.
 - **`stat` of a file open for writing** shows the size FatFs last wrote to its directory entry (at a flush or close); `fstat` is current. Syncing open files on `stat` would need the VFS to find them by name. FatFs also refuses a second open of a file open for writing.
@@ -1139,3 +1139,198 @@ and symbols the loader doesn't apply**. The user's decision: not now, recorded h
 
 Together, 1 and 2 take the five programs from 3.47 MB to about 1.8 MB (the ROM to about 4.3 MB),
 and shrink programs on the card the same way.
+
+## 21. Program faults end the program, not the system (2026-11-13; built)
+
+**Goal:** a program that crashes ends as killed by a signal (`Segmentation fault`, 139), as on
+Linux. The system and the other programs keep running and the program's memory comes back.
+Before this, every program fault was IDF's panic and a reboot (§5, §11). This is **containment,
+not protection**: a stray store into kernel memory or another program's still isn't caught (no
+U-mode, PMP locked: §2, `docs/ARCHITECTURE.md`), and a fault in kernel code still panics.
+
+**Facts it rests on** (found 2026-11-13; the platform's side in `docs/platforms/esp32p4.md` §5a):
+- **The hardware stack guard was already on** (`CONFIG_ESP_SYSTEM_HW_STACK_GUARD`) for every
+  task. At each switch and interrupt, `portasm.S` loads the running task's `pxStack`..
+  `pxEndOfStack` into the debug assist's stack-pointer monitor: the bound is `pxStack` exactly. A
+  trip is the `ASSIST_DEBUG` interrupt, which `vectors_clic.S` sends straight into the panic path.
+  It costs ~65 cycles an interrupt (`bench.md` §22); kept on (the user's decision).
+- **The hook point:** `vectors.S` sends unhandled exceptions to `panic_from_exception` (`.equ` for
+  `xt_unhandled_exception`) and the panic interrupts to `panic_from_isr` (`panicHandler`), with the
+  saved frame (`RvExcFrame`, 160 bytes pushed on the stack that was current). **If either returns,
+  the registers are restored from the frame, `mepc` included, and `mret` runs. SP is not:
+  `vectors.S` pops the frame by its size, and `mstatus` isn't restored either.** Both functions
+  are reached by `-Wl,--wrap` (checked in the disassembly), before IDF stalls the other core.
+- **System calls run on the program's own stack**, and every slot that runs kernel code with a
+  lock brackets itself with a `KernelCall` (`inKernel` set): a scan of the slots' sources finds
+  only four that don't, `exit` and `thread_exit` (they set `inKernel` themselves, ending) and the
+  two syntax slots (pure functions, no locks).
+- **Ending by a signal exists** (§15, `processes.md` §3.2): `ProgramThread::endProcess()` ends
+  every thread with Linux's "killed by N" status, cleaning up as for a `SIGKILL`.
+
+**Design, as built** (`bmds_loader/src/faults.cpp`, `bmds/programfault.h`):
+- **The wrappers** (`__wrap_xt_unhandled_exception`, `__wrap_panicHandler`; in IRAM, only as far
+  as the cache check) recover only when **all** of these hold; anything else goes to `__real_`
+  unchanged, and panics as before:
+  - the flash cache is on (`spi_flash_cache_enabled()`), checked first: a program never runs
+    with it off, so a fault then is the kernel's, and nothing outside IRAM may run;
+  - the trap didn't come from an interrupt handler (`xPortInIsrContext()` 0);
+  - the current task is a thread of a **loaded** program (`ProgramThread::ofCurrentTask()`, a
+    thread-local pointer; `run->builtin` null: a built-in program's task runs kernel code), past
+    its kernel entry (`entrySp` set), and in program code (`inKernel` clear: the rule the kill
+    handshake already relies on; firmware code a program calls keeps per-caller state, §11);
+  - the trap frame lies in memory the thread owns: at or above `stackBottom() - guardBytes`
+    (`ProgramFault::isContained()`, below);
+  - the cause maps to a signal (`ProgramFault::signalFor()`, host-tested):
+
+    | Cause | Signal |
+    |---|---|
+    | 1, 5, 7: instruction, load, store access fault | `SIGSEGV` (11) |
+    | 2: illegal instruction | `SIGILL` (4) |
+    | 0, 4, 6: misaligned | `SIGBUS` (7); never seen, the P4 does misaligned loads itself |
+    | 3: `ebreak` (`__builtin_trap`) | `SIGTRAP` (5) |
+    | the stack guard's interrupt, fired on this core | `SIGSEGV` (11), as Linux reports an overflow |
+
+    The interrupt watchdog, cache errors (asynchronous, §11) and `ecall` stay panics.
+- **Redirecting** (in the trap: no locks, no allocation): the wrapper records the cause, `mepc`,
+  `mtval`, `ra` and the trap's SP in the thread's record (`ProgramThread::Fault`), sets
+  `inKernel` (from here the thread ends itself: a killer that suspends it now leaves it to), and
+  points the frame at `bmds_fault_stub`: `mepc` the stub, `a0` the SP the thread's kernel entry
+  began with (`entrySp`, recorded by `programMain`/`threadMain`: below the port's coprocessor save
+  area and TLS at the stack's top, which stay intact), `gp` the kernel's. Since SP can't be set
+  through the frame, it clears `mstatus.MPIE` so `mret` leaves interrupts off: nothing lands on
+  the overrun stack between the `mret` and the stub's first instruction. It stops the guard's
+  monitor (the wrapper's own frames are below the bound) and clears what it latched.
+- **The stub** (assembly): moves SP to `a0`, turns the monitor back on (`bmds_fault_rearm`: the
+  task's bounds are still loaded), enables interrupts, and calls `bmds_fault_exit`, which runs
+  as the thread in an ordinary context:
+  - it logs one line at error level, e.g. `/sd0/p0/bin/prog[42]: Segmentation fault at +0xf06,
+    called from +0xf04, address 0x00000000`; `[42/32768]` for a second thread; `(stack overflow,
+    288 bytes past the bottom)` for the guard. Addresses inside the program's image are offsets
+    into it (`riscv32-esp-elf-addr2line -e prog.elf` names them); others are absolute (a jump to
+    0 shows `0x00000000` and its caller). No address for an illegal instruction or `ebreak`:
+    `mtval` is 0 for those on the P4;
+  - it calls `endProcess(killedStatus(sig))`: every thread ends and resources are released as
+    for a `SIGKILL`; the parent's `waitpid` sees `WIFSIGNALED`, the shell's `$?` 128 + the signal.
+- **The guard's interrupt reaches both cores** (one level-triggered source, routed to each). On
+  the core whose bit is set (`assist_debug_hal_is_sp_ovf_fired()`), the wrapper redirects as
+  above. On the other, it waits while either core's bit is set, up to 1 ms, and returns: the
+  fired core clears its bit when it recovers, or, panicking, stalls this core first. If it times
+  out, IDF's handler parks it as before.
+- **Handlers aren't run.** Signals are delivered only at system-call boundaries (§15), and a
+  handler that returned would fault again: a fault's signal ends the process whether it is
+  caught, ignored or blocked (Linux does the same for ignored or blocked fault signals). Running
+  a caught `SIGSEGV`'s handler is a later addition.
+- **vfork children** run on their parent's thread and stack, and only the SDK can return to the
+  parent's frame (§15): a fault in a vfork child ends the child and its parent together, as a
+  `SIGKILL` to such a program does. Only SDK code runs between `vfork` and `exec`.
+- **A gap below program stacks.** The guard is asynchronous: a tight recursion of 272-byte frames
+  ran on one more call, its stores included, before the interrupt was taken (288-704 bytes past
+  the bottom over the runs, the 160-byte frame included). `Task::Config::guardBytes` allocates
+  that much below the stack, outside its bounds (`Task::stackBottom()` is the bound;
+  `Task::stop()` frees the whole block). Program tasks and threads get
+  `ProgramFault::GuardBytes`, **1 KB**; kernel tasks none (a fault in them panics anyway).
+  - **Recovered only if the overrun stayed in the gap.** A larger single SP move (a big local
+    array, `alloca`) can put the frame and the program's own last stores under the gap, into
+    memory that isn't the program's: that stays a panic rather than running on with something
+    corrupted. Whether a frame escapes depends on where it falls: 8 KB frames on a 32 KB stack
+    crossed by 496 bytes, contained; one 64 KB frame went 33 KB under, a panic.
+  - `-fstack-clash-protection` (GCC 15 has it for RISC-V) wouldn't help: it probes in 4 KB
+    steps, more than the gap.
+- **A floor under program stacks: 12 KB.** System calls run on the program's stack, and one
+  that overflows there panics. The loader raises any smaller request (the note's `stack_size`,
+  `thread_start`'s) to `ProgramStackFloor`, measured (step d below). The default (32 KB) and
+  larger requests are unchanged. `BMDS_THREAD_STACK_MIN` keeps its value (8192: the ABI lock),
+  now documented as raised further by the kernel.
+
+**ABI impact:** a program fault ends the process with status 128 + `SIGSEGV`/`SIGILL`/`SIGBUS`/
+`SIGTRAP` instead of rebooting; the status semantics are §15's. A fault's signal isn't delivered
+to a handler (lifting that later is an addition). Stacks smaller than 12 KB are raised to it,
+and the SDK's comments for `stack_size` and `BMDS_THREAD_STACK_MIN` say that system calls run on
+the stack and that the kernel may give more. No slots, no format change. Commit with an `ABI:`
+line.
+
+**Budget, as built:** IRAM +102 bytes (the two wrappers, up to the cache check: the decisions
+are kept out of them, `noinline`, or they took 256); the rest in flash, ~1 KB. Per program
+thread: 1 KB of gap in its stack's `MemSpace`, seven words in its record (`entrySp`, `Fault`).
+Nothing on any hot path: `kernel.syscall` (getpid 2.38 µs), `programs.launch` (5.7 ms) and
+`kernel.pipe` (266 MB/s) as before.
+
+**Testing, as built:**
+- **Host:** `programfault.cpp`: each cause's signal (and `ecall`'s none), the shell's words, the
+  gap's edges (step b's overrun inside, one byte past the gap outside, no wrap below 0).
+- **Board,** `progtest faults KIND [thread]` (`sdk/tests/progtest.c`): `null`, `nullw`,
+  `reserved` (0x46000000, a PMA hole), `jump` (through a null pointer) and `recurse` end with 139,
+  `ill` 132, `ebreak` 133; `misaligned` exits 0 (no trap). The same on a second thread (the whole
+  process ends, the first waiting in `pthread_join`). In pipelines: `progtest faults null | cat`
+  and `| wc -c` end normally (EOF), `echo hi | progtest faults null` gives 139. The board stayed
+  up throughout.
+  - **No leak:** 400 faults of mixed kinds left internal RAM, the task count and the process
+    table exactly as before; PSRAM moved by a few hundred bytes either way, not with the count
+    (two rounds of 100 ended on the same byte).
+  - **Still panics, run on purpose:** `bigframe` (a 64 KB frame: 33 KB under the bound, outside
+    the gap) and `syscall` (`write()` of 0x46000000: the kernel faults reading it, `inKernel`
+    set). Each reboots the board, so neither is in any unattended run.
+- **The workload has to respect the crash counter:** three crashes in a row, none 60 s past
+  `healthy`, start recovery (`update.md` §17), which has no network; the scripts wait for 75 s
+  of uptime before a test that may crash. And a file copied just before a crash can be cut short
+  (the card's write-back is a second behind): `sync` after copying.
+
+**Sub-steps:**
+- **a. The guard's cost** (2026-11-13, `bench.md` §22): ~65 cycles an interrupt, +0.36 µs a
+  switch round trip (~4%), ~1% of the display's system time, nothing in CoreMark or Doom. Kept on.
+- **b. Spike** (2026-11-13): wrappers that logged and fell through, resuming only past an
+  `ebreak`. It showed that returning resumes; that every kind reaches the wrappers first, with
+  the program thread, `inKernel` clear and the pc in the image (`null`/`nullw` 5/7 `mtval` 0,
+  `reserved` 5 `mtval` 0x46000000, `jump` 1 `mepc` 0, `ill` 2 `mtval` 0, the guard 27, a second
+  thread on the other core); that `misaligned` doesn't trap; the 160-byte frame; and the guard
+  reaching both cores at once (their output interleaved).
+- **c. The hook** (2026-11-13): as above. Found while building it: SP and `mstatus` aren't
+  restored from the frame (hence the stub and MPIE); the port keeps the coprocessor save area
+  and TLS at the stack's top (hence `entrySp`, not the top); built-in programs have
+  `ProgramThread`s too (hence the `builtin` check).
+- **d. The gap and the floor** (2026-11-13): the gap as above. The floor was measured with
+  `CONFIG_BMDS_STACK_PROBE` (`stackprobe.cpp`, kept, off by default): in that build every
+  `KernelCall` paints 16 KB of the stack below the slot's entry SP and, returning, finds the
+  lowest word changed (interrupts taken meanwhile count: their frames land there); `stackprobe`
+  lists each slot's deepest. The workload: 46 `progtest` suites, BusyBox (`ls`, `find`, `du`,
+  `md5sum`, `sha256sum`, `tar`, `gzip`, `sort`, `awk`, `sed`, `hush`, `wget`, `nslookup`), angel's
+  four board tests (files, services, audio, the GUI) and `bench run -n @program` (every program
+  benchmark, unsaved). 110 slots were called; none reached the 16 KB paint. The deepest:
+
+  | Slot | Bytes | Calls |
+  |---|---:|---:|
+  | `image_encode` | 7,264 | 14 |
+  | `text_draw` | 7,248 | 3,617 |
+  | `audio_decode` | 4,824 | 10 |
+  | `surface_present` | 4,448 | 14,089 |
+  | `surface_open` | 4,288 | 10 |
+  | `close` | 3,888 | 2,717 |
+  | `audio_synth` | 3,624 | 9 |
+  | `surface_control` | 3,508 | 204 |
+  | `proc_exec` | 3,400 | 216 |
+  | `open` | 3,064 | 1,382 |
+
+  12 KB leaves ~4.7 KB (65%) above the deepest for the 161 slots not called and an interrupt's
+  frame on top. Measure again (`CONFIG_BMDS_STACK_PROBE=y` in a build of its own, the workload
+  above, `stackprobe`) when a slot that may go deep is added.
+- **e. Platform notes** (with b): `docs/platforms/esp32p4.md` §5a.
+
+**Open questions:**
+- **Bad pointers handed to system calls still panic.** Slots check pointers for null only
+  (`structcopy.h`); any other bad address faults inside the kernel call, which can't be
+  recovered (a lock may be held). Linux returns `EFAULT`. Checking each pointer's range at the
+  slot boundary against the memory a program may touch (its image, its heap, its stack: PSRAM
+  and internal RAM ranges) would turn most of these into `EFAULT` cheaply; recovering a fault
+  inside the kernel itself would need fix-up tables on every copy, as Linux has.
+- **The shell prints nothing when a foreground command is killed by a signal** (any signal,
+  `SIGKILL` included); bash prints `Segmentation fault` and the like (not for `SIGINT` and
+  `SIGPIPE`). Our shell has the words (`jobs.cpp`) but uses them only for jobs: the launcher's
+  interface returns 128 + the signal, which can't be told from `exit 139`, so it needs carrying
+  the wait status through.
+- **Deep slots:** `text_draw` (7.2 KB on every GUI program's stack) and `image_encode` are
+  candidates for moving their large locals off the stack, which would let the floor come down.
+- Running a caught `SIGSEGV`'s handler (crash reporters).
+- A fault in a vfork child ending only the child (it needs the SDK's help to resume the parent).
+- A crash report the user can keep (registers and a short stack walk into the log's history),
+  as a panic's report is now; `tools/bmds-panic` could decode it with the program's ELF.
+- Whether `ecall` from a program (a stray Linux binary) should be `SIGSYS` rather than a panic.

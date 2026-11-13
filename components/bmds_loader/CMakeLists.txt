@@ -26,6 +26,8 @@ if(COMMAND idf_component_register)
                                     src/audiocalls.cpp
                                     src/benchwindow.cpp
                                     src/cryptocalls.cpp
+                                    src/faults.cpp
+                                    src/stackprobe.cpp
                                     src/imagecalls.cpp
                                     src/imagewindow.cpp
                                     src/loader.cpp
@@ -45,13 +47,16 @@ if(COMMAND idf_component_register)
                                     src/systable.c
                                INCLUDE_DIRS include ${BMDS_SDK_INCLUDE}
                                REQUIRES bmds_core bmds_kernel bmds_console bmds_fonts bmds_fs bmds_input bmds_sysconf
-                               PRIV_REQUIRES bmds_audio bmds_bench bmds_crypto bmds_drivers bmds_files bmds_images bmds_ui bmds_midi bmds_net bmds_stats bmds_synth bmds_speech bmds_shell esp_hw_support esp_mm
+                               PRIV_REQUIRES hal riscv spi_flash bmds_audio bmds_bench bmds_crypto bmds_drivers bmds_files bmds_images bmds_ui bmds_midi bmds_net bmds_stats bmds_synth bmds_speech bmds_shell esp_hw_support esp_mm
                                              esp_timer
                                              freertos
                                # proccommand.cpp's commands and benchwindow.cpp's benchmarks are
                                # found through their linker sections, not by symbol.
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
+        # Program faults end the program, not the system (faults.cpp, devplan/programs.md §21).
+        target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=xt_unhandled_exception"
+                                                         "-Wl,--wrap=panicHandler")
         # benchwindow.cpp reads the PSRAM heap's TLSF bitmaps (IDF's private heap list).
         set_source_files_properties(src/benchwindow.cpp PROPERTIES INCLUDE_DIRECTORIES "${IDF_PATH}/components/heap"
                                                          COMPILE_DEFINITIONS MULTI_HEAP_FREERTOS)

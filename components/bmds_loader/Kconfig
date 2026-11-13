@@ -42,4 +42,15 @@ menu "BMDS loader"
             Priority 99's. Keep it below the real-time audio clients
             (BMDS_AUDIO_CLIENT_PRIORITY) and the device tasks.
 
+    config BMDS_STACK_PROBE
+        bool "Measure the stack each system call uses (a measurement build)"
+        default n
+        help
+            Every system call paints the program's stack below it on entry
+            and finds how deep it went on return; `stackprobe` lists the
+            deepest use of each slot. The floor under program stacks comes
+            from these figures (devplan/programs.md section 21): measure again
+            when a slot that may go deep is added. Slows every call by up to
+            a 16 KB fill and scan: never in a normal build.
+
 endmenu
