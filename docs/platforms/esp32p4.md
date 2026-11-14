@@ -929,6 +929,16 @@ Learned 2026-11-13 with a spike (wrappers that logged and fell through) and `pro
     spinlock in the stack guard's init, faulted). Write the exact address and read it back.
   - **The ROM's PMA state on core 1 has no free entry** (a probe for one found none), so nothing
     can be measured on a spare entry there.
+- **The CLIC's vector table load is an instruction fetch** (2026-11-14, `devplan/protection.md`
+  §13): with `mtvt` pointing at a table in internal data RAM (read/write, not executable under
+  BMDS's PMA), the first hardware-vectored interrupt was an instruction access fault with `mepc` =
+  `mtval` = the table's entry. Keep the table in executable memory (IDF keeps its own in IRAM's
+  code, `.exception_vectors_table.text`).
+- **The hardware stack guard rules out swapping SP with `mscratch` at trap entry:** SP outside the
+  running task's bounds for one instruction latches the guard (it watches SP every cycle, in any
+  mode), and the interrupt fires once unmasked: "Stack protection fault" in `ipc0`. Swap a
+  general register instead; move SP only with the guard's monitor stopped
+  (`ESP_HW_STACK_GUARD_MONITOR_STOP_CUR_CORE`, as `portasm.S` does at a switch).
 - **A scalar load right after a PIE store can read stale data:** `esp.vst.128.ip` then `lw` of
   the same bytes read the old value, in M-mode and U-mode alike; a `fence` between them fixed
   it (the U-mode spike above).

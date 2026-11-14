@@ -108,14 +108,18 @@ From reading IDF (v6.1-dev) and measuring on the board (rev 1.3, 2026-11-14):
 
 ### 4.2 Trap entry, trampoline and kernel stacks (P3, P4)
 
-- **Installed** on each core after IDF's start-up: our `mtvec` entry and our `mtvt` table, in
-  IRAM. Every vector goes through the same check first: `csrrw sp, mscratch, sp`. `mscratch`
-  is 0 in M-mode and the thread's kernel stack top in U-mode, so a zero means the trap came from
-  M: swap back and jump to IDF's handler for that vector (read from IDF's `_mtvt_table` at
-  install time). Cost in M-mode: three instructions.
-- **From U**, on the kernel stack: save the user SP (from `mscratch`), `mepc`, `mcause`, `gp`
-  and a scratch register in a small block at the stack's top; `mscratch` = 0; `gp` = the
-  kernel's; set the hardware stack guard to the kernel stack's bounds. Then:
+- **Installed** on each core after IDF's start-up: our `mtvec` entry and our `mtvt` table, both
+  in IRAM's code (the CLIC's table load needs execute permission: §13). Every vector goes through
+  the same check first: `csrrw t0, mscratch, t0`. `mscratch` is 0 in M-mode and the running
+  thread's kernel-side block in U-mode, so a zero means the trap came from M: swap back and jump
+  to IDF's handler for that vector (the table is fixed at link time and checked against IDF's
+  `_mtvt_table` at start-up). Cost in M-mode: three instructions. **Not an SP swap:** the
+  hardware stack guard watches SP every cycle, and SP outside the task's bounds for one
+  instruction trips it (§13).
+- **From U**, with t0 holding the block: save the user's t0 (from `mscratch`), SP, `mepc`,
+  `mcause` and `gp` into the block; stop the guard's monitor; SP = the kernel stack top (kept in
+  the block); `mscratch` = 0; `gp` = the kernel's; the guard's bounds to the kernel stack and its
+  monitor on. Then:
   - **an interrupt, or an illegal instruction** (it may be IDF's lazy coprocessor enable): point
     `mepc` at the trampoline, set MPP to M, restore the scratch register and jump to IDF's
     handler. IDF saves its frame on the kernel stack, may switch tasks (every saved context is
@@ -126,9 +130,9 @@ From reading IDF (v6.1-dev) and measuring on the board (rev 1.3, 2026-11-14):
   - **a fault** (1, 5, 7, the guard): the thread ends itself by its signal, as §21 does, now
     simply on its kernel stack (no stub, no saved-SP rules).
 - **The trampoline** (IRAM, the only way down): interrupts off first; if this core's loaded
-  `PmpSet` isn't the thread's process's, load it; set the guard's bounds to the user stack;
-  `mscratch` = kernel stack top; `mepc` = the saved user PC; MPP = U, MPIE = 1; restore `gp` and
-  SP; `mret`. A thread's first entry (program start, `thread_start`) is the trampoline with a
+  `PmpSet` isn't the thread's process's, load it; stop the guard's monitor; `mscratch` = the
+  block; `mepc` = the saved user PC; MPP = U, MPIE = 1; restore `gp` and SP; the guard's bounds
+  to the user stack and its monitor on; `mret`. A thread's first entry (program start, `thread_start`) is the trampoline with a
   prepared block.
 - **Kernel stacks** are the program thread's FreeRTOS stack (internal RAM, size measured with
   `CONFIG_BMDS_STACK_PROBE`; system calls measured 7.3 KB, so about 8 KB). The coprocessor save
@@ -346,3 +350,38 @@ core-0 decision and the exact, read-back boundaries above (no probe, no rounding
    0x46000000).
 3. `bench`: `kernel.syscall` getpid 2381 ns (2440 before), `kernel.pipe` 269.8 MB/s (259.3),
    `programs.launch` 5.56 ms on core 0 (5.07 on core 1 before; the benchmark's noisy one).
+
+## 13. Step 2: the trap entry in front of IDF's (built and tried 2026-11-14)
+
+**Built** (`bmds_loader`: `trapentry.S`, `trapentry.cpp`, `CONFIG_BMDS_TRAP_ENTRY`, default on):
+- **Stubs**, one per place IDF's table leads (`_panic_handler`, `_interrupt_handler`,
+  `esp_ipc_isr_handler`), in IRAM: `csrrw t0, mscratch, t0`; non-zero is a trap from U-mode
+  (none yet: restored and passed on the same way); zero, swapped back and `j` to IDF's handler.
+- **The table** (`bmds_trap_table`, 48 words) in IRAM's code, fixed at link time from the same
+  options as IDF's `vectors_clic.S` (the stack guard's vector, the IPC interrupt's). A core-stage
+  hook on core 0 checks it against IDF's `_mtvt_table` vector by vector; a secondary-stage hook on
+  each core (priority 2, after the region setup) checks that `mtvec`/`mtvt` are still IDF's, then,
+  interrupts off, sets `mscratch` = 0, `mtvt` = the table, `mtvec` = the exception stub with
+  IDF's mode bits. Anything unexpected leaves IDF's vectors and logs one line (`Loader::init`).
+- IRAM: 288 bytes (four 24-byte stubs, the 192-byte table) plus up to 64 of alignment.
+
+**Two failures first, each ending in recovery (no network; reached over its serial console from
+another machine: `bmdsboard.py`'s `rz` and `update apply --force` of a firmware-only package):**
+1. **The table in internal data RAM:** core 0 took an instruction access fault at the table's
+   entry 1 (`mepc` = `mtval` = 0x4ff21604) at the first interrupt. **The CLIC's load of a
+   vector's address is checked as an instruction fetch:** the table needs execute permission,
+   which BMDS's PMA gives only IRAM's code (as IDF's own table is placed).
+2. **`csrrw sp, mscratch, sp`** (the usual trick): "Stack protection fault" in `ipc0` at its
+   first interrupt. For one instruction SP was 0, outside the task's bounds, and the hardware
+   stack guard watches SP every cycle. Hence t0, and the U-mode path stops the monitor before SP
+   moves (§4.2).
+
+**Tried on the board** (0.2.0+049b8cbb, both cores: `mtvec` 0x4ff03443, `mtvt` 0x4ff034c0,
+`mscratch` 0):
+- `progtest faults` (13 kinds, on the main thread and a second): signals as before; the stack
+  guard's overflow (vector 43) and exceptions both through the stubs; no panic.
+- `bmds-compat` (the v1 corpus): all pass. `bmds-netstress` tcp and flood (5.1/6.8 MB/s, the ring
+  never dry) while 40 rounds of pipelines and stack-overflow faults ran: pass, no panic.
+- `bench` against the same set just before on step 1: `kernel.switch` 11.64/8.68 µs (11.43/8.60;
+  the earlier runs span 11.04-11.60), `kernel.syscall`, `kernel.pipe`, `kernel.sync` within 1%,
+  `surface.present` within 2%: three instructions a trap don't show.

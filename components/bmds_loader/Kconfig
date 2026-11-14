@@ -53,4 +53,13 @@ menu "BMDS loader"
             when a slot that may go deep is added. Slows every call by up to
             a 16 KB fill and scan: never in a normal build.
 
+    config BMDS_TRAP_ENTRY
+        bool "BMDS's trap entry in front of ESP-IDF's"
+        default y
+        help
+            mtvec and mtvt lead through BMDS's entry (trapentry.S) to
+            ESP-IDF's handlers: the way into and out of U-mode for programs
+            (devplan/protection.md section 4.2). Costs three instructions a
+            trap from M-mode. Off only to measure that.
+
 endmenu

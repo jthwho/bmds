@@ -55,6 +55,7 @@
 #include "realtimethreads.h"
 #include "running.h"
 #include "structcopy.h"
+#include "trapentry.h"
 
 // Programs run from PSRAM: with XIP from PSRAM, IDF's PMP setup (now BMDS's PMA,
 // regionprotect.cpp) would make the PSRAM heap non-executable (devplan/programs.md §2).
@@ -2203,6 +2204,7 @@ Error Loader::init() {
                 (void)Stats::add(*imageCounters);
         }
         logRegionProtection();
+        TrapEntry::logState();
         return err;
 }
 
