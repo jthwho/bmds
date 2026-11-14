@@ -52,6 +52,7 @@ namespace {
                         case UpdatePackage::SectionType::Firmware: return "Firmware:";
                         case UpdatePackage::SectionType::Rom: return "ROM:";
                         case UpdatePackage::SectionType::Recovery: return "Recovery:";
+                        case UpdatePackage::SectionType::Bootloader: return "Bootloader:";
                         default: return "Section:";
                 }
         }
@@ -61,6 +62,7 @@ namespace {
                         case UpdatePackage::SectionType::Firmware: return "ota_0";
                         case UpdatePackage::SectionType::Rom: return "rom";
                         case UpdatePackage::SectionType::Recovery: return "ota_1";
+                        case UpdatePackage::SectionType::Bootloader: return "the bootloader";
                         default: return nullptr;
                 }
         }
@@ -147,16 +149,25 @@ namespace {
                 return;
         }
 
-        int apply(CommandContext &ctx, const char *arg, bool force) {
+        // A bootloader in a package is written only when asked for (--bootloader, devplan/update.md §20).
+        void bootloaderHint(CommandContext &ctx, const char *arg) {
+                ctx.printf("update: it carries a new bootloader, not written: update apply --bootloader %s writes "
+                           "it (keep the power on while it does)\n",
+                           arg);
+                return;
+        }
+
+        int apply(CommandContext &ctx, const char *arg, bool force, bool bootloader) {
                 String path;
                 if (!absolute(ctx, arg, path)) return Shell::ExitFailure;
                 Update::Report r;
                 ApplyProgress  progress = {&ctx, Update::Stage::Checking, false};
-                const Error    err = Update::apply(path.view(), force, r, showProgress, &progress);
+                const Error    err = Update::apply(path.view(), force, bootloader, r, showProgress, &progress);
                 if (err == Error::Exists) {
                         const bool wrote = progress.started && progress.stage == Update::Stage::WritingRecovery;
                         ctx.printf(wrote ? "update: the recovery firmware written; the rest is installed already\n"
                                          : "update: everything in it is installed already\n");
+                        if (r.hasNewBootloader()) bootloaderHint(ctx, arg);
                         return Shell::ExitSuccess;
                 }
                 if (err.isError()) {
@@ -171,6 +182,10 @@ namespace {
                                    ? "update: %s installed; restarting\n"
                                    : "update: restarting into recovery to install %s\n",
                            r.package.versionText);
+                if (!bootloader && r.hasNewBootloader()) bootloaderHint(ctx, arg);
+                if (bootloader && System::running() == System::Firmware::Main && r.hasNewBootloader())
+                        ctx.printf("update: recovery writes the bootloader last: keep the power on until the system "
+                                   "is back\n");
                 (void)Vfs::sync();
                 (void)ctx.shell().console().flush(RestartFlushMs);
                 // Recovery's screen shows how it ended for a moment, as after an update at boot.
@@ -382,17 +397,29 @@ namespace {
                 if (args.size() >= 2 && std::strcmp(args[1], "fetch") == 0)
                         return fetch(ctx, Span<char *const>(args.data() + 2, args.size() - 2));
                 if (args.size() == 3 && std::strcmp(args[1], "check") == 0) return check(ctx, args[2]);
-                if (args.size() == 3 && std::strcmp(args[1], "apply") == 0) return apply(ctx, args[2], false);
-                if (args.size() == 4 && std::strcmp(args[1], "apply") == 0 && std::strcmp(args[2], "--force") == 0)
-                        return apply(ctx, args[3], true);
+                if (args.size() >= 3 && args.size() <= 5 && std::strcmp(args[1], "apply") == 0) {
+                        bool force = false, bootloader = false;
+                        for (size_t i = 2; i + 1 < args.size(); ++i) {
+                                if (std::strcmp(args[i], "--force") == 0 && !force)
+                                        force = true;
+                                else if (std::strcmp(args[i], "--bootloader") == 0 && !bootloader)
+                                        bootloader = true;
+                                else
+                                        return ctx.usage();
+                        }
+                        return apply(ctx, args[args.size() - 1], force, bootloader);
+                }
                 return ctx.usage();
         }
 
 } // namespace
 
-BMDS_SHELL_COMMAND(update, runUpdate, "check FILE | apply [--force] FILE | status | fetch [--check] [URL]",
+BMDS_SHELL_COMMAND(update, runUpdate,
+                   "check FILE | apply [--force] [--bootloader] FILE | status | fetch [--check] [URL]",
                    "Check an update package (.bmup), apply it (restarting into recovery to install it; "
-                   "--force: also one not newer than what is installed), or show what is pending and the last "
+                   "--force: also one not newer than what is installed; --bootloader: also write the bootloader "
+                   "it carries, which a power cut while it is written leaves for a cable to fix), or show what is "
+                   "pending and the last "
                    "update's result; fetch one (from URL, else the setting update/url) into update/dir and check it "
                    "(--check: its head only, nothing written)")
 

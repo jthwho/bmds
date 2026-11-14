@@ -59,6 +59,7 @@ namespace Update {
                 WritingRecovery, ///< Writing `ota_1` (the main firmware does this).
                 WritingFirmware, ///< Writing `ota_0` (recovery).
                 WritingRom,      ///< Writing `rom` (recovery).
+                WritingBootloader, ///< Writing the bootloader (recovery; only when confirmed).
         };
 
         /** @brief Returns the stage in English ("Writing the system"). */
@@ -79,6 +80,9 @@ namespace Update {
                         char    mainVersion[33] = {};
                         Flashed flashed[UpdatePackage::MaxSections] = {};
                         uint8_t headHash[32] = {}; ///< BLAKE2s of the signed head: what the intent names.
+
+                        /** @brief The package carries a bootloader that differs from the flashed one. */
+                        bool hasNewBootloader() const;
         };
 
         /**
@@ -106,12 +110,18 @@ namespace Update {
          *        firmware to `ota_1` if that differs, leaves the intent on /flash and makes
          *        recovery the next firmware: the caller restarts. In recovery: applies it at once
          *        (the caller restarts). Unless @p force, a package that isn't newer than `ota_0`'s
-         *        firmware is refused (`InvalidState`).
-         * @return `Ok`; `Exists` when it is all flashed already (nothing to do, no restart);
+         *        firmware is refused (`InvalidState`), except one of the same version whose only
+         *        news is a bootloader @p bootloader confirms.
+         *
+         * A bootloader the package carries is written only with @p bootloader, the user's
+         * confirmation (devplan/update.md §20): recovery writes it last, and if it doesn't read back
+         * right, recovery stays rather than restarting into a board that wouldn't start.
+         * @return `Ok`; `Exists` when it is all flashed already, or all but a bootloader not
+         *         confirmed (nothing to do, no restart: `out.hasNewBootloader()` tells which);
          *         `InvalidState`; or as `check()`.
          * @blocking
          */
-        Error apply(StringView path, bool force, Report &out, Progress progress, void *arg);
+        Error apply(StringView path, bool force, bool bootloader, Report &out, Progress progress, void *arg);
 
         /**
          * @brief The update left on /flash: the intent's package (empty if none), and the last

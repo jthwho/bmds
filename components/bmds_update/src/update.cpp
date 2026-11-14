@@ -14,6 +14,8 @@
 #include <cstring>
 #include <esp_attr.h>
 #include <esp_chip_info.h>
+#include <esp_flash.h>
+#include <esp_flash_internal.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <esp_system.h>
@@ -77,6 +79,7 @@ namespace {
                         Mode             mode = Mode::Check;
                         StringView       path;
                         bool             force = false;
+                        bool             bootloader = false;   // the user confirmed writing one (§20)
                         const uint8_t   *expectHead = nullptr; // the intent's head hash, or null
                         Update::Report  *report = nullptr;
                         Update::Progress progress = nullptr;
@@ -89,6 +92,22 @@ namespace {
                         Error            result;
         };
 
+        // The bootloader's place (the P4's: from its offset to the partition table), which the
+        // partition table doesn't list: registered as IDF's own bootloader updates do, once.
+        const esp_partition_t *bootloaderPartition() {
+                static const esp_partition_t *partition = nullptr; // jobs run one at a time (busy)
+                if (partition != nullptr) return partition;
+                const esp_err_t err = esp_partition_register_external(
+                        esp_flash_default_chip, CONFIG_BOOTLOADER_OFFSET_IN_FLASH,
+                        CONFIG_PARTITION_TABLE_OFFSET - CONFIG_BOOTLOADER_OFFSET_IN_FLASH, "bootloader",
+                        ESP_PARTITION_TYPE_BOOTLOADER, ESP_PARTITION_SUBTYPE_BOOTLOADER_PRIMARY, &partition);
+                if (err != ESP_OK) {
+                        bmdsErr("Update: can't register the bootloader's partition: %d", int(err));
+                        partition = nullptr;
+                }
+                return partition;
+        }
+
         const esp_partition_t *partitionFor(uint32_t type) {
                 switch (static_cast<SectionType>(type)) {
                         case SectionType::Firmware:
@@ -100,6 +119,7 @@ namespace {
                         case SectionType::Rom:
                                 return esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY,
                                                                 "rom");
+                        case SectionType::Bootloader: return bootloaderPartition();
                         default: return nullptr;
                 }
         }
@@ -110,6 +130,7 @@ namespace {
                         case SectionType::Recovery: return "the recovery firmware";
                         case SectionType::Rom: return "the ROM";
                         case SectionType::Notes: return "the release notes";
+                        case SectionType::Bootloader: return "the bootloader";
                 }
                 return "a section";
         }
@@ -236,7 +257,8 @@ namespace {
                                 err = readAt(job, uint64_t(s.offset) + at, job.chunk, n);
                                 if (err.isError()) return makeError<bool>(err);
                                 if (at == 0 && (s.type == uint32_t(SectionType::Firmware) ||
-                                                s.type == uint32_t(SectionType::Recovery))) {
+                                                s.type == uint32_t(SectionType::Recovery) ||
+                                                s.type == uint32_t(SectionType::Bootloader))) {
                                         UpdatePackage::ChipRevisions revisions;
                                         if (!UpdatePackage::appRevisions(Span<const uint8_t>(job.chunk, n),
                                                                          CONFIG_IDF_FIRMWARE_CHIP_ID, revisions)) {
@@ -321,6 +343,72 @@ namespace {
                 return err;
         }
 
+        // The flash's guard against writes to the bootloader's region (CONFIG_SPI_FLASH_DANGEROUS_
+        // WRITE_ABORTS), lifted only around them, as IDF's own bootloader updates do.
+        Error writeBootloaderImage(const esp_partition_t *partition, const uint8_t *image, uint32_t bytes) {
+                (void)esp_flash_set_dangerous_write_protection(esp_flash_default_chip, false);
+                const uint32_t erase = (bytes + SectorBytes - 1) / SectorBytes * SectorBytes;
+                esp_err_t      err = esp_partition_erase_range(partition, 0, erase);
+                if (err == ESP_OK) err = esp_partition_write(partition, 0, image, bytes);
+                (void)esp_flash_set_dangerous_write_protection(esp_flash_default_chip, true);
+                return err == ESP_OK ? Error::Ok : Error::IoError;
+        }
+
+        // The bootloader (devplan/update.md §20): unlike the other sections, the whole image is read
+        // and checked in memory before anything is erased, so a bad read from the card can't cut a
+        // write short; the old one is kept in memory and written back if the new one never reads
+        // back right. A cut-off write still leaves a board that only a cable starts again: the
+        // window is the erase and the write, well under a second.
+        Error writeBootloader(Job &job, size_t index) {
+                const UpdatePackage::Section &s = job.report->package.sections[index];
+                const esp_partition_t        *partition = partitionFor(s.type);
+                if (partition == nullptr) return Error::NotExist;
+                if (s.size > partition->size) return Error::OutOfRange;
+                const Update::Stage stage = Update::Stage::WritingBootloader;
+                const uint64_t      total = uint64_t(s.size) * 3;
+                report(job, stage, 0, total);
+                auto *image = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, partition->size));
+                auto *old = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, partition->size));
+                Error err = image != nullptr && old != nullptr ? Error(Error::Ok) : Error(Error::NoMem);
+                if (err.isOk()) err = readAt(job, s.offset, image, s.size);
+                if (err.isOk()) {
+                        uint8_t digest[32];
+                        Blake2s h;
+                        h.update(image, s.size);
+                        h.final(digest);
+                        if (std::memcmp(digest, s.hash, sizeof(digest)) != 0) err = Error::CorruptData;
+                }
+                if (err.isOk() && esp_partition_read(partition, 0, old, partition->size) != ESP_OK)
+                        err = Error::IoError;
+                if (err.isError()) { // nothing written
+                        Memory::free(image);
+                        Memory::free(old);
+                        return err;
+                }
+                report(job, stage, s.size, total);
+                bmdsWarn("Update: writing the bootloader (%u bytes): keep the power on", static_cast<unsigned>(s.size));
+                for (int attempt = 0; attempt < 3; ++attempt) {
+                        if (attempt > 0) bmdsWarn("Update: writing the bootloader again");
+                        err = writeBootloaderImage(partition, image, s.size);
+                        uint64_t done = uint64_t(s.size) * 2;
+                        uint8_t  digest[32];
+                        if (err.isOk()) err = hashPartition(job, partition, s.size, digest, stage, done, total);
+                        if (err.isOk() && std::memcmp(digest, s.hash, sizeof(digest)) != 0) err = Error::CorruptData;
+                        if (err.isOk()) break;
+                }
+                if (err.isError()) {
+                        bmdsErr("Update: the bootloader didn't write right: writing the old one back");
+                        if (writeBootloaderImage(partition, old, partition->size).isError())
+                                bmdsErr("Update: the old bootloader couldn't be written back either");
+                } else {
+                        job.report->flashed[index] = Update::Flashed::Same;
+                        bmdsInfo("Update: the bootloader is written");
+                }
+                Memory::free(image);
+                Memory::free(old);
+                return err;
+        }
+
         const UpdatePackage::Section *differing(const Update::Report &r, SectionType type, size_t &index) {
                 for (size_t i = 0; i < r.package.sectionCount; ++i) {
                         if (r.package.sections[i].type == uint32_t(type) && r.flashed[i] == Update::Flashed::Differs) {
@@ -371,11 +459,14 @@ namespace {
         // Left by recovery with a result, taken by the main firmware once it has logged it.
         constexpr const char *UnseenPath = "/flash/update/unseen";
 
+        // The intent: the package's path, its head's hash, then "bootloader" when the user confirmed
+        // writing one (a recovery from before §20 reads only the first two lines).
         Error writeIntent(const Job &job) {
                 char headHex[65];
                 hex(job.report->headHash, 32, headHex);
                 String text;
-                Error  err = text.appendf("%.*s\n%s\n", int(job.path.size()), job.path.data(), headHex);
+                Error  err = text.appendf("%.*s\n%s\n%s", int(job.path.size()), job.path.data(), headHex,
+                                         job.bootloader ? "bootloader\n" : "");
                 if (err.isOk()) err = writeFile(Update::IntentPath, text.view());
                 if (err.isOk()) err = Vfs::sync();
                 return err;
@@ -412,12 +503,19 @@ namespace {
         // The main firmware's part: the recovery firmware if it differs, then the intent.
         Error applyMain(Job &job) {
                 Update::Report &r = *job.report;
-                if (r.order <= 0 && !job.force) {
+                size_t          index = 0;
+                const bool newBootloader = job.bootloader && differing(r, SectionType::Bootloader, index) != nullptr;
+                // The same version is fine when the bootloader is what it brings: the second step for a
+                // board that took this package before it could confirm one (devplan/update.md §20).
+                const bool sameButBootloader = r.order == 0 && newBootloader;
+                if (r.order <= 0 && !job.force && !sameButBootloader) {
                         r.problem = r.order < 0 ? "it is older than the firmware installed (--force applies it)"
-                                                : "it is the version installed (--force applies it)";
+                                    : differing(r, SectionType::Bootloader, index) != nullptr
+                                            ? "it is the version installed, but for its bootloader (--bootloader "
+                                              "writes that)"
+                                            : "it is the version installed (--force applies it)";
                         return Error::InvalidState;
                 }
-                size_t index = 0;
                 if (differing(r, SectionType::Recovery, index) != nullptr) {
                         const Error err = writeSection(job, index, Update::Stage::WritingRecovery);
                         if (err.isError()) {
@@ -426,7 +524,7 @@ namespace {
                         }
                 }
                 if (differing(r, SectionType::Firmware, index) == nullptr &&
-                    differing(r, SectionType::Rom, index) == nullptr) {
+                    differing(r, SectionType::Rom, index) == nullptr && !newBootloader) {
                         return Error::Exists;
                 }
                 Error err = writeIntent(job);
@@ -459,7 +557,24 @@ namespace {
                     writeChecked(job, index, Update::Stage::WritingRom).isError()) {
                         failure = "writing the ROM failed";
                 }
+                // Last, and only when confirmed. If it didn't write right (the old one written back,
+                // or not even that), recovery stays: a restart could find no bootloader to start.
+                bool bootloaderFailed = false;
+                if (failure == nullptr && job.bootloader && differing(r, SectionType::Bootloader, index) != nullptr &&
+                    writeBootloader(job, index).isError()) {
+                        failure = "writing the bootloader failed (recovery stays: don't turn the board off)";
+                        bootloaderFailed = true;
+                }
                 writeResult(job, failure);
+                if (bootloaderFailed) {
+                        r.problem = failure;
+                        bmdsErr("Update: %s", failure);
+                        Vfs::Context context;
+                        (void)Vfs::remove(Update::IntentPath, context); // not again at a restart
+                        (void)Vfs::sync();
+                        if (o != nullptr && o->finished != nullptr) o->finished(o->arg, r, failure, false);
+                        return Error::InvalidState;
+                }
                 const Error  next = System::setNextFirmware(System::Firmware::Main);
                 Vfs::Context context;
                 if (next.isOk()) (void)Vfs::remove(Update::IntentPath, context);
@@ -546,6 +661,8 @@ namespace {
                         parsed = std::sscanf(t.data() + nl + 1 + 2 * i, "%2x", &byte) == 1;
                         expect[i] = uint8_t(byte);
                 }
+                // The confirmation for a bootloader (§20), on the line after the hash.
+                const bool bootloader = parsed && t.mid(nl + 1 + 64).startsWith("\nbootloader");
                 if (!parsed) {
                         bmdsErr("Update: the intent on /flash can't be read (%s, %u bytes): removed",
                                 err.isError() ? err.desc() : "not a path and a hash", static_cast<unsigned>(t.size()));
@@ -566,6 +683,7 @@ namespace {
                 job->mode = Mode::ApplyRecovery;
                 job->path = path.view();
                 job->expectHead = expect;
+                job->bootloader = bootloader;
                 job->report = r;
                 job->progress = [](void *, Update::Stage stage, uint64_t done, uint64_t total) {
                         static Update::Stage last = Update::Stage::Checking;
@@ -626,6 +744,7 @@ const char *Update::stageText(Stage stage) {
                 case Stage::WritingRecovery: return "Writing the recovery system";
                 case Stage::WritingFirmware: return "Writing the system";
                 case Stage::WritingRom: return "Writing the ROM";
+                case Stage::WritingBootloader: return "Writing the bootloader (keep the power on)";
         }
         return "?";
 }
@@ -657,13 +776,22 @@ Error Update::checkHead(Span<const uint8_t> head, uint64_t fileBytes, Report &ou
         return err;
 }
 
-Error Update::apply(StringView path, bool force, Report &out, Progress progress, void *arg) {
+bool Update::Report::hasNewBootloader() const {
+        for (size_t i = 0; i < package.sectionCount; ++i) {
+                if (package.sections[i].type == uint32_t(SectionType::Bootloader) && flashed[i] == Flashed::Differs)
+                        return true;
+        }
+        return false;
+}
+
+Error Update::apply(StringView path, bool force, bool bootloader, Report &out, Progress progress, void *arg) {
         Job *job = newJob();
         if (job == nullptr) return Error::NoMem;
         const bool recovery = System::running() == System::Firmware::Recovery;
         job->mode = recovery ? Mode::ApplyRecovery : Mode::ApplyMain;
         job->path = path;
         job->force = force;
+        job->bootloader = bootloader;
         job->report = &out;
         job->progress = progress;
         job->arg = arg;

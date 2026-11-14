@@ -22,6 +22,11 @@ CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC_SIZE=0x20
 # go if it grows: CONFIG_BOOTLOADER_FLASH_XMC_SUPPORT (XMC chips' workarounds; this board's
 # flash is a Winbond).
 CONFIG_BOOTLOADER_COMPILE_TIME_DATE=n
+# BMDS sets the PMA and PMP itself (bmds_board's regionprotect.cpp, devplan/protection.md §4.1):
+# IDF's setup locks PMP entries that would give U-mode all internal RAM. Off in the bootloader and
+# both apps alike (one option gates it in all three); MEMPROT stays on for _iram_text_end's
+# alignment. Takes effect only with the bootloader flashed (updates don't carry it).
+CONFIG_BOOTLOADER_REGION_PROTECTION_ENABLE=n
 
 # --- PSRAM (32 MB on the ESP32-P4NRW32 module) ---------------------------
 # 200 MHz (devplan/psram.md): the display scans an RGB888 surface straight from

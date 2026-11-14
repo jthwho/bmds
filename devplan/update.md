@@ -40,8 +40,8 @@ One file, `NAME.bmup`, made on the host by `tools/mkupdate` from a build:
   damaged: it needs one flash over the cable.
 - **Sections:** a table of {type, offset, size, BLAKE2s-256}: `1` the main firmware (`ota_0`'s
   image), `2` the ROM (`rom`'s, its `BMRO` header first), `3` the recovery firmware (`ota_1`'s),
-  `4` release notes (UTF-8 text, shown by the Updater). Any may be left out; unknown types are
-  skipped (append only).
+  `4` release notes (UTF-8 text, shown by the Updater), `5` the bootloader (written only when the
+  user confirms it: §20). Any may be left out; unknown types are skipped (append only).
 - **Signature:** Ed25519 over the header and the table (which hold every section's hash), 64
   bytes after the table. The public keys are built into both firmwares from `keys/`.
 - **The acceptance mode** (the user's, 2026-10-13; independent of debug or release builds):
@@ -572,3 +572,53 @@ Updater's buttons wait for the store.
   `tools/bmds-update` (a build with a changed log line, then the real one): recovery written to
   the new `ota_1`, the firmware by recovery, back to main; `update check` after: every section
   the same as flashed.
+
+## 20. The bootloader in a package, written when the user confirms (2026-11-14)
+
+**Why:** BMDS's memory protection (`protection.md` §4.1) needs a bootloader built with
+`CONFIG_BOOTLOADER_REGION_PROTECTION_ENABLE=n`: an older one locks IDF's PMP and PMA layout before
+the app runs. Boards should get it through the Updater, not only with a cable.
+
+**The risk, and why it is asked:** the P4's ROM has no second bootloader to fall back to (IDF's
+recovery bootloader is a C5/C61 ROM feature), so a power cut or reset while the bootloader is
+erased and written (6 sectors and 24 KB: ~0.3 s typical, ~2.5 s at the flash's worst erase times)
+leaves a board only a cable starts again: the web installer's Reinstall (`release.md` §4: the ROM's
+download mode over USB-Serial/JTAG, BOOT held through RESET if the browser can't reach it) or
+`idf.py flash`. The user's decision (2026-11-14): a confirmed write.
+
+**Either bootloader works** (so the two are independent, and an update without the bootloader is
+safe): a firmware that finds locked entries at start-up (an older bootloader) runs IDF's own setup,
+as before, and logs one line; an older firmware under the new bootloader sets IDF's layout itself.
+
+**As built:**
+- **Section type 5** (`UpdatePackage::SectionType::Bootloader`): `tools/mkupdate --bootloader BIN`
+  (an image's magic, at most 0x6000 bytes); the build's `update` target and `tools/release` add
+  `bootloader/bootloader.bin` to every package (24 KB). Checked as the app images are (chip id,
+  revisions by the bootloader's rule), compared with what is flashed (`Report::hasNewBootloader()`).
+- **Its place:** 0x2000-0x8000, which the partition table doesn't list: registered with
+  `esp_partition_register_external()` (type bootloader, subtype primary), as IDF's own bootloader
+  updates do. Writes lift the flash driver's guard (`CONFIG_SPI_FLASH_DANGEROUS_WRITE_ABORTS`)
+  around them only: `esp_flash_set_dangerous_write_protection()`.
+- **Confirmed:** `update apply --bootloader FILE` (with or without `--force`), and the Updater's
+  question (Install with It / Install Without / Cancel, with what a power cut means). The intent
+  gains a third line, `bootloader` (a recovery from before reads the first two). Without the
+  confirmation everything else installs, and the command says how to write the bootloader. A
+  package of the installed version whose only news is its bootloader needs no `--force`: the
+  second step for a board that took the package with a firmware that couldn't ask.
+- **Recovery writes it last,** after `ota_0` and `rom`, differently from the rest: the whole image
+  is read from the card and its hash checked in memory before anything is erased (a bad card read
+  can't cut the write short); the old bootloader is kept in memory; erase, write and read back up
+  to three times; if it never reads back right, the old one is written back, and **recovery stays**
+  (no restart, the intent removed): a restart could find no bootloader to start.
+- **Its stage** (`Update::Stage::WritingBootloader`): "Writing the bootloader (keep the power on)",
+  on recovery's screen and in the Updater.
+
+**The way for a board on 0.2.0:** its Updater (or `update apply`) can't ask, so its update installs
+everything but the bootloader; the new firmware runs on the old bootloader with IDF's layout, says
+so in the log, and the Updater (or `update apply --bootloader`) with the same package writes it.
+
+**Tried** (2026-11-14, bmds0, `tools/bmds-update`, which takes `--bootloader` too): from 0.2.0's
+firmware, the package installed everything but the bootloader (that firmware skipped section 5 as
+unknown); the new firmware ran on the old bootloader with IDF's layout; `--bootloader` with the same
+package then had recovery write only the bootloader, and the board came back with BMDS's layout.
+A plain `update apply` of the same version names `--bootloader` when the bootloader is its only news.

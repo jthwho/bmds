@@ -41,6 +41,7 @@ set(BMDS_UPDATE_KEY "" CACHE FILEPATH
 set(BMDS_UPDATE_NOTES "" CACHE FILEPATH "Release notes for the update package (optional)")
 set(bmds_update_args --board ${CONFIG_BMDS_BOARD_DIR} --firmware ${CMAKE_BINARY_DIR}/bmds.bin
                      --rom ${CMAKE_BINARY_DIR}/rom/rom.bin
+                     --bootloader ${CMAKE_BINARY_DIR}/bootloader/bootloader.bin
                      --partitions ${CMAKE_SOURCE_DIR}/partitions.csv)
 if(EXISTS ${CMAKE_SOURCE_DIR}/keys/trusted.pub)
         list(APPEND bmds_update_args --accept ${CMAKE_SOURCE_DIR}/keys/trusted.pub)
@@ -63,4 +64,4 @@ add_custom_target(update
                           ${CMAKE_BINARY_DIR}/bmds.bmup ${bmds_update_args}
                   COMMENT "Making the update package"
                   VERBATIM)
-add_dependencies(update app bmds_rom_image)
+add_dependencies(update app bootloader bmds_rom_image)

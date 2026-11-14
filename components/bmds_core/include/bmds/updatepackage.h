@@ -58,6 +58,10 @@ namespace UpdatePackage {
                 Rom = 2,      ///< The ROM's image (`BMRO`), for `rom`.
                 Recovery = 3, ///< The recovery firmware's image, for `ota_1`.
                 Notes = 4,    ///< Release notes, UTF-8 text.
+                /** The bootloader's image, for the flash's start (0x2000-0x8000 on the P4). Written only
+                    when the user confirms it (devplan/update.md §20): a cut-off write leaves a board
+                    that only a cable starts again. */
+                Bootloader = 5,
         };
 
         /** @brief A version (`BMDS_VERSION_*`), ordered major, minor, patch. */

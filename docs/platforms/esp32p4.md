@@ -878,10 +878,60 @@ until silicon v3; then test again.
 
 Learned 2026-11-13 with a spike (wrappers that logged and fell through) and `progtest faults`.
 
-- **IDF locks all 16 PMP entries at boot, in every application configuration** (MEMPROT on or
-  off, debug mode too): `esp_cpu_configure_region_protection()`, `cpu_region_protect.c`. Locked
-  entries bind M-mode and can't change until reset, so nothing is left for per-process
-  protection; the PMA's 16 entries are likewise IDF's. Everything runs in M-mode.
+- **IDF locks 14 of the 16 PMP entries at boot** (`esp_cpu_configure_region_protection()`,
+  `cpu_region_protect.c`); measured 2026-11-14 with a program reading the CSRs, our config
+  (MEMPROT on, PSRAM XIP off): 0-8 and 11-15 locked, **9 and 10 unlocked and unused** (only the
+  XIP branch sets them). The locked ones give U-mode the same rights as M-mode, all internal RAM
+  (5: RW to `SOC_DRAM_HIGH`) and the peripherals (15: RW) included, so IDF's layout can't
+  isolate a program; **no entry covers PSRAM**, so U-mode is denied it unless an unlocked entry
+  grants it. All 16 PMA entries are locked. Everything runs in M-mode.
+  - **`CONFIG_BOOTLOADER_REGION_PROTECTION_ENABLE` decides whether that function runs at all**,
+    in the bootloader and in the app (`bootloader_init_mem()`, both cores). With it on, the
+    bootloader already locks 0, 1, 2 and 15. With it off, IDF sets neither PMP nor PMA.
+  - **The core has U-mode:** `misa` 0x40901125 (U and X set), `mstatus.MPP` holds 0, `MPRV`
+    is writable, `mcounteren` is 0 (U-mode can't read the counters until it is set).
+  - **The HP peripheral PMS (APM) is at its reset value**, every bit allowed in both modes for
+    both cores; IDF doesn't touch it on the P4. Its PSRAM, flash and L2MEM bits gate only
+    accesses that bypass the cache, so it can't keep a program out of RAM, only out of
+    peripherals.
+  - **IDF assumes every task runs in M-mode:** `rtos_int_exit` (`portasm.S`) returns the
+    interrupted task's `mstatus` even after switching tasks, so the next task inherits its MPP.
+- **U-mode, measured** (2026-11-14, a spike program: interrupts masked by the CLIC threshold, its
+  own `mtvec`/`mtvt`, PMP entry 9 granting PSRAM, `mret` into U and `ecall` back; core 1):
+  - `ecall` from U is cause 8; a load nothing in the PMP covers (TCM) is a load access fault
+    with the address in `mtval`; privileged CSRs (`mstatus`, `pmpcfg2`), `mpccr` (0x7e2) and
+    `wfi` are illegal instructions, and **`mtval` holds the instruction bits** for them.
+  - **The FPU, PIE and the hardware loops all work in U-mode** once enabled (IDF enables them
+    lazily in M-mode; the `mstatus.FS` and PIE/HWLP states carry over).
+  - `cycle` traps in U while `mcounteren` is 0 and reads the count with it set.
+  - **MPRV works:** M-mode with `MPRV` set and MPP U takes U-mode's PMP checks (a TCM load
+    faulted, the program's own memory didn't), so the kernel can copy from user buffers with
+    the user's rights.
+  - **The APM gates U-mode peripheral access:** clearing a core's `UM` bit for a peripheral
+    (`PMS_COREn_UM_HP_PERI_PMS_REG1`, bit 25 for the PMS itself) made U-mode loads from it a
+    load access fault (cause 5, address in `mtval`), M-mode unaffected.
+  - **The hardware stack guard watches SP in U-mode too:** running U code on a buffer outside
+    the task's stack bounds latched the guard's interrupt, which fired when unmasked.
+  - **The CLIC threshold is memory-mapped on this chip revision** (`CLIC_INT_THRESH_REG`,
+    0x20800008, bits 31:24, per core); `mintthresh` (0x347) is an illegal instruction before
+    rev 2. It sits in PMP entry 0's region, which IDF makes RW for U-mode too.
+  - **A U round trip** (`mret` in, `ecall` back, 14 registers saved and restored) took 166 cycles.
+- **BMDS sets the PMA and PMP now** (`devplan/protection.md` §12, 2026-11-14): IDF's region
+  setup off (`CONFIG_BOOTLOADER_REGION_PROTECTION_ENABLE=n`), `bmds_board`'s `regionprotect.cpp`
+  instead. What it took:
+  - **The bootloader configures core 0 alone.** An older bootloader's locks are on core 0's CSRs
+    only, and core 1 starts with the ROM's state: decide on core 0 (the core stage, core 1 paused)
+    for both. IDF used to set core 1's from `call_start_cpu1`; now core 1 runs on the ROM's state
+    until the secondary stage's first hooks, which was fine.
+  - **The PMA's granularity is 128 bytes** (TOR addresses read back with the low 5 bits clear),
+    and `_iram_text_end` is 128-aligned while MEMPROT is on. **Never round a code/data boundary:**
+    rounding the IRAM split up to 4 KB made the start of `.data` read-only (the first store, a
+    spinlock in the stack guard's init, faulted). Write the exact address and read it back.
+  - **The ROM's PMA state on core 1 has no free entry** (a probe for one found none), so nothing
+    can be measured on a spare entry there.
+- **A scalar load right after a PIE store can read stale data:** `esp.vst.128.ip` then `lw` of
+  the same bytes read the old value, in M-mode and U-mode alike; a `fence` between them fixed
+  it (the U-mode spike above).
 - **A trap handler that returns resumes the program.** `vectors.S` sends unhandled exceptions to
   `panic_from_exception` (`.equ` for `xt_unhandled_exception`) and the panic interrupts (the stack
   guard, the interrupt watchdog, cache errors) to `panic_from_isr` (`panicHandler`), both with the

@@ -4491,6 +4491,10 @@ static int net_watch_test(int count) {
  * bigframe overflows the stack by more than the gap below it in one step, and syscall hands
  * write() an address in a PMA hole, so the kernel faults reading it inside the call: both must
  * panic the board (as before the hook). Run them only on purpose.
+ * The kernel's W^X (devplan/protection.md §4.1), each SIGSEGV: dramexec calls code written to
+ * internal RAM, iramwrite, textwrite and rodatawrite store back what is already in the kernel's
+ * IRAM code, flash code and read-only data (harmless if it isn't protected), top loads from just
+ * under 4 GB (a PMA hole).
  */
 static volatile uint32_t fault_sink;
 
@@ -4536,9 +4540,27 @@ static int fault_now(const char *kind) {
                 (void)write(1, (const void *)0x46000000u, 16);
         } else if (strcmp(kind, "ebreak") == 0) {
                 __asm__ volatile("ebreak");
+        } else if (strcmp(kind, "dramexec") == 0) {
+                uint32_t *code = bmds_mem_alloc(64, 64, BMDS_MEM_FAST);
+                if (code == NULL) return 3;
+                for (int i = 0; i < 16; ++i) code[i] = 0x00008067u; /* ret */
+                __asm__ volatile("fence.i" ::: "memory");
+                void (*volatile f)(void) = (void (*)(void))code;
+                f();
+        } else if (strcmp(kind, "iramwrite") == 0) {
+                volatile uint32_t *p = (volatile uint32_t *)0x4ff00100u; /* the vectors' IRAM code */
+                *p = *p;
+        } else if (strcmp(kind, "textwrite") == 0) {
+                volatile uint32_t *p = (volatile uint32_t *)(uintptr_t)bmds_sys->slot[BMDS_SYS_WRITE];
+                *p = *p;
+        } else if (strcmp(kind, "rodatawrite") == 0) {
+                volatile uint32_t *p = (volatile uint32_t *)(uintptr_t)bmds_sys; /* the table, in flash */
+                *p = *p;
+        } else if (strcmp(kind, "top") == 0) {
+                fault_sink = *(volatile uint32_t *)0xfffffff0u;
         } else {
-                fprintf(stderr, "faults: recurse|bigframe|syscall|null|nullw|reserved|jump|ill|misaligned|ebreak "
-                                "[thread]\n");
+                fprintf(stderr, "faults: recurse|bigframe|syscall|null|nullw|reserved|jump|ill|misaligned|ebreak|"
+                                "dramexec|iramwrite|textwrite|rodatawrite|top [thread]\n");
                 return 2;
         }
         printf("faults: %s didn't fault\n", kind);

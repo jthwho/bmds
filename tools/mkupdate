@@ -12,12 +12,14 @@
 #       A new signing key: the private key to KEY (PEM, mode 600; keep it out of the
 #       repository), its public half to PUB (one line: "ed25519 HEX COMMENT").
 #   mkupdate make OUT --board BOARD [--key KEY] [--firmware BIN] [--rom BIN]
-#                 [--recovery BIN] [--notes FILE] [--abi N] [--partitions CSV] [--accept PUB]...
+#                 [--recovery BIN] [--bootloader BIN] [--notes FILE] [--abi N] [--partitions CSV]
+#                 [--accept PUB]...
 #       (--key defaults to keys/dev.key; --abi to sdk/include/bmds/sys.h's BMDS_ABI_VERSION)
 #       A package of the images given, signed with KEY. With --accept, refused unless KEY is
 #       one of those (the keys the firmware it is for accepts). The version, build id and least
 #       chip revision come from the firmware's image (the recovery's if there is none).
-#       With --partitions, each image is checked against its partition's size.
+#       With --partitions, each image is checked against its partition's size. A bootloader is
+#       written only when the board's user confirms it (devplan/update.md §20).
 #   mkupdate info FILE [--pub PUB]...
 #       Shows a package and checks its sections' hashes and its signature: against the
 #       keys in PUB, or keys/dev.pub and keys/trusted.pub (keys/README.md). Exits 1 if anything doesn't check.
@@ -37,8 +39,10 @@ FORMAT = 1
 HEADER_BYTES = 144
 BODY = '<IHH32s32s32sqHHHH'  # the header after the container's prefix
 
-FIRMWARE, ROM, RECOVERY, NOTES = 1, 2, 3, 4
-NAMES = {FIRMWARE: 'firmware', ROM: 'rom', RECOVERY: 'recovery', NOTES: 'notes'}
+FIRMWARE, ROM, RECOVERY, NOTES, BOOTLOADER = 1, 2, 3, 4, 5
+NAMES = {FIRMWARE: 'firmware', ROM: 'rom', RECOVERY: 'recovery', NOTES: 'notes', BOOTLOADER: 'bootloader'}
+# Where the bootloader goes on the P4: from 0x2000 to the partition table at 0x8000.
+BOOTLOADER_BYTES = 0x8000 - 0x2000
 PARTITIONS = {FIRMWARE: 'ota_0', ROM: 'rom', RECOVERY: 'ota_1'}
 
 APP_MAGIC = 0xE9
@@ -146,7 +150,8 @@ def cmd_make(args):
     if args.abi is None:
         args.abi = abi_version()
     images = []
-    for kind, path in ((FIRMWARE, args.firmware), (ROM, args.rom), (RECOVERY, args.recovery), (NOTES, args.notes)):
+    for kind, path in ((FIRMWARE, args.firmware), (ROM, args.rom), (RECOVERY, args.recovery),
+                       (BOOTLOADER, args.bootloader), (NOTES, args.notes)):
         if path:
             with open(path, 'rb') as f:
                 images.append((kind, f.read()))
@@ -160,6 +165,11 @@ def cmd_make(args):
                 info = got
         elif kind == ROM and data[:4] != b'BMRO':
             fail('the ROM image has no BMRO header')
+        elif kind == BOOTLOADER:
+            if len(data) < 24 or data[0] != APP_MAGIC:
+                fail('the bootloader is not an image (its magic)')
+            if len(data) > BOOTLOADER_BYTES:
+                fail('the bootloader (%d bytes) is bigger than its %d' % (len(data), BOOTLOADER_BYTES))
         elif kind == NOTES:
             data.decode('utf-8')  # must be text
     version, build_id, min_rev = info if info else ('', bytes(32), 0)
@@ -220,6 +230,7 @@ def main():
     m.add_argument('--firmware')
     m.add_argument('--rom')
     m.add_argument('--recovery')
+    m.add_argument('--bootloader', help='the bootloader (written only when the user confirms it)')
     m.add_argument('--notes')
     m.add_argument('--abi', type=int, help="BMDS_ABI_VERSION (default: the SDK's)")
     m.add_argument('--partitions')

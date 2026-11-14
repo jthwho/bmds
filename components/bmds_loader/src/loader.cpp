@@ -47,6 +47,7 @@
 #include <bmds/shebang.h>
 #include <bmds/sys.h>
 #include <bmds/system.h>
+#include <bmds/regionprotect.h>
 #include <bmds/tasklist.h>
 #include <bmds/thread.h>
 #include <bmds/vfs.h>
@@ -55,8 +56,8 @@
 #include "running.h"
 #include "structcopy.h"
 
-// Programs run from PSRAM: with XIP from PSRAM, IDF's PMP makes the PSRAM
-// heap non-executable (devplan/programs.md §2).
+// Programs run from PSRAM: with XIP from PSRAM, IDF's PMP setup (now BMDS's PMA,
+// regionprotect.cpp) would make the PSRAM heap non-executable (devplan/programs.md §2).
 #if CONFIG_SPIRAM_XIP_FROM_PSRAM
 #error "BMDS programs need an executable PSRAM heap: turn CONFIG_SPIRAM_XIP_FROM_PSRAM off"
 #endif
@@ -72,6 +73,35 @@ BMDS_DEBUG(Loader)
 BMDS_NAMESPACE_BEGIN
 
 namespace {
+
+        // What the start-up region setup did (devplan/protection.md §4.1), once at boot: quiet
+        // when both cores have BMDS's layout; one line with an older bootloader (IDF's layout, as
+        // before: only an update that carries the bootloader changes it); a warning otherwise.
+        void logRegionProtection() {
+                const RegionProtection &first = regionProtection(0);
+                if (first.idfLayout && regionProtection(1).idfLayout) {
+                        bmdsInfo("Loader: the bootloader predates BMDS's memory protection: IDF's layout, as before "
+                                 "(update apply --bootloader with a package that carries one)");
+                        return;
+                }
+                for (unsigned core = 0; core < 2; ++core) {
+                        const RegionProtection &r = regionProtection(core);
+                        if (r.isPmaSet() && r.isPmpFree()) continue;
+                        bmdsWarn("Loader: core %u's memory protection isn't as designed (%s; PMA entries not set "
+                                 "%04x, PMP entries locked %04x)",
+                                 core,
+                                 !r.done       ? "not set up"
+                                 : r.idfLayout ? "IDF's layout"
+                                               : "BMDS's layout",
+                                 unsigned(r.pmaMismatch), unsigned(r.pmpLocked));
+                }
+                if (first.done && !first.idfLayout && (!first.iramSplit || !first.flashSplit))
+                        bmdsWarn("Loader: the kernel's W^X is incomplete (IRAM %s, flash %s): a PMA boundary "
+                                 "didn't take",
+                                 first.iramSplit ? "split" : "not split", first.flashSplit ? "split" : "not split");
+                bmdsDebug("Loader: region protection: IRAM text to %08x", unsigned(first.iramTextEnd));
+                return;
+        }
 
         // The smallest stack a program's task or thread gets, whatever its note or thread_start
         // asks: its system calls run on it, and one overflowing there is a panic, not a fault the
@@ -2172,6 +2202,7 @@ Error Loader::init() {
                 imageCounters->setName("images");
                 (void)Stats::add(*imageCounters);
         }
+        logRegionProtection();
         return err;
 }
 

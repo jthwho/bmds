@@ -424,6 +424,7 @@ def main():
              "--firmware", os.path.join(main_dir, "bmds.bin"),
              "--rom", os.path.join(main_dir, "rom", "rom.bin"),
              "--recovery", os.path.join(recovery_dir, "bmds_recovery.bin"),
+             "--bootloader", os.path.join(main_dir, "bootloader", "bootloader.bin"),
              "--notes", notes_path,
              "--partitions", os.path.join(ROOT, "partitions.csv"),
              "--accept", os.path.join(ROOT, "keys", "dev.pub")])

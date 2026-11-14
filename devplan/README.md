@@ -10,6 +10,7 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`time.md`](time.md) — Phase 2: the system clock (Linux-style: set, slewed and disciplined by sources), time zones, `date`.
 - [`storage.md`](storage.md) — Phase 2: SD card driver and hot-plug, FatFs (exFAT) under the BMDS VFS, files in the shell, YMODEM transfer.
 - [`programs.md`](programs.md) — Phase 3: executables (relocatable ELF), the loader, the syscall table (ABI v1-3), the SDK (static musl), push-and-run.
+- [`protection.md`](protection.md) — memory protection: programs in U-mode, the PMP and PMA set by BMDS, a trap entry in front of IDF's, system calls by `ecall` through the same table (planned).
 - [`distribution.md`](distribution.md) — Phase 3: the programs shipped on the card (`dist/` recipes, `tools/bmds-dist`), BusyBox.
 - [`display.md`](display.md), [`windows.md`](windows.md) — Phase 4: HDMI, surface 0, the window manager, the terminal program, screenshots.
 - [`gui.md`](gui.md) — Phase 4: the GUI toolkit, context menus, the panel and its launcher.

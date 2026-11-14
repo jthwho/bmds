@@ -8,7 +8,8 @@
  * /bin/updater [FILE] (devplan/update.md §14): an update package's version against the one
  * installed, how it checks, its release notes, and Install, which writes the recovery firmware if
  * it differs and restarts into recovery to install the rest. Without FILE, the newest package in
- * update/dir, or the last update's result. An ordinary GUI program on the toolkit; checking and
+ * update/dir, or the last update's result. A package with a new bootloader asks first whether to
+ * write it (devplan/update.md §20). An ordinary GUI program on the toolkit; checking and
  * installing run on a thread of their own, told to the window through the loop.
  */
 
@@ -175,7 +176,8 @@ namespace {
         class UpdaterWindow final : public GuiWindow {
                 public:
                         UpdaterWindow(GuiApplication &app, const Config &config)
-                            : GuiWindow(app, config), _confirm(app, "Install", 440, 48), _path(MemSpace::Psram),
+                            : GuiWindow(app, config), _confirm(app, "Install", 440, 48),
+                              _bootConfirm(app, "Install the Bootloader?", 500, 112), _path(MemSpace::Psram),
                               _notesText(MemSpace::Psram) {}
 
                         ~UpdaterWindow() override {
@@ -204,13 +206,16 @@ namespace {
                         static void restart(void *arg);
                         static void clicked(void *arg, Button &button);
                         static void confirmed(void *arg, Dialog &dialog, int result);
+                        static void bootConfirmed(void *arg, Dialog &dialog, int result);
                         static void onProgress(void *arg, Update::Stage stage, uint64_t done, uint64_t total);
                         void        start(Job job);
                         void        showNothing();
                         void        showReport();
-                        void        install(bool force);
+                        void        askBootloader(bool force);
+                        void        install(bool force, bool bootloader);
 
                         Dialog       _confirm;
+                        Dialog       _bootConfirm; // a package with a new bootloader (devplan/update.md §20)
                         Label       *_title = nullptr;
                         Label       *_versions = nullptr;
                         Label       *_made = nullptr;
@@ -225,6 +230,7 @@ namespace {
                         Thread                _worker;
                         Job                   _job = Job::Check;
                         bool                  _force = false;
+                        bool                  _bootloader = false; // the user said yes to writing it
                         bool                  _busy = false; // installing: not closed
                         String                _path;
                         String                _notesText;
@@ -301,6 +307,20 @@ namespace {
                 _confirm.addButton("&Install", 1);
                 _confirm.addButton("&Cancel", 0);
                 _confirm.setFinished(confirmed, this);
+
+                // Asked only for a package whose bootloader differs: the one write a power cut can't be
+                // recovered from without a cable.
+                for (const char *line : {"This update also brings a new bootloader, which starts the system.",
+                                         "It is written last, in under a second. Keep the board powered",
+                                         "until the system is back: if the power is cut while it is written,",
+                                         "the board must be installed again over USB (the web installer).",
+                                         "Without it, the update installs and the bootloader stays as it is."}) {
+                        (void)Widget::create<Label>(_bootConfirm.content(), line);
+                }
+                _bootConfirm.addButton("Install &with It", 2);
+                _bootConfirm.addButton("Install With&out", 1);
+                _bootConfirm.addButton("&Cancel", 0);
+                _bootConfirm.setFinished(bootConfirmed, this);
 
                 Error err = path.isEmpty() ? Error::Ok : _path.assign(path);
                 if (err.isOk() && path.isEmpty() && !newestPackage(_path)) {
@@ -387,8 +407,8 @@ namespace {
                         }
                         (void)self->application().post(checked, self);
                 } else {
-                        self->_result =
-                                Update::apply(self->_path.view(), self->_force, self->_report, onProgress, self);
+                        self->_result = Update::apply(self->_path.view(), self->_force, self->_bootloader,
+                                                      self->_report, onProgress, self);
                         (void)self->application().post(installed, self);
                 }
                 return;
@@ -417,6 +437,8 @@ namespace {
                     r.problem == nullptr ? (r.devKey ? "the dev key" : "a trusted key") : "?");
                 if (r.problem != nullptr) {
                         say(_verdict, "Can't be installed: %s", r.problem);
+                } else if (r.hasNewBootloader()) {
+                        say(_verdict, "Checked: it can be installed, with a new bootloader");
                 } else {
                         say(_verdict, "Checked: it can be installed");
                 }
@@ -431,22 +453,42 @@ namespace {
                         if (!self->_busy) self->application().quit(0);
                         return;
                 }
-                if (self->_report.order <= 0) {
+                // The same version whose news is its bootloader needs no "not newer" question.
+                const Update::Report &r = self->_report;
+                if (r.order < 0 || (r.order == 0 && !r.hasNewBootloader())) {
                         (void)self->_confirm.open();
                 } else {
-                        self->install(false);
+                        self->askBootloader(false);
                 }
                 return;
         }
 
         void UpdaterWindow::confirmed(void *arg, Dialog &, int result) {
-                if (result == 1) static_cast<UpdaterWindow *>(arg)->install(true);
+                if (result == 1) static_cast<UpdaterWindow *>(arg)->askBootloader(true);
                 return;
         }
 
-        void UpdaterWindow::install(bool force) {
+        // Installs at once, or first asks about a new bootloader.
+        void UpdaterWindow::askBootloader(bool force) {
+                _force = force;
+                if (_report.hasNewBootloader()) {
+                        (void)_bootConfirm.open();
+                } else {
+                        install(force, false);
+                }
+                return;
+        }
+
+        void UpdaterWindow::bootConfirmed(void *arg, Dialog &, int result) {
+                auto *self = static_cast<UpdaterWindow *>(arg);
+                if (result != 0) self->install(self->_force, result == 2);
+                return;
+        }
+
+        void UpdaterWindow::install(bool force, bool bootloader) {
                 _busy = true;
                 _force = force;
+                _bootloader = bootloader;
                 _install->setEnabled(false);
                 _close->setEnabled(false);
                 _bar->setValue(0);
@@ -491,7 +533,10 @@ namespace {
                 self->_close->setEnabled(true);
                 self->_bar->setVisible(false);
                 if (self->_result == Error::Exists) {
-                        say(self->_status, "Everything in it is installed already");
+                        say(self->_status, self->_report.hasNewBootloader()
+                                                   ? "Everything else in it is installed already; not its bootloader"
+                                                   : "Everything in it is installed already");
+                        self->_install->setEnabled(self->_report.hasNewBootloader());
                 } else {
                         say(self->_status, "Not installed: %s",
                             self->_report.problem != nullptr ? self->_report.problem : self->_result.desc());
