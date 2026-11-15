@@ -32,6 +32,29 @@ class ProgramControls;
 class Console;
 
 /**
+ * @brief Where a U-mode program's own internal RAM is granted to it (`devplan/protection.md`
+ *        §14): the loader's per-process PMP set. Regions are whole `PmpSet::Granule`s.
+ *
+ * @par Thread Safety
+ * Thread-safe.
+ */
+class UserGrants {
+        public:
+                /**
+                 * @brief Grants [@p base, @p base + @p bytes) with @p access (`PmpSet::Access`).
+                 * @return `Error::Full` if it doesn't fit (the caller uses PSRAM instead).
+                 */
+                virtual Error grant(uintptr_t base, size_t bytes, uint8_t access) = 0;
+
+                /** @brief Takes back the region at @p base; no core holds it once this returns. */
+                virtual void revoke(uintptr_t base) = 0;
+
+        protected:
+                UserGrants() = default;
+                ~UserGrants() = default;
+};
+
+/**
  * @brief A running program's resources and its system calls.
  *
  * Everything a program gets from the kernel belongs to its Process: its
@@ -199,6 +222,14 @@ class Process {
                 /** @brief Closes its fds and directories and frees everything it allocated. Idempotent. */
                 void release();
 
+                /**
+                 * @brief Its program runs in U-mode, granted its memory by @p grants (null:
+                 *        M-mode): its `BMDS_MEM_FAST` blocks are regions there
+                 *        (`devplan/protection.md` §14). Set before the program runs; @p grants
+                 *        outlives what the program allocates.
+                 */
+                void setUserGrants(UserGrants *grants) { _userGrants = grants; }
+
                 // --- System calls (bmds/sys.h) ------------------------------------
 
                 int32_t read(int32_t fd, void *buf, uint32_t size);
@@ -303,6 +334,7 @@ class Process {
 
                 void         releaseProgram();
                 void            unlink(Block *b); // from the allocations' list, under the lock
+                void           *memAllocGranted(uint32_t size, uint32_t align, uint32_t flags);
                 void            link(Block *b);
                 Vfs::Context vfs() const;
                 bool         isConsole(const FileHandle *h) const;
@@ -330,6 +362,7 @@ class Process {
                 Font      *_fonts = nullptr; // MaxFonts of them (Psram), made by the first font_open
                 Semaphore  _childEvent{1, 0};
                 Block     *_blocks = nullptr;
+                UserGrants                    *_userGrants = nullptr;
                 size_t     _allocatedBytes = 0;
                 size_t     _allocations = 0;
                 void      *_argBlock = nullptr;

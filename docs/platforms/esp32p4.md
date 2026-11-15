@@ -939,6 +939,40 @@ Learned 2026-11-13 with a spike (wrappers that logged and fell through) and `pro
   mode), and the interrupt fires once unmasked: "Stack protection fault" in `ipc0`. Swap a
   general register instead; move SP only with the guard's monitor stopped
   (`ESP_HW_STACK_GUARD_MONITOR_STOP_CUR_CORE`, as `portasm.S` does at a switch).
+- **Every trap must leave through its own `mret`, with its own `mcause`** (rev 1.3, 2026-11-14,
+  `devplan/protection.md` §14; it cost most of a day). On this CLIC an `mret` whose
+  `mcause.interrupt` doesn't match the entry type of the trap it leaves corrupts the CLIC's
+  state, and nothing reports it:
+  - an extra `mret` with a stale interrupt cause in `mcause` (left by an interrupt handled
+    earlier) left the core taking **no more interrupts**: the program ran on in U-mode, no tick,
+    then the watchdog;
+  - the same `mret` with `mcause` written 0, or an exception trap entered but never left by an
+    `mret` (a system call that went back to U-mode through a second trap), left the core never
+    again **delivering illegal-instruction exceptions**. IDF enables the FPU and PIE lazily
+    through exactly that exception, so the next task's first FP or PIE instruction (`flw`, `fsw`
+    in `vfork`, PIE in `TextBlend`) stalled the core silently, seconds later and in code that had
+    nothing to do with it; ecall and interrupts still worked.
+  IDF never meets it (every trap exits by its own `mret`, `mcause` restored from the frame).
+  Zephyr met the second form (zephyrproject-rtos/zephyr#114028, fixed by PR #114272: "an `mret`
+  whose mcause.interrupt does not match the current trap's entry type corrupts the CLIC
+  state"). BMDS's U-mode return ends with an `ecall` from M-mode so that its `mret` leaves a
+  trap of its own, and a system call leaves its `ecall` trap by `mret` before the slot runs.
+- **How that was found**, for the next silent hang: "Reset: watchdog" (not "interrupt watchdog")
+  means the interrupt watchdog's panic never ran, so a core stopped taking interrupts. A ring of
+  events per core in LP RAM (`RTC_NOINIT_ATTR`, written from the trap path, printed at the next
+  boot) showed the last traps. A task on each core watching the other core's tick count, reading
+  `ASSIST_DEBUG_CORE_n_RCD_PDEBUGPC/SP` when it stops, gave the stuck instruction. That register
+  is **the PC of the last exception** (IDF enables its recording), not a live PC. The ROM's
+  reset banner (`Core0 Saved PC`, `Core1 Saved PC`) on the serial console agrees with it.
+- **An interrupt taken in U-mode fetches its vector with M-mode's rights:** U-mode needs no PMP
+  grant for the `mtvt` table (measured: a U-mode loop took every tick for 3 s without one).
+- **`mcounteren` works:** with CY and IR set, U-mode reads `cycle` and `instret`; `wfi` and
+  every other CSR are illegal instructions there (SIGILL).
+- **A 4 KB-aligned input section in flash text breaks the link:** it raises `.flash.text`'s
+  alignment, which moves it off the rodata range IDF reserves for it (`ld: section .flash.text
+  ... overlaps section .flash_rodata_dummy`). Align with an ldgen fragment instead
+  (`ALIGN(4096, pre, post)` in `bmds_loader/linker.lf`), and give the section a name the default
+  `.text.*` rule doesn't take first.
 - **A scalar load right after a PIE store can read stale data:** `esp.vst.128.ip` then `lw` of
   the same bytes read the old value, in M-mode and U-mode alike; a `fence` between them fixed
   it (the U-mode spike above).

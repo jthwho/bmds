@@ -19,6 +19,7 @@
 #include <sdkconfig.h>
 #include <bmds/config.h>
 #include <bmds/process.h>
+#include <bmds/audiostream.h>
 #include <bmds/builtinprograms.h>
 #include <bmds/futex.h>
 #include <bmds/loader.h>
@@ -28,6 +29,7 @@
 #include <bmds/task.h>
 #include <bmds/taskowner.h>
 #include "imagewindow.h"
+#include "usermode.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -116,6 +118,17 @@ struct ProgramThread final : ProcessOwner {
                 bool     begun = false;       // it has run: its task exists, a real-time one is counted
                 // Program faults (devplan/programs.md §21, faults.cpp):
                 uintptr_t entrySp = 0; // SP as its kernel entry began: 0 until then (a fault is the kernel's)
+                // U-mode (devplan/protection.md §14): its block, at its kernel stack's top while it
+                // runs (null: M-mode, its task's stack the program's); the program's own stack.
+                UserBlock *user = nullptr;
+                void      *userStack = nullptr; // the allocation
+                uintptr_t  userStackLo = 0;     // [lo, hi): the stack itself (a PSRAM one's gap below lo)
+                uintptr_t  userStackHi = 0;
+                bool       userStackGranted = false; // internal RAM: a region of the process's UserSpace
+                // Where a U-mode real-time audio client makes its periods (audio_cycle), PSRAM;
+                // freed with the record.
+                static constexpr size_t AudioMirrorBytes = RtStream::MaxFrames * 2 * sizeof(float);
+                float                  *audioMirror = nullptr;
                 struct Fault {
                                 uint32_t cause = 0; // mcause, or the stack guard's interrupt
                                 uint32_t pc = 0;    // mepc
@@ -123,6 +136,7 @@ struct ProgramThread final : ProcessOwner {
                                 uint32_t ra = 0;    // the caller, for a jump to a bad address
                                 uint32_t sp = 0;    // SP at the trap: an overflow's depth
                                 int      signal = 0;
+                                bool     user = false; // in U-mode: sp is on userStack
                 } fault; // written by the trap hook, read once by the exit it sends the thread to
 
                 /** @brief The calling task's record (a program thread's: system calls only). */
@@ -215,6 +229,7 @@ struct Running final : ProcessOwner, ProcessControl {
                 uint8_t             *image = nullptr;
                 size_t               imageBytes = 0;    // its size (the profiler's modules)
                 ImageWindow::Mapping mapping;           // its shared pages, if mapped (§14.2)
+                UserSpace           *space = nullptr;   // U-mode (protection.md §14): its PMP set; null: M-mode
                 const ProgramEntry  *builtin = nullptr; // a program built in (/bin/NAME): no image
                 bool                 display = false;   // BMDS_PROGRAM_DISPLAY: drawing to the screen continuously
                 void                *data = nullptr;    // the builtin's (Context::data)

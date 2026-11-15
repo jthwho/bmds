@@ -47,7 +47,10 @@ if(COMMAND idf_component_register)
                                     src/systable.c
                                     src/trapentry.S
                                     src/trapentry.cpp
+                                    src/usermode.S
+                                    src/usermode.cpp
                                INCLUDE_DIRS include ${BMDS_SDK_INCLUDE}
+                               LDFRAGMENTS linker.lf
                                REQUIRES bmds_core bmds_kernel bmds_console bmds_fonts bmds_fs bmds_input bmds_sysconf
                                PRIV_REQUIRES hal riscv spi_flash bmds_audio bmds_bench bmds_crypto bmds_drivers bmds_files bmds_images bmds_ui bmds_midi bmds_net bmds_stats bmds_synth bmds_speech bmds_shell esp_hw_support esp_mm
                                              esp_timer

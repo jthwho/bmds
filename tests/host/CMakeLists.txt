@@ -60,6 +60,7 @@ add_executable(bmds_host_tests
         memtest.cpp
         keptrecord.cpp
         pagewindow.cpp
+        pmpset.cpp
         error.cpp
         ethernet.cpp
         fdtable.cpp

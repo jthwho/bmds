@@ -16,6 +16,7 @@
 #include <bmds/audiofile.h>
 #include <bmds/decodedfile.h>
 #include <bmds/errno.h>
+#include <bmds/memory.h>
 #include <bmds/speechfile.h>
 #include <bmds/synthfile.h>
 #include <bmds/sys.h>
@@ -160,17 +161,27 @@ int32_t bmds_k_audio_cycle(int32_t fd, bmds_audio_cycle_t *cycle) {
         int32_t               r = audioFileOf(handle, file);
         if (r < 0) return r;
         if (cycle != nullptr && cycle->size < sizeof(uint32_t)) return -BMDS_EINVAL;
+        bmds::ProgramThread &thread = call.thread();
         // Raised from its first period: the device must forget it before its task is deleted.
-        if (cycle != nullptr) bmds::ProgramThread::self().realtime = true;
+        if (cycle != nullptr) thread.realtime = true;
+        // A U-mode program can't reach the stream's buffer (internal RAM): it makes each period
+        // in a mirror of its own, copied in as the period ends (devplan/protection.md §14).
+        float *mirror = thread.audioMirror;
+        if (thread.run->space != nullptr && mirror == nullptr && cycle != nullptr) {
+                mirror = static_cast<float *>(
+                        bmds::Memory::alloc(bmds::MemSpace::Psram, bmds::ProgramThread::AudioMirrorBytes));
+                if (mirror == nullptr) return -BMDS_ENOMEM;
+                thread.audioMirror = mirror;
+        }
         bmds::RtStream::Period p;
-        const Error            err = file->cycle(cycle != nullptr ? &p : nullptr);
+        const Error            err = file->cycle(cycle != nullptr ? &p : nullptr, mirror);
         if (err.isError()) return Process::errnoFor(err);
         if (cycle == nullptr) return 0;
         bmds_audio_cycle_t c = {};
         c.frames = p.frames;
         c.channels = p.channels;
         c.rate = p.rateHz;
-        c.out = p.out;
+        c.out = mirror != nullptr ? mirror : p.out;
         c.in = p.in;
         c.position = p.position;
         c.deadline_ns = p.deadlineNs;

@@ -17,6 +17,10 @@
  * kernel call, an interrupt handler, an overrun past the gap below the
  * stack) goes on to IDF's panic as before.
  *
+ * A program in U-mode (devplan/protection.md §14) faults the same way, through usermode.S:
+ * its frame is on the thread's kernel stack with `mepc` the trampoline, so nothing need be
+ * contained; the stub restarts at the kernel stack's top.
+ *
  * What the wrappers rely on (docs/platforms/esp32p4.md §5a): returning
  * from them resumes through the frame (`mepc` included, but not `sp`:
  * `vectors.S` pops the frame by its size); `mstatus` isn't restored, so
@@ -95,25 +99,35 @@ namespace {
                 ProgramThread *t = ProgramThread::ofCurrentTask();
                 if (t == nullptr || t->run == nullptr) return false;     // a kernel task
                 if (t->run->builtin != nullptr) return false;            // kernel code throughout
-                if (t->entrySp == 0 || t->inKernel.load()) return false; // a kernel call, or not started
-                // Everything the program wrote, and the frame, must be in memory the thread owns.
-                if (!ProgramFault::isContained(reinterpret_cast<uintptr_t>(&frame), t->task.stackBottom(),
-                                               t->task.guardBytes()))
-                        return false;
+                // In U-mode (devplan/protection.md §14) the entry sent the trap here from the
+                // program's code: the frame on the kernel stack, `mepc` the trampoline, the
+                // program's PC and SP in the block. Anything else on such a thread is the kernel's.
+                const bool user = t->user != nullptr && UserMode::isReturn(static_cast<uint32_t>(frame.mepc));
+                if (t->user != nullptr && !user) return false;
+                if (!user) {
+                        if (t->entrySp == 0 || t->inKernel.load()) return false; // a kernel call, or not started
+                        // Everything the program wrote, and the frame, must be in memory the thread owns.
+                        if (!ProgramFault::isContained(reinterpret_cast<uintptr_t>(&frame), t->task.stackBottom(),
+                                                       t->task.guardBytes()))
+                                return false;
+                }
                 ProgramThread::Fault &f = t->fault;
                 f.cause = cause;
-                f.pc = static_cast<uint32_t>(frame.mepc);
+                f.pc = user ? t->user->pc : static_cast<uint32_t>(frame.mepc);
                 f.value = static_cast<uint32_t>(frame.mtval);
                 f.ra = static_cast<uint32_t>(frame.ra);
-                f.sp = static_cast<uint32_t>(frame.sp);
+                f.sp = user ? t->user->sp : static_cast<uint32_t>(frame.sp);
                 f.signal = signal;
+                f.user = user;
                 // From here it ends itself: a killer that suspends it now leaves it to (the
                 // handshake, running.h).
                 t->inKernel.store(true);
                 long gp;
                 __asm__("mv %0, gp" : "=r"(gp));
                 frame.mepc = reinterpret_cast<long>(&bmds_fault_stub);
-                frame.a0 = static_cast<long>(t->entrySp);
+                // The stub's SP: in U-mode the kernel stack's top (the block: nothing below it is
+                // needed any more), else where the kernel entry began.
+                frame.a0 = user ? reinterpret_cast<long>(t->user) : static_cast<long>(t->entrySp);
                 frame.gp = gp; // the kernel's
                 RV_CLEAR_CSR(mstatus, MSTATUS_MPIE);
                 // The monitor sees the wrapper's own frames below the bound: off until the stub has
@@ -205,7 +219,7 @@ void bmds_fault_exit(void) {
         const char *name = ProgramFault::nameOf(f.signal);
         const char *path = run.path[0] != '\0' ? run.path : run.command;
         if (f.cause == ETS_ASSIST_DEBUG_INUM) {
-                const uintptr_t bottom = t.task.stackBottom();
+                const uintptr_t bottom = f.user ? t.userStackLo : t.task.stackBottom();
                 const unsigned  past = f.sp < bottom ? static_cast<unsigned>(bottom - f.sp) : 0;
                 bmdsErr("%s[%s]: %s (stack overflow, %u bytes past the bottom) at %s, called from %s", path, who, name,
                         past, pc, ra);

@@ -409,7 +409,7 @@ AudioFile::Status AudioFile::status() {
 
 // ---- Real-time clients
 
-Error AudioFile::cycle(RtStream::Period *next) {
+Error AudioFile::cycle(RtStream::Period *next, const float *written) {
         if (_kind == Kind::Mixer) return Error::NotSupported;
         if (!_realtimeOn.load(std::memory_order_acquire)) return Error::Invalid;
         // Dropped by its device (a stop, a fault): joins again.
@@ -425,7 +425,7 @@ Error AudioFile::cycle(RtStream::Period *next) {
                 }
         }
         if (next != nullptr) _device.raiseCaller(_rt);
-        return _rt.cycle(next, Interrupt::current());
+        return _rt.cycle(next, Interrupt::current(), written);
 }
 
 BMDS_NAMESPACE_END

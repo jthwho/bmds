@@ -4495,8 +4495,31 @@ static int net_watch_test(int count) {
  * internal RAM, iramwrite, textwrite and rodatawrite store back what is already in the kernel's
  * IRAM code, flash code and read-only data (harmless if it isn't protected), top loads from just
  * under 4 GB (a PMA hole).
+ * U-mode (devplan/protection.md §14; each harmless or refused in M-mode, where it doesn't
+ * fault): kernelram reads and writes back a word of the kernel's internal RAM and periph reads a
+ * peripheral register (SIGSEGV), csr reads mstatus and wfi waits for an interrupt (SIGILL),
+ * kernelcall jumps into the kernel's flash code just past the stub page (SIGSEGV; refused,
+ * exit 3, in M-mode).
  */
 static volatile uint32_t fault_sink;
+
+/* In U-mode the slots are stubs in the 4 KB page the table is in (devplan/protection.md §4.3);
+ * in M-mode they are the kernel's functions, far from it. */
+static int in_user_mode(void) {
+        const uintptr_t table = (uintptr_t)bmds_sys;
+        const uintptr_t slot = (uintptr_t)bmds_sys->slot[BMDS_SYS_EXIT];
+        return slot > table && slot - table < 4096u;
+}
+
+/* umode: which mode programs run in, and that the cycle counter reads in it (mcounteren). */
+static int umode_test(void) {
+        uint32_t a, b;
+        __asm__ volatile("rdcycle %0" : "=r"(a));
+        for (volatile int i = 0; i < 1000; ++i) {}
+        __asm__ volatile("rdcycle %0" : "=r"(b));
+        printf("umode: %s, %u cycles\n", in_user_mode() ? "U-mode" : "M-mode", (unsigned)(b - a));
+        return b != a ? 0 : 1;
+}
 
 __attribute__((noinline)) static uint32_t fault_recurse(uint32_t depth) {
         volatile uint8_t pad[256];
@@ -4558,9 +4581,28 @@ static int fault_now(const char *kind) {
                 *p = *p;
         } else if (strcmp(kind, "top") == 0) {
                 fault_sink = *(volatile uint32_t *)0xfffffff0u;
+        } else if (strcmp(kind, "kernelram") == 0) {
+                volatile uint32_t *p = (volatile uint32_t *)0x4ff40000u; /* the kernel's data */
+                *p = *p;
+        } else if (strcmp(kind, "periph") == 0) {
+                fault_sink = *(volatile uint32_t *)0x500a5018u; /* the APM's U-mode bits */
+        } else if (strcmp(kind, "csr") == 0) {
+                uint32_t v;
+                __asm__ volatile("csrr %0, mstatus" : "=r"(v));
+                fault_sink = v;
+        } else if (strcmp(kind, "wfi") == 0) {
+                __asm__ volatile("wfi");
+        } else if (strcmp(kind, "kernelcall") == 0) {
+                if (!in_user_mode()) {
+                        printf("faults: kernelcall needs U-mode (programs/protect)\n");
+                        return 3;
+                }
+                void (*volatile f)(void) = (void (*)(void))((uintptr_t)bmds_sys + 4096u);
+                f();
         } else {
                 fprintf(stderr, "faults: recurse|bigframe|syscall|null|nullw|reserved|jump|ill|misaligned|ebreak|"
-                                "dramexec|iramwrite|textwrite|rodatawrite|top [thread]\n");
+                                "dramexec|iramwrite|textwrite|rodatawrite|top|kernelram|periph|csr|wfi|"
+                                "kernelcall [thread]\n");
                 return 2;
         }
         printf("faults: %s didn't fault\n", kind);
@@ -4591,13 +4633,14 @@ int main(int argc, char **argv) {
                         "threads|"
                         "threadspin|filetype|audio|decode|rt|midi|synth|speech|mididecode|hog|stats|tasks|"
                         "procs|"
-                        "system|notify|expand|image|fonts|net|netwatch|rtnet|sched|ptp|netfs|faults [arg]\n");
+                        "system|notify|expand|image|fonts|net|netwatch|rtnet|sched|ptp|netfs|faults|umode [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
         const char *arg = argc > 2 ? argv[2] : "0";
         if (strcmp(what, "status") == 0) return atoi(arg);
         if (strcmp(what, "faults") == 0) return faults_test(argc, argv);
+        if (strcmp(what, "umode") == 0) return umode_test();
         if (strcmp(what, "audio") == 0) return audio();
         if (strcmp(what, "decode") == 0) return decode(arg);
         if (strcmp(what, "rt") == 0) return rt();

@@ -124,6 +124,9 @@ int32_t bmds_k_surface_open(const bmds_surface_config_t *config) {
         k.format = ProgramSurface::Format(c.format);
         k.buffers = uint8_t(c.buffers);
         k.flags = uint8_t(c.flags);
+        // Buffers in internal RAM can't be granted to a U-mode program yet (protection.md §14):
+        // PSRAM's instead, slower but working.
+        if (call.thread().run->space != nullptr) k.flags &= uint8_t(~ProgramSurface::Fast);
         k.aspectX = uint16_t(c.aspect_x);
         k.aspectY = uint16_t(c.aspect_y);
         k.title = textOf(c.title, MaxTitle);

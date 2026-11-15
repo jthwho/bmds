@@ -23,6 +23,7 @@ set(BMDS_CORE_SRCS
         src/http.cpp
         src/keptrecord.cpp
         src/pagewindow.cpp
+        src/pmpset.cpp
         src/pkgfile.cpp
         src/pkgindex.cpp
         src/pkgmanifest.cpp

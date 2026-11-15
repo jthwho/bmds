@@ -130,12 +130,15 @@ From reading IDF (v6.1-dev) and measuring on the board (rev 1.3, 2026-11-14):
   - **a fault** (1, 5, 7, the guard): the thread ends itself by its signal, as §21 does, now
     simply on its kernel stack (no stub, no saved-SP rules).
 - **The trampoline** (IRAM, the only way down): interrupts off first; if this core's loaded
-  `PmpSet` isn't the thread's process's, load it; stop the guard's monitor; `mscratch` = the
-  block; `mepc` = the saved user PC; MPP = U, MPIE = 1; restore `gp` and SP; the guard's bounds
-  to the user stack and its monitor on; `mret`. A thread's first entry (program start, `thread_start`) is the trampoline with a
-  prepared block.
-- **Kernel stacks** are the program thread's FreeRTOS stack (internal RAM, size measured with
-  `CONFIG_BMDS_STACK_PROBE`; system calls measured 7.3 KB, so about 8 KB). The coprocessor save
+  `PmpSet` isn't the thread's process's, load it; then an `ecall` from M-mode, whose trap
+  (`bmds_user_resume`) sets `mscratch` = the block, `mepc` = the saved user PC, MPP = U,
+  MPIE = 1, stops the guard's monitor, restores `gp` and SP, sets the guard's bounds to the user
+  stack, turns the monitor on and `mret`s. The `ecall` is there because every `mret` must leave a
+  trap of its own (the CLIC's rule, §14). A thread's first entry (program start,
+  `thread_start`) is the trampoline with a prepared block.
+- **Kernel stacks** are the program thread's FreeRTOS stack (12 KB for now, the floor measured
+  for system calls with `CONFIG_BMDS_STACK_PROBE`; internal RAM when there is room, as program
+  stacks are placed, §14). The coprocessor save
   area and TLS block IDF puts at its top stay kernel memory. The program's own stack moves into
   its window range (§4.4), and its 12 KB floor can go: only program code runs on it.
 - **The cache-off window:** a flash write stalls the other core by IPC interrupt. In U-mode that
@@ -145,10 +148,12 @@ From reading IDF (v6.1-dev) and measuring on the board (rev 1.3, 2026-11-14):
 ### 4.3 System calls (P5)
 
 - **The stub table** is one 4 KB flash page (PMP entry 0): the `bmds_sys_t` header and slot array
-  as now, each slot pointing at a stub in the same page: `li a7, n; ecall; ret`. A program calls
+  as now, each slot pointing at a stub in the same page: `li t1, n; ecall; ret` (t1, so all
+  eight argument registers stay the slot's; built §14). A program calls
   `bmds_sys->slot[n](...)` exactly as today. The table the program gets is the stub table (U
   mode) or the direct one (M mode, P8).
-- **Dispatch:** the entry checks `a7 < count`, enables interrupts and calls the real slot (the
+- **Dispatch:** the entry leaves the `ecall`'s trap by `mret` into M-mode, checks `t1 < count`,
+  enables interrupts and calls the real slot (the
   direct table) with `a0`-`a7` and `fa0`-`fa7` untouched; `a0`/`a1`/`fa0` come back as the
   result. The stub is a C call to the program, so only callee-saved state must survive, which C
   already guarantees. Arguments passed on the stack (more than eight words, or large structs by
@@ -385,3 +390,82 @@ another machine: `bmdsboard.py`'s `rz` and `update apply --force` of a firmware-
 - `bench` against the same set just before on step 1: `kernel.switch` 11.64/8.68 µs (11.43/8.60;
   the earlier runs span 11.04-11.60), `kernel.syscall`, `kernel.pipe`, `kernel.sync` within 1%,
   `surface.present` within 2%: three instructions a trap don't show.
+
+## 14. Step 3: programs in U-mode (built and tried 2026-11-14)
+
+**Built** (off by default: `programs/protect`, read as each program starts; P8):
+- **`PmpSet`** (`bmds_core`, host-tested: NAPOT and TOR encoding, whole 128-byte granules only,
+  what fits in 16, the matching rule) and **`UserSpace`** (`bmds_loader/usermode.cpp`, one per
+  U-mode process, internal RAM): entry 0 the stub page (R X), entry 1 all of PSRAM (R W X), then
+  up to 7 internal regions as TOR pairs. A change rebuilds the set under a spinlock with its
+  stamp odd meanwhile, then a new even stamp; a revoke also interrupts the other core
+  (`esp_ipc_isr_call_blocking`), so its trampoline loads the new set before it goes back to U.
+- **The stub page** (`usermode.S`): a `bmds_sys_t` and 135 stubs `li t1, n; ecall; ret` (t1, not
+  a7: every argument register stays the slot's; no slot takes more than 7 words or anything on
+  the stack), plus where `_start` and a thread entry return to (exit, thread_exit). Alone in a
+  4 KB page of flash text by an ldgen fragment (`linker.lf`); 2.2 KB used.
+- **The entry** (`trapentry.S` stubs, `bmds_user_entry`) and **dispatch** as §4.2-§4.3; the
+  **trampoline** ends in an `ecall` from M-mode whose own trap does the `mret` to U
+  (`bmds_user_resume`), and a system call leaves its `ecall` trap by `mret` before the slot runs:
+  the CLIC's rule below.
+- **Threads:** a U-mode thread's FreeRTOS stack is its kernel stack (12 KB, placed as program
+  stacks are); its block (`UserBlock`, 48 bytes) at that stack's top; the program's stack apart,
+  in internal RAM granted to the process when it fits (stack placement rule and PMP room), else
+  PSRAM with the 1 KB gap below. Freed (and revoked) when the thread is reaped.
+- **Faults from U** go through IDF's panic path to the §21 wrappers, which see `mepc` = the
+  trampoline and end the program on its kernel stack (no containment rules needed).
+- **Memory the kernel hands a U-mode program:**
+  - `BMDS_MEM_FAST` blocks: whole granules granted to the process, the kernel's header outside
+    the region; no room in the PMP: PSRAM. `mem_realloc` of one: a new block and a copy;
+  - real-time audio (`audio_cycle`): the stream's buffer is internal RAM freed when the fd
+    closes, so a U-mode client gets a PSRAM mirror of its own (`AudioMirrorBytes`, 3.8 KB a
+    thread, lazily), copied in by `RtStream::cycle()` as the period ends;
+  - `BMDS_SURFACE_FAST` surfaces and canvases: PSRAM buffers for a U-mode program (slower,
+    working; step 4 decides surfaces).
+- `mcounteren` = CY|IR on both cores: U-mode reads `cycle` and `instret`.
+- `progtest`: `faults kernelram|periph|csr|wfi|kernelcall` (harmless or refused in M-mode),
+  `umode` (which mode, and `rdcycle`).
+- IRAM: 604 bytes (`usermode.S`) and 146 more in the stubs (step 2's 288 → 434). Flash: the 4 KB
+  page.
+
+**Not as designed (step 3 with today's memory):** U-mode is granted all of PSRAM, the kernel's
+objects there included (Running, Process, PSRAM kernel stacks): a program's heap blocks, argv
+and the buffers it is handed are scattered among them, and 16 entries can't follow them. What it
+can't touch now: internal RAM but its own stacks and fast blocks (every FreeRTOS structure, the
+drivers, IRAM), flash, the ROM, the peripherals, CSRs. Step 4's window range narrows PSRAM.
+
+**The CLIC's rule** (`docs/platforms/esp32p4.md` §5a): every trap must leave through its own
+`mret` with `mcause` its own. The first U-mode return `mret`ed with whatever `mcause` the last
+trap left: once it was an interrupt's, and the core took no more interrupts (the program ran on
+in U, no tick, the watchdog). Writing `mcause` = 0 fixed that, but the extra `mret` (and a
+system call's `ecall` trap never left by one) silently stopped illegal-instruction exceptions,
+which IDF's lazy FPU/PIE enable relies on: seconds later the first FP or PIE instruction of some
+other task (dropbear's `vfork`, the console's `TextBlend`, an M-mode program's `flw`) stalled
+its core, and the interrupt watchdog's panic couldn't run. Found with LP RAM breadcrumbs, a
+cross-core watcher reading the last-exception PC (`RCD_PDEBUGPC`), and Zephyr's report of the
+same bug (#114028/#114272). Hence the trampoline's `ecall` and the dispatch's early `mret`.
+Granting U-mode the vector table (tried while chasing the first hang) proved unnecessary: the
+vector fetch has M-mode's rights.
+
+**Tried on the board** (0.2.0+6aaa1c4c, `programs/protect` set for the run only):
+- `progtest faults`, every kind on the main thread and a second: the old kinds as before;
+  `kernelram`, `periph`, `kernelcall` SIGSEGV and `csr`, `wfi` SIGILL (in M-mode they don't
+  fault). `progtest` suites: the same results in both modes.
+- `bmds-compat` (v1): all pass, twice; internal RAM the same after the second run (no leak);
+  20 U-mode and 20 M-mode runs of a program: no change.
+- ssh logins with dropbear's session children in U-mode; a U-mode program spinning 3 s (every
+  tick taken) and killed; an M-mode FP program right after U-mode ones: fine.
+- `bench`, M-mode then U-mode (same boot): `kernel.syscall` getpid 2.41 → 3.27-3.31 µs,
+  clock_gettime 1.70 → 2.72 µs (about +0.9 µs: three trap round trips a call, against the
+  0.3-0.5 µs guessed in §4.3); `kernel.pipe` 258 → 249 MB/s; `programs.launch` 5.7 ms both.
+
+**Left for later steps:**
+- The system call's cost: a call could leave by restoring its own `ecall`'s `mcause` and
+  `mret`ing straight to U when the slot didn't switch tasks, saving two of the three traps.
+  Measure before trying; the rule above is unforgiving.
+- A sibling thread on the other core doesn't see a region granted after its set was loaded until
+  its next trap (it would fault reaching another thread's new internal stack). Reload on a PMP
+  fault and retry, or kick at grant time, if it shows.
+- Kernel stacks: 12 KB each beside the program's own stack; measure them with
+  `CONFIG_BMDS_STACK_PROBE` now that only system calls use them.
+- Steps 4-6 as §8; step 6 turns it on by default.

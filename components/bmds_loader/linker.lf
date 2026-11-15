@@ -1,0 +1,20 @@
+# The stub page (devplan/protection.md §4.3, usermode.S): one 4 KB page of flash code holding
+# nothing else, the only kernel memory a U-mode program may read or run (PMP entry 0, one NAPOT
+# region). Aligned here before and after, not by its input section: a section asking for 4 KB
+# alignment raises .flash.text's own, which moves it off the rodata range IDF reserves for it
+# (ld: "section .flash.text ... overlaps section .flash_rodata_dummy"). Not a .text.* name:
+# the default rule, earlier in .flash.text, would take it first.
+
+[sections:bmds_user_page]
+entries:
+    .bmds_user_page
+
+[scheme:bmds_user_page]
+entries:
+    bmds_user_page -> flash_text
+
+[mapping:bmds_user_page]
+archive: libbmds_loader.a
+entries:
+    usermode (bmds_user_page);
+        bmds_user_page -> flash_text KEEP() ALIGN(4096, pre, post) SURROUND(bmds_user_page)

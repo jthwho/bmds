@@ -13,13 +13,14 @@
  * Each asks first where the trap came from: `mscratch` is 0 while a core runs M-mode code and the
  * running thread's kernel-side block while it runs U-mode code. `csrrw t0, mscratch, t0` swaps it
  * into t0: a zero is a trap from M-mode, swapped back at once and passed on unchanged, with every
- * register as it was (three instructions). Nothing runs in U-mode yet (step 2): the U-mode path
- * restores the same way and passes on too, so a stray `mscratch` can't change anything.
+ * register as it was (three instructions). A block is a trap from U-mode: usermode.S's
+ * `bmds_user_entry` moves to the thread's kernel stack, takes a system call itself, and returns
+ * here for anything else, which goes on to IDF's handler as from M-mode (`mepc` the trampoline).
  *
  * **Not SP:** the usual trick swaps SP with `mscratch`, but the hardware stack guard watches SP
  * every cycle (M-mode and U-mode alike), and SP at 0 for one instruction latched it: the first
- * interrupt panicked "Stack protection fault" in the IPC task (2026-11-14). SP may only move with
- * the guard's monitor stopped (the U-mode path, step 3).
+ * interrupt panicked "Stack protection fault" in the IPC task (2026-11-14). SP moves only with
+ * the guard's monitor stopped (usermode.S).
  *
  * The vector table is here too, in IRAM's code (`bmds_trap_table`), as IDF keeps its own. Built in
  * internal data RAM (read and write only since BMDS's PMA, devplan/protection.md §12), the
@@ -32,10 +33,13 @@
  */
 
 #include <sdkconfig.h>
+#include "usermodeoffsets.h"
 
         .section .iram1.bmds_trap_entry, "ax"
 
-/* A stub: from M-mode, straight on to IDF's @target; from U-mode, to @user (step 3). */
+/* A stub: from M-mode, straight on to IDF's @target; from U-mode, through bmds_user_entry, which
+ * comes back (unless it was a system call) with SP the kernel stack and every other register the
+ * program's but t1, reloaded here. */
 .macro bmds_trap_stub name, target
         .global \name
         .type \name, @function
@@ -44,14 +48,34 @@
         bnez    t0, 1f
         csrrw   t0, mscratch, t0
         j       \target
-1:      csrrw   t0, mscratch, t0        /* from U-mode: none yet; as from M-mode */
+1:      sw      t1, BMDS_UB_T1(t0)
+        jal     t1, bmds_user_entry
+        lw      t1, BMDS_UB_T1(sp)
         j       \target
         .size \name, . - \name
 .endm
 
-        /* mtvec's base: its low 6 bits are the mode's, so the entry is 64-aligned. */
+        /* mtvec's base: its low 6 bits are the mode's, so the entry is 64-aligned. Exceptions
+         * from M-mode also ask whether this is the U-mode trampoline's own `ecall` (cause 11:
+         * nothing else in M-mode issues one), its way into U-mode (usermode.S). */
         .balign 64
-        bmds_trap_stub bmds_trap_exception, _panic_handler
+        .global bmds_trap_exception
+        .type bmds_trap_exception, @function
+bmds_trap_exception:
+        csrrw   t0, mscratch, t0
+        bnez    t0, 1f
+        csrr    t0, mcause
+        slli    t0, t0, 20                      /* the exception code: bits 11-0 */
+        srli    t0, t0, 20
+        addi    t0, t0, -11
+        beqz    t0, bmds_user_resume
+        csrrw   t0, mscratch, zero              /* t0 back, `mscratch` 0 again */
+        j       _panic_handler
+1:      sw      t1, BMDS_UB_T1(t0)
+        jal     t1, bmds_user_entry
+        lw      t1, BMDS_UB_T1(sp)
+        j       _panic_handler
+        .size bmds_trap_exception, . - bmds_trap_exception
 
         .balign 4
         bmds_trap_stub bmds_trap_irq_interrupt, _interrupt_handler
@@ -64,7 +88,8 @@
         bmds_trap_stub bmds_trap_irq_ipc, esp_ipc_isr_handler
 #endif
 
-/* mtvt: vector i's handler address, as IDF's _mtvt_table but through the stubs above. */
+/* mtvt: vector i's handler address, as IDF's _mtvt_table but through the stubs above. (An
+ * interrupt taken in U-mode fetches its vector with M-mode's rights: U-mode isn't granted it.) */
         .balign 64
         .global bmds_trap_table
         .type bmds_trap_table, @object

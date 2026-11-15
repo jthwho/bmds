@@ -13,6 +13,7 @@
 
 #include <stdint.h>
 #include <bmds/sys.h>
+#include "usermodeoffsets.h"
 
 void    bmds_k_exit(int32_t status);
 int32_t bmds_k_read(int32_t fd, void *buf, uint32_t size);
@@ -154,16 +155,17 @@ int32_t bmds_k_syntax_scan(bmds_syntax_scan_t *scan);
 int32_t bmds_k_audio_speak(const bmds_speak_config_t *config);
 int32_t bmds_k_audio_speak_info(int32_t fd, bmds_speak_info_t *info);
 
-#define SLOTS 135
+#define SLOTS BMDS_K_SLOTS
 
-/* bmds_sys_t with its slots spelled out (same layout; checked below). */
-static const struct {
+/* bmds_sys_t with its slots spelled out (same layout; checked below). Global: a U-mode
+ * program's system call reaches its slot through it (usermode.S's dispatch). */
+const struct bmds_k_table_t {
                 uint32_t      magic;
                 uint32_t      abi_version;
                 uint32_t      count;
                 uint32_t      reserved;
                 bmds_sys_fn_t slot[SLOTS];
-} table = {
+} bmds_k_table = {
         BMDS_SYS_MAGIC,
         BMDS_ABI_VERSION,
         SLOTS,
@@ -308,8 +310,8 @@ static const struct {
 };
 
 _Static_assert(SLOTS == BMDS_SYS_SYNTAX_SCAN + 1, "every slot is in the table");
-_Static_assert(sizeof(table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
+_Static_assert(sizeof(bmds_k_table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {
-        return (const bmds_sys_t *)&table;
+        return (const bmds_sys_t *)&bmds_k_table;
 }

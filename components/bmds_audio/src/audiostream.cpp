@@ -357,10 +357,12 @@ void RtStream::reset() {
         return;
 }
 
-Error RtStream::cycle(Period *next, Interrupt *interrupt) {
+Error RtStream::cycle(Period *next, Interrupt *interrupt, const float *written) {
         // The period it had is ended: the engine, waiting for it, looks again.
         const uint64_t given = _given.load(std::memory_order_relaxed);
         if (given != 0 && _ended.load(std::memory_order_relaxed) != given) {
+                if (written != nullptr && _out != nullptr)
+                        std::memcpy(_out, written, size_t(_givenFrames) * _channels * sizeof(float));
                 _ended.store(given, std::memory_order_release);
                 if (_engineWake != nullptr) _engineWake->release();
         }
@@ -388,6 +390,7 @@ Error RtStream::cycle(Period *next, Interrupt *interrupt) {
                         _skipped.fetch_add(static_cast<uint32_t>(skipped), std::memory_order_relaxed);
                         tally(Tally::ClientSkipped, static_cast<uint32_t>(skipped));
                 }
+                _givenFrames = o.frames <= MaxFrames ? o.frames : MaxFrames;
                 _given.store(o.number, std::memory_order_release);
                 next->out = _out;
                 next->in = nullptr;

@@ -420,12 +420,17 @@ class RtStream final : public AudioStream {
                 /**
                  * @brief The client: ends the period it was given (if any), then, if
                  *        @p next isn't null, waits for the next and fills it in.
+                 *
+                 * @p written, if not null, is where the client made the period it was
+                 * given instead of its `out` (a U-mode program's own memory: it can't
+                 * reach the stream's, `devplan/protection.md` §14): copied into the
+                 * output before the period ends, as many samples as it had.
                  * @return `Ok`, `Interrupted` (@p interrupt raised while waiting),
                  *         `BrokenPipe` (over: cancelled, or dropped by its device's
                  *         stop), or `Busy` (too many waiters).
                  * @blocking When @p next isn't null.
                  */
-                Error cycle(Period *next, Interrupt *interrupt);
+                Error cycle(Period *next, Interrupt *interrupt, const float *written = nullptr);
 
                 /**
                  * @brief The engine: hands out the next period, of @p frames at
@@ -499,6 +504,7 @@ class RtStream final : public AudioStream {
                 SeqLocked<Offer>               _offer;
                 std::atomic<uint64_t>          _offered{0}; // the period last offered
                 std::atomic<uint64_t>          _given{0};   // the period the client was last given (0: none yet)
+                uint32_t                       _givenFrames = 0; // its frames (the client's thread only)
                 std::atomic<uint64_t>          _ended{0};   // the period the client last ended
                 std::atomic<bool>              _inCycle{false};
                 std::atomic<bool>              _cancelled{false};

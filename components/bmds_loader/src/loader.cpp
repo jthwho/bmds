@@ -113,6 +113,14 @@ namespace {
         static_assert(ProgramStackFloor >= BMDS_THREAD_STACK_MIN, "the floor only raises requests");
         static_assert(ProgramStackFloor % 16 == 0 && ProgramFault::GuardBytes % 16 == 0, "stacks stay aligned");
 
+        // A U-mode program thread's kernel stack (devplan/protection.md §14): its FreeRTOS stack,
+        // placed as a program's stack is (internal RAM when there is room, else PSRAM: a flash
+        // write stalls the other core in its IPC interrupt before the cache goes off and lets it
+        // go after, so the trap entry's stores to it come before and its loads after, as on
+        // today's program stacks). Only system calls and trap frames run on it now, which is what
+        // the floor above was measured for.
+        constexpr size_t KernelStackBytes = ProgramStackFloor;
+
         // Internal RAM left free when a program's stack goes there.
         constexpr size_t InternalReserveBytes = 64 * 1024;
         // The largest stack internal RAM takes: bigger ones are the deep-recursion budgets (key
@@ -520,6 +528,28 @@ namespace {
                 return;
         }
 
+        uint32_t word(const void *p) {
+                return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(p));
+        }
+
+        // Into U-mode at @p pc for the first time (devplan/protection.md §14): the block at the
+        // top of what this task uses of its stack, the program's stack its own; never returns.
+        [[noreturn]] void enterUser(ProgramThread &thread, uintptr_t pc, uint32_t ra, uint32_t tp, uint32_t a0,
+                                    uint32_t a1, uint32_t a2, uint32_t a3) {
+                UserBlock block;
+                uint32_t  gp;
+                __asm__("mv %0, gp" : "=r"(gp));
+                block.sp = static_cast<uint32_t>(thread.userStackHi);
+                block.gp = gp; // the ABI's: programs leave it alone
+                block.pc = static_cast<uint32_t>(pc);
+                block.kernelLo = static_cast<uint32_t>(thread.task.stackBottom());
+                block.userLo = static_cast<uint32_t>(thread.userStackLo);
+                block.userHi = static_cast<uint32_t>(thread.userStackHi);
+                block.pmp = thread.run->space->pmp();
+                thread.user = &block;
+                UserMode::start(block, a0, a1, a2, a3, ra, tp);
+        }
+
         // The program's first task: call _start; returning from it is exit() (devplan/programs.md §12).
         void programMain(void *arg) {
                 Running       &run = *static_cast<Running *>(arg);
@@ -529,6 +559,11 @@ namespace {
                 thread.entrySp = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
                 enterTask(thread);
                 thread.leave(); // stopped or killed before it ran; then into program code
+                if (run.space != nullptr) {
+                        Process &p = *run.process;
+                        enterUser(thread, run.entry, UserMode::exitAddress(), 0, word(UserMode::table()),
+                                  static_cast<uint32_t>(p.argc()), word(p.argv()), word(p.envp()));
+                }
                 using Entry = int32_t (*)(const bmds_sys_t *, int32_t, char **, char **);
                 const Entry   entry = reinterpret_cast<Entry>(run.entry);
                 const int32_t status =
@@ -542,6 +577,9 @@ namespace {
                 thread.entrySp = reinterpret_cast<uintptr_t>(__builtin_frame_address(0)); // as programMain's
                 enterTask(thread);
                 thread.leave();
+                if (thread.run->space != nullptr)
+                        enterUser(thread, reinterpret_cast<uintptr_t>(thread.entry), UserMode::threadExitAddress(),
+                                  word(thread.tls), word(thread.arg), 0, 0, 0);
                 // The kernel has no thread-local storage (Loader::begin() checks): tp is the program's.
                 __asm__ volatile("mv tp, %0" : : "r"(thread.tls));
                 const int32_t status = thread.entry(thread.arg);
@@ -620,8 +658,16 @@ namespace {
                 return run;
         }
 
+        void freeUserStack(ProgramThread &thread);
+
         void destroyRunning(Running *run) {
                 run->releaseStats(); // an exec that failed to start, say
+                freeUserStack(run->main); // one that never ran
+                if (run->space != nullptr) {
+                        if (run->process != nullptr) run->process->setUserGrants(nullptr);
+                        UserSpace::destroy(run->space);
+                        run->space = nullptr;
+                }
                 run->~Running();
                 Memory::free(run);
                 return;
@@ -642,6 +688,50 @@ namespace {
                                        Memory::stats(MemSpace::Internal).largestFreeBlock >= bytes + reserve
                                ? MemSpace::Internal
                                : MemSpace::Psram;
+        }
+
+        // A U-mode thread's own stack (devplan/protection.md §14), apart from its kernel stack:
+        // in internal RAM, granted to the process, where stackSpaceFor() would put it and the
+        // process's PMP set has room; else PSRAM (granted as a whole) with the gap below it.
+        Error allocUserStack(ProgramThread &thread, size_t bytes, bool display) {
+                bytes = UserMode::granules(bytes);
+                if (stackSpaceFor(bytes, false, display) == MemSpace::Internal) {
+                        void           *stack = Memory::allocAligned(MemSpace::Internal, bytes, PmpSet::Granule);
+                        const uintptr_t lo = reinterpret_cast<uintptr_t>(stack);
+                        if (stack != nullptr &&
+                            thread.run->space->grant(lo, bytes, PmpSet::Read | PmpSet::Write).isOk()) {
+                                thread.userStack = stack;
+                                thread.userStackLo = lo;
+                                thread.userStackHi = lo + bytes;
+                                thread.userStackGranted = true;
+                                return Error::Ok;
+                        }
+                        Memory::free(stack);
+                }
+                void *stack = Memory::allocAligned(MemSpace::Psram, bytes + ProgramFault::GuardBytes, 16);
+                if (stack == nullptr) return Error::NoMem;
+                thread.userStack = stack;
+                thread.userStackLo = reinterpret_cast<uintptr_t>(stack) + ProgramFault::GuardBytes;
+                thread.userStackHi = thread.userStackLo + bytes;
+                thread.userStackGranted = false;
+                return Error::Ok;
+        }
+
+        // Its task stopped (or never started): no core runs its program code any more.
+        void freeUserStack(ProgramThread &thread) {
+                Memory::free(thread.audioMirror);
+                thread.audioMirror = nullptr;
+                if (thread.userStack == nullptr) return;
+                if (thread.userStackGranted) thread.run->space->revoke(thread.userStackLo);
+                Memory::free(thread.userStack);
+                thread.userStack = nullptr;
+                thread.userStackLo = thread.userStackHi = 0;
+                thread.userStackGranted = false;
+                return;
+        }
+
+        const char *stackSpaceName(const ProgramThread &thread) {
+                return thread.userStackGranted ? "internal RAM" : "PSRAM";
         }
 
         // The core the display's own work runs on: the surfaces' presenters and the scanout
@@ -693,12 +783,30 @@ namespace {
                 std::snprintf(name, sizeof(name), "%.*s", static_cast<int>(path.size() - slash - 1),
                               path.data() + slash + 1);
                 config.name = name;
-                // A program's stack holds its kernel calls too: never smaller than the floor; a gap
-                // below it takes what the stack guard catches late (devplan/programs.md §21).
-                config.stackBytes = run.builtin != nullptr ? stackBytes : std::max(stackBytes, ProgramStackFloor);
-                config.guardBytes = run.builtin != nullptr ? 0 : ProgramFault::GuardBytes;
                 run.display = display;
-                config.stackSpace = stackSpaceFor(config.stackBytes, run.builtin != nullptr, display);
+                // In U-mode (devplan/protection.md §14) if asked and it can: its own PMP set, a
+                // kernel stack for its task, its stack apart. Else M-mode as before.
+                if (run.builtin == nullptr && UserMode::isWanted()) {
+                        run.space = UserSpace::create();
+                        if (run.space == nullptr) {
+                                bmdsWarn("Loader: %s: no memory for its PMP set: runs in M-mode", name);
+                        } else if (allocUserStack(run.main, stackBytes, display).isError()) {
+                                return Error::NoMem; // destroyRunning() frees the set
+                        }
+                }
+                run.process->setUserGrants(run.space); // an exec in place: no longer the old program's
+                if (run.space != nullptr) {
+                        config.stackBytes = KernelStackBytes;
+                        config.guardBytes = 0;
+                        config.stackSpace = stackSpaceFor(KernelStackBytes, false, display);
+                } else {
+                        // A program's stack holds its kernel calls too: never smaller than the floor; a
+                        // gap below it takes what the stack guard catches late (devplan/programs.md §21).
+                        config.stackBytes =
+                                run.builtin != nullptr ? stackBytes : std::max(stackBytes, ProgramStackFloor);
+                        config.guardBytes = run.builtin != nullptr ? 0 : ProgramFault::GuardBytes;
+                        config.stackSpace = stackSpaceFor(config.stackBytes, run.builtin != nullptr, display);
+                }
                 // Its starter's priority; the shells' for one the kernel starts (pid 1). A program
                 // thread's normal one, and its policy (devplan/processes.md §3.12).
                 const ProgramThread *starter = ProgramThread::ofCurrentTask();
@@ -708,9 +816,15 @@ namespace {
                 config.priority = RealTimeThreads::inherit(run.main, starter, normal, exec);
                 config.core = core = coreForProgram(display);
                 const Error err = run.main.task.start(config, run.builtin != nullptr ? builtinMain : programMain, &run);
-                if (err.isOk())
+                if (err.isOk() && run.space != nullptr) {
+                        bmdsDebug("Loader: %s (pid %d) at %p in U-mode, stack %u in %s", name,
+                                  static_cast<int>(run.pid), run.image,
+                                  static_cast<unsigned>(run.main.userStackHi - run.main.userStackLo),
+                                  stackSpaceName(run.main));
+                } else if (err.isOk()) {
                         bmdsDebug("Loader: %s (pid %d) at %p, stack %u in %s", name, static_cast<int>(run.pid),
                                   run.image, static_cast<unsigned>(config.stackBytes), memSpaceName(config.stackSpace));
+                }
                 return err;
         }
 
@@ -720,6 +834,7 @@ namespace {
                 if (thread.realtime) AudioDevice::forgetTask(thread.task.handle());
                 RealTimeThreads::forget(thread);
                 (void)thread.task.stop();
+                freeUserStack(thread);
                 Running &run = *thread.run;
                 bool     last = false;
                 {
@@ -1556,7 +1671,9 @@ int32_t ProgramThread::startThread(const bmds_thread_t *spec) {
         uint32_t stackBytes = spec->stack_size != 0 ? spec->stack_size : BMDS_DEFAULT_STACK_SIZE;
         if (stackBytes > BMDS_MAX_STACK_SIZE) return -BMDS_EINVAL;
         if (stackBytes < BMDS_THREAD_STACK_MIN) stackBytes = BMDS_THREAD_STACK_MIN;
-        stackBytes = std::max<uint32_t>((stackBytes + 15u) & ~15u, ProgramStackFloor);
+        // U-mode: the program's stack is its own (its calls run on the kernel stack), no floor.
+        stackBytes = run->space != nullptr ? (stackBytes + 15u) & ~15u
+                                           : std::max<uint32_t>((stackBytes + 15u) & ~15u, ProgramStackFloor);
         void *memory = Memory::alloc(MemSpace::Psram, sizeof(ProgramThread));
         if (memory == nullptr) return -BMDS_ENOMEM;
         auto *t = new (memory) ProgramThread;
@@ -1589,11 +1706,19 @@ int32_t ProgramThread::startThread(const bmds_thread_t *spec) {
         if (spec->tid != nullptr) *spec->tid = t->tid;
         Task::Config config;
         config.name = pcTaskGetName(nullptr); // the program's name, as its first task's
-        config.stackBytes = stackBytes;
-        config.guardBytes = ProgramFault::GuardBytes;
-        config.stackSpace = stackSpaceFor(stackBytes, false, run->display);
+        Error err = Error::Ok;
+        if (run->space != nullptr) {
+                config.stackBytes = KernelStackBytes;
+                config.guardBytes = 0;
+                config.stackSpace = stackSpaceFor(KernelStackBytes, false, run->display);
+                err = allocUserStack(*t, stackBytes, run->display);
+        } else {
+                config.stackBytes = stackBytes;
+                config.guardBytes = ProgramFault::GuardBytes;
+                config.stackSpace = stackSpaceFor(stackBytes, false, run->display);
+        }
         config.priority = RealTimeThreads::inherit(*t, this, normalPriority, false);
-        const Error err = t->task.start(config, threadMain, t);
+        if (err.isOk()) err = t->task.start(config, threadMain, t);
         if (err.isError()) {
                 {
                         Mutex::Locker locker(run->threadsLock, WaitForever);
@@ -1606,11 +1731,13 @@ int32_t ProgramThread::startThread(const bmds_thread_t *spec) {
                         --run->records;
                         s.detach(t->own);
                 }
+                freeUserStack(*t);
                 destroyThread(t);
                 return -BMDS_ENOMEM;
         }
         bmdsDebug("Loader: thread %d of pid %d, stack %u in %s", static_cast<int>(t->tid), static_cast<int>(run->pid),
-                  static_cast<unsigned>(stackBytes), memSpaceName(config.stackSpace));
+                  static_cast<unsigned>(stackBytes),
+                  run->space != nullptr ? stackSpaceName(*t) : memSpaceName(config.stackSpace));
         return t->tid;
 }
 
@@ -2205,6 +2332,7 @@ Error Loader::init() {
         }
         logRegionProtection();
         TrapEntry::logState();
+        UserMode::logState();
         return err;
 }
 

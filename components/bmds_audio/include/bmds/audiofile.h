@@ -147,8 +147,10 @@ class AudioFile final : public Stream {
                  * @return `Ok`, `Invalid` (not real-time), `NotSupported` (a mixer),
                  *         `Interrupted`, `BrokenPipe`, or a rejoin's error.
                  * @blocking When @p next isn't null: a period.
+                 * @param written Where the client made its period instead of its `out`
+                 *        (`RtStream::cycle()`), or null.
                  */
-                Error cycle(RtStream::Period *next);
+                Error cycle(RtStream::Period *next, const float *written = nullptr);
 
                 /** @brief Plays now, below the start threshold. @return `Ok`, or `NotSupported` (a mixer). */
                 Error start();
