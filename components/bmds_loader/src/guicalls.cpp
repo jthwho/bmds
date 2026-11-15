@@ -82,9 +82,11 @@ int32_t bmds_k_gui_canvas_surface(int32_t conn, uint32_t canvas, const bmds_surf
                 k.height = uint16_t(c.height);
                 k.format = uint8_t(c.format);
                 k.buffers = uint8_t(c.buffers);
-                // Not in internal RAM for a U-mode program (protection.md §14, as surface_open).
-                k.fast = (c.flags & BMDS_SURFACE_FAST) != 0 && call.thread().run->space == nullptr;
+                k.fast = (c.flags & BMDS_SURFACE_FAST) != 0;
         }
+        // A U-mode program's in its own memory, PSRAM (protection.md §15, as surface_open).
+        k.memory = call.thread().run->memory;
+        if (k.memory != nullptr) k.fast = false;
         auto [handle, err] = bmds::GuiOpener::canvasSurface(connection->stream(), canvas, k);
         if (err == Error::NotSupported) return -BMDS_ENOTTY;
         if (err == Error::NotExist) return -BMDS_ENOENT;

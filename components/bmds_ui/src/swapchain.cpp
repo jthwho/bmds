@@ -67,21 +67,35 @@ SwapChain::FrameTime SwapChain::frameTime() {
 
 SwapChain::~SwapChain() {
         for (uint8_t *&b : _buffers) {
-                Memory::free(b);
+                if (_memory != nullptr && b != nullptr) {
+                        (void)_memory->free(b, ProgramMemory::KernelOwner);
+                } else {
+                        Memory::free(b);
+                }
                 b = nullptr;
         }
+        if (_memory != nullptr) _memory->unref();
+        _memory = nullptr;
         if (_blitting.load(std::memory_order_acquire)) unrefBlitter();
 }
 
-Error SwapChain::makeBuffers(uint16_t width, uint16_t height, Format format, uint8_t count, MemSpace space) {
+Error SwapChain::makeBuffers(uint16_t width, uint16_t height, Format format, uint8_t count, MemSpace space,
+                             ProgramMemory *memory) {
         if (width == 0 || height == 0 || count < 1 || count > MaxBuffers || _bufferCount != 0) return Error::Invalid;
+        if (memory != nullptr && _memory == nullptr) {
+                memory->ref();
+                _memory = memory;
+        }
         _width = width;
         _height = height;
         _format = format;
         _stride = size_t(width) * bytesPerPixel(format);
         _bufferBytes = (_stride * height + BufferAlign - 1) / BufferAlign * BufferAlign;
         for (uint8_t i = 0; i < count; ++i) {
-                _buffers[i] = static_cast<uint8_t *>(Memory::allocAligned(space, _bufferBytes, BufferAlign));
+                _buffers[i] = static_cast<uint8_t *>(
+                        _memory != nullptr ? _memory->alloc(uint32_t(_bufferBytes), uint32_t(BufferAlign),
+                                                            ProgramMemory::Dma, ProgramMemory::KernelOwner)
+                                           : Memory::allocAligned(space, _bufferBytes, BufferAlign));
                 if (_buffers[i] == nullptr) return Error::NoMem;
                 std::memset(_buffers[i], 0, _bufferBytes);
                 (void)esp_cache_msync(_buffers[i], _bufferBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);

@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/filehandle.h>
+#include <bmds/programmemory.h>
 #include <bmds/result.h>
 #include <bmds/stringview.h>
 
@@ -46,6 +47,7 @@ namespace GuiOpener {
                         uint8_t  format = 3;   ///< `SwapChain::Format` (the ABI's `BMDS_PIXEL_...`).
                         uint8_t  buffers = 2;  ///< 2 or 3.
                         bool     fast = false; ///< Buffers in internal RAM.
+                        ProgramMemory *memory = nullptr; ///< A U-mode program's: the buffers there.
         };
 
         /**

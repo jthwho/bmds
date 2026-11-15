@@ -61,6 +61,7 @@ add_executable(bmds_host_tests
         keptrecord.cpp
         pagewindow.cpp
         pmpset.cpp
+        rangeheap.cpp
         error.cpp
         ethernet.cpp
         fdtable.cpp

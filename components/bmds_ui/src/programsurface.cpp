@@ -108,8 +108,9 @@ Error ProgramSurface::start(const Config &requested) {
                 return Error::Invalid;
         _config = config;
         _config.title = StringView();
+        _config.memory = nullptr; // the swap chain keeps its reference
         const MemSpace space = (config.flags & Fast) != 0 ? MemSpace::InternalDma : MemSpace::PsramDma;
-        Error          err = makeBuffers(config.width, config.height, config.format, config.buffers, space);
+        Error err = makeBuffers(config.width, config.height, config.format, config.buffers, space, config.memory);
         if (err.isError()) return err;
         if (config.format == Format::L8) {
                 _palette = static_cast<uint32_t *>(Memory::alloc(MemSpace::Internal, 256 * sizeof(uint32_t)));

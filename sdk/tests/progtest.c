@@ -19,6 +19,8 @@
  *   progtest lines        read lines (fgets) until end of input
  *   progtest raw          read keys raw until 'q'
  *   progtest mem          memory info
+ *   progtest umem [MB]  blocks small and large up to MB (8) written whole, a realloc grown,
+ *                       all freed: the memory comes back (devplan/protection.md §15)
  *   progtest syntax       the code colouring calls (syntax_find, syntax_scan)
  *   progtest random       16 random bytes
  *   progtest cwd DIR      getcwd, chdir DIR, getcwd
@@ -788,6 +790,52 @@ static int posix(const char *dir) {
         struct utsname u;
         CHECK(uname(&u) == 0 && strcmp(u.sysname, "BMDS") == 0);
         printf("posix: ok (%s %s %s)\n", u.sysname, u.release, u.machine);
+        return 0;
+}
+
+/* A program's memory (devplan/protection.md §15): small blocks and large ones (a range each in
+   U-mode) up to @p mb megabytes, each written whole and checked; one grown by realloc; all freed,
+   and the system's PSRAM is back (within what a heap keeps for its next blocks). */
+static int umem(const char *arg) {
+        const uint32_t        limit = (uint32_t)(arg != NULL && atoi(arg) > 0 ? atoi(arg) : 8) << 20;
+        static const uint32_t sizes[] = {48, 100, 3000, 70000, 300000, 1500000};
+        enum {
+                Max = 2048
+        };
+        static uint8_t *blocks[Max];
+        static uint32_t lengths[Max];
+        bmds_mem_info_t before = {.size = sizeof(before)}, after = {.size = sizeof(after)};
+        CHECK(bmds_mem_info(0, &before) == 0);
+        uint32_t n = 0, total = 0;
+        for (; n < Max && total < limit; ++n) {
+                const uint32_t size = sizes[n % (sizeof(sizes) / sizeof(sizes[0]))];
+                blocks[n] = bmds_mem_alloc(size, n % 7 == 0 ? 4096 : 0, 0);
+                if (blocks[n] == NULL) break;
+                CHECK(((uintptr_t)blocks[n] & (n % 7 == 0 ? 4095u : 15u)) == 0);
+                memset(blocks[n], (int)(n & 0xff), size);
+                lengths[n] = size;
+                total += size;
+        }
+        for (uint32_t i = 0; i < n; ++i) CHECK(blocks[i][0] == (uint8_t)i && blocks[i][lengths[i] - 1] == (uint8_t)i);
+        /* Grown a step at a time, its contents kept. */
+        uint8_t *g = bmds_mem_alloc(1000, 0, 0);
+        CHECK(g != NULL);
+        memset(g, 0x5a, 1000);
+        for (uint32_t size = 2000; size <= 1200000; size *= 3) {
+                uint8_t *h = bmds_mem_realloc(g, size, 0);
+                CHECK(h != NULL && h[0] == 0x5a && h[999] == 0x5a);
+                memset(h + 1000, 0x5a, size - 1000);
+                g = h;
+        }
+        CHECK(bmds_mem_info(0, &after) == 0);
+        const uint32_t used = after.program_bytes - before.program_bytes;
+        bmds_mem_free(g);
+        for (uint32_t i = n; i > 0; --i) bmds_mem_free(blocks[i - 1]);
+        CHECK(bmds_mem_info(0, &after) == 0);
+        CHECK(after.program_bytes == before.program_bytes);
+        printf("umem: %u blocks, %u bytes (%u counted), free %u before, %u after\n", (unsigned)n, (unsigned)total,
+               (unsigned)used, (unsigned)before.free_bytes, (unsigned)after.free_bytes);
+        CHECK(after.free_bytes + 512u * 1024u >= before.free_bytes);
         return 0;
 }
 
@@ -4755,6 +4803,7 @@ int main(int argc, char **argv) {
         if (strcmp(what, "lines") == 0) return lines();
         if (strcmp(what, "raw") == 0) return raw();
         if (strcmp(what, "mem") == 0) return mem();
+        if (strcmp(what, "umem") == 0) return umem(arg);
         if (strcmp(what, "posix") == 0) return posix(arg);
         if (strcmp(what, "abort") == 0) abort();
         if (strcmp(what, "random") == 0) {

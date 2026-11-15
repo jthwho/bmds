@@ -44,11 +44,12 @@ class CanvasSurface final : public SwapChain {
 
                 /**
                  * @brief Makes a surface of @p count buffers of @p width × @p height in @p format
-                 *        (RGB565 or BGR24), in @p space, and the program's handle to it.
+                 *        (RGB565 or BGR24), in @p space (or a U-mode program's @p memory), and the
+                 *        program's handle to it.
                  * @return The handle (which holds the first reference), or `Invalid`, `NoMem`.
                  */
                 static Result<FileHandle::Ptr> make(uint16_t width, uint16_t height, Format format, uint8_t count,
-                                                    MemSpace space);
+                                                    MemSpace space, ProgramMemory *memory);
 
                 /** @brief Returns @p handle's canvas surface, or null. */
                 static CanvasSurface *of(FileHandle &handle);

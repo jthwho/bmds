@@ -15,6 +15,7 @@
 #include <bmds/error.h>
 #include <bmds/fdtable.h>
 #include <bmds/memspace.h>
+#include <bmds/programmemory.h>
 #include <bmds/mutex.h>
 #include <bmds/semaphore.h>
 #include <bmds/signals.h>
@@ -30,29 +31,6 @@ class Font;
 class ProgramControls;
 
 class Console;
-
-/**
- * @brief Where a U-mode program's own internal RAM is granted to it (`devplan/protection.md`
- *        §14): the loader's per-process PMP set. Regions are whole `PmpSet::Granule`s.
- *
- * @par Thread Safety
- * Thread-safe.
- */
-class UserGrants {
-        public:
-                /**
-                 * @brief Grants [@p base, @p base + @p bytes) with @p access (`PmpSet::Access`).
-                 * @return `Error::Full` if it doesn't fit (the caller uses PSRAM instead).
-                 */
-                virtual Error grant(uintptr_t base, size_t bytes, uint8_t access) = 0;
-
-                /** @brief Takes back the region at @p base; no core holds it once this returns. */
-                virtual void revoke(uintptr_t base) = 0;
-
-        protected:
-                UserGrants() = default;
-                ~UserGrants() = default;
-};
 
 /**
  * @brief A running program's resources and its system calls.
@@ -130,14 +108,16 @@ class Process {
                 /**
                  * @brief Prepares for a new program (an exec): the argument block
                  *        is rebuilt from @p args and @p environment (which may point
-                 *        into the old one or into this process's memory), then the
+                 *        into the old one or into this process's memory) in @p memory,
+                 *        the new program's (null: the kernel's heap), then the
                  *        memory, directories and line input of the old program are
                  *        freed, the close-on-exec fds closed and caught signals
                  *        reset to their default. Its fds, directory, terminal,
                  *        ignored signals, mask and pending signals stay.
                  * @return `Ok`, or as `setArguments()` (nothing changed then).
                  */
-                Error prepareExec(Span<const StringView> args, Span<const StringView> environment);
+                Error prepareExec(Span<const StringView> args, Span<const StringView> environment,
+                                  ProgramMemory *memory);
 
                 /** @brief Released when one of its children ends (its waits). */
                 Semaphore &childEvent() { return _childEvent; }
@@ -158,7 +138,8 @@ class Process {
 
                 /**
                  * @brief Builds the argument block: `argv` (with its NULL) and `envp`
-                 *        ("NAME=value" strings, NULL-terminated), in one allocation.
+                 *        ("NAME=value" strings, NULL-terminated), in one allocation in its
+                 *        program's memory (`setMemory()`).
                  * @return `Ok`, `NoMem`, or `Invalid` (too many or too long).
                  */
                 Error setArguments(Span<const StringView> args, Span<const StringView> environment);
@@ -223,12 +204,18 @@ class Process {
                 void release();
 
                 /**
-                 * @brief Its program runs in U-mode, granted its memory by @p grants (null:
-                 *        M-mode): its `BMDS_MEM_FAST` blocks are regions there
-                 *        (`devplan/protection.md` §14). Set before the program runs; @p grants
-                 *        outlives what the program allocates.
+                 * @brief Its program's memory from now on (null: the kernel's heap, M-mode), a
+                 *        reference kept (`devplan/protection.md` §15). Blocks it made before stay
+                 *        where they are, freed by `release()`: set before the program allocates,
+                 *        or by `prepareExec()`.
                  */
-                void setUserGrants(UserGrants *grants) { _userGrants = grants; }
+                void setMemory(ProgramMemory *memory);
+
+                /** @brief Returns its program's memory (null: the kernel's heap). */
+                ProgramMemory *memory() const { return _memory; }
+
+                /** @brief Returns the owner its blocks have in a `ProgramMemory`. */
+                uint32_t memoryOwner() const { return _memoryOwner; }
 
                 // --- System calls (bmds/sys.h) ------------------------------------
 
@@ -334,8 +321,10 @@ class Process {
 
                 void         releaseProgram();
                 void            unlink(Block *b); // from the allocations' list, under the lock
-                void           *memAllocGranted(uint32_t size, uint32_t align, uint32_t flags);
                 void            link(Block *b);
+                Error           buildArguments(Span<const StringView> args, Span<const StringView> environment,
+                                               ProgramMemory *memory);
+                void            freeArguments();
                 Vfs::Context vfs() const;
                 bool         isConsole(const FileHandle *h) const;
                 int32_t      readConsole(void *buf, uint32_t size);
@@ -362,10 +351,12 @@ class Process {
                 Font      *_fonts = nullptr; // MaxFonts of them (Psram), made by the first font_open
                 Semaphore  _childEvent{1, 0};
                 Block     *_blocks = nullptr;
-                UserGrants                    *_userGrants = nullptr;
+                ProgramMemory                 *_memory = nullptr; // U-mode: its program's (a reference)
+                uint32_t                       _memoryOwner = 0;  // its blocks' owner there
                 size_t     _allocatedBytes = 0;
                 size_t     _allocations = 0;
                 void      *_argBlock = nullptr;
+                ProgramMemory                 *_argMemory = nullptr; // where _argBlock is (a reference; null: the heap)
                 char     **_argv = nullptr;
                 char     **_envp = nullptr;
                 int32_t    _argc = 0;

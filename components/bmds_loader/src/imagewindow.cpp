@@ -75,97 +75,121 @@ namespace ImageWindow {
                 return state != nullptr && PsramWindow::contains(p, bytes);
         }
 
+        namespace {
+
+                Error mapInto(ImageCache &cache, ImageCache::Entry &entry, uint8_t *at, Mapping &out);
+
+        } // namespace
+
         Error map(ImageCache &cache, ImageCache::Entry &entry, Mapping &out) {
-                out = Mapping();
-                State *s = state;
-                if (s == nullptr || !entry.hasPages()) return Error::NotSupported;
-                const ProgramImage::Info &info = entry.info();
-                const uint32_t            pages = ProgramImage::pageCount(info.imageSize);
-                {
+                return mapInto(cache, entry, nullptr, out);
+        }
+
+        Error mapAt(ImageCache &cache, ImageCache::Entry &entry, uint8_t *at, Mapping &out) {
+                if (at == nullptr) return Error::Invalid;
+                return mapInto(cache, entry, at, out);
+        }
+
+        namespace {
+
+                // At @p at (the caller's addresses), else a range of the window's.
+                Error mapInto(ImageCache &cache, ImageCache::Entry &entry, uint8_t *at, Mapping &out) {
+                        out = Mapping();
+                        State *s = state;
+                        if (s == nullptr || !entry.hasPages()) return Error::NotSupported;
+                        const ProgramImage::Info &info = entry.info();
+                        const uint32_t            pages = ProgramImage::pageCount(info.imageSize);
+                        {
+                                Mutex::Locker locker(s->lock, WaitForever);
+                                if (s->usage.used + pages > s->limit) return Error::NoMem;
+                                s->usage.used += pages; // held while mapping
+                        }
+                        uint8_t *const base = at != nullptr ? at : PsramWindow::takeRange(pages, false);
+                        auto           giveBack = [&](uint8_t *block, uint8_t **privatePages) {
+                                freePrivate(block, privatePages);
+                                if (base != nullptr && at == nullptr) PsramWindow::giveRange(base, pages);
+                                Mutex::Locker locker(s->lock, WaitForever);
+                                s->usage.used -= pages;
+                        };
+                        if (base == nullptr) {
+                                giveBack(nullptr, nullptr);
+                                return Error::NoMem;
+                        }
+
+                        // The private pages: one 64 KB-aligned block for all of them, from the heap (any
+                        // physical pages will do; a window block of its own would be mapped twice). A block
+                        // a page left the heap a gap just under 64 KB before each, which no other page
+                        // could use: 11 instances of a 16-private-page program cut the largest free block
+                        // from 23.6 to 1.1 MB, with 12.5 MB free.
+                        const uint32_t shared = ProgramImage::sharedPageCount(info);
+                        auto         **privatePages =
+                                static_cast<uint8_t **>(Memory::alloc(MemSpace::Psram, pages * sizeof(uint8_t *)));
+                        Memory::Options heapPages;
+                        heapPages.alignBytes = Page;
+                        heapPages.heapOnly = true;
+                        auto *block = pages > shared
+                                              ? static_cast<uint8_t *>(Memory::alloc(
+                                                        MemSpace::Psram, size_t(pages - shared) * Page, heapPages))
+                                              : nullptr;
+                        if (privatePages == nullptr || (block == nullptr && pages > shared)) {
+                                giveBack(block, privatePages);
+                                return Error::NoMem;
+                        }
+                        for (uint32_t p = 0, k = 0; p < pages; ++p)
+                                privatePages[p] =
+                                        ProgramImage::isSharedPage(info, p) ? nullptr : block + size_t(k++) * Page;
+                        // The block's lines under its heap addresses dropped (whoever had the memory last may
+                        // have left dirty ones, which would land on it later), every page mapped (the entry's
+                        // bytes were written back when it was read), the range's stale lines dropped; then the
+                        // private pages placed through the range itself, so the program finds its data in the
+                        // cache as written. What it may execute (below the writable data: the code and
+                        // constants moved to the end, programs.md §14.3) is written back: each core fetches
+                        // instructions past the data cache, and found libgcc's lui unpatched otherwise (a load
+                        // from the bare offset). The data and the bss stay in the cache: the write-back of two
+                        // pages took ~0.5 ms (§19).
+                        if (block != nullptr) PsramWindow::invalidate(block, size_t(pages - shared) * Page);
+                        for (uint32_t p = 0; p < pages; ++p) {
+                                const uint8_t *from =
+                                        privatePages[p] != nullptr ? privatePages[p] : entry.bytes() + size_t(p) * Page;
+                                PsramWindow::mapPage(base + size_t(p) * Page, from);
+                        }
+                        PsramWindow::invalidate(base, size_t(pages) * Page);
+                        for (uint32_t p = 0; p < pages; ++p)
+                                if (privatePages[p] != nullptr) privatePages[p] = base + size_t(p) * Page;
+                        ProgramImage::placePages(info, entry.bytes(), entry.patches(), privatePages,
+                                                 uint32_t(uintptr_t(base)));
+                        uint32_t firstPrivate = pages;
+                        for (uint32_t p = 0; p < pages && firstPrivate == pages; ++p)
+                                if (privatePages[p] != nullptr) firstPrivate = p;
+                        const uint32_t codeStart = firstPrivate * Page;
+                        const uint32_t codeEnd = std::min(info.writableOffset, info.imageSize);
+                        if (codeEnd > codeStart)
+                                (void)esp_cache_msync(base + codeStart, codeEnd - codeStart,
+                                                      ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+                        cache.pin(&entry);
+                        out.base = base;
+                        out.pages = pages;
+                        out.shared = shared;
+                        out.privatePages = privatePages;
+                        out.privateBlock = block;
+                        out.entry = &entry;
+                        out.cache = &cache;
+                        out.ownRange = at == nullptr;
                         Mutex::Locker locker(s->lock, WaitForever);
-                        if (s->usage.used + pages > s->limit) return Error::NoMem;
-                        s->usage.used += pages; // held while mapping
-                }
-                uint8_t *const base = PsramWindow::takeRange(pages, false);
-                auto           giveBack = [&](uint8_t *block, uint8_t **privatePages) {
-                        freePrivate(block, privatePages);
-                        if (base != nullptr) PsramWindow::giveRange(base, pages);
-                        Mutex::Locker locker(s->lock, WaitForever);
-                        s->usage.used -= pages;
-                };
-                if (base == nullptr) {
-                        giveBack(nullptr, nullptr);
-                        return Error::NoMem;
+                        s->usage.instances += 1;
+                        s->usage.shared += shared;
+                        s->usage.mapped += 1;
+                        return Error::Ok;
                 }
 
-                // The private pages: one 64 KB-aligned block for all of them, from the heap (any
-                // physical pages will do; a window block of its own would be mapped twice). A block
-                // a page left the heap a gap just under 64 KB before each, which no other page
-                // could use: 11 instances of a 16-private-page program cut the largest free block
-                // from 23.6 to 1.1 MB, with 12.5 MB free.
-                const uint32_t shared = ProgramImage::sharedPageCount(info);
-                auto         **privatePages =
-                        static_cast<uint8_t **>(Memory::alloc(MemSpace::Psram, pages * sizeof(uint8_t *)));
-                Memory::Options heapPages;
-                heapPages.alignBytes = Page;
-                heapPages.heapOnly = true;
-                auto *block = pages > shared ? static_cast<uint8_t *>(Memory::alloc(
-                                                       MemSpace::Psram, size_t(pages - shared) * Page, heapPages))
-                                             : nullptr;
-                if (privatePages == nullptr || (block == nullptr && pages > shared)) {
-                        giveBack(block, privatePages);
-                        return Error::NoMem;
-                }
-                for (uint32_t p = 0, k = 0; p < pages; ++p)
-                        privatePages[p] = ProgramImage::isSharedPage(info, p) ? nullptr : block + size_t(k++) * Page;
-                // The block's lines under its heap addresses dropped (whoever had the memory last may
-                // have left dirty ones, which would land on it later), every page mapped (the entry's
-                // bytes were written back when it was read), the range's stale lines dropped; then the
-                // private pages placed through the range itself, so the program finds its data in the
-                // cache as written. What it may execute (below the writable data: the code and
-                // constants moved to the end, programs.md §14.3) is written back: each core fetches
-                // instructions past the data cache, and found libgcc's lui unpatched otherwise (a load
-                // from the bare offset). The data and the bss stay in the cache: the write-back of two
-                // pages took ~0.5 ms (§19).
-                if (block != nullptr) PsramWindow::invalidate(block, size_t(pages - shared) * Page);
-                for (uint32_t p = 0; p < pages; ++p) {
-                        const uint8_t *from =
-                                privatePages[p] != nullptr ? privatePages[p] : entry.bytes() + size_t(p) * Page;
-                        PsramWindow::mapPage(base + size_t(p) * Page, from);
-                }
-                PsramWindow::invalidate(base, size_t(pages) * Page);
-                for (uint32_t p = 0; p < pages; ++p)
-                        if (privatePages[p] != nullptr) privatePages[p] = base + size_t(p) * Page;
-                ProgramImage::placePages(info, entry.bytes(), entry.patches(), privatePages, uint32_t(uintptr_t(base)));
-                uint32_t firstPrivate = pages;
-                for (uint32_t p = 0; p < pages && firstPrivate == pages; ++p)
-                        if (privatePages[p] != nullptr) firstPrivate = p;
-                const uint32_t codeStart = firstPrivate * Page;
-                const uint32_t codeEnd = std::min(info.writableOffset, info.imageSize);
-                if (codeEnd > codeStart)
-                        (void)esp_cache_msync(base + codeStart, codeEnd - codeStart,
-                                              ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-                cache.pin(&entry);
-                out.base = base;
-                out.pages = pages;
-                out.shared = shared;
-                out.privatePages = privatePages;
-                out.privateBlock = block;
-                out.entry = &entry;
-                out.cache = &cache;
-                Mutex::Locker locker(s->lock, WaitForever);
-                s->usage.instances += 1;
-                s->usage.shared += shared;
-                s->usage.mapped += 1;
-                return Error::Ok;
-        }
+        } // namespace
 
         void unmap(Mapping &m) {
                 State *s = state;
                 if (!m.isMapped() || s == nullptr) return;
                 PsramWindow::invalidate(m.base, size_t(m.pages) * Page); // the instance's dirty lines die with it
                 PsramWindow::clear(m.base, m.pages);
-                PsramWindow::giveRange(m.base, m.pages);
+                if (m.ownRange) PsramWindow::giveRange(m.base, m.pages);
                 freePrivate(m.privateBlock, m.privatePages);
                 m.cache->release(m.entry);
                 {

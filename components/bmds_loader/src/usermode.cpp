@@ -5,14 +5,14 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * Programs in U-mode (devplan/protection.md §14): the per-process PMP sets, whether the system
+ * Programs in U-mode (devplan/protection.md §14): the per-program PMP sets, whether the system
  * can run programs in U-mode, and the setting that asks for it. The trap paths are usermode.S's.
  *
- * What a U-mode program is granted (step 3, with today's memory): the stub page (read, run),
- * all of PSRAM (its image, heap, the buffers the kernel hands it, but the kernel's own objects
- * there too, until step 4's window range), and the internal RAM it owns (stacks, `BMDS_MEM_FAST`
- * blocks), each region whole granules. Everything else is denied: the kernel's internal RAM and
- * IRAM, flash, the ROM, the peripherals, CSRs but the counters.
+ * What a U-mode program is granted (§15): the stub page (read, run) and its own memory
+ * (`UserMemory`): its window ranges (its code read and run, the rest read and write) and the
+ * internal RAM it owns (stacks, `BMDS_MEM_FAST` blocks), each region whole granules. Everything
+ * else is denied: the kernel's memory, other programs', flash, the ROM, the peripherals, CSRs but
+ * the counters.
  */
 
 #include "usermode.h"
@@ -77,7 +77,6 @@ namespace {
         static_assert(alignof(UserBlock) == 16);
 
         constexpr uint8_t Rx = PmpSet::Read | PmpSet::Exec;
-        constexpr uint8_t Rwx = PmpSet::Read | PmpSet::Write | PmpSet::Exec;
 
         // A set's stamp: even and never reused (odd: being rewritten; 0: nothing loaded).
         constinit std::atomic<uint32_t> nextStamp{2};
@@ -129,7 +128,7 @@ UserSpace *UserSpace::create() {
         if (memory == nullptr) return nullptr;
         auto *space = new (memory) UserSpace;
         taskENTER_CRITICAL(&space->_lock);
-        const Error err = space->update();
+        const Error err = space->update(0);
         taskEXIT_CRITICAL(&space->_lock);
         if (err.isError()) {
                 destroy(space);
@@ -146,14 +145,14 @@ void UserSpace::destroy(UserSpace *space) {
 }
 
 // Under the lock: the set from the regions, published with a new stamp; nothing changed if
-// they don't fit. Built and published under one lock, so the last change is what is loaded.
-Error UserSpace::update() {
+// they don't fit with @p keepFree entries to spare. Built and published under one lock, so the
+// last change is what is loaded.
+Error UserSpace::update(unsigned keepFree) {
         PmpSet set;
-        // Entry 0: the stub page. Entry 1: PSRAM (64 MB, aligned: one NAPOT entry).
-        Error err = set.add(address(bmds_user_page), BMDS_K_PAGE_BYTES, Rx);
-        if (err.isOk()) err = set.add(SOC_EXTRAM_LOW, SOC_EXTRAM_HIGH - SOC_EXTRAM_LOW, Rwx);
+        Error  err = set.add(address(bmds_user_page), BMDS_K_PAGE_BYTES, Rx); // entry 0: the stub page
         for (unsigned i = 0; err.isOk() && i < _count; ++i)
                 err = set.add(_regions[i].base, _regions[i].bytes, _regions[i].access);
+        if (err.isOk() && PmpSet::Entries - set.used < keepFree) err = Error::Full;
         if (err.isError()) return err;
         __atomic_store_n(&_pmp.stamp, 1u, __ATOMIC_SEQ_CST); // odd: a trampoline reading it waits
         for (unsigned i = 0; i < PmpSet::Entries / 4; ++i) _pmp.cfg[i] = set.cfg[i];
@@ -163,15 +162,34 @@ Error UserSpace::update() {
         return Error::Ok;
 }
 
-Error UserSpace::grant(uintptr_t base, size_t bytes, uint8_t access) {
+Error UserSpace::grant(uintptr_t base, size_t bytes, uint8_t access, unsigned keepFree) {
         taskENTER_CRITICAL(&_lock);
         Error err = _count < MaxRegions ? Error::Ok : Error::Full;
         if (err.isOk()) {
                 _regions[_count++] = Region{base, bytes, access};
-                err = update();
+                err = update(keepFree);
                 if (err.isError()) --_count;
         }
         taskEXIT_CRITICAL(&_lock);
+        // The other core may run a sibling thread with the old set: an interrupt there sends it
+        // through its trampoline, which loads this one.
+        if (err.isOk()) esp_ipc_isr_call_blocking(nothing, nullptr);
+        return err;
+}
+
+Error UserSpace::resize(uintptr_t base, size_t bytes) {
+        Error err = Error::NotExist;
+        taskENTER_CRITICAL(&_lock);
+        for (unsigned i = 0; i < _count; ++i) {
+                if (_regions[i].base != base) continue;
+                const size_t old = _regions[i].bytes;
+                _regions[i].bytes = bytes;
+                err = update(0);
+                if (err.isError()) _regions[i].bytes = old;
+                break;
+        }
+        taskEXIT_CRITICAL(&_lock);
+        if (err.isOk()) esp_ipc_isr_call_blocking(nothing, nullptr);
         return err;
 }
 
@@ -183,14 +201,21 @@ void UserSpace::revoke(uintptr_t base) {
                 for (unsigned j = i + 1; j < _count; ++j) _regions[j - 1] = _regions[j];
                 --_count;
                 found = true;
-                (void)update(); // fewer regions than fitted before: it fits
+                (void)update(0); // fewer regions than fitted before: it fits
                 break;
         }
         taskEXIT_CRITICAL(&_lock);
-        // This core loads it at its next trampoline; the other may be in U-mode with the old one:
-        // an interrupt there sends it through its trampoline.
+        // This core loads it at its next trampoline; the other may be in U-mode with the old one.
         if (found) esp_ipc_isr_call_blocking(nothing, nullptr);
         return;
+}
+
+unsigned UserSpace::entriesFor(uintptr_t base, size_t bytes) const {
+        return _pmp.entriesFor(base, bytes);
+}
+
+unsigned UserSpace::freeEntries() const {
+        return PmpSet::Entries - _pmp.used;
 }
 
 bool UserMode::isAvailable() {

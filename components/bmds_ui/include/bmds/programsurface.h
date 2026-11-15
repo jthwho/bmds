@@ -108,6 +108,7 @@ class ProgramSurface final : public SwapChain {
                                 uint16_t   aspectX = 0; ///< The picture's shape (0, 0: square pixels).
                                 uint16_t   aspectY = 0;
                                 StringView title; ///< The window's (copied).
+                                ProgramMemory *memory = nullptr; ///< A U-mode program's: the buffers there.
                 };
 
                 /** @brief A pointer event's x and y once the pointer has left the window (the ABI's

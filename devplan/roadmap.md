@@ -82,7 +82,10 @@ Plans: [`storage.md`](storage.md), [`time.md`](time.md). Complete; verified on h
 - [ ] Memory protection: programs in U-mode (`protection.md`, planned 2026-11-14, the user's request): BMDS sets the PMP and PMA (bootloader region protection off), a trap entry in front of IDF's vectors with a kernel stack per program thread, the same slot table as `ecall` stubs, a program's memory in one window range, pointers checked at the slot boundary (`EFAULT`). U-mode, FPU/PIE/loops in U, MPRV and the APM measured on the board (`docs/platforms/esp32p4.md` §5a). Step 1 done (§12): BMDS sets the PMA (the kernel's W^X) and leaves the PMP free on both cores; the bootloader through the Updater, confirmed (`update.md` §20), the firmware on either bootloader; tried on the board without a cable. Step 2 done (§13): the trap entry in front of IDF's vectors (a t0 check, the table in IRAM's code), tried with the faults, the compat corpus and a network soak; no measurable cost. Step 3 done (§14, off by default: `programs/protect`): programs in U-mode with
 kernel stacks, the stub page, `ecall` dispatch and faults from U; PSRAM granted whole until step 4;
 the CLIC's one-`mret`-per-trap rule found the hard way; the compat corpus passes in U-mode, a system
-call +0.9 µs. Next: step 4, one window range per process.
+call +0.9 µs. Step 4 done (§15): a U-mode program's own memory (window ranges for image, heap
+and stacks, records in the kernel, granted and zeroed as used, surfaces in it); PSRAM no longer
+granted whole; a launch +1 ms. Open: a pre-existing hang when a second thread faults (M-mode too),
+two unexplained watchdog resets during updates. Next: step 5, the slot audit and `EFAULT`.
   - [x] MMU spike (aliases, caches, DMA) and design.
   - [x] (a) The image cache with plain copies (`programs.md` §14.1): `exec` from memory, without the card.
   - [x] (b) Shared pages through the MMU window.

@@ -165,11 +165,11 @@ int32_t bmds_k_audio_cycle(int32_t fd, bmds_audio_cycle_t *cycle) {
         // Raised from its first period: the device must forget it before its task is deleted.
         if (cycle != nullptr) thread.realtime = true;
         // A U-mode program can't reach the stream's buffer (internal RAM): it makes each period
-        // in a mirror of its own, copied in as the period ends (devplan/protection.md §14).
+        // in a mirror in its own memory, copied in as the period ends (devplan/protection.md §14).
         float *mirror = thread.audioMirror;
-        if (thread.run->space != nullptr && mirror == nullptr && cycle != nullptr) {
-                mirror = static_cast<float *>(
-                        bmds::Memory::alloc(bmds::MemSpace::Psram, bmds::ProgramThread::AudioMirrorBytes));
+        if (thread.run->memory != nullptr && mirror == nullptr && cycle != nullptr) {
+                mirror = static_cast<float *>(thread.run->memory->alloc(bmds::ProgramThread::AudioMirrorBytes, 16, 0,
+                                                                        bmds::ProgramMemory::KernelOwner));
                 if (mirror == nullptr) return -BMDS_ENOMEM;
                 thread.audioMirror = mirror;
         }

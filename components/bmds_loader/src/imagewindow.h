@@ -39,6 +39,7 @@ namespace ImageWindow {
                         uint8_t           *privateBlock = nullptr; // the private pages, one after another
                         ImageCache::Entry *entry = nullptr;        // pinned while mapped
                         ImageCache        *cache = nullptr;
+                        bool ownRange = false; // its addresses are the window's to give back (else a UserMemory's)
 
                         /** @brief True if it holds a mapping. */
                         bool isMapped() const { return base != nullptr; }
@@ -67,6 +68,12 @@ namespace ImageWindow {
          * @blocking Allocates, copies the private pages.
          */
         Error map(ImageCache &cache, ImageCache::Entry &entry, Mapping &out);
+
+        /**
+         * @brief As `map()`, at @p at: window addresses the caller holds (a U-mode program's main
+         *        range, `devplan/protection.md` §15), which `unmap()` leaves to it.
+         */
+        Error mapAt(ImageCache &cache, ImageCache::Entry &entry, uint8_t *at, Mapping &out);
 
         /**
          * @brief Ends a mapping: the range invalidated (its dirty lines dropped), unmapped and

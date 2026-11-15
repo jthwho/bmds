@@ -29,6 +29,7 @@
 #include <bmds/task.h>
 #include <bmds/taskowner.h>
 #include "imagewindow.h"
+#include "usermemory.h"
 #include "usermode.h"
 
 BMDS_NAMESPACE_BEGIN
@@ -121,12 +122,11 @@ struct ProgramThread final : ProcessOwner {
                 // U-mode (devplan/protection.md §14): its block, at its kernel stack's top while it
                 // runs (null: M-mode, its task's stack the program's); the program's own stack.
                 UserBlock *user = nullptr;
-                void      *userStack = nullptr; // the allocation
-                uintptr_t  userStackLo = 0;     // [lo, hi): the stack itself (a PSRAM one's gap below lo)
+                void      *userStack = nullptr; // the allocation, the kernel's block in the program's memory
+                uintptr_t  userStackLo = 0;     // [lo, hi): the stack itself
                 uintptr_t  userStackHi = 0;
-                bool       userStackGranted = false; // internal RAM: a region of the process's UserSpace
-                // Where a U-mode real-time audio client makes its periods (audio_cycle), PSRAM;
-                // freed with the record.
+                // Where a U-mode real-time audio client makes its periods (audio_cycle), in the
+                // program's memory; freed with the record.
                 static constexpr size_t AudioMirrorBytes = RtStream::MaxFrames * 2 * sizeof(float);
                 float                  *audioMirror = nullptr;
                 struct Fault {
@@ -229,7 +229,10 @@ struct Running final : ProcessOwner, ProcessControl {
                 uint8_t             *image = nullptr;
                 size_t               imageBytes = 0;    // its size (the profiler's modules)
                 ImageWindow::Mapping mapping;           // its shared pages, if mapped (§14.2)
-                UserSpace           *space = nullptr;   // U-mode (protection.md §14): its PMP set; null: M-mode
+                UserMemory          *memory =
+                        nullptr; // U-mode (protection.md §15): its memory, a reference until the record goes
+                UserMemory          *imageMemory = nullptr; // the same, the image's reference: released with the image
+                UserSpace           *space = nullptr;       // its PMP set (memory's); null: M-mode
                 const ProgramEntry  *builtin = nullptr; // a program built in (/bin/NAME): no image
                 bool                 display = false;   // BMDS_PROGRAM_DISPLAY: drawing to the screen continuously
                 void                *data = nullptr;    // the builtin's (Context::data)

@@ -469,3 +469,94 @@ vector fetch has M-mode's rights.
 - Kernel stacks: 12 KB each beside the program's own stack; measure them with
   `CONFIG_BMDS_STACK_PROBE` now that only system calls use them.
 - Steps 4-6 as §8; step 6 turns it on by default.
+
+## 15. Step 4: a program's own memory (built and tried 2026-11-14)
+
+Step 3 granted U-mode all of PSRAM. Now a U-mode program is granted only its own memory: its
+image, heap and stacks in PSRAM window ranges of its own, the internal RAM it owns, and nothing of
+the kernel's or another program's. §4.4 as refined against the code:
+
+**A program's memory (`UserMemory`, `bmds_loader/src/usermemory.cpp`)**, one per program
+instance (a `Running`; an exec makes a new one), made when its image is placed (before its
+arguments, which go in it). Reference-counted: the image, the `Running` until its record goes
+(after its last thread is reaped: their stacks are freed into it), its `Process` (a vfork child
+holds its parent's), and each swap chain with buffers in it.
+- **The main range:** window addresses reserved (`PsramWindow::takeRange()`, 4 pages of headroom),
+  the image's pages first (`ImageWindow::mapAt()`: shared pages from the cache entry, private
+  ones from a block of their own; a plain copy in pages of the range), then the heap: pages mapped
+  as it grows (heap runs, `PsramWindow::takeHeapPages()`), the reservation extended in place
+  (`takeRangeAt()`), else up to three more ranges (a pair of entries each). The heap's first bytes
+  are the rest of the image's last page.
+- **Large blocks** (from 256 KB): a range each, zeroed whole, freed whole, grown in place when the
+  addresses after it are free; with no pair of entries to spare, the heap.
+- **Internal RAM** (`BMDS_MEM_FAST`, stacks that fit as §14): a region each, zeroed (it was the
+  kernel's); only while a pair stays free for the heap.
+- **Records outside the program's memory:** `RangeHeap` (`bmds_core`, host-tested): TLSF's size
+  classes (with a scan of the request's own class, so the top of a range isn't grown for nothing),
+  neighbours linked for merging, a hash from address to record, an owner per block (the process,
+  a vfork child, the kernel: stacks, the audio mirror, surface buffers, none of which the program
+  can free). `Process` goes through a `ProgramMemory` interface (`bmds_core`), host-tested with a
+  fake; M-mode programs keep the kernel's heap with the header in front.
+- **Granted as used:** a heap range is granted up to its highest block, a 4 KB step at a time, and
+  what is granted is zeroed first (another program's data or the kernel's would show otherwise).
+  Pages the program never reaches cost no zeroing: a launch's zeroing went from 470 to 35 µs.
+- **Freeing:** whole runs at a range's top go back to the heap once free (the grant lowered and the
+  other core kicked first; one page kept); pages in the middle stay the program's until it ends (an
+  unmapped page there would be a cache-error panic, not a fault).
+- **Surfaces and canvases:** a U-mode program's buffers are made in its memory (the kernel's
+  blocks; the swap chain holds a reference), so the compositor and the 2D-DMA use them at the
+  program's addresses: no aliases, no PMP entries. Another U-mode program given the descriptor
+  gets `EACCES` from `surface_buffer`. `BMDS_SURFACE_FAST` is PSRAM for U-mode programs.
+- **Out of addresses or entries:** `NULL`/`ENOMEM`, never M-mode.
+
+**The PMP** (`UserSpace`, now a list of regions; every change kicks the other core, so a sibling
+thread there loads it before running program code again: step 3's open item closed):
+
+| Entries | What | Rights |
+|---|---|---|
+| 0 | the stub page | R X |
+| 1-4 | the main range: its base; code and constants to `writableOffset` rounded down; the granule holding both the last code and the first data; data, heap, stacks up to the grant | R X; R W X; R W |
+| 5-15 | a pair each: more heap ranges, large blocks, internal RAM | R W |
+
+Shared pages are read-only now: no program can write another's code. The straddling granule is
+R W X: the first try rounded the boundary down and `guisurface` faulted fetching libgcc's
+`__clzsi2` from the last bytes of `.patched`, just below `.data` (§14.3's layout).
+
+**Found while trying it:**
+- **The `Running`'s memory has to outlive its threads' reaping**: releasing it in
+  `Running::end()` let the reaper free a thread's stack into freed memory (a blocked task on a
+  freed mutex; once, kernel heap corruption: TLSF's `next_free` null). Found with
+  `heap_caps_check_integrity_all()` around teardown and the console.
+- `gui_canvas_surface` with a null config left the buffers in kernel memory (refused by
+  `surface_buffer`); the program's memory is now set either way.
+
+**Tried on the board** (`programs/protect` set for the run only):
+- The compat corpus (v1), four times, once with three 12 MB uploads and a fault loop alongside.
+- Every `progtest faults` kind, main thread and second, 120 back to back, three times over; the
+  `progtest` suites the same in both modes but timings (`threads` fails at its posix_spawn from a
+  thread in both modes alike).
+- `progtest umem` (new): 9.4 and 19.1 MB of small and large blocks written and checked, a realloc
+  grown to 1.2 MB, all freed and the PSRAM back; past what the window holds, `NULL` cleanly.
+- `blittest` (2D-DMA and CPU blits into surface buffers in the program's memory): 0 bad pixels;
+  `guisurface` 640x480 27.4 ms a frame (M-mode 28.0); `guidemo`, `surfdemo`, `bounce` run.
+- **Memory**, four idle `progtest`s: 52 KB of internal RAM and 4.21 MB of PSRAM (step 3: 81.7 KB
+  and 4.00 MB, with the stacks in internal RAM then; M-mode now: 3.85 MB): about 51 KB of PSRAM a
+  program more than step 3, the 64 KB pages' rounding.
+- **Speed** against step 3 in U-mode: `kernel.syscall` getpid 3.13 → 3.2-3.3 µs, clock_gettime
+  2.59 → 2.44-2.57 µs, `kernel.pipe` 248 → 251-262 MB/s, `programs.launch` 5.55 → 6.5 ms (making
+  and freeing the memory ~0.15 ms, the stack ~0.15 ms, the benchmark's own heap growing ~1 ms).
+
+**Open:**
+- **A fault on a program's second thread sometimes leaves its main thread blocked** in
+  `pthread_join`: the fault is reported, the thread ends, the process doesn't (about 1 in 20-45
+  `progtest faults null thread`, **in M-mode too**: older than this step, programs.md §21's kill
+  of the other threads). `kill` ends it; once, killing two stuck ones panicked (no console then).
+- **Two hardware-watchdog resets** (`HP_SYS_HP_WDT_RESET`, no panic output: both cores stopped),
+  each just after an update package's upload, in `update check`, each in a boot where U-mode
+  programs had run (once with `programs/protect` already off). Not reproduced in five uploads,
+  two `update check`s after U-mode work, and two installs after the same benchmarks.
+- Large blocks are zeroed whole, and musl's `mmap` zeroes them again: a 10 MB block costs
+  ~150 ms more than in M-mode. A `BMDS_MEM_ZERO` flag (append-only) or a pool of pages zeroed
+  when idle would remove one.
+- Window addresses: 32 MB shared by every program's ranges and the kernel's large blocks; four
+  ranges a program at most.

@@ -15,6 +15,7 @@
 #include <bmds/error.h>
 #include <bmds/memspace.h>
 #include <bmds/mutex.h>
+#include <bmds/programmemory.h>
 #include <bmds/rect.h>
 #include <bmds/result.h>
 #include <bmds/scanout.h>
@@ -106,6 +107,9 @@ class SwapChain : public Stream {
                 /** @brief Returns buffer @p index's first pixel, or null. */
                 uint8_t *buffer(uint8_t index) const { return index < _bufferCount ? _buffers[index] : nullptr; }
 
+                /** @brief The U-mode program's memory its buffers are in, or null (the kernel's). */
+                ProgramMemory *bufferMemory() const { return _memory; }
+
                 /** @brief Returns the bytes from a row to the next. */
                 size_t stride() const { return _stride; }
 
@@ -192,10 +196,13 @@ class SwapChain : public Stream {
 
                 /**
                  * @brief Makes @p count buffers of @p width × @p height in @p format, black, in
-                 *        @p space (aligned and padded to the cache's lines, for the DMA).
+                 *        @p space (aligned and padded to the cache's lines, for the DMA); for a
+                 *        U-mode program in @p memory, its own (`devplan/protection.md` §15), a
+                 *        reference kept while they are.
                  * @return `Ok`, `Invalid`, `NoMem`.
                  */
-                Error makeBuffers(uint16_t width, uint16_t height, Format format, uint8_t count, MemSpace space);
+                Error makeBuffers(uint16_t width, uint16_t height, Format format, uint8_t count, MemSpace space,
+                                  ProgramMemory *memory);
 
                 /** @brief Writes buffer @p index back from the CPU's cache (a present's: for the DMA). */
                 void writeBack(uint8_t index) const;
@@ -219,6 +226,7 @@ class SwapChain : public Stream {
                 Format    _format = Format::Bgr24;
                 uint8_t   _bufferCount = 0;
                 uint8_t  *_buffers[MaxBuffers] = {};
+                ProgramMemory *_memory = nullptr; // the buffers' (a reference), or null: Memory's
                 size_t    _stride = 0;
                 size_t    _bufferBytes = 0;
                 Mutex     _lock; // the buffers' states, the images, and the subclass's own

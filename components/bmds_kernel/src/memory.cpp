@@ -340,6 +340,19 @@ namespace {
                 return;
         }
 
+        // Heap pages for a caller's own ranges (PsramWindow::takeHeapPages()): the window's lock
+        // held as windowAlloc() holds it while gathering, so the two don't race for the heap's
+        // largest blocks.
+        size_t takePages(uint32_t pages, Span<PageRuns::Run> out) {
+                if (!window.isCreated() || pages == 0) return 0;
+                Window       &w = *window;
+                Mutex::Locker locker(w.lock, WaitForever);
+                HeapRuns      heap;
+                const size_t  n = PageRuns::gather(heap, pages, uint32_t(Page), out);
+                for (size_t i = 0; i < n; ++i) PsramWindow::invalidate(out[i].at, size_t(out[i].pages) * Page);
+                return n;
+        }
+
         void *windowAlloc(size_t sizeBytes, bool fromTop) {
                 if (!window.isCreated()) return nullptr;
                 Window        &w = *window;
@@ -737,6 +750,18 @@ MemStats Memory::stats(MemSpace space) {
                 if (mapped > s.largestFreeBlock) s.largestFreeBlock = mapped;
         }
         return s;
+}
+
+size_t PsramWindow::takeHeapPages(uint32_t pages, Span<PageRuns::Run> out) {
+        size_t n = takePages(pages, out);
+        if (n == 0 && reclaimed(MemSpace::Psram, size_t(pages) * Page)) n = takePages(pages, out);
+        return n;
+}
+
+void PsramWindow::giveHeapPages(Span<const PageRuns::Run> runs) {
+        HeapRuns heap;
+        PageRuns::release(heap, runs);
+        return;
 }
 
 BMDS_NAMESPACE_END

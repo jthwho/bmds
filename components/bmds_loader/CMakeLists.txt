@@ -48,6 +48,7 @@ if(COMMAND idf_component_register)
                                     src/trapentry.S
                                     src/trapentry.cpp
                                     src/usermode.S
+                                    src/usermemory.cpp
                                     src/usermode.cpp
                                INCLUDE_DIRS include ${BMDS_SDK_INCLUDE}
                                LDFRAGMENTS linker.lf

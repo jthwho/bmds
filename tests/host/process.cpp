@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -20,6 +21,7 @@
 #include <bmds/memorystream.h>
 #include <bmds/process.h>
 #include <bmds/processtable.h>
+#include <bmds/rangeheap.h>
 #include <bmds/ramblockdevice.h>
 #include <bmds/sys.h>
 #include <bmds/vfs.h>
@@ -90,6 +92,126 @@ namespace {
         }
 
 } // namespace
+
+namespace {
+
+        // A U-mode program's memory as the loader's UserMemory keeps it, over a buffer: blocks
+        // by owner, records outside (RangeHeap), references counted.
+        class FakeProgramMemory final : public bmds::ProgramMemory {
+                public:
+                        static constexpr uint32_t Bytes = 64 * 1024;
+                        FakeProgramMemory() { REQUIRE(_heap.addRange(16, Bytes - 16).isOk()); }
+                        ~FakeProgramMemory() = default;
+
+                        void  ref() override { ++refs; }
+                        void  unref() override { --refs; }
+                        void *alloc(uint32_t bytes, uint32_t align, uint32_t, uint32_t owner) override {
+                                auto r = _heap.alloc(bytes, align, owner);
+                                return r.isOk() ? _bytes + r.value() : nullptr;
+                        }
+                        uint32_t free(void *p, uint32_t owner) override { return _heap.free(at(p), owner).bytes; }
+                        void    *realloc(void *p, uint32_t bytes, uint32_t flags, uint32_t owner) override {
+                                const uint32_t old = sizeOf(p, owner);
+                                if (old == 0) return nullptr;
+                                if (_heap.resize(at(p), bytes, owner).isOk()) return p;
+                                void *moved = alloc(bytes, 0, flags, owner);
+                                if (moved == nullptr) return nullptr;
+                                std::memcpy(moved, p, old < bytes ? old : bytes);
+                                (void)free(p, owner);
+                                return moved;
+                        }
+                        uint32_t sizeOf(const void *p, uint32_t owner) override { return _heap.sizeOf(at(p), owner); }
+                        bool     contains(const void *p, size_t bytes, uint32_t owner) override {
+                                return isInside(p) && _heap.contains(at(p), uint32_t(bytes), owner);
+                        }
+                        void freeOwner(uint32_t owner) override { _heap.freeOwner(owner); }
+
+                        bool isInside(const void *p) const {
+                                auto *b = static_cast<const uint8_t *>(p);
+                                return b >= _bytes && b < _bytes + Bytes;
+                        }
+                        uint32_t used() const { return _heap.stats().usedBytes; }
+
+                        int refs = 1;
+
+                private:
+                        uint32_t at(const void *p) const {
+                                return isInside(p) ? uint32_t(static_cast<const uint8_t *>(p) - _bytes) : 0;
+                        }
+
+                        alignas(4096) uint8_t _bytes[Bytes] = {};
+                        bmds::RangeHeap _heap;
+        };
+
+} // namespace
+
+TEST_CASE("Process: a U-mode program's memory (its own, records outside)") {
+        const size_t base = HostMemory::liveAllocations();
+        {
+                auto          memory = std::make_unique<FakeProgramMemory>();
+                auto          next = std::make_unique<FakeProgramMemory>();
+                bmds::FdTable fds;
+                Process      *p = Process::create(fds, nullptr);
+                REQUIRE(p != nullptr);
+                p->setMemory(memory.get());
+                CHECK(memory->refs == 2);
+                // Its arguments where it can read them.
+                const bmds::StringView args[] = {"prog", "one"};
+                REQUIRE(p->setArguments(args, {}).isOk());
+                CHECK(memory->isInside(p->argv()));
+                CHECK(std::string(p->argv()[1]) == "one");
+                CHECK(memory->refs == 3); // the arguments' block keeps one
+                // Its blocks there, aligned, counted; nothing in front of them that is the kernel's.
+                void *a = p->memAlloc(100, 4096, 0);
+                REQUIRE(a != nullptr);
+                CHECK(memory->isInside(a));
+                CHECK(reinterpret_cast<uintptr_t>(a) % 4096 == 0);
+                CHECK(p->allocations() == 1);
+                CHECK(p->allocatedBytes() == 112);
+                CHECK(p->owns(static_cast<uint8_t *>(a) + 50, 50));
+                // A block the kernel made there (a stack) isn't the program's to free.
+                void *kernel = memory->alloc(256, 16, 0, bmds::ProgramMemory::KernelOwner);
+                REQUIRE(kernel != nullptr);
+                p->memFree(kernel);
+                CHECK(memory->sizeOf(kernel, bmds::ProgramMemory::KernelOwner) == 256);
+                CHECK_FALSE(p->owns(kernel, 16));
+                // realloc keeps the contents.
+                std::memcpy(a, "abc", 4);
+                a = p->memRealloc(a, 3000, 0);
+                REQUIRE(a != nullptr);
+                CHECK(std::string(static_cast<char *>(a)) == "abc");
+                CHECK(p->allocatedBytes() == 3008);
+
+                // A vfork child allocates from its parent's memory under its own name; its exec
+                // frees what it made there and moves it to the new program's.
+                Process *child = p->createChild(p->signals().mainThread());
+                REQUIRE(child != nullptr);
+                CHECK(child->memory() == memory.get());
+                CHECK(child->memoryOwner() != p->memoryOwner());
+                void *c = child->memAlloc(500, 0, 0);
+                REQUIRE(c != nullptr);
+                CHECK(memory->isInside(c));
+                p->memFree(c); // not the parent's
+                CHECK(memory->sizeOf(c, child->memoryOwner()) == 512);
+                const uint32_t         before = memory->used();
+                const bmds::StringView args2[] = {"next", bmds::StringView(p->argv()[1])};
+                REQUIRE(child->prepareExec(args2, {}, next.get()).isOk());
+                CHECK(memory->used() == before - 512);
+                CHECK(child->memory() == next.get());
+                CHECK(next->isInside(child->argv()));
+                CHECK(std::string(child->argv()[1]) == "one");
+                CHECK(memory->sizeOf(a, p->memoryOwner()) == 3008); // the parent's untouched
+                Process::destroy(child);
+                CHECK(next->refs == 1);
+                CHECK(next->used() == 0);
+
+                // Its end frees its blocks and lets go of the memory.
+                Process::destroy(p);
+                CHECK(memory->refs == 1);
+                CHECK(memory->used() == 256); // only the kernel's block, freed by its owner
+        }
+        CHECK(HostMemory::liveAllocations() == base);
+}
 
 TEST_CASE("Process: memory") {
         const size_t base = HostMemory::liveAllocations();
@@ -1004,7 +1126,7 @@ TEST_CASE("Process: vfork children, pipes, close-on-exec, exec") {
                 char                  *oldArg = child->argv()[1];
                 const bmds::StringView args2[] = {"next", bmds::StringView(oldArg, std::strlen(oldArg))};
                 const bmds::StringView env[] = {"A=1"};
-                REQUIRE(child->prepareExec(args2, env).isOk());
+                REQUIRE(child->prepareExec(args2, env, nullptr).isOk());
                 CHECK(std::string(child->argv()[0]) == "next");
                 CHECK(std::string(child->argv()[1]) == "one");
                 CHECK(std::string(child->envp()[0]) == "A=1");
@@ -1024,7 +1146,7 @@ TEST_CASE("Process: vfork children, pipes, close-on-exec, exec") {
                 REQUIRE(block != nullptr);
                 std::strcpy(static_cast<char *>(block), "from the heap");
                 const bmds::StringView args3[] = {"again", bmds::StringView(static_cast<char *>(block))};
-                REQUIRE(parent->prepareExec(args3, {}).isOk());
+                REQUIRE(parent->prepareExec(args3, {}, nullptr).isOk());
                 CHECK(std::string(parent->argv()[1]) == "from the heap");
                 CHECK(parent->allocations() == 0);
                 CHECK(parent->fdFlags(p[0], -1) == -BMDS_EBADF);

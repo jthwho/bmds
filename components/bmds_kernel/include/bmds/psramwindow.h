@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/pagewindow.h>
+#include <bmds/span.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -106,6 +108,19 @@ namespace PsramWindow {
          *        one call: about 7 µs at any size.
          */
         void invalidate(const void *p, size_t bytes);
+
+        /**
+         * @brief Takes @p pages pages from the PSRAM heap, in as few runs as it can
+         *        (`PageRuns::gather()`, the reclaimers asked if the first try fails), for a caller
+         *        that maps them itself (a U-mode program's ranges, `devplan/protection.md` §15).
+         *        Their lines under the heap's addresses are dropped.
+         * @return How many runs in @p out, or 0 (nothing taken).
+         * @blocking Allocates. `memory.cpp`'s, beside `Memory`'s own window blocks.
+         */
+        size_t takeHeapPages(uint32_t pages, Span<PageRuns::Run> out);
+
+        /** @brief Gives runs from `takeHeapPages()` back to the heap (unmapped first). */
+        void giveHeapPages(Span<const PageRuns::Run> runs);
 
 } // namespace PsramWindow
 

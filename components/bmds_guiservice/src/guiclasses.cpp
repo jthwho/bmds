@@ -4018,8 +4018,9 @@ Result<FileHandle::Ptr> guiCanvasSurface(GuiObject &o, const GuiOpener::SurfaceC
                 h = g.height;
                 if (w == 0 || h == 0) return makeError<FileHandle::Ptr>(Error::NotReady); // not laid out yet
         }
-        auto [handle, err] = CanvasSurface::make(w, h, SwapChain::Format(config.format), config.buffers,
-                                                 config.fast ? MemSpace::InternalDma : MemSpace::PsramDma);
+        auto [handle, err] =
+                CanvasSurface::make(w, h, SwapChain::Format(config.format), config.buffers,
+                                    config.fast ? MemSpace::InternalDma : MemSpace::PsramDma, config.memory);
         if (err.isError()) return makeError<FileHandle::Ptr>(err);
         c.setSurface(CanvasSurface::of(*handle));
         return makeResult(std::move(handle));

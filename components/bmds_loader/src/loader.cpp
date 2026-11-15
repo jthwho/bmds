@@ -214,6 +214,7 @@ namespace {
                         uint8_t              *memory = nullptr; // where it runs (a mapping's base)
                         size_t                bytes = 0;
                         ImageWindow::Mapping  mapping; // shared pages (§14.2); else a plain copy at memory
+                        UserMemory *user = nullptr;    // U-mode: the program's memory, the image in it (a reference)
                         uint32_t              entry = 0;
                         uint32_t              stackBytes = 0;
                         bool                  display = false;   // BMDS_PROGRAM_DISPLAY
@@ -278,27 +279,47 @@ namespace {
                 return Error::Ok;
         }
 
+        // A U-mode program's memory for @p header's image (devplan/protection.md §15), when
+        // programs run in U-mode: made once, before the image is placed.
+        Error userMemoryFor(const ProgramImage::Info &header, Image &image) {
+                if (image.user != nullptr || !UserMode::isWanted()) return Error::Ok;
+                const uint32_t code =
+                        header.writableOffset < header.imageSize ? header.writableOffset : header.imageSize;
+                image.user = UserMemory::create(header.imageSize, code);
+                return image.user != nullptr ? Error::Ok : Error::NoMem;
+        }
+
         // The memory for a program of @p header: 4096-aligned and whole pages (so
-        // the cache sync covers whole lines).
+        // the cache sync covers whole lines); a U-mode program's in its own memory.
         Error allocateImage(const ProgramImage::Info &header, Image &image) {
                 image.bytes = (header.imageSize + BMDS_LOAD_ALIGN - 1) & ~size_t(BMDS_LOAD_ALIGN - 1);
+                Error err = userMemoryFor(header, image);
+                if (err.isError()) return err;
+                if (image.user != nullptr) {
+                        err = image.user->backImage();
+                        image.memory = err.isOk() ? image.user->base() : nullptr;
+                        return err;
+                }
                 image.memory =
                         static_cast<uint8_t *>(Memory::allocAligned(MemSpace::Psram, image.bytes, BMDS_LOAD_ALIGN));
                 return image.memory != nullptr ? Error::Ok : Error::NoMem;
         }
 
-        // Frees a program's image: its mapping, or its plain copy.
-        void releaseImage(uint8_t *&memory, ImageWindow::Mapping &mapping) {
+        // Frees a program's image: its mapping, or its plain copy; then its memory (U-mode), once
+        // the image is out of it.
+        void releaseImage(uint8_t *&memory, ImageWindow::Mapping &mapping, UserMemory *&user) {
                 if (mapping.isMapped())
                         ImageWindow::unmap(mapping);
-                else
+                else if (user == nullptr)
                         Memory::free(memory);
+                if (user != nullptr) user->unref();
+                user = nullptr;
                 memory = nullptr;
                 return;
         }
 
         void releaseImage(Image &image) {
-                releaseImage(image.memory, image.mapping);
+                releaseImage(image.memory, image.mapping, image.user);
                 return;
         }
 
@@ -311,10 +332,11 @@ namespace {
                                 esp_cache_msync(image.memory, image.bytes,
                                                 ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE));
                 }
+                // A U-mode program's: the rest of its memory ready, its regions granted.
+                if (err.isOk() && image.user != nullptr) err = image.user->start();
                 if (err.isError()) {
                         failure.stage = "cannot load";
-                        Memory::free(image.memory); // a plain copy (a mapping is never finished)
-                        image.memory = nullptr;
+                        releaseImage(image); // a plain copy (a mapping is never finished)
                         return err;
                 }
                 image.entry = header.entry;
@@ -327,8 +349,14 @@ namespace {
         // the window has room (devplan/programs.md §14.2), else in memory of its own.
         Error placeFrom(ImageCache::Entry &entry, Image &image, LoadFailure &failure) {
                 const ProgramImage::Info &header = entry.info();
+                Error                     err = userMemoryFor(header, image);
+                if (err.isError()) return err;
                 if (entry.hasPages() && ImageWindow::isEnabled()) {
-                        if (ImageWindow::map(*imageCache, entry, image.mapping).isOk()) {
+                        err = image.user != nullptr
+                                      ? ImageWindow::mapAt(*imageCache, entry, image.user->base(), image.mapping)
+                                      : ImageWindow::map(*imageCache, entry, image.mapping);
+                        if (err.isOk() && image.user != nullptr) err = image.user->start();
+                        if (err.isOk()) {
                                 image.memory = image.mapping.base;
                                 image.bytes = size_t(image.mapping.pages) * ProgramImage::SharePageBytes;
                                 image.entry = header.entry;
@@ -336,10 +364,17 @@ namespace {
                                 image.display = (header.flags & BMDS_PROGRAM_DISPLAY) != 0;
                                 return Error::Ok;
                         }
+                        if (image.mapping.isMapped()) { // mapped, but its memory couldn't start
+                                releaseImage(image);
+                                return err;
+                        }
                         ImageWindow::countFallback(); // no room: a plain copy
                 }
-                Error err = allocateImage(header, image);
-                if (err.isError()) return err;
+                err = allocateImage(header, image);
+                if (err.isError()) {
+                        releaseImage(image);
+                        return err;
+                }
                 ProgramImage::place(header, entry.bytes(), entry.patches(), image.memory,
                                     static_cast<uint32_t>(reinterpret_cast<uintptr_t>(image.memory)));
                 return finishImage(Error::Ok, header, image, failure);
@@ -382,7 +417,10 @@ namespace {
                         imageCache->release(entry);
                 }
                 err = allocateImage(header, image);
-                if (err.isError()) return err;
+                if (err.isError()) {
+                        releaseImage(image);
+                        return err;
+                }
                 err = ProgramImage::load(source, program.size, header, image.memory,
                                          static_cast<uint32_t>(reinterpret_cast<uintptr_t>(image.memory)),
                                          failure.problem);
@@ -633,6 +671,13 @@ namespace {
                 run->image = image.memory;
                 run->imageBytes = image.bytes;
                 run->mapping = image.mapping;
+                // Its memory: the image's reference goes with the image (at its end, or the
+                // caller's on a failed start); its own stays until the record goes, after the last
+                // thread is reaped (their stacks are freed there).
+                run->imageMemory = image.user;
+                run->memory = image.user;
+                if (run->memory != nullptr) run->memory->ref();
+                run->space = image.user != nullptr ? image.user->space() : nullptr;
                 run->builtin = image.builtin;
                 // Kernel code until it reaches the program's: a kill before then leaves it to end
                 // itself (a built-in program always gets its data: devplan/processes.md §3.8.1).
@@ -663,11 +708,9 @@ namespace {
         void destroyRunning(Running *run) {
                 run->releaseStats(); // an exec that failed to start, say
                 freeUserStack(run->main); // one that never ran
-                if (run->space != nullptr) {
-                        if (run->process != nullptr) run->process->setUserGrants(nullptr);
-                        UserSpace::destroy(run->space);
-                        run->space = nullptr;
-                }
+                if (run->memory != nullptr) run->memory->unref();
+                run->memory = nullptr;
+                run->space = nullptr;
                 run->~Running();
                 Memory::free(run);
                 return;
@@ -690,48 +733,37 @@ namespace {
                                : MemSpace::Psram;
         }
 
-        // A U-mode thread's own stack (devplan/protection.md §14), apart from its kernel stack:
-        // in internal RAM, granted to the process, where stackSpaceFor() would put it and the
-        // process's PMP set has room; else PSRAM (granted as a whole) with the gap below it.
+        // A U-mode thread's own stack (devplan/protection.md §14, §15), apart from its kernel
+        // stack, in its program's memory: internal RAM where stackSpaceFor() would put it and the
+        // PMP set has room, else the program's PSRAM. The kernel's block: the program can't free it.
         Error allocUserStack(ProgramThread &thread, size_t bytes, bool display) {
                 bytes = UserMode::granules(bytes);
-                if (stackSpaceFor(bytes, false, display) == MemSpace::Internal) {
-                        void           *stack = Memory::allocAligned(MemSpace::Internal, bytes, PmpSet::Granule);
-                        const uintptr_t lo = reinterpret_cast<uintptr_t>(stack);
-                        if (stack != nullptr &&
-                            thread.run->space->grant(lo, bytes, PmpSet::Read | PmpSet::Write).isOk()) {
-                                thread.userStack = stack;
-                                thread.userStackLo = lo;
-                                thread.userStackHi = lo + bytes;
-                                thread.userStackGranted = true;
-                                return Error::Ok;
-                        }
-                        Memory::free(stack);
-                }
-                void *stack = Memory::allocAligned(MemSpace::Psram, bytes + ProgramFault::GuardBytes, 16);
+                const uint32_t fast = stackSpaceFor(bytes, false, display) == MemSpace::Internal ? BMDS_MEM_FAST : 0;
+                void          *stack = thread.run->memory->alloc(uint32_t(bytes), 16, fast, ProgramMemory::KernelOwner);
                 if (stack == nullptr) return Error::NoMem;
                 thread.userStack = stack;
-                thread.userStackLo = reinterpret_cast<uintptr_t>(stack) + ProgramFault::GuardBytes;
+                thread.userStackLo = reinterpret_cast<uintptr_t>(stack);
                 thread.userStackHi = thread.userStackLo + bytes;
-                thread.userStackGranted = false;
                 return Error::Ok;
         }
 
-        // Its task stopped (or never started): no core runs its program code any more.
+        // Its task stopped (or never started): no core runs its program code any more. The
+        // Running's reference keeps the memory until its last thread is reaped.
         void freeUserStack(ProgramThread &thread) {
-                Memory::free(thread.audioMirror);
+                UserMemory *memory = thread.run->memory;
+                if (memory != nullptr) {
+                        (void)memory->free(thread.audioMirror, ProgramMemory::KernelOwner);
+                        (void)memory->free(thread.userStack, ProgramMemory::KernelOwner);
+                }
                 thread.audioMirror = nullptr;
-                if (thread.userStack == nullptr) return;
-                if (thread.userStackGranted) thread.run->space->revoke(thread.userStackLo);
-                Memory::free(thread.userStack);
                 thread.userStack = nullptr;
                 thread.userStackLo = thread.userStackHi = 0;
-                thread.userStackGranted = false;
                 return;
         }
 
         const char *stackSpaceName(const ProgramThread &thread) {
-                return thread.userStackGranted ? "internal RAM" : "PSRAM";
+                UserMemory *memory = thread.run->memory;
+                return memory != nullptr && memory->isInternal(thread.userStack) ? "internal RAM" : "PSRAM";
         }
 
         // The core the display's own work runs on: the surfaces' presenters and the scanout
@@ -784,17 +816,10 @@ namespace {
                               path.data() + slash + 1);
                 config.name = name;
                 run.display = display;
-                // In U-mode (devplan/protection.md §14) if asked and it can: its own PMP set, a
-                // kernel stack for its task, its stack apart. Else M-mode as before.
-                if (run.builtin == nullptr && UserMode::isWanted()) {
-                        run.space = UserSpace::create();
-                        if (run.space == nullptr) {
-                                bmdsWarn("Loader: %s: no memory for its PMP set: runs in M-mode", name);
-                        } else if (allocUserStack(run.main, stackBytes, display).isError()) {
-                                return Error::NoMem; // destroyRunning() frees the set
-                        }
-                }
-                run.process->setUserGrants(run.space); // an exec in place: no longer the old program's
+                // In U-mode (devplan/protection.md §14, §15) if its image went into memory of its
+                // own: its PMP set, a kernel stack for its task, its stack apart. Else M-mode.
+                if (run.memory != nullptr && allocUserStack(run.main, stackBytes, display).isError())
+                        return Error::NoMem; // the image's release frees the memory
                 if (run.space != nullptr) {
                         config.stackBytes = KernelStackBytes;
                         config.guardBytes = 0;
@@ -1509,7 +1534,7 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
                 // The program is replaced: its other threads end first (Linux's de_thread).
                 if (depth == 0) endOtherThreads();
                 err = target->prepareExec(Span<const StringView>(argViews.data(), argViews.size()),
-                                          Span<const StringView>(env.data(), env.size()));
+                                          Span<const StringView>(env.data(), env.size()), loaded.user);
                 if (err.isError()) {
                         releaseImage(loaded);
                         return execErrno(err);
@@ -1575,7 +1600,7 @@ int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *en
         }
         run->process = nullptr;
         current = nullptr;
-        releaseImage(run->image, run->mapping);
+        releaseImage(run->image, run->mapping, run->imageMemory);
         run->imageBytes = 0;
         queueStop(*this);
 }
@@ -2103,7 +2128,7 @@ void Running::end(int32_t status) {
                 Process::destroy(process);
                 process = nullptr;
         }
-        releaseImage(image, mapping);
+        releaseImage(image, mapping, imageMemory);
         imageBytes = 0;
         return;
 }
@@ -2615,6 +2640,7 @@ Result<int32_t> Loader::begin(const Request &request, Semaphore &ended, Console:
                 if (err.isOk()) err = tz.append(value);
                 if (err.isOk()) err = environment.append(tz.view());
         }
+        process->setMemory(image.user); // a U-mode program's arguments in its own memory
         if (err.isOk())
                 err = process->setArguments(request.args,
                                             Span<const StringView>(environment.data(), environment.size()));

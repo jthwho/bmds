@@ -19,12 +19,12 @@
 BMDS_NAMESPACE_BEGIN
 
 Result<FileHandle::Ptr> CanvasSurface::make(uint16_t width, uint16_t height, Format format, uint8_t count,
-                                            MemSpace space) {
+                                            MemSpace space, ProgramMemory *programMemory) {
         if (format != Format::Rgb565 && format != Format::Bgr24) return makeError<FileHandle::Ptr>(Error::Invalid);
         void *memory = Memory::alloc(MemSpace::Psram, sizeof(CanvasSurface));
         if (memory == nullptr) return makeError<FileHandle::Ptr>(Error::NoMem);
         auto *surface = ::new (memory) CanvasSurface();
-        Error err = surface->makeBuffers(width, height, format, count, space);
+        Error err = surface->makeBuffers(width, height, format, count, space, programMemory);
         if (err.isOk()) {
                 auto [handle, herr] = FileHandle::open(*surface, FileHandle::Read);
                 if (herr.isOk()) return makeResult(std::move(handle));

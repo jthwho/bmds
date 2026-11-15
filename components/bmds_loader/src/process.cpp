@@ -6,6 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  */
 
+#include <atomic>
 #include <cstring>
 #include <new>
 #include <bmds/clock.h>
@@ -19,7 +20,6 @@
 #include <bmds/lineeditor.h>
 #include <bmds/memory.h>
 #include <bmds/pipe.h>
-#include <bmds/pmpset.h>
 #include <bmds/process.h>
 #include <bmds/programcontrols.h>
 #include <bmds/sysconf.h>
@@ -35,11 +35,8 @@ struct Process::Block {
                 Block   *prev;
                 Block   *next;
                 uint32_t size;   // bytes the program asked for
-                uint32_t offset; // from the raw allocation to the program's pointer (just past this),
-                                 // with Granted: a U-mode program's region (UserSpace)
-                static constexpr uint32_t Granted = 0x80000000u;
-                uint32_t                  pad() const { return offset & ~Granted; }
-                bool                      isGranted() const { return (offset & Granted) != 0; }
+                uint32_t offset; // from the raw allocation to the program's pointer (just past this)
+                uint32_t pad() const { return offset; }
 };
 
 // Console input taken from the console but not yet read: with
@@ -65,6 +62,8 @@ struct Process::LineInput {
 namespace {
 
         constexpr uint32_t KnownMemFlags = BMDS_MEM_FAST | BMDS_MEM_DMA;
+        static_assert(ProgramMemory::Fast == BMDS_MEM_FAST && ProgramMemory::Dma == BMDS_MEM_DMA,
+                      "a ProgramMemory takes mem_alloc's flags");
         constexpr uint32_t KnownOpenFlags = BMDS_O_READ | BMDS_O_WRITE | BMDS_O_CREATE | BMDS_O_TRUNC | BMDS_O_APPEND |
                                             BMDS_O_EXCL | BMDS_O_CLOEXEC;
         constexpr uint32_t KnownTermFlags = BMDS_TERM_SIGNALS | BMDS_TERM_ONLCR | BMDS_TERM_COLORS | BMDS_TERM_LOGS |
@@ -131,9 +130,14 @@ namespace {
                 return 0;
         }
 
+        // Each process's owner in a ProgramMemory: never 0 (the kernel's), never reused before it
+        // wraps (a memory lives no longer than its program).
+        constinit std::atomic<uint32_t> nextMemoryOwner{1};
+
 } // namespace
 
 Process::Process(const FdTable &fds, Console *console) : _fds(fds), _console(console) {
+        _memoryOwner = nextMemoryOwner.fetch_add(1, std::memory_order_relaxed) % 0x7fffffffu + 1;
         if (console != nullptr) console->addUser();
 }
 
@@ -183,6 +187,7 @@ Process *Process::createChild(const Signals::Thread &thread) {
         child->_lineInput = _lineInput;
         child->_echo = _echo;
         child->_crToNl = _crToNl;
+        child->setMemory(_memory); // it runs on its parent's memory until it execs
         child->_signals.inherit(_signals, thread);
         return child;
 }
@@ -223,18 +228,20 @@ void Process::releaseProgram() {
         while (_blocks != nullptr) {
                 Block *b = _blocks;
                 _blocks = b->next;
-                // A granted region needs no revoke: no thread of the program runs any more.
                 Memory::free(reinterpret_cast<uint8_t *>(b + 1) - b->pad());
         }
+        // A U-mode program's: its own blocks there (a vfork child's from its parent's memory).
+        if (_memory != nullptr) _memory->freeOwner(_memoryOwner);
         _allocatedBytes = 0;
         _allocations = 0;
         return;
 }
 
-Error Process::prepareExec(Span<const StringView> args, Span<const StringView> environment) {
-        const Error err = setArguments(args, environment);
+Error Process::prepareExec(Span<const StringView> args, Span<const StringView> environment, ProgramMemory *memory) {
+        const Error err = buildArguments(args, environment, memory);
         if (err.isError()) return err;
         releaseProgram();
+        setMemory(memory);
         _fds.closeOnExec();
         _signals.resetForExec();
         return Error::Ok;
@@ -243,8 +250,33 @@ Error Process::prepareExec(Span<const StringView> args, Span<const StringView> e
 void Process::release() {
         _fds.closeAll();
         releaseProgram();
-        Memory::free(_argBlock);
+        freeArguments();
+        setMemory(nullptr);
+        return;
+}
+
+void Process::setMemory(ProgramMemory *memory) {
+        if (memory == _memory) return;
+        if (memory != nullptr) memory->ref();
+        ProgramMemory *old = nullptr;
+        {
+                Mutex::Locker locker(_lock, WaitForever);
+                old = _memory;
+                _memory = memory;
+        }
+        if (old != nullptr) old->unref();
+        return;
+}
+
+void Process::freeArguments() {
+        if (_argMemory != nullptr) {
+                (void)_argMemory->free(_argBlock, _memoryOwner);
+                _argMemory->unref();
+        } else {
+                Memory::free(_argBlock);
+        }
         _argBlock = nullptr;
+        _argMemory = nullptr;
         _argv = nullptr;
         _envp = nullptr;
         _argc = 0;
@@ -348,6 +380,10 @@ int32_t Process::absolutePath(const char *path, String &out) {
 }
 
 Error Process::setArguments(Span<const StringView> args, Span<const StringView> environment) {
+        return buildArguments(args, environment, _memory);
+}
+
+Error Process::buildArguments(Span<const StringView> args, Span<const StringView> environment, ProgramMemory *memory) {
         constexpr size_t MaxCount = 4096;
         constexpr size_t MaxBytes = 256 * 1024;
         if (args.size() > MaxCount || environment.size() > MaxCount) return Error::Invalid;
@@ -356,11 +392,17 @@ Error Process::setArguments(Span<const StringView> args, Span<const StringView> 
         for (StringView e : environment) text += e.size() + 1;
         if (text > MaxBytes) return Error::Invalid;
         const size_t pointers = (args.size() + 1 + environment.size() + 1) * sizeof(char *);
-        auto        *block = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, pointers + text));
+        // A U-mode program's in its own memory, where it can read them.
+        auto *block =
+                static_cast<uint8_t *>(memory != nullptr ? memory->alloc(uint32_t(pointers + text), 0, 0, _memoryOwner)
+                                                         : Memory::alloc(MemSpace::Psram, pointers + text));
         if (block == nullptr) return Error::NoMem;
+        if (memory != nullptr) memory->ref();
         // The old block goes last: an exec's arguments may point into it.
-        void *old = _argBlock;
+        void          *old = _argBlock;
+        ProgramMemory *oldMemory = _argMemory;
         _argBlock = block;
+        _argMemory = memory;
         char **slots = reinterpret_cast<char **>(block);
         char  *out = reinterpret_cast<char *>(block + pointers);
         auto   copy = [&](StringView s) {
@@ -377,7 +419,12 @@ Error Process::setArguments(Span<const StringView> args, Span<const StringView> 
         for (size_t i = 0; i < environment.size(); ++i) _envp[i] = copy(environment[i]);
         _envp[environment.size()] = nullptr;
         _argc = static_cast<int32_t>(args.size());
-        Memory::free(old);
+        if (oldMemory != nullptr) {
+                (void)oldMemory->free(old, _memoryOwner);
+                oldMemory->unref();
+        } else {
+                Memory::free(old);
+        }
         return Error::Ok;
 }
 
@@ -792,9 +839,15 @@ void *Process::memAlloc(uint32_t size, uint32_t align, uint32_t flags) {
         if (align == 0) align = BMDS_MEM_ALIGN;
         if ((align & (align - 1)) != 0 || align > MaxAlign) return nullptr;
         if (align < BMDS_MEM_ALIGN) align = BMDS_MEM_ALIGN;
-        if ((flags & BMDS_MEM_FAST) != 0 && _userGrants != nullptr) {
-                if (void *p = memAllocGranted(size, align, flags); p != nullptr) return p;
-                flags &= ~BMDS_MEM_FAST; // no room (memory or PMP entries): PSRAM, as a hint can be
+        if (_memory != nullptr) {
+                // A U-mode program's (devplan/protection.md §15): its records out of its reach.
+                void *p = _memory->alloc(size, align, flags, _memoryOwner);
+                if (p == nullptr) return nullptr;
+                const uint32_t bytes = _memory->sizeOf(p, _memoryOwner);
+                Mutex::Locker  locker(_lock, WaitForever);
+                _allocatedBytes += bytes;
+                ++_allocations;
+                return p;
         }
         // The header goes in front, in padding that keeps the program's
         // pointer aligned.
@@ -816,32 +869,8 @@ void *Process::memAlloc(uint32_t size, uint32_t align, uint32_t flags) {
         return user;
 }
 
-// A U-mode program's internal RAM (devplan/protection.md §14): whole PMP granules, granted to it
-// in its process's PMP set, with the header below the region; null if the memory or the entries
-// aren't there.
-void *Process::memAllocGranted(uint32_t size, uint32_t align, uint32_t flags) {
-        const size_t bytes = roundUp(size != 0 ? size : 1, PmpSet::Granule);
-        if (align < PmpSet::Granule) align = PmpSet::Granule;
-        const size_t pad = roundUp(sizeof(Block), align); // == align: the header is outside the region
-        if (bytes > SIZE_MAX - pad) return nullptr;
-        auto *raw = static_cast<uint8_t *>(Memory::allocAligned(spaceFor(flags), bytes + pad, align));
-        if (raw == nullptr) return nullptr;
-        uint8_t *user = raw + pad;
-        if (_userGrants->grant(reinterpret_cast<uintptr_t>(user), bytes, PmpSet::Read | PmpSet::Write).isError()) {
-                Memory::free(raw);
-                return nullptr;
-        }
-        Block *b = reinterpret_cast<Block *>(user) - 1;
-        b->size = size;
-        b->offset = static_cast<uint32_t>(pad) | Block::Granted;
-        link(b);
-        Mutex::Locker locker(_lock, WaitForever);
-        _allocatedBytes += size;
-        ++_allocations;
-        return user;
-}
-
 bool Process::owns(const void *ptr, size_t bytes) const {
+        if (_memory != nullptr) return _memory->contains(ptr, bytes, _memoryOwner);
         const auto    from = reinterpret_cast<uintptr_t>(ptr);
         Mutex::Locker locker(_lock, WaitForever);
         for (const Block *b = _blocks; b != nullptr; b = b->next) {
@@ -853,6 +882,14 @@ bool Process::owns(const void *ptr, size_t bytes) const {
 
 void Process::memFree(void *ptr) {
         if (ptr == nullptr) return;
+        if (_memory != nullptr) {
+                const uint32_t bytes = _memory->free(ptr, _memoryOwner); // 0: not its block, ignored
+                if (bytes == 0) return;
+                Mutex::Locker locker(_lock, WaitForever);
+                _allocatedBytes -= bytes;
+                --_allocations;
+                return;
+        }
         Block *b = static_cast<Block *>(ptr) - 1;
         {
                 Mutex::Locker locker(_lock, WaitForever);
@@ -865,7 +902,6 @@ void Process::memFree(void *ptr) {
                 _allocatedBytes -= b->size;
                 --_allocations;
         }
-        if (b->isGranted()) _userGrants->revoke(reinterpret_cast<uintptr_t>(ptr)); // before it is reused
         Memory::free(reinterpret_cast<uint8_t *>(b + 1) - b->pad());
         return;
 }
@@ -873,17 +909,19 @@ void Process::memFree(void *ptr) {
 void *Process::memRealloc(void *ptr, uint32_t size, uint32_t flags) {
         if (ptr == nullptr) return memAlloc(size, 0, flags);
         if ((flags & ~KnownMemFlags) != 0) return nullptr;
-        // Through Memory::realloc(): a large block grows in place in the PSRAM window, else moves
-        // with its header (the pad keeps the program's pointer aligned, BMDS_MEM_ALIGN at least).
-        Block *b = static_cast<Block *>(ptr) - 1;
-        if (b->isGranted() || ((flags & BMDS_MEM_FAST) != 0 && _userGrants != nullptr)) {
-                // A granted region can't grow in place (its PMP entry is fixed): a new block.
-                void *moved = memAlloc(size, 0, flags);
+        if (_memory != nullptr) {
+                const uint32_t old = _memory->sizeOf(ptr, _memoryOwner);
+                if (old == 0) return nullptr;
+                void *moved = _memory->realloc(ptr, size, flags, _memoryOwner);
                 if (moved == nullptr) return nullptr;
-                std::memcpy(moved, ptr, b->size < size ? b->size : size);
-                memFree(ptr);
+                const uint32_t now = _memory->sizeOf(moved, _memoryOwner);
+                Mutex::Locker  locker(_lock, WaitForever);
+                _allocatedBytes = _allocatedBytes - old + now;
                 return moved;
         }
+        // Through Memory::realloc(): a large block grows in place in the PSRAM window, else moves
+        // with its header (the pad keeps the program's pointer aligned, BMDS_MEM_ALIGN at least).
+        Block         *b = static_cast<Block *>(ptr) - 1;
         const uint32_t pad = b->pad();
         if (size > SIZE_MAX - pad) return nullptr;
         unlink(b);

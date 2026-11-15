@@ -17,7 +17,6 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/pmpset.h>
-#include <bmds/process.h>
 #include <bmds/sys.h>
 #include "usermodeoffsets.h"
 
@@ -50,39 +49,50 @@ struct alignas(16) UserBlock {
 };
 
 /**
- * @brief A process's U-mode memory: the PMP entries its threads run with (protection.md §14):
- *        the stub page, PSRAM, and the internal RAM it was granted (stacks, `BMDS_MEM_FAST`).
+ * @brief The PMP entries a U-mode program's threads run with (protection.md §15): the stub page,
+ *        then the regions its memory (`UserMemory`) grants, in the order granted (the main
+ *        range's code then its data, adjacent: they share an entry).
  *
  * In internal RAM: the trampoline reads its `PmpSet` with interrupts off, on either core.
  * Changing it rebuilds and rewrites the set under a spinlock (interrupts off) with the stamp odd
- * meanwhile (a trampoline reading it waits, then reads it again); a revoke then interrupts the
- * other core, whose trampoline loads the new set before it goes back to U-mode, so nothing
- * revoked is reachable once `revoke()` returns.
+ * meanwhile (a trampoline reading it waits, then reads it again), then interrupts the other core,
+ * whose trampoline loads the new set before it goes back to U-mode: once a change returns, no
+ * core runs program code with the old set (nothing revoked is reachable, everything granted is).
  *
  * @par Thread Safety
- * Thread-safe.
+ * Thread-safe. Blocking (the other core's interrupt).
  */
-class UserSpace final : public UserGrants {
+class UserSpace final {
         public:
-                /** @brief The internal regions it holds at most (TOR pairs in the 14 entries after the fixed two). */
-                static constexpr unsigned MaxRegions = 7;
+                /** @brief The regions it holds at most (the entries after the stub page). */
+                static constexpr unsigned MaxRegions = PmpSet::Entries - 1;
 
-                /** @brief A new one in internal RAM, with the fixed entries; null: no memory. */
+                /** @brief A new one in internal RAM, the stub page only; null: no memory. */
                 static UserSpace *create();
 
-                /** @brief Frees @p space (no thread of its process may run in U-mode). */
+                /** @brief Frees @p space (no thread of its program may run in U-mode). */
                 static void destroy(UserSpace *space);
 
                 /**
                  * @brief Grants [@p base, @p base + @p bytes) to U-mode with @p access
-                 *        (`PmpSet::Access` bits); whole `PmpSet::Granule`s only.
-                 * @return `Error::Full` if its entries don't fit (use PSRAM instead),
-                 *         `Error::Invalid` for a boundary off a granule.
+                 *        (`PmpSet::Access` bits), leaving at least @p keepFree entries free;
+                 *        whole `PmpSet::Granule`s only.
+                 * @return `Error::Full` if its entries don't fit so, `Error::Invalid` for a
+                 *         boundary off a granule.
                  */
-                Error grant(uintptr_t base, size_t bytes, uint8_t access) override;
+                Error grant(uintptr_t base, size_t bytes, uint8_t access, unsigned keepFree);
 
-                /** @brief Takes back the region granted at @p base; waits until no core holds it. */
-                void revoke(uintptr_t base) override;
+                /** @brief Makes the region at @p base @p bytes long (its top moved). */
+                Error resize(uintptr_t base, size_t bytes);
+
+                /** @brief Takes back the region granted at @p base. */
+                void revoke(uintptr_t base);
+
+                /** @brief The entries a region at @p base of @p bytes would take, added now. */
+                unsigned entriesFor(uintptr_t base, size_t bytes) const;
+
+                /** @brief The entries free. */
+                unsigned freeEntries() const;
 
                 /** @brief The set the trampoline loads. */
                 const PmpSet *pmp() const { return &_pmp; }
@@ -96,7 +106,7 @@ class UserSpace final : public UserGrants {
 
                 UserSpace() = default;
                 ~UserSpace() = default;
-                Error update();
+                Error update(unsigned keepFree);
 
                 PmpSet       _pmp;
                 Region       _regions[MaxRegions] = {};
