@@ -96,7 +96,10 @@ uploads, no reset, hang, wrong result or leak; CoreMark the same in both modes. 
 (`programs/protect` off runs programs in M-mode, unprotected); `docs/VISION.md` moves it from the
 non-goals to the goals. Follow-ups (§21): kernel stacks measured in U-mode (7.5 of 12 KB at most:
 kept), fault reports with registers and a stack trace (`tools/bmds-fault`), the profiler's U-mode
-PCs; `fs_info`'s type in U-mode and `crypto`'s `EINVAL` for a missing pointer fixed.
+PCs; `fs_info`'s type in U-mode and `crypto`'s `EINVAL` for a missing pointer fixed. §22:
+`tools/bmds-suites` (every progtest suite and fault, both modes), the window's unused heap room
+reclaimed when it runs short, `-g` for programs' debug ELFs; a non-blocking TCP send's `ENOMEM` now
+`EAGAIN`.
   - [x] MMU spike (aliases, caches, DMA) and design.
   - [x] (a) The image cache with plain copies (`programs.md` §14.1): `exec` from memory, without the card.
   - [x] (b) Shared pages through the MMU window.

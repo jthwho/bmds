@@ -18,6 +18,11 @@
 
 get_filename_component(BMDS_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
+# Debug information for everything built from here on (the SDK's libraries, musl, programs):
+# <name>.debug.elf then has the files and lines tools/bmds-fault and GDB show. GCC's code is the
+# same with it, and <name>.elf, on the card, is stripped of it (devplan/protection.md §22).
+add_compile_options(-g)
+
 include(${CMAKE_CURRENT_LIST_DIR}/BmdsLibc.cmake)
 
 # bmds-link (sdk/tools) runs every program's link.

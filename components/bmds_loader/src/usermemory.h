@@ -66,6 +66,12 @@ class UserMemory final : public ProgramMemory {
                  */
                 static UserMemory *create(uint32_t imageBytes, uint32_t codeBytes);
 
+                /**
+                 * @brief Boot: the list of programs' memories, and the PSRAM window's reclaimer
+                 *        (`reclaimHeadroom()`).
+                 */
+                static void init();
+
                 /** @brief Where the image goes: the main range's start. */
                 uint8_t *base() const { return _ranges[0].base; }
 
@@ -200,6 +206,8 @@ class UserMemory final : public ProgramMemory {
                 UserMemory() = default;
                 ~UserMemory();
 
+                static uint32_t reclaimHeadroom(uint32_t pages);
+
                 Error     map(Range &r, uint32_t pages, bool zero);
                 void      unmapTail(Range &r, uint32_t pages);
                 void      release(Range &r);
@@ -229,6 +237,10 @@ class UserMemory final : public ProgramMemory {
                 Internal              _internal[MaxInternal];
                 uint32_t              _imageBytes = 0;
                 uint32_t              _codeBytes = 0;
+                UserMemory           *_next = nullptr; // the list of them (reclaimHeadroom())
+                UserMemory           *_prev = nullptr;
+                bool                  _listed = false;
+                bool                  _started = false; // start() done: the image's pages mapped
 };
 
 BMDS_NAMESPACE_END

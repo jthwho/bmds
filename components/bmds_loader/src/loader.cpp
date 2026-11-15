@@ -2442,6 +2442,7 @@ Error Loader::init() {
                         &*imageCache); // before the fonts' (a later boot stage): programs reload cheaply
         }
         Profiler::setLocator(&locateProgram);
+        UserMemory::init();
         Error err = processes->init();
         if (err.isOk()) err = RealTimeThreads::init();
         if (err.isOk() && signalQueue == nullptr) {

@@ -18,6 +18,7 @@
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/psramwindow.h>
+#include <bmds/staticobject.h>
 #include <bmds/sys.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -45,7 +46,42 @@ namespace {
                 return (value + to - 1) / to * to;
         }
 
+        // Every UserMemory, for the window's reclaimer (a list through the objects themselves).
+        constinit StaticObject<Mutex> registryLock;
+        constinit UserMemory         *registry = nullptr;
+
 } // namespace
+
+void UserMemory::init() {
+        if (!registryLock.isCreated()) registryLock.create();
+        PsramWindow::setReclaimer(&reclaimHeadroom);
+        return;
+}
+
+// The window's reclaimer (PsramWindow::Reclaimer): every program's heap room above what it has
+// mapped given back. A program it can't lock now (its own call waiting for this, or busy) keeps
+// its room. Its in-place growth then needs the window's next pages free again, else a range of
+// its own (growHeap()).
+uint32_t UserMemory::reclaimHeadroom(uint32_t pages) {
+        (void)pages; // all of it: the ranges come back where they come, not in one piece
+        uint32_t given = 0;
+        if (!registryLock.isCreated()) return 0;
+        Mutex::Locker list(*registryLock, WaitForever);
+        for (UserMemory *m = registry; m != nullptr; m = m->_next) {
+                if (m->_lock.tryLock().isError()) continue;
+                for (unsigned i = 0; i < m->_rangeCount && m->_started; ++i) {
+                        Range         &r = m->_ranges[i];
+                        const uint32_t keep = r.mapped > r.imagePages ? r.mapped : r.imagePages;
+                        if (r.reserved <= keep) continue;
+                        PsramWindow::giveRange(r.base + size_t(keep) * Page, r.reserved - keep);
+                        given += r.reserved - keep;
+                        r.reserved = keep;
+                }
+                m->_lock.unlock();
+        }
+        if (given != 0) bmdsInfo("UserMemory: %u window pages of heap room given back", unsigned(given));
+        return given;
+}
 
 UserMemory *UserMemory::create(uint32_t imageBytes, uint32_t codeBytes) {
         if (!PsramWindow::isReady() || imageBytes == 0) return nullptr;
@@ -72,10 +108,25 @@ UserMemory *UserMemory::create(uint32_t imageBytes, uint32_t codeBytes) {
         r.reserved = reserve;
         r.imagePages = imagePages;
         m->_rangeCount = 1;
+        if (registryLock.isCreated()) {
+                Mutex::Locker list(*registryLock, WaitForever);
+                m->_next = registry;
+                if (registry != nullptr) registry->_prev = m;
+                registry = m;
+                m->_listed = true;
+        }
         return m;
 }
 
 UserMemory::~UserMemory() {
+        if (_listed) {
+                Mutex::Locker list(*registryLock, WaitForever);
+                if (_prev != nullptr)
+                        _prev->_next = _next;
+                else
+                        registry = _next;
+                if (_next != nullptr) _next->_prev = _prev;
+        }
         for (Internal &b : _internal) Memory::free(b.block);
         for (Large &l : _large) release(l.range);
         for (unsigned i = 0; i < _rangeCount; ++i) release(_ranges[i]);
@@ -199,6 +250,7 @@ Error UserMemory::start() {
                 r.granted = true;
                 r.grantTop = imageEnd;
         }
+        _started = true; // its image is mapped: the reclaimer may take its room
         return Error::Ok;
 }
 

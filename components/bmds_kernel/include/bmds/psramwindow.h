@@ -71,6 +71,18 @@ namespace PsramWindow {
          */
         uint8_t *takeRange(uint32_t pages, bool fromTop);
 
+        /**
+         * @brief Gives back window pages reserved and not in use (a U-mode program's heap room,
+         *        `devplan/protection.md` §22), wanting at least @p pages; returns how many it gave.
+         *        Called by `takeRange()` when no range is long enough, with no lock of the
+         *        window's held, then the take tried once more. It must not wait on a lock its
+         *        caller may hold (it tries them).
+         */
+        using Reclaimer = uint32_t (*)(uint32_t pages);
+
+        /** @brief Sets the reclaimer (the loader's, at boot). */
+        void setReclaimer(Reclaimer reclaimer);
+
         /** @brief Takes the @p pages pages at @p at if they are all free (growing in place). */
         bool takeRangeAt(uint8_t *at, uint32_t pages);
 

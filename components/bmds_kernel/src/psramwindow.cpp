@@ -37,6 +37,7 @@ namespace PsramWindow {
                 constinit bool                   heapInOrder = false;
                 constinit StaticObject<Mutex>    lock;
                 constinit PageWindow             ranges;
+                constinit std::atomic<Reclaimer> reclaimer{nullptr};
                 portMUX_TYPE                     mmuLock = portMUX_INITIALIZER_UNLOCKED;
 
                 uint32_t readEntry(uint32_t id) {
@@ -127,9 +128,22 @@ namespace PsramWindow {
 
         uint8_t *takeRange(uint32_t count, bool fromTop) {
                 if (!isReady()) return nullptr;
-                Mutex::Locker  locker(*lock, WaitForever);
-                const uint32_t first = ranges.take(count, fromTop);
-                return first == PageWindow::None ? nullptr : base() + size_t(first) * PageBytes;
+                for (int attempt = 0;; ++attempt) {
+                        {
+                                Mutex::Locker  locker(*lock, WaitForever);
+                                const uint32_t first = ranges.take(count, fromTop);
+                                if (first != PageWindow::None) return base() + size_t(first) * PageBytes;
+                        }
+                        // Short: ranges reserved and not used are asked back once (outside the
+                        // lock: the reclaimer gives them back through giveRange()).
+                        const Reclaimer r = reclaimer.load(std::memory_order_acquire);
+                        if (attempt > 0 || r == nullptr || r(count) == 0) return nullptr;
+                }
+        }
+
+        void setReclaimer(Reclaimer r) {
+                reclaimer.store(r, std::memory_order_release);
+                return;
         }
 
         bool takeRangeAt(uint8_t *at, uint32_t count) {

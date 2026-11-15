@@ -52,6 +52,9 @@ namespace {
                 return tcp_sndbuf(pcb) >= TCP_SND_BUF / 2 && tcp_sndqueuelen(pcb) <= TCP_SND_QUEUELEN / 2;
         }
         constexpr int32_t MaxReceiveBuffer = 256 * 1024;
+        // How often a blocking TCP send looks again while lwIP's memory is out and nothing of its
+        // own is in flight to wake it (sendTcp()).
+        constexpr unsigned StarvedRetryMs = 10;
 
         Error errorOf(err_t err) {
                 switch (err) {
@@ -1494,6 +1497,7 @@ Result<size_t> Socket::sendFast(Span<const ByteSpan> pieces, const SocketAddress
 Result<size_t> Socket::sendTcp(Span<const ByteSpan> pieces, uint32_t flags, const Deadline &deadline) {
         const size_t total = totalOf(pieces);
         size_t       done = 0;
+        bool         starved = false; // lwIP's memory out with nothing of ours in flight
         for (;;) {
                 {
                         NetStack::Locker lock;
@@ -1510,6 +1514,7 @@ Result<size_t> Socket::sendTcp(Span<const ByteSpan> pieces, uint32_t flags, cons
                         while (piece < pieces.size() && offset >= pieces[piece].size())
                                 offset -= pieces[piece++].size();
                         bool wrote = false;
+                        starved = false;
                         while (done < total) {
                                 const size_t room = tcp_sndbuf(pcb);
                                 if (room == 0 || tcp_sndqueuelen(pcb) >= TCP_SND_QUEUELEN) break;
@@ -1521,9 +1526,11 @@ Result<size_t> Socket::sendTcp(Span<const ByteSpan> pieces, uint32_t flags, cons
                                         TCP_WRITE_FLAG_COPY | ((!last || (flags & More)) ? TCP_WRITE_FLAG_MORE : 0);
                                 const err_t err = tcp_write(pcb, p.data() + offset, static_cast<u16_t>(n), api);
                                 if (err == ERR_MEM) {
-                                        // Nothing in flight to free room: no sent callback will come.
-                                        if (!wrote && tcp_sndqueuelen(pcb) == 0)
-                                                return Result<size_t>(done, Error::NoMem);
+                                        // lwIP's memory is out, held elsewhere (on loopback, often
+                                        // by the reader's unread data). With nothing of ours in
+                                        // flight no sent callback will come to wake us: a would-block
+                                        // as on Linux, and a blocking send retries (below).
+                                        starved = !wrote && tcp_sndqueuelen(pcb) == 0;
                                         break;
                                 }
                                 if (err != ERR_OK) return Result<size_t>(done, errorOf(err));
@@ -1541,6 +1548,17 @@ Result<size_t> Socket::sendTcp(Span<const ByteSpan> pieces, uint32_t flags, cons
                                 if (done > 0) return makeResult(done);
                                 return makeError<size_t>(Error::WouldBlock);
                         }
+                }
+                if (starved) {
+                        // Nothing will tell us when lwIP's memory frees: look again shortly (only
+                        // while it is out), within the caller's deadline.
+                        const int64_t left = deadline.remainingUs();
+                        if (left == 0) return Result<size_t>(done, Error::WouldBlock);
+                        const Deadline shortly(left < int64_t(StarvedRetryMs) * 1000 ? unsigned((left + 999) / 1000)
+                                                                                     : StarvedRetryMs);
+                        const Error    err = Interrupt::waitCurrent(_writable, shortly);
+                        if (err.isOk() || err == Error::Timeout) continue;
+                        return Result<size_t>(done, err);
                 }
                 const Error err = Interrupt::waitCurrent(_writable, deadline);
                 if (err.isError()) return Result<size_t>(done, err == Error::Timeout ? Error::WouldBlock : err);

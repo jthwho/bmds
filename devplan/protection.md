@@ -789,3 +789,41 @@ no frame pointer, so a return address left by a finished call can show up too (L
 recursion shows its repeats. `tools/bmds-fault` names them from the program's unstripped ELF
 (functions; files and lines for a program built with `-g`). The record: 31 words more per thread
 (PSRAM). GDB's stub and IDF's panic decoder still see only kernel frames.
+
+## 22. A suite runner, the window's headroom, debug information (2026-11-15)
+
+**`tools/bmds-suites`** runs every automatic `progtest` suite (36) and every fault kind, on the
+main thread and a second, in both modes, with the arguments each needs, and says where the modes
+differ. Each suite by its own ssh, in a session of its own (`signals` signals its group) under
+`timeout`; the uptime read between them, so a reset is reported as one; `programs/protect` set for
+the run and put back (never saved); free memory before and after each mode. Left out: the helpers
+other suites run, those waiting for a key or a signal, and in M-mode the faults that panic the board
+by design (`bigframe`, `syscall`, `badsp`: two panics found that by running them there). 148 runs,
+about four minutes. The `netfs` and `crypto` regressions of §21 are what it is for.
+
+It found **`net` failing in both modes:** a non-blocking TCP send returned `ENOMEM` where Linux
+gives `EAGAIN`. `tcp_write()` got `ERR_MEM` with nothing of the socket's in flight (on loopback the
+memory was the reader's unread data), and with no sent callback to come, `sendTcp()` returned
+`NoMem`. Now a would-block for a non-blocking send; a blocking one looks again every 10 ms while
+lwIP's memory is out (nothing tells it when memory frees), within its deadline.
+
+**The window's headroom.** Ten idle BusyBox processes took 8.5 MB of the 32 MB PSRAM window in
+U-mode, 5.9 MB in M-mode: each instance maps its whole image at its own range (code and data at a
+fixed distance: §14.2 of `programs.md`; BusyBox's 9 pages), and in U-mode four pages more of heap
+room (`HeadroomPages`, so the heap grows in place without a new range's PMP entries). The room is
+only addresses, but those ran out first: twenty processes and exec failed with memory free. Now
+the window has a reclaimer (`PsramWindow::setReclaimer()`): when no range is long enough, the
+loader's (`UserMemory::reclaimHeadroom()`) gives back every started program's room above what it
+has mapped (a program whose lock it can't take keeps its own), and the take is tried once more.
+Twelve idle processes then gave back 30 pages as a program needed them. The pieces are scattered
+(four pages after each program): they make room for more programs, not for one big block. The
+process table (32, shells included; a background job is two) now runs out first.
+
+**Debug information:** `BmdsProgram.cmake` builds everything with `-g`, so `<name>.debug.elf` has
+files and lines (`tools/bmds-fault`: `fault_now at progtest.c:4856`). The 24 SDK examples' card
+ELFs came out byte for byte the same with it. Distribution packages (`bmds-cc`) not yet: their
+card copies need checking for stripping first.
+
+**Open:** `progtest netfs` takes 60 s in both modes, twice `netfs/timeout`, and passes: a request
+the test's server never answers. `umem`'s realloc to 1.2 MB failed once in a full run right after a
+window stress test (not in ten repeats): a NULL from a window crowded at that moment.

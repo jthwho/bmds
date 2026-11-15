@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+# @file      bmds-suites
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Runs every automatic `progtest` suite on the board, with the arguments each needs, in both of
+# programs/protect's modes (U-mode and M-mode), and says which passed and where the modes differ
+# (devplan/protection.md §22). Each suite runs in a session of its own (`signals` signals its
+# group) under `timeout`, by ssh; the uptime is read between suites, so a reset is reported as one.
+# programs/protect is set for the run only and put back as it was (never saved). Free internal RAM
+# and PSRAM are shown before and after each mode.
+#
+#   tools/bmds-suites root@bmds0
+#   tools/bmds-suites root@bmds0 --modes u --only crypto,netfs
+#
+# The program is build-host/sdk-examples/progtest.elf unless --elf; it and the FLAC the decoder
+# suite reads go to a folder in the board's /tmp, removed at the end. Faults are run too: every
+# kind on the main thread and a second one, with each mode's expected status. Left out: the
+# helpers other suites run, those that wait for a key or a signal, and the faults that panic the
+# board on purpose in M-mode (bigframe, syscall, badsp: progtest.c).
+
+import argparse
+import os
+import shlex
+import subprocess
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# (name, arguments, modes it runs in, expected status). SELF, WORK and FLAC are filled in.
+SUITES = [
+    ("float", "", "um", 0),
+    ("files", "WORK", "um", 0),
+    ("time", "", "um", 0),
+    ("mem", "", "um", 0),
+    ("umem", "6", "um", 0),
+    ("freerace", "", "u", 0),
+    ("hostile", "", "u", 0),  # M-mode has no checks: its pointers would land in the kernel
+    ("syntax", "", "um", 0),
+    ("random", "", "um", 0),
+    ("cwd", "/", "um", 0),
+    ("spawn", "SELF WORK", "um", 0),
+    ("scripts", "SELF WORK", "um", 0),
+    ("signals", "SELF", "um", 0),
+    ("poll", "SELF", "um", 0),
+    ("threads", "SELF", "um", 0),
+    ("mainexit", "", "um", 0),
+    ("threadexit", "", "um", 9),
+    ("threadexec", "SELF", "um", 42),
+    ("exec", "SELF", "um", 42),
+    ("audio", "", "um", 0),
+    ("decode", "FLAC", "um", 0),
+    ("stats", "SELF", "um", 0),
+    ("tasks", "", "um", 0),
+    ("procs", "SELF", "um", 0),
+    ("rusage", "SELF", "um", 0),
+    ("system", "", "um", 0),
+    ("notify", "", "um", 0),
+    ("timers", "SELF", "um", 0),
+    ("pty", "SELF", "um", 0),
+    ("syslog", "", "um", 0),
+    ("crypto", "", "um", 0),
+    ("net", "", "um", 0),
+    ("sched", "SELF", "um", 0),
+    ("speech", "quiet", "um", 0),
+    ("netfs", "", "um", 0),
+    ("rtnet", "", "um", 0),
+]
+
+# Each fault kind's status, U-mode and M-mode (None: not run there). progtest.c's faults.
+FAULTS = {
+    "recurse": (139, 139), "null": (139, 139), "nullw": (139, 139), "reserved": (139, 139),
+    "jump": (139, 139), "ill": (132, 132), "misaligned": (0, 0), "ebreak": (133, 133),
+    "dramexec": (139, 139), "iramwrite": (139, 139), "textwrite": (139, 139),
+    "rodatawrite": (139, 139), "top": (139, 139), "kernelram": (139, 1), "periph": (139, 1),
+    "csr": (132, 1), "wfi": (132, 1), "kernelcall": (139, 3), "bigframe": (139, None),
+    "syscall": (1, None), "badsp": (139, None),
+}
+
+MODES = {"u": ("true", "U-mode"), "m": ("false", "M-mode")}
+
+
+class Board:
+    def __init__(self, host, timeout):
+        self.host = host
+        self.timeout = timeout
+
+    def run(self, command, timeout=None):
+        """Runs @p command on the board: (status, output). Status 255: ssh failed."""
+        try:
+            r = subprocess.run(["ssh", "-n", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", self.host, command],
+                               capture_output=True, text=True, errors="replace",
+                               timeout=timeout or self.timeout + 60)
+            return r.returncode, r.stdout + r.stderr
+        except subprocess.TimeoutExpired:
+            return 255, "(no answer from the board)"
+
+    def uptime(self):
+        """Seconds the board has been up, or None."""
+        status, out = self.run("uptime", timeout=30)
+        if status != 0:
+            return None
+        text = out.strip()
+        try:
+            return float(text.split()[0])
+        except ValueError:
+            pass
+        # "up 0d 00:07:02.889"
+        for word in text.split():
+            if word.count(":") == 2:
+                days = 0
+                for w in text.split():
+                    if w.endswith("d") and w[:-1].isdigit():
+                        days = int(w[:-1])
+                h, m, s = word.split(":")
+                return days * 86400 + int(h) * 3600 + int(m) * 60 + float(s)
+        return None
+
+    def free(self):
+        """(internal, PSRAM) free bytes, from `mem`."""
+        _, out = self.run("mem", timeout=30)
+        got = {}
+        for line in out.splitlines():
+            fields = line.split()
+            if len(fields) >= 3 and fields[0] in ("Internal", "Psram"):
+                got[fields[0]] = int(fields[2])
+        return got.get("Internal"), got.get("Psram")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run progtest's automatic suites in both modes.")
+    parser.add_argument("host", help="the board, as ssh reaches it (root@bmds0)")
+    parser.add_argument("--elf", default=os.path.join(ROOT, "build-host", "sdk-examples", "progtest.elf"),
+                        help="progtest's ELF (build-host/sdk-examples/progtest.elf)")
+    parser.add_argument("--modes", default="um", help="u (U-mode), m (M-mode) or um (both; the default)")
+    parser.add_argument("--only", help="only these suites (comma-separated; 'faults' for the faults)")
+    parser.add_argument("--skip", default="", help="suites to leave out (comma-separated)")
+    parser.add_argument("--bin", default="/sd0/p0/bin", help="where the board's BusyBox is (/sd0/p0/bin)")
+    parser.add_argument("--timeout", type=int, default=120, help="seconds a suite may take (120)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show a failing suite's last lines")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.elf):
+        sys.exit("bmds-suites: no %s (build progtest.elf in build-host/sdk-examples)" % args.elf)
+    flac = os.path.join(ROOT, "tests", "host", "audio", "tone.flac")
+    only = set(args.only.split(",")) if args.only else None
+    skip = set(filter(None, args.skip.split(",")))
+    wanted = lambda name: (only is None or name in only) and name not in skip  # noqa: E731
+    modes = [m for m in args.modes if m in MODES]
+    if not modes:
+        sys.exit("bmds-suites: --modes takes u, m or um")
+
+    board = Board(args.host, args.timeout)
+    work = "/tmp/bmds-suites-%d" % os.getpid()
+    self_path, flac_path = work + "/progtest.elf", work + "/tone.flac"
+    status, out = board.run("sysconf get programs/protect", timeout=30)
+    if status != 0:
+        sys.exit("bmds-suites: can't reach %s: %s" % (args.host, out.strip()))
+    was = out.strip()
+    status, out = board.run("mkdir -p %s/work" % work, timeout=30)
+    copy = subprocess.run(["scp", "-q", args.elf, flac, "%s:%s/" % (args.host, work)], capture_output=True, text=True)
+    if status != 0 or copy.returncode != 0:
+        sys.exit("bmds-suites: couldn't copy to the board: %s%s" % (out, copy.stderr))
+
+    results = {}  # (name, mode) -> (ok, status, last lines)
+    failures = 0
+    reset = None
+    try:
+        for mode in modes:
+            value, label = MODES[mode]
+            board.run("sysconf set programs/protect %s" % value, timeout=30)
+            before = board.free()
+            print("== %s" % label, flush=True)
+            up = board.uptime()
+            runs = [(n, a, e) for n, a, ms, e in SUITES if mode in ms and wanted(n)]
+            if wanted("faults"):
+                for kind, (u, m) in FAULTS.items():
+                    expect = u if mode == "u" else m
+                    if expect is None:
+                        continue
+                    runs.append(("faults %s" % kind, "", expect))
+                    runs.append(("faults %s thread" % kind, "", expect))
+            for name, arg, expect in runs:
+                words = arg.replace("SELF", self_path).replace("WORK", work + "/work").replace("FLAC", flac_path)
+                command = "(cd %s/work && exec %s/setsid %s/timeout %d %s %s %s) > %s/out 2>&1; echo \"status $?\"; " \
+                          "%s/tail -n 4 %s/out" % (work, args.bin, args.bin, args.timeout, self_path, name, words,
+                                                   work, args.bin, work)
+                started = time.monotonic()
+                _, out = board.run(command)
+                took = time.monotonic() - started
+                lines = out.splitlines()
+                got = None
+                for line in lines:
+                    if line.startswith("status "):
+                        got = int(line.split()[1])
+                tail = [l for l in lines if not l.startswith("status ")]
+                now = board.uptime()
+                if now is None or (up is not None and now < up):
+                    reset = "%s (%s)" % (name, label)
+                    print("  %-26s RESET (the board restarted)" % name, flush=True)
+                    raise SystemExit
+                up = now
+                ok = got == expect
+                results[(name, mode)] = (ok, got, tail)
+                failures += 0 if ok else 1
+                note = "" if ok else "  status %s, expected %d" % (got, expect)
+                print("  %-26s %s %5.1f s%s" % (name, "pass" if ok else "FAIL", took, note), flush=True)
+                if not ok and args.verbose:
+                    for line in tail:
+                        print("      | " + line)
+            after = board.free()
+            if None not in before + after:
+                print("  free: internal %d -> %d, PSRAM %d -> %d" % (before[0], after[0], before[1], after[1]))
+    except SystemExit:
+        pass
+    finally:
+        board.run("sysconf set programs/protect %s; rm -r %s" % (shlex.quote(was), work), timeout=60)
+
+    if len(modes) > 1:
+        names = sorted({n for n, _ in results}, key=lambda n: [r[0] for r in SUITES].index(n)
+                       if n in [r[0] for r in SUITES] else len(SUITES))
+        differ = [n for n in names if len({results[(n, m)][0] for m in modes if (n, m) in results}) > 1]
+        if differ:
+            print("Differ between the modes: %s" % ", ".join(differ))
+    if reset:
+        print("bmds-suites: the board reset during %s" % reset)
+        return 2
+    print("%d run, %d failed" % (len(results), failures))
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
