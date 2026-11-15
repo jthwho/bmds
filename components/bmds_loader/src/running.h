@@ -100,6 +100,7 @@ struct ProgramThread final : ProcessOwner {
                 volatile uint32_t    *hint = nullptr;    // the program's (sig_setup): a signal is due
                 volatile int32_t     *clear = nullptr;   // thread_clear(): 0 and a wake once it has ended
                 uint32_t              callEpoch = 0;     // U-mode: its call's (UserMemory::enterCall()), 0: none
+                uint32_t              hintValue = UINT32_MAX; // what was last written to `hint`
                 // Writes a word the program gave the kernel to keep (hint, clear): U-mode's only
                 // while still the program's (devplan/protection.md §16).
                 void pokeKept(volatile void *word, uint32_t value);
@@ -170,8 +171,8 @@ struct ProgramThread final : ProcessOwner {
                 void enter() {
                         inKernel.store(true);
                         beginCall(); // a U-mode program's: what it frees from now on waits for this call (§16)
-                        current->signals().prepare(currentSignals());
-                        keepKill();
+                        const bool cleared = current->signals().prepare(currentSignals());
+                        if (cleared) keepKill();
                         return;
                 }
 
@@ -362,8 +363,8 @@ namespace StackProbe {
  */
 class MemoryHold {
         public:
-                MemoryHold() {
-                        ProgramThread &t = ProgramThread::self();
+                MemoryHold() : MemoryHold(ProgramThread::self()) {}
+                explicit MemoryHold(ProgramThread &t) {
                         if (t.run->memory != nullptr && t.callEpoch == 0) {
                                 t.callEpoch = t.run->memory->enterCall();
                                 _thread = &t;

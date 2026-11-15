@@ -312,14 +312,20 @@ Signals::Taken Signals::take(Thread &thread) {
         }
 }
 
-void Signals::prepare(Thread &thread) {
-        if (thread.wake.load(std::memory_order_acquire) || isDue(thread)) return;
+bool Signals::prepare(Thread &thread) {
+        // Nothing pending, no wake, not raised (relaxed: skipping clears nothing, so a stale look
+        // loses nothing; a signal posted from now on raises it): most calls, protection.md §18.
+        if (((_pending.load(std::memory_order_relaxed) | thread.pending.load(std::memory_order_relaxed)) == 0) &&
+            !thread.wake.load(std::memory_order_relaxed) && thread.interrupt.raisesRelaxed() == 0)
+                return false;
+        if (thread.wake.load(std::memory_order_acquire) || isDue(thread)) return false;
+        if (thread.interrupt.raises() == 0) return false;
         thread.interrupt.clear();
         // The clear before the second look (a store, then loads): a signal posted meanwhile is
         // either seen here or raises the interrupt after the clear. The looks' loads are acquire.
         std::atomic_thread_fence(std::memory_order_seq_cst);
         if (thread.wake.load(std::memory_order_acquire) || isDue(thread)) thread.interrupt.raise();
-        return;
+        return true;
 }
 
 void Signals::inherit(const Signals &parent, const Thread &thread) {

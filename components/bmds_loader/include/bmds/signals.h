@@ -256,11 +256,21 @@ class Signals {
                 /**
                  * @brief At the start of a system call: clears @p thread's interrupt
                  *        while nothing is due for it (and no `wake()` is).
+                 * @return True if it cleared a raise (a kill's would have to be raised again).
                  */
-                void prepare(Thread &thread);
+                bool prepare(Thread &thread);
 
                 /** @brief `prepare()` for the main thread. */
-                void prepare() { prepare(_main); }
+                bool prepare() { return prepare(_main); }
+
+                /**
+                 * @brief True if no signal is pending for @p thread or its process (acquire): the
+                 *        common case, where the stop, end and due checks all have nothing to say.
+                 */
+                bool isQuiet(const Thread &thread) const {
+                        return (_pending.load(std::memory_order_acquire) |
+                                thread.pending.load(std::memory_order_acquire)) == 0;
+                }
 
                 /** @brief Returns the main thread's interrupt (kernel code's). */
                 Interrupt &interrupt() { return _main.interrupt; }

@@ -25,6 +25,7 @@
 #include <soc/soc.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
+#include <bmds/process.h>
 #include <bmds/regionprotect.h>
 #include <bmds/sysconf.h>
 #include "trapentry.h"
@@ -61,7 +62,8 @@ namespace {
                               offsetof(UserBlock, kernelLo) == BMDS_UB_KERNEL_LO &&
                               offsetof(UserBlock, userLo) == BMDS_UB_USER_LO &&
                               offsetof(UserBlock, userHi) == BMDS_UB_USER_HI &&
-                              offsetof(UserBlock, pmp) == BMDS_UB_PMP && sizeof(UserBlock) == BMDS_UB_BYTES,
+                              offsetof(UserBlock, pmp) == BMDS_UB_PMP && offsetof(UserBlock, space) == BMDS_UB_SPACE &&
+                              sizeof(UserBlock) == BMDS_UB_BYTES,
                       "UserBlock's layout is usermodeoffsets.h's");
         static_assert(offsetof(PmpSet, stamp) == BMDS_PMP_STAMP && offsetof(PmpSet, cfg) == BMDS_PMP_CFG &&
                               offsetof(PmpSet, addr) == BMDS_PMP_ADDR,
@@ -71,6 +73,7 @@ namespace {
                               BMDS_K_SYS_SLOTS == offsetof(bmds_sys_t, slot),
                       "bmds_sys_t as usermode.S builds it");
         static_assert(BMDS_SYS_EXIT == 0 && BMDS_SYS_THREAD_EXIT == 54, "usermode.S's exit stubs");
+        static_assert(BMDS_SYS_CLOCK_GET == BMDS_K_SYS_CLOCK_GET, "usermode.S's fast clock_get");
         static_assert(sizeof(void *) == 4, "the block holds addresses as words");
 
         // Kernel stack bottoms are 16-aligned, and the block is at a stack's top.
@@ -221,6 +224,32 @@ unsigned UserSpace::entriesFor(uintptr_t base, size_t bytes) const {
         return _pmp.entriesFor(base, bytes);
 }
 
+bool UserSpace::allows(uintptr_t address, size_t bytes, uint8_t access) {
+        if (bytes == 0) return true;
+        if (address + bytes < address) return false;
+        for (;;) {
+                const uint32_t before = __atomic_load_n(&_pmp.stamp, __ATOMIC_ACQUIRE);
+                if ((before & 1u) != 0) continue;
+                uintptr_t       at = address;
+                const uintptr_t end = address + bytes;
+                bool            ok = true;
+                while (ok && at < end) {
+                        ok = false;
+                        for (unsigned i = 0; i < _spanCount; ++i) {
+                                const Span &s = _spans[i];
+                                if (at < s.lo || at >= s.hi) continue;
+                                if ((s.access & access) == access) {
+                                        at = s.hi;
+                                        ok = true;
+                                }
+                                break;
+                        }
+                }
+                __atomic_thread_fence(__ATOMIC_ACQUIRE);
+                if (__atomic_load_n(&_pmp.stamp, __ATOMIC_RELAXED) == before) return ok;
+        }
+}
+
 unsigned UserSpace::freeEntries() const {
         return PmpSet::Entries - _pmp.used;
 }
@@ -289,6 +318,19 @@ void UserMode::logState() {
 }
 
 BMDS_NAMESPACE_END
+
+// clock_get from U-mode, inside its own `ecall` trap with interrupts off (usermode.S): pure and
+// short, nothing in it can trap (integer arithmetic, the timer's registers, a sequence lock), so
+// the trap is left by its own `mret` straight back to U-mode, two trap round trips saved
+// (devplan/protection.md §18). No hold on the program's memory is needed: with this core's
+// interrupts off, another core's revoke waits for its interrupt here before anything goes.
+extern "C" int32_t bmds_user_clock(uint32_t clock, int64_t *ns, bmds::UserBlock *block) {
+        if (ns == nullptr) return -BMDS_EFAULT;
+        if (!block->space->allows(reinterpret_cast<uintptr_t>(ns), sizeof(*ns),
+                                  bmds::PmpSet::Read | bmds::PmpSet::Write))
+                return -BMDS_EFAULT;
+        return bmds::Process::clockGet(clock, ns);
+}
 
 // Each core: U-mode may read the cycle and instruction counters (`mcounteren`: CY, IR), as a
 // program could in M-mode; nothing else.

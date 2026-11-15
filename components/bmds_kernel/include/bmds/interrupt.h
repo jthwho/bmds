@@ -71,6 +71,9 @@ class Interrupt {
                  */
                 uint32_t raises() const { return _raises.load(); }
 
+                /** @brief `raises()` without ordering: for a look that only skips work. */
+                uint32_t raisesRelaxed() const { return _raises.load(std::memory_order_relaxed); }
+
                 /**
                  * @brief Raises the interrupt and wakes every waiter (task context).
                  * @nonblocking

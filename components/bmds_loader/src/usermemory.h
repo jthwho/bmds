@@ -151,6 +151,10 @@ class UserMemory final : public ProgramMemory {
                 bool     contains(const void *p, size_t bytes, uint32_t owner) override;
                 void     freeOwner(uint32_t owner) override;
                 size_t   accessible(const void *p, bool write) override;
+                bool     isAccessible(const void *p, size_t bytes, bool write) override {
+                        return _space->allows(reinterpret_cast<uintptr_t>(p), bytes,
+                                              write ? uint8_t(PmpSet::Read | PmpSet::Write) : uint8_t(PmpSet::Read));
+                }
 
         private:
                 static constexpr unsigned MaxRanges = 4; // the heap's

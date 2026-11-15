@@ -662,3 +662,36 @@ stack protection fault in an M-mode program thread's own code (SP in its PSRAM s
 §21 wrappers refused to contain, likely because the thread was already marked in the kernel by the
 kill. Not seen since; with the hang fixed, the situation (killing a program stuck mid-kill) no
 longer arises in the tests.
+
+## 18. The system call's cost (2026-11-15)
+
+Step 5 left a U-mode `getpid` at 4.2 µs (step 4: 3.2) and `clock_gettime` at 3.9 µs (2.4).
+Measured with the cycle counter on `getpid`'s path, the kernel's bookkeeping (~1,300 cycles) cost
+more than the traps (~490 cycles, the program's loop included). Where it went, and what changed:
+
+| Piece (cycles) | Before | After | What |
+|---|---:|---:|---|
+| Finding the thread (`ProgramThread::self()`) | 155 | 95 | FreeRTOS's `xTaskGetCurrentTaskHandle()` masks interrupts around one array read, and masking here writes the CLIC's memory-mapped threshold: now `mstatus.MIE` off for the two reads (`Detail::taskOwner()`, `taskInterrupt()`) |
+| `Signals::prepare()` | 275 | 72 | nothing pending, no wake, not raised: return with relaxed loads (skipping clears nothing, so it can't lose a raise); `keepKill()` only after a clear |
+| The hint written as the call ends | 330 | 25 | only when its value changes (the SDK only reads it); a write is a checked one since §16 |
+| The stop, end and due checks | 140 | 98 | one look at the pending sets (`isQuiet()`) instead of five, each load with its fence (~25 cycles) |
+| A pointer check | ~290 | — | `UserSpace::allows()`: a whole range in one pass over the decoded regions, one stamp read |
+
+**`clock_get` from U-mode is answered inside its own trap** (`bmds_user_clock()`, usermode.S): with
+interrupts still off, the PC stepped, the pointer checked against the block's `UserSpace` and the
+clock read; then `bmds_user_resume` leaves the `ecall`'s trap by its own `mret` straight to U-mode,
+so two of a call's four trap transitions go. Allowed because nothing on that path can trap (integer
+arithmetic, the timer's registers, a sequence lock, ROM's `__divdi3`; no FP: checked in the
+disassembly), so the CLIC's rule (§14) holds; and no hold on the memory is needed, since another
+core's revoke waits for this core's interrupt before anything is given back. The `KernelCall`-less
+`bmds_k_clock_get` is M-mode programs' only.
+
+**Result** (same boot, M-mode → U-mode): `getpid` 1.57 → 2.42 µs (step 4's U-mode: 3.2;
+M-mode before this: 2.41), `clock_gettime` 1.78 → 2.49 µs, `kernel.pipe` 294 → 273 MB/s,
+`programs.launch` 6.2 → 6.9 ms. The faster thread lookup and signal checks sped M-mode too. Tried:
+the compat corpus, every fault kind (main and thread, `badsp` too), `hostile`, `freerace`, `umem`,
+and the U-mode benchmarks looped beside a U-mode `guisurface` and M-mode FP programs, FP and PIE
+working everywhere after.
+
+**Left:** the remaining trap round trips for every other slot (the general case needs the slot to
+run outside the `ecall`'s trap: §14), and the hold's two atomics a call (~120 cycles).

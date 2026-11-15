@@ -89,8 +89,9 @@ two unexplained watchdog resets during updates. Step 5 done (§16): every slot's
 could reach itself (`EFAULT`), read once, memory freed during a call kept until it ends; the audit
 table; `progtest hostile` and `freerace`; a system call ~1 µs more. The thread-fault hang found
 in it fixed (a kill's interrupt cleared by a call's start, M-mode too); the watchdog resets traced to
-a trap storm in IDF's panic handler, now caught and reported (§17), not reproduced since. Next: step
-6, on by default, once the watchdog's cause has shown itself or enough use without it.
+a trap storm in IDF's panic handler, now caught and reported (§17), not reproduced since. A system call's cost
+taken back (§18): U-mode getpid 4.2 → 2.4 µs (M-mode 1.6), clock_gettime answered inside its trap
+(2.5 µs). Next: a soak in U-mode, then step 6, on by default.
   - [x] MMU spike (aliases, caches, DMA) and design.
   - [x] (a) The image cache with plain copies (`programs.md` §14.1): `exec` from memory, without the card.
   - [x] (b) Shared pages through the MMU window.

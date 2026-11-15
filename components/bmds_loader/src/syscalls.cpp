@@ -152,12 +152,10 @@ int32_t bmds_k_dup2(int32_t fd, int32_t to) {
 int32_t bmds_k_clock_get(uint32_t clock, int64_t *ns) {
         // No KernelCall (devplan/bench.md §15): the clocks are read without a lock or a wait, as
         // Linux's vDSO reads them, so a kill meanwhile may end the thread here as in its own code,
-        // and no signal is delivered on the way out. It was most of clock_gettime()'s time. A
-        // U-mode program's answer goes only where it could write it, held as a call holds memory
-        // (devplan/protection.md §16).
-        if (ns == nullptr) return bmds::Process::clockGet(clock, ns);
-        bmds::MemoryHold hold;
-        return bmds::detail::canWrite(ns, sizeof(*ns)) ? bmds::Process::clockGet(clock, ns) : -BMDS_EFAULT;
+        // and no signal is delivered on the way out. It was most of clock_gettime()'s time. Only
+        // M-mode programs come here: a U-mode program's clock_get is answered inside its own trap,
+        // its pointer checked there (usermode.S, bmds_user_clock(): devplan/protection.md §18).
+        return bmds::Process::clockGet(clock, ns);
 }
 
 int32_t bmds_k_sleep(int64_t ns) {

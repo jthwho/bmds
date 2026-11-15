@@ -112,8 +112,31 @@ namespace {
 
 } // namespace
 
+extern "C" {
+// FreeRTOS's (tasks.c, a plain global): each core's running task.
+extern void *volatile pxCurrentTCBs[];
+}
+
+namespace {
+
+        // The calling task, as xTaskGetCurrentTaskHandle() finds it but without its interrupt mask:
+        // on this chip masking writes the CLIC's memory-mapped threshold (~150 cycles, on every
+        // system call's path: devplan/protection.md §18). Interrupts off for the two reads instead
+        // (a CSR bit), so the task can't move between reading its core and that core's entry.
+        TaskHandle_t currentTask() {
+                uint32_t mstatus;
+                __asm__ volatile("csrrci %0, mstatus, 8" : "=r"(mstatus));
+                uint32_t core;
+                __asm__ volatile("csrr %0, mhartid" : "=r"(core));
+                void *task = pxCurrentTCBs[core];
+                if ((mstatus & 8u) != 0) __asm__ volatile("csrsi mstatus, 8");
+                return static_cast<TaskHandle_t>(task);
+        }
+
+} // namespace
+
 void *Detail::taskOwner() {
-        return pvTaskGetThreadLocalStoragePointer(nullptr, OwnerTlsIndex);
+        return pvTaskGetThreadLocalStoragePointer(currentTask(), OwnerTlsIndex);
 }
 
 void *Detail::taskOwnerOf(void *task) {
@@ -126,7 +149,7 @@ void Detail::setTaskOwner(void *owner) {
 }
 
 void *Detail::taskInterrupt() {
-        return pvTaskGetThreadLocalStoragePointer(nullptr, InterruptTlsIndex);
+        return pvTaskGetThreadLocalStoragePointer(currentTask(), InterruptTlsIndex);
 }
 
 void Detail::setTaskInterrupt(void *interrupt) {

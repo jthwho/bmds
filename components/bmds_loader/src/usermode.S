@@ -187,6 +187,21 @@ bmds_user_entry:
  */
         .type bmds_user_ecall, @function
 bmds_user_ecall:
+        /* clock_get: answered inside this trap, interrupts still off, then out of it by its own
+         * `mret` straight to U-mode (bmds_user_resume): nothing in it can trap (usermode.cpp's
+         * bmds_user_clock). */
+        lw      t1, BMDS_UB_T1(sp)
+        li      t0, BMDS_K_SYS_CLOCK_GET
+        bne     t1, t0, 2f
+        lw      t0, BMDS_UB_PC(sp)
+        addi    t0, t0, 4                       /* past the ecall */
+        sw      t0, BMDS_UB_PC(sp)
+        sw      ra, BMDS_UB_RA(sp)
+        mv      a2, sp                          /* the block */
+        call    bmds_user_clock
+        lw      ra, BMDS_UB_RA(sp)
+        j       bmds_user_resume
+2:
         /* Out of the ecall's trap first, by an `mret` with this trap's own mcause, into M-mode
          * (interrupts back on): every trap leaves through its own `mret` (the CLIC's rule: see
          * bmds_user_return). The slot then runs as ordinary kernel code. */

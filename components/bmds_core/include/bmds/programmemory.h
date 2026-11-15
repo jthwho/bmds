@@ -78,8 +78,12 @@ class ProgramMemory {
                  */
                 virtual size_t accessible(const void *p, bool write) = 0;
 
-                /** @brief True if the program could make each access to [@p p, @p p + @p bytes). */
-                bool isAccessible(const void *p, size_t bytes, bool write) {
+                /**
+                 * @brief True if the program could make each access to [@p p, @p p + @p bytes).
+                 *        The loader's answers in one pass; this one asks `accessible()` a region
+                 *        at a time.
+                 */
+                virtual bool isAccessible(const void *p, size_t bytes, bool write) {
                         auto at = reinterpret_cast<uintptr_t>(p);
                         if (bytes == 0) return true;
                         if (at + bytes < at) return false;

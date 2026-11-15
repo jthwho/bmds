@@ -1032,6 +1032,12 @@ the emergency stack): a bad one goes to a 2 KB emergency stack a core, its mepc,
 and ra kept in RTC memory and reported at the next boot, and IDF's panic then prints (a third storm
 on a core resets). `progtest faults badsp` in M-mode tries it.
 
+**Interrupt masking is expensive here** (rev 1.3: the CLIC's threshold is memory-mapped, §5a):
+FreeRTOS's `xTaskGetCurrentTaskHandle()` masks interrupts around one array read (~150 cycles), and a
+critical section costs ~1,000 cycles end to end. Clearing `mstatus.MIE` for a few instructions does
+the same job for two. Fenced atomics (acquire loads, seq_cst) cost ~25 cycles each. Both mattered on
+every system call's path (`devplan/protection.md` §18).
+
 **Capturing the console across resets:** the USB serial port stays enumerated across a software
 reset but not every reset; a capture must reopen the port when it goes, or it silently stops at the
 reset it was meant to catch (lost three captures before this was noticed).

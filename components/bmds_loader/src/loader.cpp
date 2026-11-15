@@ -584,6 +584,7 @@ namespace {
                 block.userLo = static_cast<uint32_t>(thread.userStackLo);
                 block.userHi = static_cast<uint32_t>(thread.userStackHi);
                 block.pmp = thread.run->space->pmp();
+                block.space = thread.run->space;
                 thread.user = &block;
                 UserMode::start(block, a0, a1, a2, a3, ra, tp);
         }
@@ -1024,8 +1025,10 @@ namespace {
                                 }
                                 // Every thread it is due for takes it at its next call.
                                 forEach(run, [&](ProgramThread &t) {
-                                        if (t.current == &p && t.hint != nullptr && s.isDue(t.currentSignals()))
+                                        if (t.current == &p && t.hint != nullptr && s.isDue(t.currentSignals())) {
                                                 t.pokeKept(t.hint, 1);
+                                                t.hintValue = 1;
+                                        }
                                 });
                                 return true;
                         }
@@ -1371,14 +1374,23 @@ void ProgramThread::leave() {
         for (;;) {
                 Signals         &s = current->signals();
                 Signals::Thread &mine = currentSignals();
+                // Nothing pending (most calls): no stop, end or due signal to look for.
+                const bool quiet = s.isQuiet(mine);
                 // A stop signal the call unblocked stops it now; a stopped process parks here.
-                if (const int sig = s.stopSignal(mine); sig != 0 && s.stopWith(mine, sig))
+                if (const int sig = quiet ? 0 : s.stopSignal(mine); sig != 0 && s.stopWith(mine, sig))
                         recordChange(currentPid, sig);
                 mine.interrupt.park();
                 // A vfork child is ended by the SDK (the hint); its parent once it is back.
-                const int terminate = s.terminateSignal();
+                const int terminate = quiet ? 0 : s.terminateSignal();
                 if (depth == 0 && terminate != 0) endProcess(ProcessTable::killedStatus(terminate));
-                if (hint != nullptr) pokeKept(hint, s.isDue(mine, terminate) ? 1 : 0);
+                if (hint != nullptr) {
+                        // Only when it changes: the SDK only reads it, and the write is checked.
+                        const uint32_t due = !quiet && s.isDue(mine, terminate) ? 1 : 0;
+                        if (due != hintValue) {
+                                pokeKept(hint, due);
+                                hintValue = due;
+                        }
+                }
                 Signals::clearWake(mine);
                 inKernel.store(false);
                 // Killed, or (running a vfork child meanwhile) its process ended while it was away.
@@ -1682,6 +1694,7 @@ int32_t ProgramThread::sigSetup(volatile uint32_t *word) {
             !run->memory->isAccessible(const_cast<uint32_t *>(word), 4, true))
                 return -BMDS_EFAULT;
         hint = word;
+        hintValue = UINT32_MAX; // unknown: written at the next call's end
         return 0;
 }
 

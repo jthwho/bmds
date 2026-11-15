@@ -47,6 +47,7 @@ struct alignas(16) UserBlock {
                 uint32_t      userLo = 0;    ///< The program's stack: its bottom,
                 uint32_t      userHi = 0;    ///< and its top (the guard's bounds in U-mode).
                 const PmpSet *pmp = nullptr; ///< Its process's (`UserSpace::pmp()`).
+                class UserSpace *space = nullptr; ///< ...and the space it is (the fast `clock_get`'s checks).
 };
 
 /**
@@ -97,6 +98,9 @@ class UserSpace final {
 
                 /** @brief `PmpSet::extent()` on the set as it is now (lock-free: its stamp). */
                 size_t extent(uintptr_t address, uint8_t access);
+
+                /** @brief True if each byte of [@p address, + @p bytes) allows @p access, in one pass. */
+                bool allows(uintptr_t address, size_t bytes, uint8_t access);
 
                 /** @brief The set the trampoline loads. */
                 const PmpSet *pmp() const { return &_pmp; }

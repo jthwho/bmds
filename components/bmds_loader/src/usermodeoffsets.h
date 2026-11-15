@@ -38,7 +38,11 @@
 #define BMDS_UB_USER_LO 36
 #define BMDS_UB_USER_HI 40
 #define BMDS_UB_PMP 44
-#define BMDS_UB_BYTES 48
+#define BMDS_UB_SPACE 48
+#define BMDS_UB_BYTES 64
+
+/* clock_get's slot: answered inside its own trap (usermode.S, protection.md §18). */
+#define BMDS_K_SYS_CLOCK_GET 23
 
 /* PmpSet (bmds/pmpset.h). */
 #define BMDS_PMP_STAMP 0
