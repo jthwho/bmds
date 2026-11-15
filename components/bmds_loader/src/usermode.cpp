@@ -121,7 +121,7 @@ namespace {
 #endif
         }
 
-        BMDS_SYSCONF(programsProtect, "programs/protect", Config::Type::Bool, "false",
+        BMDS_SYSCONF(programsProtect, "programs/protect", Config::Type::Bool, "true",
                      "Programs run in U-mode, kept out of the kernel's memory and the hardware", 0, 0, nullptr, nullptr)
 
 } // namespace

@@ -695,3 +695,39 @@ working everywhere after.
 
 **Left:** the remaining trap round trips for every other slot (the general case needs the slot to
 run outside the `ecall`'s trap: §14), and the hold's two atomics a call (~120 cycles).
+
+## 19. The U-mode soak (2026-11-15)
+
+Three hours with `programs/protect` on (00:20-03:20), driven from the host, the console captured
+throughout (reopening the port at resets). 128 rounds, each: BusyBox pipelines (`seq | sort |
+uniq | wc`), bzip2 and gzip round trips checked byte for byte, `sha256sum`, `tar`, `awk`, `sed`;
+`progtest umem 6`, `hostile`, `freerace`, a thread's fault and a stack overflow, `float`, `mem`;
+`blittest` (40 rounds of CPU and 2D-DMA blits, checked pixel by pixel) and `guisurface -n 120`;
+CoreMark every fourth round. Every third round the system-call benchmarks, every fifth a 12 MB
+upload and `update check`.
+
+- **No reset, no hang, no wrong result:** all 128 rounds exited 0; `hostile` 200/200, `blittest` 0
+  bad pixels, every round trip and checksum matched, all 25 uploads checked good. The console: no
+  panic, no bad-SP record, no reset (the board up 3 h 10 min at the end).
+- **No leak:** internal RAM 159,619 bytes free after nearly every round (580 fewer once, back the
+  next); PSRAM 17.265-17.268 MB free from round 14 on (a 9 KB step there, then flat; once 57 KB
+  lower for one round, a cache, back the next).
+- **Steady speed:** U-mode `getpid` 2.40-2.53 µs, `clock_gettime` 2.48-2.62 µs, `kernel.pipe`
+  261-268 MB/s, `programs.launch` 6.65-7.2 ms over the 42 benchmark rounds.
+- **Computation costs nothing:** CoreMark 1,061 iterations a second on core 1 in both modes, and
+  1,004-1,010 on core 0 in both (the window manager, network and audio are there): which core the
+  program lands on, not its mode.
+
+The watchdog storm of §17 didn't recur. Step 6 next.
+
+## 20. Step 6: on by default (2026-11-15)
+
+`programs/protect` now defaults to true; off runs programs in M-mode as before step 3, unprotected,
+for a program that needs it (none known) or to tell a protection bug from a program's. Nothing in
+the ABI changes: `sys.h`'s startup contract says what the program can reach and what ends it,
+`docs/ABI.md` records the decision, `docs/ARCHITECTURE.md` and `docs/VISION.md` (it was a
+non-goal) say it is there.
+
+Checked on the board with the default, nothing set: the compat corpus (v1) passes; every fault
+kind, in the main thread and another, ends the program with its signal and leaves the system up;
+`hostile` 200/200, `freerace`, `umem`.

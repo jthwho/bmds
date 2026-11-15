@@ -27,6 +27,16 @@
  *   loaded, relocated and its bss is zero.
  * - Returning from `_start` ends the program with a0 as its status.
  *
+ * Memory protection (the system's `programs/protect`, on by default): the program runs in RISC-V
+ * U-mode and reaches only its own memory: its image (code and constants readable and runnable,
+ * its data readable and writable), what `mem_alloc` gives it, its threads' stacks, the buffers the
+ * kernel makes for it (surface buffers, an audio period), and the table (readable). Data, heap and
+ * stacks aren't runnable. Anything else ends it as a fault would: another address SIGSEGV; a CSR
+ * other than `cycle`, `instret` and their high halves, or `wfi`, SIGILL. A slot handed a pointer
+ * the program couldn't use itself returns `-BMDS_EFAULT` and does nothing. The slots are entry
+ * points into a page of stubs: call them; don't compare them with other functions or jump into
+ * their middle. Nothing else about the calls changes.
+ *
  * ABI: frozen. Append only.
  */
 
