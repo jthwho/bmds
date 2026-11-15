@@ -84,6 +84,46 @@ class UserMemory final : public ProgramMemory {
                 /** @brief True if @p p is one of its internal RAM blocks. */
                 bool isInternal(const void *p);
 
+                /**
+                 * @brief A system call of its program begins (`devplan/protection.md` §16).
+                 * @return Its epoch: what it checks from now on was granted when the call began.
+                 */
+                uint32_t enterCall() {
+                        // Acquire: a free's revoke (published before it bumped the epoch, release)
+                        // is seen by this call's checks if the call saw that epoch.
+                        _calls->inFlight.fetch_add(1, std::memory_order_acq_rel);
+                        return _calls->epoch.load(std::memory_order_acquire);
+                }
+
+                /** @brief The call ends. */
+                void leaveCall() {
+                        _calls->inFlight.fetch_sub(1, std::memory_order_release);
+                        return;
+                }
+
+                /** @brief True if freed memory waits for calls that began before it was freed. */
+                bool hasDeferred() const { return _calls->deferred.load(std::memory_order_relaxed) != 0; }
+
+                /**
+                 * @brief Gives back the freed memory no call in flight may still use: @p oldest
+                 *        is the least epoch of the program's calls in flight (0: none).
+                 */
+                void releaseDeferred(uint32_t oldest);
+
+                /**
+                 * @brief Writes @p value to the word at @p p if the program can still write it
+                 *        (a word the kernel kept: the signal hint, `thread_clear`'s), under the
+                 *        lock that freeing takes. @return False if it couldn't.
+                 */
+                bool poke(volatile uint32_t *p, uint32_t value);
+
+                /** @brief As `poke()`, from a call of the program in flight: nothing it can reach goes meanwhile. */
+                bool pokeInCall(volatile uint32_t *p, uint32_t value) {
+                        if (!isAccessible(const_cast<const uint32_t *>(p), sizeof(uint32_t), true)) return false;
+                        *p = value;
+                        return true;
+                }
+
                 /** @brief What `mem` and the debug log show. */
                 struct Usage {
                                 uint32_t mappedPages =
@@ -110,6 +150,7 @@ class UserMemory final : public ProgramMemory {
                 uint32_t sizeOf(const void *p, uint32_t owner) override;
                 bool     contains(const void *p, size_t bytes, uint32_t owner) override;
                 void     freeOwner(uint32_t owner) override;
+                size_t   accessible(const void *p, bool write) override;
 
         private:
                 static constexpr unsigned MaxRanges = 4; // the heap's
@@ -137,16 +178,19 @@ class UserMemory final : public ProgramMemory {
                                 List<Run> runs;
                 };
 
+                // A freed one waits (`deferred`: the epoch it was freed in) while older calls run.
                 struct Large {
                                 Range    range;
                                 uint32_t bytes = 0;
                                 uint32_t owner = 0;
+                                uint32_t deferred = 0;
                 };
 
                 struct Internal {
                                 void    *block = nullptr;
                                 uint32_t bytes = 0;
                                 uint32_t owner = 0;
+                                uint32_t deferred = 0;
                 };
 
                 UserMemory() = default;
@@ -171,6 +215,7 @@ class UserMemory final : public ProgramMemory {
                 void      freeLocked(void *p, uint32_t owner, uint32_t &bytes);
 
                 std::atomic<uint32_t> _refs{1};
+                UserSpace::Calls     *_calls = nullptr; // the space's (internal RAM)
                 Mutex                 _lock;
                 UserSpace            *_space = nullptr;
                 RangeHeap             _heap;

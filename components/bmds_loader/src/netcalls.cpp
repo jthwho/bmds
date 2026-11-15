@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <type_traits>
 #include <bmds/clock.h>
 #include <bmds/errno.h>
 #include <bmds/netstatus.h>
@@ -189,6 +190,8 @@ namespace {
         int32_t addressIn(const void *addr, uint32_t length, SocketAddress &out, bool unspec) {
                 if (addr == nullptr) return -BMDS_EFAULT;
                 if (length < sizeof(uint16_t)) return -BMDS_EINVAL;
+                const uint32_t read = length < sizeof(bmds_sockaddr_in_t) ? length : sizeof(bmds_sockaddr_in_t);
+                if (!bmds::detail::canRead(addr, read)) return -BMDS_EFAULT;
                 uint16_t family;
                 std::memcpy(&family, addr, sizeof(family));
                 if (family == BMDS_AF_UNSPEC && unspec) {
@@ -212,6 +215,7 @@ namespace {
                 out.port = swap16(a.port);
                 out.addr = a.ipv4;
                 const uint32_t n = *length < sizeof(out) ? *length : sizeof(out);
+                if (!bmds::detail::canWrite(addr, n)) return -BMDS_EFAULT;
                 std::memcpy(addr, &out, n);
                 *length = sizeof(out);
                 return 0;
@@ -338,15 +342,21 @@ namespace {
         int32_t piecesOf(const bmds_msghdr_t &m, Piece (&pieces)[BMDS_IOV_MAX], size_t &count) {
                 if (m.iov_count > BMDS_IOV_MAX) return -BMDS_EMSGSIZE;
                 if (m.iov_count > 0 && m.iov == nullptr) return -BMDS_EFAULT;
+                if (!bmds::detail::canRead(m.iov, size_t(m.iov_count) * sizeof(bmds_iovec_t))) return -BMDS_EFAULT;
                 uint64_t total = 0;
                 count = 0;
                 for (uint32_t i = 0; i < m.iov_count; ++i) {
-                        uint32_t n = m.iov[i].length;
+                        const bmds_iovec_t v = m.iov[i]; // read once
+                        uint32_t           n = v.length;
                         if (n == 0) continue;
-                        if (m.iov[i].base == nullptr) return -BMDS_EFAULT;
+                        if (v.base == nullptr) return -BMDS_EFAULT;
                         if (total + n > INT32_MAX) n = static_cast<uint32_t>(INT32_MAX - total);
+                        // Read for a send, written for a receive (devplan/protection.md §16).
+                        if (std::is_const_v<Base> ? !bmds::detail::canRead(v.base, n)
+                                                  : !bmds::detail::canWrite(v.base, n))
+                                return -BMDS_EFAULT;
                         total += n;
-                        pieces[count++] = Piece(static_cast<Base *>(m.iov[i].base), n);
+                        pieces[count++] = Piece(static_cast<Base *>(v.base), n);
                         if (total == INT32_MAX) break;
                 }
                 return 0;
@@ -396,12 +406,23 @@ int32_t bmds_k_accept(int32_t fd, void *addr, uint32_t *length, uint32_t flags) 
         if ((flags & ~(BMDS_SOCK_CLOEXEC | BMDS_SOCK_DONTWAIT)) != 0) return -BMDS_EINVAL;
         if (const int32_t r = find(call, fd, t); r < 0) return r;
         if (addr != nullptr && length == nullptr) return -BMDS_EFAULT;
+        uint32_t room = 0; // the program's length word, read once
+        if (addr != nullptr) {
+                if (!bmds::detail::canWrite(length, sizeof(*length))) return -BMDS_EFAULT;
+                room = *length;
+                if (!bmds::detail::canWrite(addr,
+                                            room < sizeof(bmds_sockaddr_in_t) ? room : sizeof(bmds_sockaddr_in_t)))
+                        return -BMDS_EFAULT;
+        }
         SocketAddress peer;
         auto [handle, err] = t.socket->accept(&peer, (flags & BMDS_SOCK_DONTWAIT) ? uint32_t(Socket::DontWait) : 0u);
         if (err == Error::WouldBlock) return -BMDS_EAGAIN;
         if (err.isError()) return errnoOf(err);
         const int32_t newFd = call->addHandle(std::move(handle), flags & BMDS_SOCK_CLOEXEC);
-        if (newFd >= 0 && addr != nullptr) (void)addressOut(peer, addr, length);
+        if (newFd >= 0 && addr != nullptr) {
+                (void)addressOut(peer, addr, &room);
+                *length = room;
+        }
         return newFd;
 }
 
@@ -419,15 +440,21 @@ int32_t bmds_k_sock_name(int32_t fd, uint32_t which, void *addr, uint32_t *lengt
         KernelCall call;
         Target     t;
         if (const int32_t r = find(call, fd, t); r < 0) return r;
+        if (length == nullptr || !bmds::detail::canWrite(length, sizeof(*length))) return -BMDS_EFAULT;
+        uint32_t room = *length; // read once
+        int32_t  r = 0;
         switch (which) {
-                case BMDS_SOCK_NAME_LOCAL: return addressOut(t.socket->address(), addr, length);
+                case BMDS_SOCK_NAME_LOCAL: r = addressOut(t.socket->address(), addr, &room); break;
                 case BMDS_SOCK_NAME_PEER: {
                         auto [peer, err] = t.socket->peer();
                         if (err.isError()) return errnoOf(err);
-                        return addressOut(peer, addr, length);
+                        r = addressOut(peer, addr, &room);
+                        break;
                 }
                 default: return -BMDS_EINVAL;
         }
+        if (r == 0) *length = room;
+        return r;
 }
 
 int32_t bmds_k_sendmsg(int32_t fd, const bmds_msghdr_t *msg, uint32_t flags) {
@@ -472,7 +499,8 @@ int32_t bmds_k_recvmsg(int32_t fd, bmds_msghdr_t *msg, uint32_t flags) {
         size_t           count = 0;
         if (const int32_t r = piecesOf<WritableByteSpan, uint8_t>(m, pieces, count); r < 0) return r;
         const Socket::StampOptions stamps = t.socket->stampOptions();
-        ControlOut                 control(m.control, m.control_length);
+        if (m.control != nullptr && !bmds::detail::canWrite(m.control, m.control_length)) return -BMDS_EFAULT;
+        ControlOut control(m.control, m.control_length);
         if (flags & BMDS_MSG_ERRQUEUE) { // a send stamp, as Linux gives it (devplan/network.md §30f)
                 auto [report, err] = t.socket->receiveTxReport(Span<const WritableByteSpan>(pieces, count));
                 if (err.isError()) return err == Error::WouldBlock ? -BMDS_EAGAIN : errnoOf(err);
@@ -533,6 +561,8 @@ int32_t bmds_k_setsockopt(int32_t fd, int32_t level, int32_t name, const void *v
         KernelCall call;
         Target     t;
         if (const int32_t r = find(call, fd, t); r < 0) return r;
+        // Every option reads at most `length` bytes (the larger ones by copyIn(), which checks itself).
+        if (value != nullptr && !bmds::detail::canRead(value, length < 256 ? length : 256)) return -BMDS_EFAULT;
         Socket &s = *t.socket;
         if (level == SolSocket) {
                 switch (name) {
@@ -662,9 +692,20 @@ int32_t bmds_k_setsockopt(int32_t fd, int32_t level, int32_t name, const void *v
         return -BMDS_ENOPROTOOPT;
 }
 
-int32_t bmds_k_getsockopt(int32_t fd, int32_t level, int32_t name, void *value, uint32_t *length) {
+int32_t bmds_k_getsockopt(int32_t fd, int32_t level, int32_t name, void *value, uint32_t *given) {
         KernelCall call;
-        Target     t;
+        // The program's length word read once, its value's room checked for it, and written back
+        // as the call ends (before the call lets go of the program's memory: §16).
+        if (given == nullptr || !bmds::detail::canWrite(given, sizeof(*given))) return -BMDS_EFAULT;
+        uint32_t room = *given;
+        if (value != nullptr && !bmds::detail::canWrite(value, room)) return -BMDS_EFAULT;
+        struct WriteBack {
+                        uint32_t *to;
+                        uint32_t &from;
+                        ~WriteBack() { *to = from; }
+        } writeBack{given, room};
+        uint32_t *const length = &room;
+        Target          t;
         if (const int32_t r = find(call, fd, t); r < 0) return r;
         Socket &s = *t.socket;
         if (level == SolSocket) {
@@ -842,6 +883,12 @@ int32_t bmds_k_ptp_ctl(int32_t fd, uint32_t op, void *arg) {
         bmds::PtpClock *clock = handle->stream().ptpClock();
         if (clock == nullptr) return -BMDS_ENOTTY;
         if (arg == nullptr) return -BMDS_EFAULT;
+        using bmds::detail::canRead;
+        using bmds::detail::canWrite;
+        if ((op == BMDS_PTP_TIME || op == BMDS_PTP_GET_FREQ) && !canWrite(arg, sizeof(int64_t))) return -BMDS_EFAULT;
+        if ((op == BMDS_PTP_SET || op == BMDS_PTP_STEP || op == BMDS_PTP_SET_FREQ) && !canRead(arg, sizeof(int64_t)))
+                return -BMDS_EFAULT;
+        if (op == BMDS_PTP_OFFSET && !canRead(arg, sizeof(uint32_t))) return -BMDS_EFAULT;
         auto errnoOf = [](Error err) -> int32_t {
                 switch (err.code()) {
                         case Error::Ok: return 0;
@@ -875,6 +922,8 @@ int32_t bmds_k_ptp_ctl(int32_t fd, uint32_t op, void *arg) {
                         const uint32_t header = offsetof(bmds_ptp_offset_t, samples);
                         if (size < header) return -BMDS_EINVAL;
                         const uint32_t room = (size - header) / (3 * sizeof(int64_t));
+                        if (!canWrite(arg, size < sizeof(bmds_ptp_offset_t) ? size : sizeof(bmds_ptp_offset_t)))
+                                return -BMDS_EFAULT;
                         const uint32_t which = o->clock;
                         const uint32_t count = o->count;
                         if (which > BMDS_CLOCK_TAI || count == 0 || count > BMDS_PTP_MAX_SAMPLES || count > room)

@@ -320,6 +320,16 @@ class Process {
                 struct LineInput; // the line editor and its line, once the program reads the console
 
                 void         releaseProgram();
+                // A U-mode program's pointers, checked as it could use them itself
+                // (devplan/protection.md §16); an M-mode program's are its own business.
+                bool canRead(const void *p, size_t bytes) const;
+                bool canWrite(void *p, size_t bytes) const;
+                // A program's NUL-ended text of at most @p max bytes: its length, or -BMDS_EFAULT,
+                // or @p tooLong past @p max.
+                int32_t                       textArg(const char *text, size_t max, int32_t tooLong) const;
+                template <typename T> int32_t copyOut(const T &full, T *out) const;
+                int32_t                       copyText(StringView text, char *out, uint32_t size) const;
+                int32_t                       keyArg(const char *key, StringView &out) const;
                 void            unlink(Block *b); // from the allocations' list, under the lock
                 void            link(Block *b);
                 Error           buildArguments(Span<const StringView> args, Span<const StringView> environment,

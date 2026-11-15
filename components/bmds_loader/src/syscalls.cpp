@@ -152,8 +152,12 @@ int32_t bmds_k_dup2(int32_t fd, int32_t to) {
 int32_t bmds_k_clock_get(uint32_t clock, int64_t *ns) {
         // No KernelCall (devplan/bench.md §15): the clocks are read without a lock or a wait, as
         // Linux's vDSO reads them, so a kill meanwhile may end the thread here as in its own code,
-        // and no signal is delivered on the way out. It was most of clock_gettime()'s time.
-        return bmds::Process::clockGet(clock, ns);
+        // and no signal is delivered on the way out. It was most of clock_gettime()'s time. A
+        // U-mode program's answer goes only where it could write it, held as a call holds memory
+        // (devplan/protection.md §16).
+        if (ns == nullptr) return bmds::Process::clockGet(clock, ns);
+        bmds::MemoryHold hold;
+        return bmds::detail::canWrite(ns, sizeof(*ns)) ? bmds::Process::clockGet(clock, ns) : -BMDS_EFAULT;
 }
 
 int32_t bmds_k_sleep(int64_t ns) {
@@ -186,7 +190,7 @@ int32_t bmds_k_mem_info(uint32_t flags, bmds_mem_info_t *info) {
 
 int32_t bmds_k_random(void *buf, uint32_t size) {
         KernelCall call;
-        if (buf == nullptr && size != 0) return -BMDS_EFAULT;
+        if (!bmds::detail::canWrite(buf, size)) return -BMDS_EFAULT;
         bmds::Random::fill(buf, size); // the kernel's pool (devplan/random.md)
         return 0;
 }
@@ -367,6 +371,7 @@ int32_t bmds_k_proc_exit_signal(int32_t sig) {
 
 int32_t bmds_k_io_poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeout_ms, const uint32_t *mask) {
         KernelCall call;
+        if (mask != nullptr && !bmds::detail::canRead(mask, sizeof(*mask))) return -BMDS_EFAULT;
         if (mask != nullptr) {
                 // Set for the wait and left so: the SDK runs the handlers under
                 // it. A signal it unblocks is due now, but nothing raised for it.
@@ -406,6 +411,12 @@ int32_t bmds_k_futex(volatile int32_t *word, uint32_t op, int32_t value, int64_t
                      int32_t count2) {
         KernelCall call;
         if (word == nullptr || (reinterpret_cast<uintptr_t>(word) & 3u) != 0) return -BMDS_EINVAL;
+        // A U-mode program's words where it could reach them: a wait reads one, a wake and a
+        // requeue only name them (devplan/protection.md §16).
+        if (!bmds::detail::canRead(const_cast<int32_t *>(word), sizeof(*word)) ||
+            (op == BMDS_FUTEX_REQUEUE && word2 != nullptr &&
+             !bmds::detail::canRead(const_cast<int32_t *>(word2), sizeof(*word2))))
+                return -BMDS_EFAULT;
         bmds::FutexTable &futexes = bmds::programFutexes();
         switch (op) {
                 case BMDS_FUTEX_WAIT: {
@@ -475,9 +486,10 @@ int32_t bmds_k_system_info(bmds_system_info_t *info) {
 
 int32_t bmds_k_expand(const char *text, char *out, uint32_t size) {
         KernelCall call;
-        if (text == nullptr || (out == nullptr && size != 0)) return -BMDS_EFAULT;
-        const size_t n = strnlen(text, BMDS_SYSCONF_VALUE_MAX + 1);
-        if (n > BMDS_SYSCONF_VALUE_MAX) return -BMDS_EINVAL;
+        if ((out == nullptr && size != 0) || !bmds::detail::canWrite(out, size)) return -BMDS_EFAULT;
+        const int32_t length = bmds::detail::stringLength(text, BMDS_SYSCONF_VALUE_MAX);
+        if (length < 0) return length == -BMDS_ENAMETOOLONG ? -BMDS_EINVAL : length;
+        const size_t      n = size_t(length);
         bmds::String      expanded(bmds::MemSpace::Psram);
         const bmds::Error err = bmds::SysConf::expand(bmds::StringView(text, n), expanded);
         if (err.isError()) return bmds::Process::errnoFor(err);

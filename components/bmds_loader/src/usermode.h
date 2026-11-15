@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <freertos/FreeRTOS.h>
@@ -94,8 +95,25 @@ class UserSpace final {
                 /** @brief The entries free. */
                 unsigned freeEntries() const;
 
+                /** @brief `PmpSet::extent()` on the set as it is now (lock-free: its stamp). */
+                size_t extent(uintptr_t address, uint8_t access);
+
                 /** @brief The set the trampoline loads. */
                 const PmpSet *pmp() const { return &_pmp; }
+
+                /**
+                 * @brief Its program's calls and frees (`UserMemory`'s, `devplan/protection.md` §16):
+                 *        here, in internal RAM, because every call counts itself (atomics on PSRAM
+                 *        cost a microsecond a call).
+                 */
+                struct Calls {
+                                std::atomic<uint32_t> epoch{1};    // a free's; calls record it as they begin
+                                std::atomic<uint32_t> inFlight{0}; // its calls now
+                                std::atomic<uint32_t> deferred{0}; // freed blocks waiting for them
+                };
+
+                /** @brief Returns them. */
+                Calls &calls() { return _calls; }
 
         private:
                 struct Region {
@@ -108,7 +126,17 @@ class UserSpace final {
                 ~UserSpace() = default;
                 Error update(unsigned keepFree);
 
+                // A region as the slots' checks read it: [lo, hi) with its rights.
+                struct Span {
+                                uint32_t lo;
+                                uint32_t hi;
+                                uint8_t  access;
+                };
+
                 PmpSet       _pmp;
+                Span         _spans[MaxRegions + 1] = {}; // the stub page, then the regions (with _pmp's stamp)
+                uint8_t      _spanCount = 0;
+                Calls        _calls;
                 Region       _regions[MaxRegions] = {};
                 unsigned     _count = 0;
                 portMUX_TYPE _lock = portMUX_INITIALIZER_UNLOCKED;

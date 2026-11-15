@@ -20,6 +20,10 @@
  *   progtest raw          read keys raw until 'q'
  *   progtest mem          memory info
  *   progtest umem [MB]  blocks small and large up to MB (8) written whole, a realloc grown,
+ *   progtest freerace    a block freed while another thread's read fills it: the read ends
+ *                       well, the memory comes back after (devplan/protection.md §16)
+ *   progtest hostile     U-mode: every slot with pointers handed kernel RAM, a peripheral, kernel
+ *                       PSRAM, the stub page and a buffer past its memory: EFAULT, alive (§16)
  *                       all freed: the memory comes back (devplan/protection.md §15)
  *   progtest syntax       the code colouring calls (syntax_find, syntax_scan)
  *   progtest random       16 random bytes
@@ -4582,6 +4586,164 @@ __attribute__((noinline)) static uint32_t fault_recurse_huge(uint32_t depth) {
         return pad[0];
 }
 
+/* Memory freed while a call uses it (devplan/protection.md §16): a thread reads a pipe into a
+   large block (a range of its own) and a FAST one, the main thread frees both and writes; the
+   reads fill what was freed without harm, and the memory comes back once they end. */
+struct freerace_arg {
+                int      fd;
+                uint8_t *into;
+                long     got;
+};
+
+static void *freerace_reader(void *p) {
+        struct freerace_arg *a = p;
+        a->got = (long)read(a->fd, a->into, 4096);
+        return NULL;
+}
+
+static int freerace(void) {
+        for (int round = 0; round < 2; ++round) {
+                bmds_mem_info_t before = {.size = sizeof(before)}, after = {.size = sizeof(after)};
+                CHECK(bmds_mem_info(0, &before) == 0);
+                uint8_t *block = round == 0 ? bmds_mem_alloc(512 * 1024, 0, 0) : bmds_mem_alloc(4096, 0, BMDS_MEM_FAST);
+                CHECK(block != NULL);
+                int fds[2];
+                CHECK(pipe(fds) == 0);
+                struct freerace_arg a = {fds[0], block, 0};
+                pthread_t           t;
+                CHECK(pthread_create(&t, NULL, freerace_reader, &a) == 0);
+                usleep(50000);        /* it waits in read() now */
+                bmds_mem_free(block); /* revoked at once; given back after the read */
+                char data[1000];
+                memset(data, 'x', sizeof(data));
+                CHECK(write(fds[1], data, sizeof(data)) == (long)sizeof(data));
+                CHECK(pthread_join(t, NULL) == 0);
+                CHECK(a.got == (long)sizeof(data));
+                close(fds[0]);
+                close(fds[1]);
+                usleep(20000);
+                CHECK(bmds_mem_info(0, &after) == 0);
+                CHECK(after.program_bytes == before.program_bytes);
+                printf("freerace: %s: read %ld bytes into a block freed meanwhile; free %u before, %u after\n",
+                       round == 0 ? "large" : "fast", a.got, (unsigned)before.free_bytes, (unsigned)after.free_bytes);
+        }
+        return 0;
+}
+
+/* A hostile program's pointers (devplan/protection.md §16): each slot given memory the program
+   couldn't use itself answers EFAULT, and nothing faults. U-mode only. */
+static int hostile_bad = 0, hostile_checks = 0;
+#define HOSTILE(expr)                                                                                                  \
+        do {                                                                                                           \
+                const long r_ = (long)(expr);                                                                          \
+                ++hostile_checks;                                                                                      \
+                if (r_ != -BMDS_EFAULT) {                                                                              \
+                        ++hostile_bad;                                                                                 \
+                        printf("hostile: line %d: %s gave %ld\n", __LINE__, #expr, r_);                                \
+                }                                                                                                      \
+        } while (0)
+
+static int hostile(void) {
+        if (!in_user_mode()) {
+                printf("hostile: M-mode: nothing checked\n");
+                return 0;
+        }
+        void *const   kernel[] = {(void *)0x4ff40000u, (void *)0x500a5018u, (void *)0x48010000u};
+        void *const   stub = (void *)(uintptr_t)bmds_sys; /* readable, never writable */
+        const int32_t fd = bmds_open("/tmp/hostile.txt", BMDS_O_READ | BMDS_O_WRITE | BMDS_O_CREATE | BMDS_O_TRUNC);
+        CHECK(fd >= 0 && bmds_write(fd, "0123456789abcdef", 16) == 16);
+        const int32_t sock = bmds_socket(BMDS_AF_INET, BMDS_SOCK_DGRAM, 0, 0);
+        uint8_t      *large = bmds_mem_alloc(512 * 1024, 0, 0); /* a range of its own */
+        CHECK(large != NULL);
+        /* Runs off its memory: two bytes before the end of a block of 'a's (no NUL for a string to
+           end at, no small `size` for a struct, no NULL to end a vector). */
+        memset(large, 'a', 512 * 1024);
+        uint8_t    *past = large + 512 * 1024 - 2;
+        char        buf[256];
+        bmds_stat_t st = {sizeof(st)};
+        for (unsigned i = 0; i <= sizeof(kernel) / sizeof(kernel[0]); ++i) {
+                /* The kernel's, a peripheral, the kernel's PSRAM; last, a buffer running off. */
+                void *const b = i < sizeof(kernel) / sizeof(kernel[0]) ? kernel[i] : past;
+                HOSTILE(bmds_read(fd, b, 64));
+                HOSTILE(bmds_write(fd, b, 64));
+                HOSTILE(bmds_seek(fd, 0, BMDS_SEEK_SET, (int64_t *)b));
+                HOSTILE(bmds_open((const char *)b, BMDS_O_READ));
+                HOSTILE(bmds_stat((const char *)b, &st));
+                HOSTILE(bmds_stat("/", (bmds_stat_t *)b));
+                HOSTILE(bmds_fstat(fd, (bmds_stat_t *)b));
+                HOSTILE(bmds_rename((const char *)b, "/tmp/x"));
+                HOSTILE(bmds_getcwd((char *)b, 64));
+                HOSTILE(bmds_clock_get(0, (int64_t *)b));
+                HOSTILE(bmds_mem_info(0, (bmds_mem_info_t *)b));
+                HOSTILE(bmds_random(b, 64));
+                HOSTILE(bmds_symlink((const char *)b, "/tmp/x"));
+                HOSTILE(bmds_readlink("/tmp/x", (char *)b, 64));
+                HOSTILE(bmds_proc_wait(-1, (int32_t *)b, BMDS_WAIT_NOHANG));
+                HOSTILE(bmds_pipe((int32_t *)b, 0));
+                HOSTILE(bmds_sig_setup((volatile uint32_t *)b));
+                HOSTILE(bmds_sig_take((bmds_siginfo_t *)b));
+                HOSTILE(bmds_io_poll((bmds_pollfd_t *)b, 1, 0, NULL));
+                HOSTILE(bmds_io_poll(NULL, 0, 0, (const uint32_t *)b));
+                /* A word is whole: the one just past the block for the running-off case. */
+                HOSTILE(bmds_futex((volatile int32_t *)(b == past ? large + 512 * 1024 : (uint8_t *)b), BMDS_FUTEX_WAIT,
+                                   0, 0, NULL, 0));
+                HOSTILE(bmds_thread_clear((volatile int32_t *)b));
+                HOSTILE(bmds_thread_start((const bmds_thread_t *)b));
+                HOSTILE(bmds_file_type((const char *)b, 0, buf, sizeof(buf)));
+                HOSTILE(bmds_file_type("/", 0, (char *)b, 64));
+                HOSTILE(bmds_sysconf_find((const char *)b));
+                HOSTILE(bmds_sysconf_get(0, 0, (char *)b, 64));
+                HOSTILE(bmds_sysconf_info(0, (bmds_sysconf_info_t *)b));
+                HOSTILE(bmds_sysconf_declare((const bmds_sysconf_param_t *)b));
+                HOSTILE(bmds_task_list((bmds_task_info_t *)b, 4));
+                HOSTILE(bmds_proc_info(0, 0, (bmds_proc_info_t *)b));
+                HOSTILE(bmds_system_info((bmds_system_info_t *)b));
+                HOSTILE(bmds_expand((const char *)b, buf, sizeof(buf)));
+                HOSTILE(bmds_expand("x", (char *)b, 64));
+                HOSTILE(bmds_crypto((const bmds_crypto_op_t *)b));
+                {
+                        uint8_t          state[32] = {0};
+                        bmds_crypto_op_t op = {sizeof(op), BMDS_CRYPTO_SHA256, NULL, 0, state, b, NULL, 64};
+                        HOSTILE(bmds_crypto(&op));
+                }
+                HOSTILE(bmds_sched(BMDS_SCHED_GET, 0, (bmds_sched_t *)b));
+                HOSTILE(bmds_fs_info((const char *)b, NULL));
+                {
+                        bmds_image_info_t info = {sizeof(info)};
+                        HOSTILE(bmds_image_info(-1, b, 64, NULL, &info));
+                }
+                HOSTILE(bmds_syntax_find((const char *)b, 8));
+                HOSTILE(bmds_syntax_scan((bmds_syntax_scan_t *)b));
+                HOSTILE(bmds_font_open((const bmds_font_spec_t *)b));
+                HOSTILE(bmds_proc_exec((const char *)b, NULL, NULL));
+                HOSTILE(bmds_proc_exec("/bin/true", (char *const *)b, NULL));
+                if (sock >= 0) {
+                        HOSTILE(bmds_bind(sock, b, 16));
+                        HOSTILE(bmds_sendmsg(sock, (const bmds_msghdr_t *)b, 0));
+                        {
+                                bmds_iovec_t  v = {b, 64};
+                                bmds_msghdr_t m = {sizeof(m), NULL, 0, &v, 1, NULL, 0, 0};
+                                HOSTILE(bmds_sendmsg(sock, &m, 0));
+                        }
+                        uint32_t len = 4;
+                        HOSTILE(bmds_getsockopt(sock, 1, 3, b, &len));
+                        HOSTILE(bmds_getsockopt(sock, 1, 3, buf, (uint32_t *)b));
+                }
+        }
+        /* The stub page: readable, so taken as a source; never as a destination. */
+        HOSTILE(bmds_read(fd, stub, 16));
+        HOSTILE(bmds_getcwd((char *)stub, 64));
+        HOSTILE(bmds_mem_info(0, (bmds_mem_info_t *)stub));
+        HOSTILE(bmds_random(stub, 16));
+        CHECK(bmds_write(fd, stub, 16) == 16);
+        bmds_mem_free(large);
+        if (sock >= 0) bmds_close(sock);
+        bmds_close(fd);
+        bmds_unlink("/tmp/hostile.txt");
+        printf("hostile: %d checks, %d wrong\n", hostile_checks, hostile_bad);
+        return hostile_bad == 0 ? 0 : 1;
+}
+
 static int fault_now(const char *kind) {
         printf("faults: %s\n", kind);
         fflush(stdout);
@@ -4629,6 +4791,10 @@ static int fault_now(const char *kind) {
                 *p = *p;
         } else if (strcmp(kind, "top") == 0) {
                 fault_sink = *(volatile uint32_t *)0xfffffff0u;
+        } else if (strcmp(kind, "badsp") == 0) {
+                /* A fault with SP where no stack can be (M-mode: the kernel's trap entry must cope
+                   rather than storm; U-mode: the program's own SP, nothing the kernel uses). */
+                __asm__ volatile("mv t1, sp\n li sp, 0x30000000\n lw t2, 0(zero)\n mv sp, t1" ::: "t1", "t2", "memory");
         } else if (strcmp(kind, "kernelram") == 0) {
                 volatile uint32_t *p = (volatile uint32_t *)0x4ff40000u; /* the kernel's data */
                 *p = *p;
@@ -4804,6 +4970,8 @@ int main(int argc, char **argv) {
         if (strcmp(what, "raw") == 0) return raw();
         if (strcmp(what, "mem") == 0) return mem();
         if (strcmp(what, "umem") == 0) return umem(arg);
+        if (strcmp(what, "hostile") == 0) return hostile();
+        if (strcmp(what, "freerace") == 0) return freerace();
         if (strcmp(what, "posix") == 0) return posix(arg);
         if (strcmp(what, "abort") == 0) abort();
         if (strcmp(what, "random") == 0) {

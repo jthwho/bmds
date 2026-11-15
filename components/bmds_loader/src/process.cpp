@@ -86,18 +86,6 @@ namespace {
                 return dma ? MemSpace::PsramDma : MemSpace::Psram;
         }
 
-        // Copies the fields of @p full that fit in the caller's struct (its
-        // first member, `size`, says how big it is), leaving `size` alone.
-        template <typename T> int32_t copyOut(const T &full, T *out) {
-                if (out == nullptr) return -BMDS_EFAULT;
-                const uint32_t size = out->size;
-                if (size < sizeof(uint32_t)) return -BMDS_EINVAL;
-                const size_t n = size < sizeof(T) ? size : sizeof(T);
-                std::memcpy(reinterpret_cast<uint8_t *>(out) + sizeof(uint32_t),
-                            reinterpret_cast<const uint8_t *>(&full) + sizeof(uint32_t), n - sizeof(uint32_t));
-                return 0;
-        }
-
         bmds_stat_t statFor(const FileInfo &info) {
                 bmds_stat_t st = {};
                 switch (info.type) {
@@ -135,6 +123,60 @@ namespace {
         constinit std::atomic<uint32_t> nextMemoryOwner{1};
 
 } // namespace
+
+bool Process::canRead(const void *p, size_t bytes) const {
+        if (bytes == 0) return true;
+        if (p == nullptr) return false;
+        return _memory == nullptr || _memory->isAccessible(p, bytes, false);
+}
+
+bool Process::canWrite(void *p, size_t bytes) const {
+        if (bytes == 0) return true;
+        if (p == nullptr) return false;
+        return _memory == nullptr || _memory->isAccessible(p, bytes, true);
+}
+
+int32_t Process::textArg(const char *text, size_t max, int32_t tooLong) const {
+        if (text == nullptr) return -BMDS_EFAULT;
+        if (_memory == nullptr) {
+                const size_t n = strnlen(text, max + 1);
+                return n > max ? tooLong : static_cast<int32_t>(n);
+        }
+        auto [n, err] = _memory->stringLength(text, max);
+        if (err == Error::OutOfRange) return tooLong;
+        if (err.isError()) return -BMDS_EFAULT;
+        return static_cast<int32_t>(n);
+}
+
+// Copies the fields of @p full that fit in the caller's struct (its first member, `size`, says how
+// big it is, read once), leaving `size` alone.
+template <typename T> int32_t Process::copyOut(const T &full, T *out) const {
+        if (!canRead(out, sizeof(uint32_t))) return -BMDS_EFAULT;
+        const uint32_t size = out->size;
+        if (size < sizeof(uint32_t)) return -BMDS_EINVAL;
+        const size_t n = size < sizeof(T) ? size : sizeof(T);
+        if (!canWrite(out, n)) return -BMDS_EFAULT;
+        std::memcpy(reinterpret_cast<uint8_t *>(out) + sizeof(uint32_t),
+                    reinterpret_cast<const uint8_t *>(&full) + sizeof(uint32_t), n - sizeof(uint32_t));
+        return 0;
+}
+
+int32_t Process::copyText(StringView text, char *out, uint32_t size) const {
+        if (out == nullptr) return -BMDS_EFAULT;
+        if (text.size() + 1 > size) return -BMDS_ERANGE;
+        if (!canWrite(out, text.size() + 1)) return -BMDS_EFAULT;
+        std::memcpy(out, text.data(), text.size());
+        out[text.size()] = '\0';
+        return static_cast<int32_t>(text.size());
+}
+
+// A program's key or prefix: NUL-ended within the longest key.
+int32_t Process::keyArg(const char *key, StringView &out) const {
+        const int32_t n = textArg(key, BMDS_SYSCONF_KEY_MAX, -BMDS_ENOENT); // no key is that long
+        if (n < 0) return n;
+        out = StringView(key, size_t(n));
+        return 0;
+}
 
 Process::Process(const FdTable &fds, Console *console) : _fds(fds), _console(console) {
         _memoryOwner = nextMemoryOwner.fetch_add(1, std::memory_order_relaxed) % 0x7fffffffu + 1;
@@ -361,11 +403,10 @@ FileHandle::Ptr Process::handleOf(int32_t fd) const {
 
 // A path from the program: NUL-terminated, at most BMDS_PATH_MAX bytes.
 int32_t Process::path(const char *path, StringView &out) const {
-        if (path == nullptr) return -BMDS_EFAULT;
-        const size_t n = strnlen(path, BMDS_PATH_MAX + 1);
-        if (n > BMDS_PATH_MAX) return -BMDS_ENAMETOOLONG;
+        const int32_t n = textArg(path, BMDS_PATH_MAX, -BMDS_ENAMETOOLONG);
+        if (n < 0) return n;
         if (n == 0) return -BMDS_ENOENT;
-        out = StringView(path, n);
+        out = StringView(path, size_t(n));
         return 0;
 }
 
@@ -469,6 +510,7 @@ int32_t Process::errnoFor(Error err) {
                 case Error::NetworkUnreachable: return -BMDS_ENETUNREACH;
                 case Error::HostUnreachable: return -BMDS_EHOSTUNREACH;
                 case Error::MessageTooLong: return -BMDS_EMSGSIZE;
+                case Error::BadAddress: return -BMDS_EFAULT;
                 default: return -BMDS_EIO;
         }
 }
@@ -506,6 +548,7 @@ Error Process::errorFor(int32_t error) {
                 case BMDS_ENETDOWN: return Error::NetworkDown;
                 case BMDS_ENETUNREACH: return Error::NetworkUnreachable;
                 case BMDS_EHOSTUNREACH: return Error::HostUnreachable;
+                case BMDS_EFAULT: return Error::BadAddress;
                 default: return Error::IoError;
         }
 }
@@ -515,6 +558,7 @@ int32_t Process::read(int32_t fd, void *buf, uint32_t size) {
         if (!h) return -BMDS_EBADF;
         if (size == 0) return 0;
         if (size > INT32_MAX) size = INT32_MAX;
+        if (_memory != nullptr && !canWrite(buf, size)) return -BMDS_EFAULT;
         if (h->canRead() && isConsole(h.get())) {
                 // One thread at a time edits and takes the console's input.
                 const Error turn = Interrupt::waitCurrent(_consoleTurn, Deadline(WaitForever));
@@ -696,9 +740,10 @@ uint8_t Process::readiness(FileHandle &h) {
 
 int32_t Process::poll(bmds_pollfd_t *fds, uint32_t count, int32_t timeoutMs) {
         if (count > MaxPollEntries) return -BMDS_EINVAL;
-        if (count > 0 && fds == nullptr) return -BMDS_EFAULT;
+        if (count > 0 && (fds == nullptr || !canRead(fds, sizeof(uint32_t)))) return -BMDS_EFAULT;
         const uint32_t stride = count > 0 ? fds[0].size : 0;
         if (count > 0 && stride < sizeof(bmds_pollfd_t)) return -BMDS_EINVAL;
+        if (count > 0 && !canWrite(fds, size_t(stride) * count)) return -BMDS_EFAULT;
         auto entry = [&](uint32_t i) {
                 return reinterpret_cast<bmds_pollfd_t *>(reinterpret_cast<uint8_t *>(fds) + size_t(i) * stride);
         };
@@ -788,6 +833,7 @@ int32_t Process::write(int32_t fd, const void *buf, uint32_t size) {
         const FileHandle::Ptr h = handleOf(fd);
         if (!h) return -BMDS_EBADF;
         if (size > INT32_MAX) size = INT32_MAX;
+        if (_memory != nullptr && !canRead(buf, size)) return -BMDS_EFAULT;
         auto [n, err] = h->write(ByteSpan(static_cast<const uint8_t *>(buf), size), WaitForever);
         // Part of it written, then an error: report what was written.
         if (err.isError() && n == 0) {
@@ -824,6 +870,7 @@ int32_t Process::seek(int32_t fd, int64_t offset, uint32_t whence, int64_t *posi
         auto [pos, err] = h->stream().seek(offset, from);
         if (err == Error::NotSupported) return -BMDS_ESPIPE;
         if (err.isError()) return errnoFor(err);
+        if (position != nullptr && !canWrite(position, sizeof(*position))) return -BMDS_EFAULT;
         if (position != nullptr) *position = static_cast<int64_t>(pos);
         return 0;
 }
@@ -982,7 +1029,7 @@ int32_t Process::open(const char *path, uint32_t flags) {
 }
 
 int32_t Process::pipe(int32_t *fds, uint32_t flags) {
-        if (fds == nullptr) return -BMDS_EFAULT;
+        if (fds == nullptr || !canWrite(fds, 2 * sizeof(int32_t))) return -BMDS_EFAULT;
         if ((flags & ~BMDS_O_CLOEXEC) != 0) return -BMDS_EINVAL;
         auto [ends, err] = Pipe::create();
         if (err.isError()) return errnoFor(err);
@@ -1036,7 +1083,7 @@ int32_t Process::symlink(const char *target, const char *path) {
 int32_t Process::readlink(const char *path, char *buf, uint32_t size) {
         StringView p;
         if (int32_t r = this->path(path, p); r < 0) return r;
-        if (buf == nullptr && size != 0) return -BMDS_EFAULT;
+        if ((buf == nullptr && size != 0) || !canWrite(buf, size)) return -BMDS_EFAULT;
         Mutex::Locker locker(_pathLock, WaitForever);
         auto [target, err] = Vfs::readLink(p, vfs());
         if (err == Error::Invalid) return -BMDS_EINVAL;
@@ -1060,7 +1107,7 @@ int32_t Process::fileType(const char *path, uint32_t flags, char *out, uint32_t 
         static_assert(BMDS_FILE_TYPE_MAX == FileFormat::MaxType);
         StringView p;
         if (int32_t r = this->path(path, p); r < 0) return r;
-        if (out == nullptr) return -BMDS_EFAULT;
+        if (out == nullptr || !canWrite(out, size)) return -BMDS_EFAULT;
         if ((flags & ~(BMDS_FILE_TYPE_NAME | BMDS_FILE_TYPE_CONTENT)) != 0 ||
             flags == (BMDS_FILE_TYPE_NAME | BMDS_FILE_TYPE_CONTENT))
                 return -BMDS_EINVAL;
@@ -1101,28 +1148,11 @@ namespace {
                       BMDS_SYSCONF_TYPE_SECRET == uint32_t(Config::Type::Secret));
         static_assert(BMDS_SYSCONF_OVERFLOW == SysConf::OverflowRecord);
 
-        // A program's key or prefix: NUL-ended within the longest key.
-        int32_t keyArg(const char *key, StringView &out) {
-                if (key == nullptr) return -BMDS_EFAULT;
-                const size_t n = strnlen(key, BMDS_SYSCONF_KEY_MAX + 1);
-                if (n > BMDS_SYSCONF_KEY_MAX) return -BMDS_ENOENT; // no key is that long
-                out = StringView(key, n);
-                return 0;
-        }
-
         // An id from a program: one the registry has (else ENOENT).
         bool idArg(int32_t id, SysConf::Id &out) {
                 if (id < 0 || id >= int32_t(SysConf::NoId)) return false;
                 out = SysConf::Id(id);
                 return true;
-        }
-
-        int32_t copyText(StringView text, char *out, uint32_t size) {
-                if (out == nullptr) return -BMDS_EFAULT;
-                if (text.size() + 1 > size) return -BMDS_ERANGE;
-                std::memcpy(out, text.data(), text.size());
-                out[text.size()] = '\0';
-                return static_cast<int32_t>(text.size());
         }
 
 } // namespace
@@ -1176,10 +1206,9 @@ int32_t Process::sysconfSet(int32_t id, uint32_t op, const char *value) {
         if (!idArg(id, which)) return -BMDS_ENOENT;
         switch (op) {
                 case BMDS_SYSCONF_OP_SET: {
-                        if (value == nullptr) return -BMDS_EFAULT;
-                        const size_t n = strnlen(value, BMDS_SYSCONF_VALUE_MAX + 1);
-                        if (n > BMDS_SYSCONF_VALUE_MAX) return -BMDS_ERANGE;
-                        return errnoFor(SysConf::set(which, StringView(value, n)));
+                        const int32_t n = textArg(value, BMDS_SYSCONF_VALUE_MAX, -BMDS_ERANGE);
+                        if (n < 0) return n;
+                        return errnoFor(SysConf::set(which, StringView(value, size_t(n))));
                 }
                 case BMDS_SYSCONF_OP_SETDEF: return errnoFor(SysConf::setDefault(which));
                 case BMDS_SYSCONF_OP_REVERT: return errnoFor(SysConf::revert(which));
@@ -1196,26 +1225,31 @@ int32_t Process::sysconfNext(const char *prefix, int32_t after) {
         return err.isError() ? errnoFor(err) : static_cast<int32_t>(id);
 }
 
-int32_t Process::sysconfDeclare(const bmds_sysconf_param_t *param) {
-        if (param == nullptr) return -BMDS_EFAULT;
-        if (param->size < sizeof(bmds_sysconf_param_t) || param->type > BMDS_SYSCONF_TYPE_SECRET) return -BMDS_EINVAL;
+int32_t Process::sysconfDeclare(const bmds_sysconf_param_t *given) {
+        // Read once: another thread can't swap its texts' pointers after they are checked.
+        if (!canRead(given, sizeof(uint32_t))) return -BMDS_EFAULT;
+        if (given->size < sizeof(bmds_sysconf_param_t)) return -BMDS_EINVAL;
+        if (!canRead(given, sizeof(bmds_sysconf_param_t))) return -BMDS_EFAULT;
+        bmds_sysconf_param_t param;
+        std::memcpy(&param, given, sizeof(param));
+        if (param.type > BMDS_SYSCONF_TYPE_SECRET) return -BMDS_EINVAL;
         StringView key;
-        if (int32_t r = keyArg(param->key, key); r < 0) return r == -BMDS_ENOENT ? -BMDS_EINVAL : r;
-        // The texts' lengths bounded before the registry copies them.
-        const auto bounded = [](const char *text, size_t most) {
-                return text == nullptr || strnlen(text, most + 1) <= most;
+        if (int32_t r = keyArg(param.key, key); r < 0) return r == -BMDS_ENOENT ? -BMDS_EINVAL : r;
+        // The texts' lengths bounded (and readable) before the registry copies them.
+        const auto bounded = [&](const char *text, size_t most) {
+                return text == nullptr ? 0 : textArg(text, most, -BMDS_EINVAL);
         };
-        if (!bounded(param->default_value, BMDS_SYSCONF_VALUE_MAX) || !bounded(param->help, 255) ||
-            !bounded(param->choices, BMDS_SYSCONF_VALUE_MAX))
-                return -BMDS_EINVAL;
+        for (const int32_t r : {bounded(param.default_value, BMDS_SYSCONF_VALUE_MAX), bounded(param.help, 255),
+                                bounded(param.choices, BMDS_SYSCONF_VALUE_MAX)})
+                if (r < 0) return r;
         Config::Param p;
-        p.key = param->key;
-        p.type = static_cast<Config::Type>(param->type);
-        p.defaultValue = param->default_value != nullptr ? param->default_value : "";
-        p.help = param->help != nullptr ? param->help : "";
-        p.min = param->min;
-        p.max = param->max;
-        p.choices = param->choices;
+        p.key = param.key;
+        p.type = static_cast<Config::Type>(param.type);
+        p.defaultValue = param.default_value != nullptr ? param.default_value : "";
+        p.help = param.help != nullptr ? param.help : "";
+        p.min = param.min;
+        p.max = param.max;
+        p.choices = param.choices;
         auto [id, err] = SysConf::declare(p);
         return err.isError() ? errnoFor(err) : static_cast<int32_t>(id);
 }
@@ -1330,6 +1364,7 @@ int32_t Process::opendir(const char *path) {
 
 int32_t Process::readdir(int32_t dir, bmds_stat_t *info, char *name, uint32_t size) {
         if (name == nullptr && size != 0) return -BMDS_EFAULT;
+        if (!canWrite(name, size) || (info != nullptr && !canRead(info, sizeof(uint32_t)))) return -BMDS_EFAULT;
         if (info != nullptr && info->size < sizeof(uint32_t)) return -BMDS_EINVAL;
         // Held while it reads: another thread's closedir() waits.
         Mutex::Locker locker(_lock, WaitForever);
@@ -1364,6 +1399,7 @@ int32_t Process::getcwd(char *buf, uint32_t size) {
         const StringView c = cwd();
         if (buf == nullptr) return -BMDS_EFAULT;
         if (size < c.size() + 1) return -BMDS_ERANGE;
+        if (!canWrite(buf, c.size() + 1)) return -BMDS_EFAULT;
         std::memcpy(buf, c.data(), c.size());
         buf[c.size()] = '\0';
         return static_cast<int32_t>(c.size());

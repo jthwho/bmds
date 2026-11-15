@@ -18,6 +18,7 @@
 
 #include <sdkconfig.h>
 #include <cstdint>
+#include <esp_attr.h>
 #include <esp_private/startup_internal.h>
 #include <riscv/csr_clic.h>
 #include <bmds/log.h>
@@ -83,7 +84,39 @@ TrapEntry::State TrapEntry::state(unsigned core) {
         return core < Cores ? states[core] : State::Off;
 }
 
+namespace {
+
+        // trapentry.S's bmds_trap_bad_sp: an exception in M-mode with an SP no stack can be at.
+        struct StormRecord {
+                        uint32_t mepc, mcause, mtval, sp, ra, count, magic, reserved;
+        };
+        static_assert(sizeof(StormRecord) == 32, "trapentry.S's layout");
+        constexpr uint32_t StormMagic = 0x4d525453;
+
+} // namespace
+
+BMDS_NAMESPACE_END
+
+extern "C" {
+// Kept across resets (RTC memory: a power cycle clears it), one a core.
+RTC_NOINIT_ATTR bmds::StormRecord bmds_storm_records[SOC_CPU_CORES_NUM];
+// Each core's emergency stack, 2 KB.
+alignas(16) uint8_t bmds_storm_stacks[SOC_CPU_CORES_NUM * 2048];
+}
+
+BMDS_NAMESPACE_BEGIN
+
 void TrapEntry::logState() {
+        // An earlier boot's storm: its first exception, told once.
+        for (unsigned core = 0; core < SOC_CPU_CORES_NUM; ++core) {
+                StormRecord &r = bmds_storm_records[core];
+                if (r.magic != StormMagic) continue;
+                bmdsErr("Loader: core %u had an exception with a bad SP before this boot (%u times): mepc 0x%08x, "
+                        "mcause 0x%x, mtval 0x%08x, sp 0x%08x, ra 0x%08x",
+                        core, unsigned(r.count), unsigned(r.mepc), unsigned(r.mcause), unsigned(r.mtval),
+                        unsigned(r.sp), unsigned(r.ra));
+                r = StormRecord{};
+        }
         for (unsigned core = 0; core < Cores; ++core) {
                 switch (states[core]) {
                         case State::Installed: break;

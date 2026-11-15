@@ -158,6 +158,13 @@ Error UserSpace::update(unsigned keepFree) {
         for (unsigned i = 0; i < PmpSet::Entries / 4; ++i) _pmp.cfg[i] = set.cfg[i];
         for (unsigned i = 0; i < PmpSet::Entries; ++i) _pmp.addr[i] = set.addr[i];
         _pmp.used = set.used;
+        // The same regions decoded, for the slots' checks (§16): they don't overlap, so the order
+        // the PMP decides by doesn't matter.
+        _spans[0] = Span{address(bmds_user_page), address(bmds_user_page) + BMDS_K_PAGE_BYTES, Rx};
+        for (unsigned i = 0; i < _count; ++i)
+                _spans[i + 1] = Span{uint32_t(_regions[i].base), uint32_t(_regions[i].base + _regions[i].bytes),
+                                     _regions[i].access};
+        _spanCount = uint8_t(_count + 1);
         __atomic_store_n(&_pmp.stamp, nextStamp.fetch_add(2), __ATOMIC_SEQ_CST);
         return Error::Ok;
 }
@@ -216,6 +223,25 @@ unsigned UserSpace::entriesFor(uintptr_t base, size_t bytes) const {
 
 unsigned UserSpace::freeEntries() const {
         return PmpSet::Entries - _pmp.used;
+}
+
+// Without the lock (a critical section writes the CLIC's threshold here: about 1,000 cycles, more
+// than the rest of a system call): the set read between two looks at its stamp, again if a change
+// was under way (odd) or came meanwhile.
+size_t UserSpace::extent(uintptr_t address, uint8_t access) {
+        for (;;) {
+                const uint32_t before = __atomic_load_n(&_pmp.stamp, __ATOMIC_ACQUIRE);
+                if ((before & 1u) != 0) continue;
+                size_t n = 0;
+                for (unsigned i = 0; i < _spanCount; ++i) {
+                        const Span &s = _spans[i];
+                        if (address < s.lo || address >= s.hi) continue;
+                        n = (s.access & access) == access ? s.hi - address : 0;
+                        break;
+                }
+                __atomic_thread_fence(__ATOMIC_ACQUIRE);
+                if (__atomic_load_n(&_pmp.stamp, __ATOMIC_RELAXED) == before) return n;
+        }
 }
 
 bool UserMode::isAvailable() {

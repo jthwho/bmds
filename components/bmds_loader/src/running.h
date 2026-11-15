@@ -99,6 +99,17 @@ struct ProgramThread final : ProcessOwner {
                 Signals::Thread       own;               // that part, but for the first thread's
                 volatile uint32_t    *hint = nullptr;    // the program's (sig_setup): a signal is due
                 volatile int32_t     *clear = nullptr;   // thread_clear(): 0 and a wake once it has ended
+                uint32_t              callEpoch = 0;     // U-mode: its call's (UserMemory::enterCall()), 0: none
+                // Writes a word the program gave the kernel to keep (hint, clear): U-mode's only
+                // while still the program's (devplan/protection.md §16).
+                void pokeKept(volatile void *word, uint32_t value);
+                // A call begins (U-mode: its epoch, UserMemory::enterCall()).
+                void beginCall();
+                // After prepare() cleared the interrupt: raised again if a kill came (it isn't a
+                // signal prepare() keeps), or the call would wait through it.
+                void keepKill();
+                // The call ends: memory freed meanwhile may go once no older call runs.
+                void endCall();
                 int32_t (*entry)(void *) = nullptr;      // a started thread's (thread_start)
                 void                 *arg = nullptr;
                 void                 *tls = nullptr;
@@ -158,7 +169,9 @@ struct ProgramThread final : ProcessOwner {
                 /** @brief A system call starts. */
                 void enter() {
                         inKernel.store(true);
+                        beginCall(); // a U-mode program's: what it frees from now on waits for this call (§16)
                         current->signals().prepare(currentSignals());
+                        keepKill();
                         return;
                 }
 
@@ -262,6 +275,9 @@ struct Running final : ProcessOwner, ProcessControl {
                         main.thread = &main;
                 }
 
+                /** @brief The least epoch of its threads' calls in flight (0: none). Takes the threads' lock. */
+                uint32_t oldestCallEpoch();
+
                 /** @brief The calling task's process, or null (a kernel task). */
                 static Running *ofCurrentTask() {
                         ProcessOwner *owner = ProcessOwner::current();
@@ -339,6 +355,29 @@ namespace StackProbe {
         void leave(ProgramThread &thread, uintptr_t top, const char *slot);
 } // namespace StackProbe
 #endif
+
+/**
+ * @brief For a slot without a `KernelCall` (a pure one): holds a U-mode program's memory as a call
+ *        does while it reads and writes the program's buffers (`devplan/protection.md` §16).
+ */
+class MemoryHold {
+        public:
+                MemoryHold() {
+                        ProgramThread &t = ProgramThread::self();
+                        if (t.run->memory != nullptr && t.callEpoch == 0) {
+                                t.callEpoch = t.run->memory->enterCall();
+                                _thread = &t;
+                        }
+                }
+                ~MemoryHold() {
+                        if (_thread != nullptr) _thread->endCall();
+                }
+                MemoryHold(const MemoryHold &) = delete;
+                MemoryHold &operator=(const MemoryHold &) = delete;
+
+        private:
+                ProgramThread *_thread = nullptr;
+};
 
 class KernelCall {
         public:

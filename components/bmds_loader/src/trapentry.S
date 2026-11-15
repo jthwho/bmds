@@ -34,6 +34,9 @@
 
 #include <sdkconfig.h>
 #include "usermodeoffsets.h"
+#include <soc/soc.h>
+
+#define BMDS_STORM_MAGIC 0x4d525453 /* "STRM": trapentry.cpp checks it */
 
         .section .iram1.bmds_trap_entry, "ax"
 
@@ -69,13 +72,77 @@ bmds_trap_exception:
         srli    t0, t0, 20
         addi    t0, t0, -11
         beqz    t0, bmds_user_resume
-        csrrw   t0, mscratch, zero              /* t0 back, `mscratch` 0 again */
+        /* IDF's panic handler pushes its frame at SP: an SP no stack can be at would fault there,
+         * again and again, both cores silent until the hardware watchdog (docs/platforms/
+         * esp32p4.md §5a). Such an SP goes to bmds_trap_bad_sp instead. Stacks can be in TCM, in
+         * PSRAM, in internal RAM past IRAM's code, or in LP RAM (the RTC heap): in address order.
+         * (An SP wrongly called bad would come back from a harmless trap on the emergency stack.) */
+        li      t0, SOC_TCM_LOW
+        bleu    sp, t0, bmds_trap_bad_sp
+        li      t0, SOC_TCM_HIGH
+        bleu    sp, t0, 2f
+        li      t0, SOC_EXTRAM_LOW
+        bleu    sp, t0, bmds_trap_bad_sp
+        li      t0, SOC_EXTRAM_HIGH
+        bleu    sp, t0, 2f
+        lui     t0, %hi(_iram_end)
+        addi    t0, t0, %lo(_iram_end)
+        bleu    sp, t0, bmds_trap_bad_sp
+        li      t0, SOC_DRAM_HIGH
+        bleu    sp, t0, 2f
+        li      t0, SOC_RTC_DRAM_LOW
+        bleu    sp, t0, bmds_trap_bad_sp
+        li      t0, SOC_RTC_DRAM_HIGH
+        bgtu    sp, t0, bmds_trap_bad_sp
+2:      csrrw   t0, mscratch, zero              /* t0 back, `mscratch` 0 again */
         j       _panic_handler
 1:      sw      t1, BMDS_UB_T1(t0)
         jal     t1, bmds_user_entry
         lw      t1, BMDS_UB_T1(sp)
         j       _panic_handler
         .size bmds_trap_exception, . - bmds_trap_exception
+
+/* An exception in M-mode with an SP no stack can be at (t0 free, the trapped t0 in `mscratch`):
+ * the first one's mepc, mcause, mtval, SP and ra kept in RTC memory for the next boot to report
+ * (trapentry.cpp), then IDF's panic on this core's emergency stack, so it can say what happened.
+ * The trapped t0 is lost (the bad SP takes its place in the report). A third on a core resets. */
+        .global bmds_trap_bad_sp
+        .type bmds_trap_bad_sp, @function
+bmds_trap_bad_sp:
+        csrw    mscratch, sp                    /* the bad SP; sp is a scratch register now */
+        csrr    t0, mhartid
+        slli    t0, t0, 5                       /* a record is 32 bytes */
+        la      sp, bmds_storm_records
+        add     t0, t0, sp
+        csrr    sp, mscratch
+        sw      sp, 12(t0)
+        sw      ra, 16(t0)
+        csrr    sp, mepc
+        sw      sp, 0(t0)
+        csrr    sp, mcause
+        sw      sp, 4(t0)
+        csrr    sp, mtval
+        sw      sp, 8(t0)
+        lw      sp, 20(t0)
+        addi    sp, sp, 1
+        sw      sp, 20(t0)
+        li      sp, BMDS_STORM_MAGIC
+        sw      sp, 24(t0)
+        lw      t0, 20(t0)
+        addi    t0, t0, -3                      /* >= 0: the third on this core */
+        csrr    sp, mhartid
+        slli    sp, sp, 11                      /* 2 KB a core */
+        addi    sp, sp, 2047
+        addi    sp, sp, 1
+        bgez    t0, 3f
+        la      t0, bmds_storm_stacks
+        add     sp, sp, t0                      /* this core's emergency stack's top */
+        csrrw   t0, mscratch, zero              /* t0: the bad SP, for the report */
+        j       _panic_handler
+3:      la      t0, bmds_storm_stacks
+        add     sp, sp, t0
+        tail    esp_rom_software_reset_system   /* storming still: start again */
+        .size bmds_trap_bad_sp, . - bmds_trap_bad_sp
 
         .balign 4
         bmds_trap_stub bmds_trap_irq_interrupt, _interrupt_handler

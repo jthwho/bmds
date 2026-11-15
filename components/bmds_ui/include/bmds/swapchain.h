@@ -156,6 +156,9 @@ class SwapChain : public Stream {
                  */
                 Error setImage(uint8_t slot, const Image &image);
 
+                /** @brief The picture in slot @p slot (none past the slots). */
+                Image image(uint8_t slot) const;
+
                 /**
                  * @brief Copies (or fills) @p pieces of buffer @p index, which the program holds,
                  *        by the 2D-DMA in as few jobs as fit, and returns when they are written.
@@ -229,7 +232,7 @@ class SwapChain : public Stream {
                 ProgramMemory *_memory = nullptr; // the buffers' (a reference), or null: Memory's
                 size_t    _stride = 0;
                 size_t    _bufferBytes = 0;
-                Mutex     _lock; // the buffers' states, the images, and the subclass's own
+                mutable Mutex  _lock; // the buffers' states, the images, and the subclass's own
                 State     _states[MaxBuffers] = {};
                 int8_t    _latest = -1;  // the newest presented
                 int8_t    _reading = -1; // being read by whatever shows it

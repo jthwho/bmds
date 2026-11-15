@@ -74,8 +74,10 @@ int32_t bmds_k_fs_serve(const bmds_fs_serve_t *config) {
         int32_t         r = bmds::detail::copyIn(config, c);
         if (r < 0) return r;
         if ((c.flags & ~BMDS_O_CLOEXEC) != 0 || c.path == nullptr || c.type == nullptr) return -BMDS_EINVAL;
-        const size_t typeBytes = strnlen(c.type, ServedFs::MaxType);
-        if (typeBytes == 0 || typeBytes >= ServedFs::MaxType) return -BMDS_EINVAL;
+        const int32_t typeLength = bmds::detail::stringLength(c.type, ServedFs::MaxType - 1);
+        if (typeLength == -BMDS_EFAULT) return typeLength;
+        if (typeLength <= 0) return -BMDS_EINVAL;
+        const size_t typeBytes = size_t(typeLength);
         bmds::String path;
         r = call->absolutePath(c.path, path);
         if (r < 0) return r;

@@ -66,7 +66,7 @@ namespace {
                         line = StringView();
                         return 0;
                 }
-                if (text == nullptr) return -BMDS_EFAULT;
+                if (text == nullptr || !bmds::detail::canRead(text, length)) return -BMDS_EFAULT;
                 const void *newline = std::memchr(text, '\n', length);
                 line = StringView(text,
                                   newline != nullptr ? size_t(static_cast<const char *>(newline) - text) : length);
@@ -92,16 +92,18 @@ int32_t bmds_k_font_open(const bmds_font_spec_t *spec) {
                 return -BMDS_ERANGE;
         FontName name;
         if (s.name != nullptr) {
-                const size_t n = strnlen(s.name, BMDS_FONT_NAME_MAX);
-                if (n == BMDS_FONT_NAME_MAX) return -BMDS_EINVAL;
-                auto [parsed, err] = FontName::parse(StringView(s.name, n));
+                const int32_t n = bmds::detail::stringLength(s.name, BMDS_FONT_NAME_MAX - 1);
+                if (n == -BMDS_EFAULT) return n;
+                if (n < 0) return -BMDS_EINVAL;
+                auto [parsed, err] = FontName::parse(StringView(s.name, size_t(n)));
                 if (err == Error::OutOfRange) return -BMDS_ERANGE;
                 if (err.isError()) return -BMDS_EINVAL;
                 name = parsed;
         } else if (s.family != nullptr) {
-                const size_t n = strnlen(s.family, FontName::MaxFamily + 1);
-                if (n == 0 || n > FontName::MaxFamily) return -BMDS_EINVAL;
-                name = FontName::make(StringView(s.family, n), uint16_t(s.pixel_size), uint8_t(s.style));
+                const int32_t n = bmds::detail::stringLength(s.family, FontName::MaxFamily);
+                if (n == -BMDS_EFAULT) return n;
+                if (n <= 0) return -BMDS_EINVAL;
+                name = FontName::make(StringView(s.family, size_t(n)), uint16_t(s.pixel_size), uint8_t(s.style));
         } else {
                 if (s.role == BMDS_FONT_ROLE_NONE) return -BMDS_EINVAL;
                 name.role = FontName::Role(s.role);
@@ -183,6 +185,9 @@ int32_t bmds_k_text_draw(const bmds_text_draw_t *draw) {
         const auto     format = TextBlend::Format(d.format);
         const uint32_t row = d.width * TextBlend::bytesPerPixel(format);
         if (d.stride != 0 && d.stride < row) return -BMDS_EINVAL;
+        // Every row it may draw in, where a U-mode program could write (devplan/protection.md §16).
+        const uint64_t span = uint64_t(d.stride != 0 ? d.stride : row) * (d.height - 1) + row;
+        if (span > UINT32_MAX || !bmds::detail::canWrite(d.pixels, size_t(span))) return -BMDS_EFAULT;
         bmds::TextTarget t;
         t.pixels = static_cast<uint8_t *>(d.pixels);
         t.format = format;

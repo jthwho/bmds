@@ -261,7 +261,8 @@ int32_t bmds_k_audio_decode(int32_t fd, const bmds_decode_config_t *config) {
         const auto                          format = native ? SampleFormat::S16Le : static_cast<SampleFormat>(c.format);
         bmds::Result<bmds::FileHandle::Ptr> opened = bmds::makeError<bmds::FileHandle::Ptr>(Error::BadDescriptor);
         if (fd == -1) {
-                if (c.data == nullptr && c.length != 0) return -BMDS_EFAULT;
+                if ((c.data == nullptr && c.length != 0) || !bmds::detail::canRead(c.data, c.length))
+                        return -BMDS_EFAULT;
                 opened = DecodedFile::open(bmds::ByteSpan(static_cast<const uint8_t *>(c.data), c.length), format,
                                            native);
         } else {
@@ -305,7 +306,9 @@ int32_t bmds_k_audio_decode_tag(int32_t fd, uint32_t index, char *key, uint32_t 
         DecodedFile                *file = nullptr;
         const int32_t               r = decodedFileOf(handle, file);
         if (r < 0) return r;
-        if ((key == nullptr && key_size != 0) || (value == nullptr && value_size != 0)) return -BMDS_EFAULT;
+        if ((key == nullptr && key_size != 0) || (value == nullptr && value_size != 0) ||
+            !bmds::detail::canWrite(key, key_size) || !bmds::detail::canWrite(value, value_size))
+                return -BMDS_EFAULT;
         if (index >= file->decoder().tagCount()) return -BMDS_ENOENT;
         const Decoder::Tag t = file->decoder().tag(index);
         copyText(t.key, key, key_size);
@@ -386,9 +389,10 @@ int32_t bmds_k_audio_speak(const bmds_speak_config_t *config) {
             c.pitch > Speaker::MaxPitch || c.volume > Speaker::MaxVolume)
                 return -BMDS_EINVAL;
         if (c.voice != nullptr) {
-                const size_t n = strnlen(c.voice, BMDS_SPEAK_VOICE_MAX);
-                if (n == 0 || n == BMDS_SPEAK_VOICE_MAX) return -BMDS_EINVAL;
-                k.voice = bmds::StringView(c.voice, n);
+                const int32_t n = bmds::detail::stringLength(c.voice, BMDS_SPEAK_VOICE_MAX - 1);
+                if (n == -BMDS_EFAULT) return n;
+                if (n <= 0) return -BMDS_EINVAL;
+                k.voice = bmds::StringView(c.voice, size_t(n));
         }
         auto [handle, err] = SpeechFile::open(k);
         if (err == Error::CorruptData || err == Error::NotSupported) return -BMDS_EIO; // a damaged voice

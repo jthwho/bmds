@@ -66,6 +66,54 @@ Error PmpSet::add(uintptr_t base, size_t bytes, uint8_t access) {
         return Error::Ok;
 }
 
+bool PmpSet::bounds(unsigned i, uint64_t &lo, uint64_t &hi) const {
+        switch (modeOf(config(i))) {
+                case Off: return false;
+                case Tor:
+                        lo = i == 0 ? 0 : uint64_t(addr[i - 1]) << 2;
+                        hi = uint64_t(addr[i]) << 2;
+                        return true;
+                case Na4:
+                        lo = uint64_t(addr[i]) << 2;
+                        hi = lo + 4;
+                        return true;
+                case Napot: {
+                        // Trailing ones: n of them make a region of 2^(n+3) bytes.
+                        const uint32_t a = addr[i];
+                        const uint32_t ones = uint32_t(__builtin_ctz(~a));
+                        const uint64_t size = uint64_t(8) << ones;
+                        lo = (uint64_t(a) << 2) & ~(size - 1);
+                        hi = lo + size;
+                        return true;
+                }
+        }
+        return false;
+}
+
+size_t PmpSet::extent(uintptr_t address, uint8_t access) const {
+        for (unsigned i = 0; i < used; ++i) {
+                uint64_t lo = 0, hi = 0;
+                if (!bounds(i, lo, hi) || address < lo || address >= hi) continue;
+                if ((config(i) & access & AccessMask) != (access & AccessMask)) return 0;
+                const uint64_t n = hi - address;
+                return n > SIZE_MAX ? SIZE_MAX : size_t(n);
+        }
+        return 0;
+}
+
+bool PmpSet::allows(uintptr_t address, size_t bytes, uint8_t access) const {
+        if (bytes == 0) return true;
+        if (uint64_t(address) + bytes > (uint64_t(1) << 32)) return false;
+        while (bytes > 0) {
+                const size_t n = extent(address, access);
+                if (n == 0) return false;
+                if (n >= bytes) return true;
+                address += n;
+                bytes -= n;
+        }
+        return true;
+}
+
 bool PmpSet::permits(uintptr_t address, size_t bytes, uint8_t access) const {
         if (bytes == 0) return false;
         const uint64_t first = address;
@@ -73,26 +121,7 @@ bool PmpSet::permits(uintptr_t address, size_t bytes, uint8_t access) const {
         for (unsigned i = 0; i < used; ++i) {
                 const uint8_t c = config(i);
                 uint64_t      lo = 0, hi = 0; // [lo, hi)
-                switch (modeOf(c)) {
-                        case Off: continue;
-                        case Tor:
-                                lo = i == 0 ? 0 : uint64_t(addr[i - 1]) << 2;
-                                hi = uint64_t(addr[i]) << 2;
-                                break;
-                        case Na4:
-                                lo = uint64_t(addr[i]) << 2;
-                                hi = lo + 4;
-                                break;
-                        case Napot: {
-                                // Trailing ones: n of them make a region of 2^(n+3) bytes.
-                                const uint32_t a = addr[i];
-                                const uint32_t ones = uint32_t(__builtin_ctz(~a));
-                                const uint64_t size = uint64_t(8) << ones;
-                                lo = (uint64_t(a) << 2) & ~(size - 1);
-                                hi = lo + size;
-                                break;
-                        }
-                }
+                if (!bounds(i, lo, hi)) continue;
                 const bool firstIn = first >= lo && first < hi;
                 const bool lastIn = last >= lo && last < hi;
                 if (!firstIn && !lastIn) continue;

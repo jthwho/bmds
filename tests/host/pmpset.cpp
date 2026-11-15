@@ -117,3 +117,25 @@ TEST_CASE("PmpSet: TOR from 0 in entry 0 takes one entry") {
         CHECK(s.permits(0, 4, PmpSet::Read));
         CHECK_FALSE(s.permits(0x3000, 4, PmpSet::Read));
 }
+
+TEST_CASE("PmpSet: extent and allows, across adjacent entries") {
+        PmpSet s;
+        // A program's main range: code (R X), the straddling granule (R W X), data (R W).
+        REQUIRE(s.add(0x4a000000u, 0x1000, Rx) == Error::Ok);
+        REQUIRE(s.add(0x4a001000u, 0x80, Rwx) == Error::Ok);
+        REQUIRE(s.add(0x4a001080u, 0x10000 - 0x1080, Rw) == Error::Ok);
+        CHECK(s.extent(0x4a000ff0u, PmpSet::Read) == 0x10);
+        CHECK(s.extent(0x4a000ff0u, PmpSet::Write) == 0);
+        CHECK(s.extent(0x4a001000u, PmpSet::Write) == 0x80);
+        CHECK(s.extent(0x4a00fffcu, PmpSet::Write) == 4);
+        CHECK(s.extent(0x4a010000u, PmpSet::Read) == 0);
+        CHECK(s.extent(0x4ff40000u, PmpSet::Read) == 0);
+        // Reading from code into data: each access would pass, so the range does.
+        CHECK(s.allows(0x4a000f00u, 0x400, PmpSet::Read));
+        CHECK_FALSE(s.permits(0x4a000f00u, 0x400, PmpSet::Read)); // one access couldn't
+        CHECK_FALSE(s.allows(0x4a000f00u, 0x400, PmpSet::Write));
+        CHECK(s.allows(0x4a001000u, 0x200, PmpSet::Write));
+        CHECK_FALSE(s.allows(0x4a00ff00u, 0x200, PmpSet::Read)); // past the end
+        CHECK_FALSE(s.allows(0xfffffff0u, 0x20, PmpSet::Read));  // wraps
+        CHECK(s.allows(0x4ff40000u, 0, PmpSet::Write));          // empty
+}

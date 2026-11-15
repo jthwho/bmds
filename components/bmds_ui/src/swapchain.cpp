@@ -339,6 +339,12 @@ Error SwapChain::setImage(uint8_t slot, const Image &image) {
         return Error::Ok;
 }
 
+SwapChain::Image SwapChain::image(uint8_t slot) const {
+        if (slot >= MaxImages) return Image();
+        Mutex::Locker locker(_lock, WaitForever);
+        return _images[slot];
+}
+
 Error SwapChain::blit(uint8_t index, BlitSource source, uint32_t from, Span<const Piece> pieces) {
         if (index >= _bufferCount || pieces.size() == 0 || pieces.size() > MaxBlitPieces) return Error::Invalid;
         const size_t             bpp = bytesPerPixel(_format);

@@ -1025,7 +1025,7 @@ namespace {
                                 // Every thread it is due for takes it at its next call.
                                 forEach(run, [&](ProgramThread &t) {
                                         if (t.current == &p && t.hint != nullptr && s.isDue(t.currentSignals()))
-                                                *t.hint = 1;
+                                                t.pokeKept(t.hint, 1);
                                 });
                                 return true;
                         }
@@ -1332,13 +1332,25 @@ namespace {
                 return;
         }
 
-        // The argument or environment vector @p v (NULL-terminated; NULL is empty) as views.
+        // The argument or environment vector @p v (NULL-terminated; NULL is empty) as views: a
+        // U-mode program's slots and strings where it could read them (devplan/protection.md §16).
         int32_t viewsOf(char *const *v, List<StringView> &out) {
+                constexpr size_t MaxEntries = 4096;    // as Process::setArguments()'s
+                constexpr size_t MaxText = 256 * 1024; // likewise
                 if (v == nullptr) return 0;
                 size_t n = 0;
-                while (v[n] != nullptr) ++n;
+                for (;; ++n) {
+                        if (n > MaxEntries) return -BMDS_E2BIG;
+                        if (!detail::canRead(&v[n], sizeof(char *))) return -BMDS_EFAULT;
+                        if (v[n] == nullptr) break;
+                }
                 if (out.reserve(n).isError()) return -BMDS_ENOMEM;
-                for (size_t i = 0; i < n; ++i) (void)out.append(StringView(v[i], std::strlen(v[i])));
+                for (size_t i = 0; i < n; ++i) {
+                        const char   *text = v[i]; // read once
+                        const int32_t length = detail::stringLength(text, MaxText);
+                        if (length < 0) return length == -BMDS_ENAMETOOLONG ? -BMDS_E2BIG : length;
+                        (void)out.append(StringView(text, size_t(length)));
+                }
                 return 0;
         }
 
@@ -1366,14 +1378,17 @@ void ProgramThread::leave() {
                 // A vfork child is ended by the SDK (the hint); its parent once it is back.
                 const int terminate = s.terminateSignal();
                 if (depth == 0 && terminate != 0) endProcess(ProcessTable::killedStatus(terminate));
-                if (hint != nullptr) *hint = s.isDue(mine, terminate) ? 1 : 0;
+                if (hint != nullptr) pokeKept(hint, s.isDue(mine, terminate) ? 1 : 0);
                 Signals::clearWake(mine);
                 inKernel.store(false);
                 // Killed, or (running a vfork child meanwhile) its process ended while it was away.
                 if (kill.load() || (depth == 0 && run->killed.load())) finish(run->killStatus.load());
                 // Stopped meanwhile: a stopper that saw it in the kernel left it to park (the
                 // handshake); one that saw it out suspended it before this.
-                if (!s.isStopped()) return;
+                if (!s.isStopped()) {
+                        endCall();
+                        return;
+                }
                 inKernel.store(true);
         }
 }
@@ -1479,10 +1494,9 @@ int32_t ProgramThread::vforkExit(int32_t status) {
 }
 
 int32_t ProgramThread::exec(const char *path, char *const *argv, char *const *envp) {
-        StringView p;
-        if (path == nullptr) return -BMDS_EFAULT;
-        p = StringView(path, strnlen(path, BMDS_PATH_MAX + 1));
-        if (p.size() > BMDS_PATH_MAX) return -BMDS_ENAMETOOLONG;
+        const int32_t length = detail::stringLength(path, BMDS_PATH_MAX);
+        if (length < 0) return length;
+        const StringView p(path, size_t(length));
         if (p.isEmpty()) return -BMDS_ENOENT;
         Image         loaded;
         Process      *target = current;
@@ -1622,6 +1636,7 @@ void ProgramThread::endOtherThreads() {
 }
 
 int32_t ProgramThread::wait(int32_t child, int32_t *status, uint32_t flags) {
+        if (status != nullptr && !detail::canWrite(status, sizeof(*status))) return -BMDS_EFAULT;
         if ((flags & ~(BMDS_WAIT_NOHANG | BMDS_WAIT_UNTRACED | BMDS_WAIT_CONTINUED)) != 0) return -BMDS_EINVAL;
         uint32_t reap = 0;
         if ((flags & BMDS_WAIT_UNTRACED) != 0) reap |= ProcessTable::ReapStopped;
@@ -1663,17 +1678,77 @@ int32_t ProgramThread::id(uint32_t which) {
 }
 
 int32_t ProgramThread::sigSetup(volatile uint32_t *word) {
+        if (word != nullptr && run->memory != nullptr &&
+            !run->memory->isAccessible(const_cast<uint32_t *>(word), 4, true))
+                return -BMDS_EFAULT;
         hint = word;
         return 0;
 }
 
+ProgramMemory *detail::callerMemory() {
+        const ProgramThread *t = ProgramThread::ofCurrentTask();
+        return t != nullptr && t->run != nullptr ? t->run->memory : nullptr;
+}
+
+void ProgramThread::pokeKept(volatile void *word, uint32_t value) {
+        if (run->memory != nullptr) {
+                auto *w = static_cast<volatile uint32_t *>(word);
+                // Its own call holds the memory (the hint as a call ends): no lock needed.
+                if (callEpoch != 0 && this == ProgramThread::ofCurrentTask()) {
+                        (void)run->memory->pokeInCall(w, value);
+                } else {
+                        (void)run->memory->poke(w, value);
+                }
+        } else {
+                *static_cast<volatile uint32_t *>(word) = value;
+        }
+        return;
+}
+
+void ProgramThread::keepKill() {
+        // The killer sets `kill` (or the Running's `killed`) before it raises the interrupt, and
+        // prepare() fenced after its clear: a raise the clear wiped is seen here.
+        if (kill.load() || (depth == 0 && run->killed.load())) currentSignals().interrupt.raise();
+        return;
+}
+
+void ProgramThread::beginCall() {
+        if (run->memory != nullptr && callEpoch == 0) callEpoch = run->memory->enterCall();
+        return;
+}
+
+void ProgramThread::endCall() {
+        if (callEpoch == 0) return;
+        UserMemory *memory = run->memory;
+        callEpoch = 0;
+        memory->leaveCall();
+        if (memory->hasDeferred()) memory->releaseDeferred(run->oldestCallEpoch());
+        return;
+}
+
+uint32_t Running::oldestCallEpoch() {
+        Mutex::Locker locker(threadsLock, WaitForever);
+        uint32_t      oldest = 0;
+        auto          note = [&](const ProgramThread &t) {
+                if (!t.ended && t.callEpoch != 0 && (oldest == 0 || t.callEpoch < oldest)) oldest = t.callEpoch;
+        };
+        note(main);
+        for (const ProgramThread *t = others; t != nullptr; t = t->next) note(*t);
+        return oldest;
+}
+
 int32_t ProgramThread::sigTake(bmds_siginfo_t *info) {
+        if (info != nullptr && !detail::canRead(info, sizeof(uint32_t))) return -BMDS_EFAULT;
+        const uint32_t size = info != nullptr ? info->size : 0; // read once
+        if (size > sizeof(uint32_t) &&
+            !detail::canWrite(info, size < sizeof(bmds_siginfo_t) ? size : sizeof(bmds_siginfo_t)))
+                return -BMDS_EFAULT;
         const Signals::Taken taken = current->signals().take(currentSignals());
-        if (info != nullptr && info->size > sizeof(uint32_t)) {
+        if (size > sizeof(uint32_t)) {
                 const bmds_siginfo_t out = {sizeof(bmds_siginfo_t), taken.signal, taken.code,
                                             taken.terminate ? BMDS_SIG_TERMINATE : 0u};
                 // The fields that fit; the caller's size stays.
-                const size_t n = info->size < sizeof(out) ? info->size : sizeof(out);
+                const size_t n = size < sizeof(out) ? size : sizeof(out);
                 std::memcpy(reinterpret_cast<uint8_t *>(info) + sizeof(uint32_t),
                             reinterpret_cast<const uint8_t *>(&out) + sizeof(uint32_t), n - sizeof(uint32_t));
         }
@@ -1688,12 +1763,25 @@ int32_t ProgramThread::sigSuspend(uint32_t mask) {
         return -BMDS_EINTR;
 }
 
-int32_t ProgramThread::startThread(const bmds_thread_t *spec) {
-        if (spec == nullptr) return -BMDS_EFAULT;
-        if (spec->size < sizeof(bmds_thread_t) || spec->entry == nullptr) return -BMDS_EINVAL;
+int32_t ProgramThread::startThread(const bmds_thread_t *given) {
+        if (given == nullptr) return -BMDS_EFAULT;
+        // Read once (another thread can't change it after the checks), a U-mode program's only
+        // where it could read it (devplan/protection.md §16).
+        UserMemory *mine = run->memory;
+        if (mine != nullptr && !mine->isAccessible(given, sizeof(uint32_t), false)) return -BMDS_EFAULT;
+        if (given->size < sizeof(bmds_thread_t)) return -BMDS_EINVAL;
+        if (mine != nullptr && !mine->isAccessible(given, sizeof(bmds_thread_t), false)) return -BMDS_EFAULT;
+        bmds_thread_t spec;
+        std::memcpy(&spec, given, sizeof(spec));
+        if (spec.entry == nullptr) return -BMDS_EINVAL;
+        if (mine != nullptr &&
+            ((spec.hint != nullptr && !mine->isAccessible(const_cast<uint32_t *>(spec.hint), 4, true)) ||
+             (spec.clear != nullptr && !mine->isAccessible(const_cast<int32_t *>(spec.clear), 4, true)) ||
+             (spec.tid != nullptr && !mine->isAccessible(spec.tid, 4, true))))
+                return -BMDS_EFAULT;
         // A vfork child is its parent's thread for now, not a process that can have more.
         if (depth > 0) return -BMDS_EINVAL;
-        uint32_t stackBytes = spec->stack_size != 0 ? spec->stack_size : BMDS_DEFAULT_STACK_SIZE;
+        uint32_t stackBytes = spec.stack_size != 0 ? spec.stack_size : BMDS_DEFAULT_STACK_SIZE;
         if (stackBytes > BMDS_MAX_STACK_SIZE) return -BMDS_EINVAL;
         if (stackBytes < BMDS_THREAD_STACK_MIN) stackBytes = BMDS_THREAD_STACK_MIN;
         // U-mode: the program's stack is its own (its calls run on the kernel stack), no floor.
@@ -1709,11 +1797,11 @@ int32_t ProgramThread::startThread(const bmds_thread_t *spec) {
         t->currentPid = run->pid;
         t->signals = &t->own;
         t->own.blocked.store(Signals::blocked(*signals)); // the caller's mask
-        t->hint = spec->hint;
-        t->clear = spec->clear;
-        t->entry = spec->entry;
-        t->arg = spec->arg;
-        t->tls = spec->tls;
+        t->hint = spec.hint;
+        t->clear = spec.clear;
+        t->entry = spec.entry;
+        t->arg = spec.arg;
+        t->tls = spec.tls;
         t->inKernel.store(true); // until it reaches the program's code
         Signals &s = run->process->signals();
         {
@@ -1728,7 +1816,7 @@ int32_t ProgramThread::startThread(const bmds_thread_t *spec) {
                 ++run->records;
                 s.attach(t->own); // held if the process is stopped, raised if it is ending
         }
-        if (spec->tid != nullptr) *spec->tid = t->tid;
+        if (spec.tid != nullptr) *spec.tid = t->tid; // checked above, and this call holds what it checked
         Task::Config config;
         config.name = pcTaskGetName(nullptr); // the program's name, as its first task's
         Error err = Error::Ok;
@@ -1786,6 +1874,9 @@ int32_t ProgramThread::killThread(int32_t target, int32_t sig, uint32_t flags) {
 }
 
 int32_t ProgramThread::setClear(volatile int32_t *word) {
+        if (word != nullptr && run->memory != nullptr &&
+            !run->memory->isAccessible(const_cast<int32_t *>(word), 4, true))
+                return -BMDS_EFAULT;
         clear = word;
         return depth > 0 ? currentPid : tid;
 }
@@ -2074,11 +2165,15 @@ void Running::threadEnded(ProgramThread &gone, int32_t status) {
                 Mutex::Locker locker(threadsLock, WaitForever);
                 if (gone.ended) return;
                 gone.ended = true;
+                if (gone.callEpoch != 0) { // ended inside a call: it no longer holds freed memory
+                        gone.callEpoch = 0;
+                        run->memory->leaveCall();
+                }
                 if (gone.task.isRunning()) endedCpuUs += TaskList::cpuUs(gone.task.handle());
                 // Gone from program code: a joiner may free its memory now. The program's memory is
                 // there while this thread is still counted.
                 if (gone.clear != nullptr) {
-                        *gone.clear = 0;
+                        gone.pokeKept(gone.clear, 0);
                         (void)futexes->wake(gone.clear, 1);
                 }
                 for (ProgramThread **at = &others; *at != nullptr; at = &(*at)->next) {

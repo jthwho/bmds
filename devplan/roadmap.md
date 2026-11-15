@@ -85,7 +85,12 @@ the CLIC's one-`mret`-per-trap rule found the hard way; the compat corpus passes
 call +0.9 µs. Step 4 done (§15): a U-mode program's own memory (window ranges for image, heap
 and stacks, records in the kernel, granted and zeroed as used, surfaces in it); PSRAM no longer
 granted whole; a launch +1 ms. Open: a pre-existing hang when a second thread faults (M-mode too),
-two unexplained watchdog resets during updates. Next: step 5, the slot audit and `EFAULT`.
+two unexplained watchdog resets during updates. Step 5 done (§16): every slot's pointers checked against what the program
+could reach itself (`EFAULT`), read once, memory freed during a call kept until it ends; the audit
+table; `progtest hostile` and `freerace`; a system call ~1 µs more. The thread-fault hang found
+in it fixed (a kill's interrupt cleared by a call's start, M-mode too); the watchdog resets traced to
+a trap storm in IDF's panic handler, now caught and reported (§17), not reproduced since. Next: step
+6, on by default, once the watchdog's cause has shown itself or enough use without it.
   - [x] MMU spike (aliases, caches, DMA) and design.
   - [x] (a) The image cache with plain copies (`programs.md` §14.1): `exec` from memory, without the card.
   - [x] (b) Shared pages through the MMU window.

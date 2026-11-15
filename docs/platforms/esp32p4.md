@@ -1019,6 +1019,23 @@ Learned 2026-11-13 with a spike (wrappers that logged and fell through) and `pro
   `-fstack-clash-protection` works on RISC-V but probes in 4 KB steps.
 - **Cost:** ~65 cycles an interrupt (`devplan/bench.md` §22).
 
+**A trap storm looks like a silent watchdog reset.** IDF's `_panic_handler` starts by pushing its
+frame at SP. Entered with an SP no store can use (outside RAM, in IRAM's code, a PMA hole), every
+store faults, the fault re-enters `_panic_handler`, and so on, forever: no output, and once the other
+core is stalled too, only the hardware system watchdog ends it (`rst:0x7 (HP_SYS_HP_WDT_RESET)`, the
+ROM's `Core0 Saved PC` and `Core1 Saved PC` both `_panic_handler`'s first instruction). Seen three
+times in two days of protection work (`devplan/protection.md` §17), each around installs and U-mode
+benchmarks; not reproduced in 17 cycles of the same with the console captured. BMDS's exception
+entry now checks SP for an M-mode trap against where stacks can be (TCM, PSRAM, internal RAM past
+`_iram_end`, LP RAM: the RTC heap holds task stacks too, so leaving it out crashed every boot on
+the emergency stack): a bad one goes to a 2 KB emergency stack a core, its mepc, mcause, mtval, SP
+and ra kept in RTC memory and reported at the next boot, and IDF's panic then prints (a third storm
+on a core resets). `progtest faults badsp` in M-mode tries it.
+
+**Capturing the console across resets:** the USB serial port stays enumerated across a software
+reset but not every reset; a capture must reopen the port when it goes, or it silently stops at the
+reset it was meant to catch (lost three captures before this was noticed).
+
 ## 6. The ROM
 
 - **Has:** miniz's `tdefl` (PNG writing) and `tinfl` (inflate: PNG decoding, through

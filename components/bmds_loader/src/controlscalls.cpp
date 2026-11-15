@@ -89,6 +89,7 @@ namespace {
                         text = StringView(declaration.text, got);
                 } else {
                         if (size > MaxText) return -BMDS_E2BIG;
+                        if (!bmds::detail::canRead(arg, size)) return -BMDS_EFAULT;
                         std::memcpy(declaration.text, arg, size);
                         text = StringView(declaration.text, size);
                 }
@@ -132,6 +133,7 @@ int32_t bmds_k_controls(uint32_t op, void *arg, uint32_t size) {
                         bmds::ProgramControls *controls = call->existingControls();
                         if (controls == nullptr) return -BMDS_ENOENT; // nothing declared
                         if (arg != nullptr && size > MaxSetName) return -BMDS_EINVAL;
+                        if (arg != nullptr && !bmds::detail::canRead(arg, size)) return -BMDS_EFAULT;
                         const Error err = controls->setSet(
                                 arg != nullptr ? StringView(static_cast<const char *>(arg), size) : StringView());
                         return err.isOk() ? 0 : err == Error::NotExist ? -BMDS_ENOENT : -BMDS_EINVAL;
@@ -144,7 +146,8 @@ int32_t bmds_k_controls(uint32_t op, void *arg, uint32_t size) {
                         if (r < 0) return r;
                         if (b.id == 0 || b.id > 65535 || (b.which != BMDS_BINDING_KEYS && b.which != BMDS_BINDING_PAD))
                                 return -BMDS_EINVAL;
-                        if (b.text == nullptr || b.text_size == 0) return -BMDS_EFAULT;
+                        if (b.text == nullptr || b.text_size == 0 || !bmds::detail::canWrite(b.text, b.text_size))
+                                return -BMDS_EFAULT;
                         char        text[256];
                         size_t      length = 0;
                         const Error err = controls->bindingText(uint16_t(b.id), b.which == BMDS_BINDING_PAD, text,

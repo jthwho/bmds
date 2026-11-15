@@ -83,7 +83,22 @@ struct PmpSet {
                  */
                 bool permits(uintptr_t address, size_t bytes, uint8_t access) const;
 
+                /**
+                 * @brief The bytes from @p address to the end of the entry that decides it, if
+                 *        that entry allows @p access; else 0 (`devplan/protection.md` §16: how far
+                 *        a string may run before the next entry is asked).
+                 */
+                size_t extent(uintptr_t address, uint8_t access) const;
+
+                /**
+                 * @brief True if U-mode could make @p access to each byte of [@p address,
+                 *        @p address + @p bytes), access by access: across adjacent entries too
+                 *        (a buffer the kernel uses on a program's behalf). Empty: true.
+                 */
+                bool allows(uintptr_t address, size_t bytes, uint8_t access) const;
+
         private:
+                bool bounds(unsigned i, uint64_t &lo, uint64_t &hi) const;
                 void set(unsigned i, uint32_t address, uint8_t config);
                 bool isNapot(uintptr_t base, size_t bytes) const;
 };

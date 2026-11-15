@@ -86,9 +86,13 @@ namespace {
         // An array of the ABI's structs: the stride is the first entry's `size` (as io_poll's).
         template <typename T> int32_t strideOf(const T *out, uint32_t max, size_t &stride) {
                 if (max == 0) return 0;
-                if (out == nullptr) return -BMDS_EFAULT;
-                stride = out->size;
-                return stride < sizeof(uint32_t) ? -BMDS_EINVAL : 0;
+                if (out == nullptr || !bmds::detail::canRead(out, sizeof(uint32_t))) return -BMDS_EFAULT;
+                stride = out->size; // read once
+                if (stride < sizeof(uint32_t)) return -BMDS_EINVAL;
+                // The whole array where a U-mode program could write it (devplan/protection.md §16).
+                if (uint64_t(stride) * max > UINT32_MAX || !bmds::detail::canWrite(const_cast<T *>(out), stride * max))
+                        return -BMDS_EFAULT;
+                return 0;
         }
 
         // Puts @p full in entry @p i of an array with that stride, its `size` set to the stride.
@@ -144,6 +148,12 @@ int32_t bmds_k_stats_read(const uint32_t *ids, uint32_t count, int64_t *values, 
         KernelCall call;
         if (count > MaxReadIds) return -BMDS_EINVAL;
         if (count > 0 && (ids == nullptr || values == nullptr)) return -BMDS_EFAULT;
+        using bmds::detail::canRead;
+        using bmds::detail::canWrite;
+        if (!canRead(ids, count * sizeof(*ids)) || !canWrite(values, count * sizeof(*values)) ||
+            (health != nullptr && !canWrite(health, count)) ||
+            (time_ns != nullptr && !canWrite(time_ns, sizeof(*time_ns))))
+                return -BMDS_EFAULT;
         // Program memory is the kernel's to read and write: no copies.
         const size_t n = Stats::read(Span<const uint32_t>(ids, count), Span<int64_t>(values, count),
                                      health != nullptr ? Span<uint8_t>(health, count) : Span<uint8_t>());
@@ -154,6 +164,9 @@ int32_t bmds_k_stats_read(const uint32_t *ids, uint32_t count, int64_t *values, 
 int32_t bmds_k_stats_history(uint32_t id, int64_t *values, uint32_t max, int64_t *newest_ns) {
         KernelCall call;
         if (max > 0 && values == nullptr) return -BMDS_EFAULT;
+        if (uint64_t(max) * sizeof(*values) > UINT32_MAX || !bmds::detail::canWrite(values, max * sizeof(*values)) ||
+            (newest_ns != nullptr && !bmds::detail::canWrite(newest_ns, sizeof(*newest_ns))))
+                return -BMDS_EFAULT;
         int32_t      samples[Stats::HistoryDepth];
         const size_t n = Stats::history(id, Span<int32_t>(samples, Stats::HistoryDepth));
         // The newest ones, if not all fit.

@@ -560,3 +560,105 @@ R W X: the first try rounded the boundary down and `guisurface` faulted fetching
   when idle would remove one.
 - Window addresses: 32 MB shared by every program's ranges and the kernel's large blocks; four
   ranges a program at most.
+
+## 16. Step 5: pointers at the slot boundary (built and tried 2026-11-14)
+
+U-mode programs only: an M-mode program's pointers stay its own business (`programs.md` §4).
+
+**The check** is what the program could do itself: a pointer and length pass if each byte could be
+read (or written) by U-mode under the program's PMP set, across adjacent regions too
+(`ProgramMemory::isAccessible()`; strings by `stringLength()`, measured only where readable).
+`UserSpace` publishes, beside the PMP set and under the same stamp, the regions decoded as plain
+bounds, read without a lock: decoding the 16 entries took ~800 cycles a check, and a spinlock
+~1,000 (a critical section writes the CLIC's memory-mapped threshold on this revision). A failure
+is `-BMDS_EFAULT` (`Error::BadAddress`, appended).
+
+**Read once:** `copyIn()` reads `size` once and copies once; `thread_start`, `sysconf_declare`,
+iovecs, `argv`/`envp` slots, and the length words of `accept`, `sock_name`, `getsockopt` are copied
+before use (the latter written back as the call ends), so another thread can't swap a checked
+pointer or length for another.
+
+**Freed while in use:** each U-mode call records the memory's epoch as it begins (`enter()`, or
+`MemoryHold` in the slots without a `KernelCall`: `clock_get`, `syntax_*`); a free revokes the grant
+at once and, while another call is in flight, defers giving back a large block's range or an
+internal block (`Large`/`Internal::deferred`) and skips heap trims; the deferred blocks go when the
+last call older than them leaves (`Running::oldestCallEpoch()`). The counters are in `UserSpace`
+(internal RAM). Words the kernel keeps and writes later are checked when given and written by
+`poke()` (under the memory's lock; lock-free from the thread's own call). A picture kept for
+`BMDS_SURFACE_BLIT` is checked again at each blit (the 2D-DMA reads it within the call).
+
+**The audit** (131 slots; 86 take pointers; ✓ = checked as above):
+
+| Slots | Pointers | How |
+|---|---|---|
+| read, write, random, getcwd, readlink, file_type, sysconf_get, expand, audio_decode_tag | buffers with lengths | `canRead`/`canWrite` the whole length |
+| open, stat, lstat, mkdir, rmdir, unlink, rename, opendir, chdir, symlink, set_mtime, fs_info, fs_watch, sysconf_find/next/watch, syntax_find, audio_synth's font, proc_exec's path | strings | `Process::path()`/`keyArg()`/`stringLength()`: measured where readable |
+| stat, fstat, lstat, readdir, term_get, mem_info, fs_info, sysconf_info, seek, pipe, proc_wait, clock_get, sig_take | outputs | `Process::copyOut()` / `canWrite` |
+| every `size`-first struct (audio, midi, stats, proc_info, system_info, sched, proc_timer, notify, image, font, surface, controls, crypto, fs_serve, ptp, net_info, gui_canvas_surface) | struct in/out | `detail::copyIn()`/`copyOut()` |
+| proc_exec | `argv`, `envp` | each slot readable, each string measured, at most 4,096 and 256 KB |
+| io_poll | entries, mask | the array at its stride; the mask word |
+| futex | words | readable (a wait reads one; a wake only names it) |
+| sig_setup, thread_clear, thread_start | words kept | writable when given; written later by `poke()` |
+| thread_start | the struct, `tid`, `hint`, `clear` | copied once; words writable |
+| thread_exit | `release` | `mem_free`'s own owner check |
+| mem_free, mem_realloc | blocks | the memory's records (owner) |
+| sysconf_declare, sysconf_set | struct, texts | copied once; each text measured |
+| stats_read, stats_history, stats_problems, task_list | arrays | the whole array |
+| crypto | key, state, in, out | by algorithm: in and state always, key and out for AES |
+| image_info, image_decode, image_encode | data, out, pixels | the bytes read; `out_size`; the picture's rows |
+| text_measure, text_draw, font_open | text, pixels, names | the text's length; every row it may draw in; names measured |
+| syntax_scan | struct, line, spans | the line; the spans it may fill; the struct written back |
+| audio_decode, audio_speak | data, voice | the bytes; the name measured |
+| surface_present, surface_control | damage, palette, title, pointer mode, pieces, kept picture | each by its count; the picture again at each blit |
+| controls | text, set name, binding text | each by its size |
+| bind, connect, sendmsg, recvmsg, accept, sock_name, setsockopt, getsockopt | addresses, iovecs, control, values | the address read/written; each iovec for its direction; control's room; option values up to their length |
+| ptp_ctl | arg | by operation |
+| the other 45 | none, or values only | — |
+
+**Tried on the board** (`programs/protect` set for the run only):
+- `progtest hostile` (new): ~45 slots each given kernel RAM, a peripheral, kernel PSRAM and a
+  buffer running off the program's memory (and the stub page as a destination): 200 checks, all
+  `EFAULT`, the program alive. M-mode: nothing checked, as designed.
+- `progtest freerace` (new): a thread's `read` fills a large block and a fast one that another
+  thread freed meanwhile: the reads end well, the memory comes back.
+- The compat corpus, every fault kind, `umem`, `blittest`, `guisurface`: as in step 4.
+- **Speed** in U-mode, step 4 → step 5: `getpid` 3.2 → 4.2 µs, `clock_gettime` 2.4 → 3.9 µs,
+  `kernel.pipe` 262 → 216-224 MB/s, `programs.launch` 6.5 → 7.0 ms. Measured with the cycle counter
+  in `clock_get`: holding the memory ~150 cycles, a check ~290, letting go ~60.
+
+**Left for later:**
+- The checks' cost: the caller's memory found from the thread for each check, through a virtual
+  call; a check inlined against the thread's cached `UserSpace` and the hold's two atomics folded
+  into the call's own bookkeeping would take most of it back.
+- The hardware-watchdog resets of §15 (one more: a boot ended by the watchdog 46 s in, while the
+  U-mode benchmarks ran right after an install). Not reproduced since, with the console captured.
+- A pre-existing hang when a program's second thread faults (§15), and `progtest threads`' failing
+  posix_spawn from a thread (both modes).
+
+## 17. The thread-fault hang and the watchdog resets (2026-11-14)
+
+**A program whose second thread faults sometimes never ended** (main left blocked in
+`pthread_join`; in M-mode too, about 1 in 40-90 runs of `progtest faults null|recurse thread`).
+The kill raises the main thread's interrupt and sets its `kill` flag; if that came just as main was
+entering a call, `Signals::prepare()` (every call's start) cleared the interrupt, since a kill isn't
+a due signal, and the futex wait then waited through it. `ProgramThread::keepKill()` raises it again
+after `prepare()` when the thread is being killed (the killer sets the flag before raising; `prepare()`
+fences after clearing). 1,800 thread faults since, both modes: none hung.
+
+**Hardware-watchdog resets** (three: during an install's upload after U-mode benchmarks, during an
+install in M-mode after U-mode GUI programs, and 46 s into the boot after an install while the
+U-mode benchmarks ran). The one console captured ended `HP_SYS_HP_WDT_RESET` with both cores'
+saved PC at `_panic_handler`'s first instruction: a trap storm, the panic handler entered with an SP
+it can't push to (`docs/platforms/esp32p4.md` §5a). What put SP there isn't known. BMDS's exception
+entry now sends an M-mode trap with an SP no stack can be at to an emergency stack, keeps the first
+one's registers in RTC memory for the next boot to log, and lets IDF's panic print
+(`progtest faults badsp`: a printed load-access-fault panic and the record logged after the reboot;
+in U-mode, SIGSEGV). Not reproduced since in 17 cycles of benchmarks, uploads, checks and real
+installs with the console captured (which must reopen the port at resets: earlier captures had
+stopped at the very resets they were for). The next one prints what it is.
+
+**Also seen once** (21:02, before the hang fix): killing two stuck test programs panicked with a
+stack protection fault in an M-mode program thread's own code (SP in its PSRAM stack), which the
+§21 wrappers refused to contain, likely because the thread was already marked in the kernel by the
+kill. Not seen since; with the hang fixed, the situation (killing a program stuck mid-kill) no
+longer arises in the tests.

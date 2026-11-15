@@ -13,6 +13,7 @@
 #include <bmds/errno.h>
 #include <bmds/sys.h>
 #include <bmds/textsyntax.h>
+#include "running.h"
 #include "structcopy.h"
 
 using bmds::Span;
@@ -49,7 +50,8 @@ namespace {
 extern "C" {
 
 int32_t bmds_k_syntax_find(const char *name, uint32_t length) {
-        if (name == nullptr && length > 0) return -BMDS_EFAULT;
+        bmds::MemoryHold hold; // no KernelCall: it is pure, but reads the program's memory
+        if ((name == nullptr && length > 0) || !bmds::detail::canRead(name, length)) return -BMDS_EFAULT;
         const Syntax *s = Syntax::forName(StringView(name, length));
         if (s == nullptr) return -BMDS_ENOENT;
         Span<const Syntax *const> all = Syntax::all();
@@ -59,6 +61,7 @@ int32_t bmds_k_syntax_find(const char *name, uint32_t length) {
 }
 
 int32_t bmds_k_syntax_scan(bmds_syntax_scan_t *scan) {
+        bmds::MemoryHold   hold; // no KernelCall: it is pure, but uses the program's memory
         bmds_syntax_scan_t s;
         int32_t            r = copyIn(scan, s);
         if (r < 0) return r;
@@ -67,6 +70,12 @@ int32_t bmds_k_syntax_scan(bmds_syntax_scan_t *scan) {
         if (s.language < 0 || size_t(s.language) >= all.size() || s.state > 0xFFFFu) return -BMDS_EINVAL;
         if (s.length > 0 && s.line == nullptr) return -BMDS_EFAULT;
         if (s.max_spans > 0 && s.spans == nullptr) return -BMDS_EFAULT;
+        using bmds::detail::canRead;
+        using bmds::detail::canWrite;
+        const size_t outSpans = s.max_spans < MaxSpans ? s.max_spans : MaxSpans;
+        if (!canRead(s.line, s.length) || !canWrite(s.spans, outSpans * sizeof(bmds_syntax_span_t)) ||
+            !canWrite(scan, sizeof(bmds_syntax_scan_t)))
+                return -BMDS_EFAULT;
         StyleSpan spans[MaxSpans];
         size_t    count = 0;
         size_t    max = s.max_spans < MaxSpans ? s.max_spans : MaxSpans;

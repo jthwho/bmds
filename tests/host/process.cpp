@@ -125,6 +125,15 @@ namespace {
                                 return isInside(p) && _heap.contains(at(p), uint32_t(bytes), owner);
                         }
                         void freeOwner(uint32_t owner) override { _heap.freeOwner(owner); }
+                        // The program reaches its buffer only, and writes it past `readOnly` bytes.
+                        size_t accessible(const void *p, bool write) override {
+                                if (!isInside(p)) return 0;
+                                const size_t at = size_t(static_cast<const uint8_t *>(p) - _bytes);
+                                if (write && at < readOnly) return 0;
+                                return Bytes - at;
+                        }
+                        uint8_t *bytes() { return _bytes; }
+                        size_t   readOnly = 16;
 
                         bool isInside(const void *p) const {
                                 auto *b = static_cast<const uint8_t *>(p);
@@ -209,6 +218,54 @@ TEST_CASE("Process: a U-mode program's memory (its own, records outside)") {
                 Process::destroy(p);
                 CHECK(memory->refs == 1);
                 CHECK(memory->used() == 256); // only the kernel's block, freed by its owner
+        }
+        CHECK(HostMemory::liveAllocations() == base);
+}
+
+TEST_CASE("Process: a U-mode program's pointers are checked (EFAULT)") {
+        { Disks warm; }
+        const size_t base = HostMemory::liveAllocations();
+        {
+                Disks         disks;
+                auto          memory = std::make_unique<FakeProgramMemory>();
+                bmds::FdTable fds;
+                Process      *p = Process::create(fds, nullptr);
+                REQUIRE(p != nullptr);
+                p->setMemory(memory.get());
+                REQUIRE(p->setCwd(disks.aRoot.c_str()).isOk());
+                char *mine = static_cast<char *>(p->memAlloc(256, 0, 0));
+                REQUIRE(mine != nullptr);
+                char        outside[64] = "outside"; // the kernel's, as the program sees it
+                const char *readOnly = reinterpret_cast<const char *>(memory->bytes()); // its code
+                // Paths: in its memory only, NUL within it.
+                std::strcpy(mine, "file");
+                CHECK(p->open(outside, BMDS_O_READ) == -BMDS_EFAULT);
+                const int32_t fd = p->open(mine, BMDS_O_WRITE | BMDS_O_CREATE);
+                CHECK(fd >= 0);
+                char *end = reinterpret_cast<char *>(memory->bytes()) + FakeProgramMemory::Bytes - 4;
+                std::memcpy(end, "abcd", 4); // no NUL before its memory ends
+                CHECK(p->open(end, BMDS_O_READ) == -BMDS_EFAULT);
+                // Buffers: written only where it could write, read only where it could read.
+                CHECK(p->write(fd, outside, 4) == -BMDS_EFAULT);
+                CHECK(p->write(fd, readOnly, 4) == 4); // readable
+                CHECK(p->write(fd, mine, 4) == 4);
+                CHECK(p->seek(fd, 0, BMDS_SEEK_SET, nullptr) == 0);
+                int64_t pos = 0;
+                CHECK(p->seek(fd, 0, BMDS_SEEK_SET, &pos) == -BMDS_EFAULT);
+                CHECK(p->getcwd(outside, sizeof(outside)) == -BMDS_EFAULT);
+                CHECK(p->getcwd(const_cast<char *>(readOnly), 200) == -BMDS_EFAULT);
+                CHECK(p->getcwd(mine, 256) > 0);
+                bmds_stat_t st = {};
+                st.size = sizeof(st);
+                CHECK(p->fstat(fd, &st) == -BMDS_EFAULT);
+                auto *inside = reinterpret_cast<bmds_stat_t *>(mine);
+                inside->size = sizeof(bmds_stat_t);
+                CHECK(p->fstat(fd, inside) == 0);
+                CHECK(inside->file_size == 8);
+                int32_t pair[2];
+                CHECK(p->pipe(pair, 0) == -BMDS_EFAULT);
+                CHECK(p->close(fd) == 0);
+                Process::destroy(p);
         }
         CHECK(HostMemory::liveAllocations() == base);
 }

@@ -130,6 +130,10 @@ int32_t bmds_k_surface_open(const bmds_surface_config_t *config) {
         if (k.memory != nullptr) k.flags &= uint8_t(~ProgramSurface::Fast);
         k.aspectX = uint16_t(c.aspect_x);
         k.aspectY = uint16_t(c.aspect_y);
+        if (c.title != nullptr) { // read where the program could: up to its NUL or MaxTitle
+                const int32_t n = bmds::detail::stringLength(c.title, MaxTitle);
+                if (n == -BMDS_EFAULT) return n;
+        }
         k.title = textOf(c.title, MaxTitle);
         if (k.title.isEmpty()) {
                 // The program's name: its command's first word, its last part.
@@ -193,7 +197,8 @@ int32_t bmds_k_surface_present(int32_t fd, const bmds_surface_present_t *present
         Rect   damage[MaxDamage];
         size_t n = 0;
         if (p.damage_count > 0 && p.damage_count <= MaxDamage) {
-                if (p.damage == nullptr) return -BMDS_EFAULT;
+                if (p.damage == nullptr || !bmds::detail::canRead(p.damage, p.damage_count * sizeof(bmds_rect_t)))
+                        return -BMDS_EFAULT;
                 for (uint32_t i = 0; i < p.damage_count; ++i) {
                         const bmds_rect_t &d = p.damage[i];
                         const int64_t      x0 = d.x < 0 ? 0 : d.x, y0 = d.y < 0 ? 0 : d.y;
@@ -223,16 +228,19 @@ int32_t bmds_k_surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size
                         if (r < 0) return r;
                         if (p.first > 256 || p.count > 256 - p.first || (p.count > 0 && p.rgb == nullptr))
                                 return -BMDS_EINVAL;
+                        if (!bmds::detail::canRead(p.rgb, size_t(p.count) * sizeof(uint32_t))) return -BMDS_EFAULT;
                         const Error err = surface->setPalette(p.first, bmds::Span<const uint32_t>(p.rgb, p.count));
                         return err == Error::NotSupported ? -BMDS_ENOTSUP : err.isOk() ? 0 : -BMDS_EINVAL;
                 }
                 case BMDS_SURFACE_TITLE: {
                         const char  *text = static_cast<const char *>(arg);
+                        if (!bmds::detail::canRead(text, size < MaxTitle ? size : MaxTitle)) return -BMDS_EFAULT;
                         const size_t n = textOf(text, size < MaxTitle ? size : MaxTitle).size();
                         return surface->setTitle(bmds::StringView(text, n)).isOk() ? 0 : -BMDS_EINVAL;
                 }
                 case BMDS_SURFACE_POINTER: {
                         if (size < sizeof(uint32_t)) return -BMDS_EINVAL;
+                        if (!bmds::detail::canRead(arg, sizeof(uint32_t))) return -BMDS_EFAULT;
                         const uint32_t mode = *static_cast<const uint32_t *>(arg);
                         if (mode > BMDS_POINTER_RELATIVE) return -BMDS_EINVAL;
                         return surface->setPointerMode(SwapChain::PointerMode(mode)).isOk() ? 0 : -BMDS_EINVAL;
@@ -302,7 +310,19 @@ int32_t bmds_k_surface_control(int32_t fd, uint32_t op, void *arg, uint32_t size
                         if (bl.count == 0 || bl.count > BMDS_SURFACE_BLIT_MAX || bl.source > BMDS_BLIT_FILL ||
                             bl.buffer >= SwapChain::MaxBuffers)
                                 return -BMDS_EINVAL;
-                        if (bl.pieces == nullptr) return -BMDS_EFAULT;
+                        if (bl.pieces == nullptr ||
+                            !bmds::detail::canRead(bl.pieces, size_t(bl.count) * sizeof(bmds_surface_piece_t)))
+                                return -BMDS_EFAULT;
+                        // A kept picture still the program's: freed since, the 2D-DMA would read
+                        // whatever has the memory now (devplan/protection.md §16).
+                        if (bl.source == BMDS_BLIT_IMAGE && call.thread().run->memory != nullptr) {
+                                const SwapChain::Image im = surface->image(uint8_t(bl.from < 256 ? bl.from : 255));
+                                if (im.pixels != nullptr &&
+                                    !call.owner()->owns(im.pixels, size_t(im.stride) * im.height)) {
+                                        (void)surface->setImage(uint8_t(bl.from), SwapChain::Image());
+                                        return -BMDS_EFAULT;
+                                }
+                        }
                         static_assert(sizeof(bmds_surface_piece_t) == sizeof(SwapChain::Piece) &&
                                               offsetof(bmds_surface_piece_t, from_y) ==
                                                       offsetof(SwapChain::Piece, fromY),

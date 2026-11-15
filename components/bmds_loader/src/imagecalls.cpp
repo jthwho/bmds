@@ -54,7 +54,7 @@ namespace {
         int32_t fileOf(KernelCall &call, int32_t fd, const void *data, uint32_t length, Images::FileBytes &file,
                        bmds::ByteSpan &bytes) {
                 if (fd == -1) {
-                        if (data == nullptr || length == 0) return -BMDS_EFAULT;
+                        if (data == nullptr || length == 0 || !bmds::detail::canRead(data, length)) return -BMDS_EFAULT;
                         bytes = bmds::ByteSpan(static_cast<const uint8_t *>(data), length);
                         return 0;
                 }
@@ -155,7 +155,9 @@ int32_t bmds_k_image_decode(int32_t fd, const bmds_image_decode_t *request, bmds
         Images::Options o;
         r = optionsOf(d, o);
         if (r < 0) return r;
-        if (d.out == nullptr) return -BMDS_EFAULT;
+        // All it may write where a U-mode program could (the JPEG engine's DMA isn't the PMP's to
+        // stop: devplan/protection.md §16).
+        if (d.out == nullptr || !bmds::detail::canWrite(d.out, d.out_size)) return -BMDS_EFAULT;
         Images::FileBytes file;
         bmds::ByteSpan    bytes;
         r = fileOf(call, fd, d.data, d.length, file, bytes);
@@ -197,6 +199,7 @@ int32_t bmds_k_image_encode(int32_t fd, const bmds_image_encode_t *request) {
         in.format = PixelFormat(e.format);
         in.stride = e.stride != 0 ? e.stride : size_t(e.width) * bmds::bytesPerPixel(in.format);
         if (!in.isValid()) return -BMDS_EINVAL;
+        if (!bmds::detail::canRead(in.pixels, in.bytes())) return -BMDS_EFAULT;
         const bmds::FileHandle::Ptr h = call->handle(fd);
         if (!h || !h->canWrite()) return -BMDS_EBADF;
         Images::Encode how;

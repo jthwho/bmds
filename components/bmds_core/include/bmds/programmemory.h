@@ -11,6 +11,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/error.h>
+#include <bmds/result.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -68,6 +70,47 @@ class ProgramMemory {
 
                 /** @brief Frees every block of @p owner. */
                 virtual void freeOwner(uint32_t owner) = 0;
+
+                /**
+                 * @brief How many bytes from @p p the program could read (or with @p write, write)
+                 *        itself, up to the end of the region holding @p p: 0 if none
+                 *        (`devplan/protection.md` §16). The PMP's own rule.
+                 */
+                virtual size_t accessible(const void *p, bool write) = 0;
+
+                /** @brief True if the program could make each access to [@p p, @p p + @p bytes). */
+                bool isAccessible(const void *p, size_t bytes, bool write) {
+                        auto at = reinterpret_cast<uintptr_t>(p);
+                        if (bytes == 0) return true;
+                        if (at + bytes < at) return false;
+                        while (bytes > 0) {
+                                const size_t n = accessible(reinterpret_cast<const void *>(at), write);
+                                if (n == 0) return false;
+                                if (n >= bytes) return true;
+                                at += n;
+                                bytes -= n;
+                        }
+                        return true;
+                }
+
+                /**
+                 * @brief The length of the NUL-ended string at @p s, measured only in memory the
+                 *        program could read: `BadAddress` if it runs into memory it couldn't,
+                 *        `OutOfRange` if longer than @p max.
+                 */
+                Result<size_t> stringLength(const char *s, size_t max) {
+                        size_t n = 0;
+                        for (;;) {
+                                const char  *at = s + n;
+                                const size_t room = accessible(at, false);
+                                if (room == 0) return makeError<size_t>(Error::BadAddress);
+                                const size_t look = room < max + 1 - n ? room : max + 1 - n;
+                                for (size_t i = 0; i < look; ++i)
+                                        if (at[i] == '\0') return makeResult(n + i);
+                                n += look;
+                                if (n > max) return makeError<size_t>(Error::OutOfRange);
+                        }
+                }
 
         protected:
                 ProgramMemory() = default;

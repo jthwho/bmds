@@ -56,6 +56,7 @@ UserMemory *UserMemory::create(uint32_t imageBytes, uint32_t codeBytes) {
         m->_imageBytes = imageBytes;
         m->_codeBytes = codeBytes < imageBytes ? codeBytes : imageBytes;
         m->_space = UserSpace::create();
+        if (m->_space != nullptr) m->_calls = &m->_space->calls();
         uint32_t reserve = imagePages + HeadroomPages;
         uint8_t *at = m->_space != nullptr ? PsramWindow::takeRange(reserve, false) : nullptr;
         if (at == nullptr && m->_space != nullptr) {
@@ -278,7 +279,8 @@ Error UserMemory::growHeap(uint32_t bytes) {
 // After a free: whole runs at a range's top, all free, go back to the PSRAM heap (one page kept
 // free there, so a block freed and made again doesn't map and unmap each time).
 void UserMemory::trim(const RangeHeap::Freed &f) {
-        if (f.bytes == 0) return;
+        // Another call may be using what was freed (§16): the pages stay the program's for now.
+        if (f.bytes == 0 || _calls->inFlight.load(std::memory_order_acquire) > 1) return;
         Range *r = heapRangeOf(f.freeAt);
         if (r == nullptr) return;
         uint32_t free = f.freeBytes;
@@ -349,15 +351,21 @@ void *UserMemory::allocLarge(uint32_t bytes, uint32_t owner) {
 
 UserMemory::Large *UserMemory::largeAt(const void *p) {
         for (Large &l : _large)
-                if (l.range.base != nullptr && l.range.base == p) return &l;
+                if (l.range.base != nullptr && l.deferred == 0 && l.range.base == p) return &l;
         return nullptr;
 }
 
+// Revoked at once (no check passes on it from now on); its pages go once no call that began
+// before is in flight (§16).
 void UserMemory::freeLarge(Large &l) {
         _space->revoke(l.range.region); // on both cores before its pages go
+        if (_calls->inFlight.load(std::memory_order_acquire) > 1) {
+                l.deferred = _calls->epoch.fetch_add(1, std::memory_order_acq_rel);
+                _calls->deferred.fetch_add(1);
+                return;
+        }
         release(l.range);
-        l.bytes = 0;
-        l.owner = 0;
+        l = Large();
         return;
 }
 
@@ -369,7 +377,8 @@ bool UserMemory::resizeLarge(Large &l, uint32_t bytes) {
                 uint32_t end = r.mapped;
                 while (r.runs.size() > 1 && end - r.runs[r.runs.size() - 1].pages >= pages)
                         end -= r.runs[r.runs.size() - 1].pages;
-                if (end < r.mapped) {
+                if (end < r.mapped &&
+                    _calls->inFlight.load(std::memory_order_acquire) <= 1) { // else kept while other calls run (§16)
                         (void)_space->resize(r.region, size_t(end) * Page);
                         unmapTail(r, r.mapped - end);
                 }
@@ -416,15 +425,48 @@ void *UserMemory::allocInternal(uint32_t bytes, uint32_t align, uint32_t flags, 
 
 UserMemory::Internal *UserMemory::internalAt(const void *p) {
         for (Internal &b : _internal)
-                if (b.block != nullptr && b.block == p) return &b;
+                if (b.block != nullptr && b.deferred == 0 && b.block == p) return &b;
         return nullptr;
 }
 
 void UserMemory::freeInternal(Internal &b) {
         _space->revoke(reinterpret_cast<uintptr_t>(b.block)); // on both cores before it is reused
+        if (_calls->inFlight.load(std::memory_order_acquire) > 1) {
+                b.deferred = _calls->epoch.fetch_add(1, std::memory_order_acq_rel);
+                _calls->deferred.fetch_add(1);
+                return;
+        }
         Memory::free(b.block);
         b = Internal();
         return;
+}
+
+void UserMemory::releaseDeferred(uint32_t oldest) {
+        Mutex::Locker locker(_lock, WaitForever);
+        for (Large &l : _large) {
+                if (l.deferred == 0 || (oldest != 0 && l.deferred >= oldest)) continue;
+                release(l.range);
+                l = Large();
+                _calls->deferred.fetch_sub(1);
+        }
+        for (Internal &b : _internal) {
+                if (b.deferred == 0 || (oldest != 0 && b.deferred >= oldest)) continue;
+                Memory::free(b.block);
+                b = Internal();
+                _calls->deferred.fetch_sub(1);
+        }
+        return;
+}
+
+size_t UserMemory::accessible(const void *p, bool write) {
+        return _space->extent(reinterpret_cast<uintptr_t>(p), write ? Rw : uint8_t(PmpSet::Read));
+}
+
+bool UserMemory::poke(volatile uint32_t *p, uint32_t value) {
+        Mutex::Locker locker(_lock, WaitForever);
+        if (!isAccessible(const_cast<const uint32_t *>(p), sizeof(uint32_t), true)) return false;
+        *p = value;
+        return true;
 }
 
 bool UserMemory::isInternal(const void *p) {
@@ -523,11 +565,14 @@ bool UserMemory::contains(const void *p, size_t bytes, uint32_t owner) {
         Mutex::Locker locker(_lock, WaitForever);
         for (const Internal &b : _internal) {
                 const uint32_t start = address(b.block);
-                if (b.block != nullptr && b.owner == owner && at >= start && at + bytes <= start + b.bytes) return true;
+                if (b.block != nullptr && b.deferred == 0 && b.owner == owner && at >= start &&
+                    at + bytes <= start + b.bytes)
+                        return true;
         }
         for (const Large &l : _large) {
                 const uint32_t start = address(l.range.base);
-                if (l.range.base != nullptr && l.owner == owner && at >= start && at + bytes <= start + l.bytes)
+                if (l.range.base != nullptr && l.deferred == 0 && l.owner == owner && at >= start &&
+                    at + bytes <= start + l.bytes)
                         return true;
         }
         return _heap.contains(at, uint32_t(bytes), owner);
@@ -536,9 +581,9 @@ bool UserMemory::contains(const void *p, size_t bytes, uint32_t owner) {
 void UserMemory::freeOwner(uint32_t owner) {
         Mutex::Locker locker(_lock, WaitForever);
         for (Internal &b : _internal)
-                if (b.block != nullptr && b.owner == owner) freeInternal(b);
+                if (b.block != nullptr && b.deferred == 0 && b.owner == owner) freeInternal(b);
         for (Large &l : _large)
-                if (l.range.base != nullptr && l.owner == owner) freeLarge(l);
+                if (l.range.base != nullptr && l.deferred == 0 && l.owner == owner) freeLarge(l);
         _heap.freeOwner(owner);
         return;
 }

@@ -99,6 +99,7 @@ class [[nodiscard]] Error {
                         NetworkUnreachable,     ///< No route to the network (ENETUNREACH).
                         HostUnreachable,        ///< The host doesn't answer (EHOSTUNREACH).
                         MessageTooLong,         ///< The datagram is too big to send (EMSGSIZE).
+                        BadAddress,             ///< A program's pointer it can't use itself (EFAULT).
                         CodeCount               ///< Number of codes (not an error code).
                 };
 

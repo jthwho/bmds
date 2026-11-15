@@ -71,6 +71,7 @@ namespace {
                 {"NetworkUnreachable", "Network is unreachable"},
                 {"HostUnreachable", "No route to host"},
                 {"MessageTooLong", "Message too long"},
+                {"BadAddress", "Bad address"},
         };
         static_assert(sizeof(CodeTexts) / sizeof(CodeTexts[0]) == Error::CodeCount,
                       "CodeTexts must have one entry per Error::Code");
@@ -145,6 +146,7 @@ namespace {
                 {ENETUNREACH, Error::NetworkUnreachable},
                 {EHOSTUNREACH, Error::HostUnreachable},
                 {EMSGSIZE, Error::MessageTooLong},
+                {EFAULT, Error::BadAddress},
         };
 
         template <typename Table> Error lookup(const Table &table, int32_t value, Error::Code fallback) {
