@@ -99,11 +99,22 @@ kept), fault reports with registers and a stack trace (`tools/bmds-fault`), the 
 PCs; `fs_info`'s type in U-mode and `crypto`'s `EINVAL` for a missing pointer fixed. §22:
 `tools/bmds-suites` (every progtest suite and fault, both modes), the window's unused heap room
 reclaimed when it runs short, `-g` for programs' debug ELFs; a non-blocking TCP send's `ENOMEM` now
-`EAGAIN`.
+`EAGAIN`. §23: a served directory read under the process's lock (each `readdir()` of one
+waited 30 s for its own server), `-g` for the distribution's builds.
   - [x] MMU spike (aliases, caches, DMA) and design.
   - [x] (a) The image cache with plain copies (`programs.md` §14.1): `exec` from memory, without the card.
   - [x] (b) Shared pages through the MMU window.
   - [x] (c) The link gathers the patched bytes at the image's end (`bmds-link`), measured.
+- [ ] Debug information on the card (`debuginfo.md`, planned 2026-11-15, the user's request): a
+  build-id in every program (the firmware by its ELF's SHA), logged with each fault and in the
+  banner; debug-only files under `debug/paths` (`/sd0/p0/lib/debug/.build-id/`, GDB's layout) from
+  `NAME-dbg` packages and the firmware's `bmds-dbg`; `debug`, a program that names a fault's or a
+  panic's addresses on the board. Decided (§7): not compressed yet (several kinds later, §10), the
+  firmware's debug package published, inlined callers later, `debug` the home of other debugging
+  too (§11). Step 1 done (§12): a build-id in every program, logged with each fault and in
+  `prof dump`, the firmware's SHA in the banner; the host tools refuse another build's ELF. Next,
+  step 2: reproducible ids first (§3a: source paths in relative, so no build folder or home path is
+  in an id or a published package).
 - [x] Example programs: `hello`, `cat`, `ls` and more in `sdk/examples`; `benchprog` the benchmark.
 - [x] Application folders (`apps.md`, planned 2026-10-14): one folder per application (`/sd0/p0/apps/NAME.app`: the program, its data, `app.desktop`), found by looking (no registry), each one a command in a virtual `/apps` on the `PATH`, `BMDS_APP_DIR`, its data in `$HOME/.local/share/ID`; the launcher, the file browser and Open With from them. Done (`apps.md` §11): `Apps` (the scan, the watches, ids and commands, `apps/path`, the `apps` command), `/apps` in the VFS, the default `PATH`, `BMDS_APP_DIR` and `BMDS_APP_ID`, the SDK's `bmds/app.h` (`appinfo`); the launcher reads `/apps` and watches its directories (§12); the file browser and desktop run `NAME.app` folders (Show Contents), `MimeType=` opens files when `mimeapps.list` names none (§13). building folders: `bmds_add_app()`, `bmds-dist` recipes into `apps/` (§14). Later: an application's own icon in the file browser, an Open With submenu.
 - [ ] Partition editing (`storage.md` §14): BusyBox `fdisk` (MBR) on the card, not built in; raw block device nodes as streams, writes kept out of mounted partitions, the table re-read on close; extended partitions read.

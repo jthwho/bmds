@@ -217,6 +217,8 @@ namespace {
                         UserMemory *user = nullptr;    // U-mode: the program's memory, the image in it (a reference)
                         uint32_t              entry = 0;
                         uint32_t              stackBytes = 0;
+                        uint32_t              buildIdOffset = 0; // its build-id in it (debuginfo.md §3)
+                        uint32_t              buildIdBytes = 0;
                         bool                  display = false;   // BMDS_PROGRAM_DISPLAY
                         const ProgramEntry   *builtin = nullptr; // a program built in: no image
                         char                  path[Loader::PathBytes] = {}; // its file, looked up ("": unknown)
@@ -342,6 +344,8 @@ namespace {
                 image.entry = header.entry;
                 image.stackBytes = header.stackSize != 0 ? header.stackSize : BMDS_DEFAULT_STACK_SIZE;
                 image.display = (header.flags & BMDS_PROGRAM_DISPLAY) != 0;
+                image.buildIdOffset = header.buildIdOffset;
+                image.buildIdBytes = header.buildIdBytes;
                 return Error::Ok;
         }
 
@@ -362,6 +366,8 @@ namespace {
                                 image.entry = header.entry;
                                 image.stackBytes = header.stackSize != 0 ? header.stackSize : BMDS_DEFAULT_STACK_SIZE;
                                 image.display = (header.flags & BMDS_PROGRAM_DISPLAY) != 0;
+                                image.buildIdOffset = header.buildIdOffset;
+                                image.buildIdBytes = header.buildIdBytes;
                                 return Error::Ok;
                         }
                         if (image.mapping.isMapped()) { // mapped, but its memory couldn't start
@@ -671,6 +677,8 @@ namespace {
                 run->main.signals = &process->signals().mainThread();
                 run->image = image.memory;
                 run->imageBytes = image.bytes;
+                run->buildIdOffset = image.buildIdOffset;
+                run->buildIdBytes = image.buildIdBytes;
                 run->mapping = image.mapping;
                 // Its memory: the image's reference goes with the image (at its end, or the
                 // caller's on a failed start); its own stays until the record goes, after the last
@@ -2406,7 +2414,8 @@ namespace {
 
         // The profiler's view of a task: its program's image (devplan/sysmon.md §9). Called from
         // the tick hook, for the task it interrupted, which is running and so its process alive.
-        bool IRAM_ATTR locateProgram(void *task, uint32_t &pc, uint32_t &base, uint32_t &bytes, const char *&name) {
+        bool IRAM_ATTR locateProgram(void *task, uint32_t &pc, uint32_t &base, uint32_t &bytes, const char *&name,
+                                     const uint8_t *&buildId, uint32_t &buildIdBytes) {
                 auto          *owner = static_cast<ProcessOwner *>(TaskOwner::of(task));
                 const Running *run = owner != nullptr ? owner->run : nullptr;
                 if (run == nullptr || run->image == nullptr) return false;
@@ -2419,6 +2428,10 @@ namespace {
                 base = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(run->image));
                 bytes = static_cast<uint32_t>(run->imageBytes);
                 name = run->command;
+                const bool hasId = run->buildIdBytes != 0 && run->buildIdOffset <= run->imageBytes &&
+                                   run->buildIdBytes <= run->imageBytes - run->buildIdOffset;
+                buildId = hasId ? run->image + run->buildIdOffset : nullptr;
+                buildIdBytes = hasId ? run->buildIdBytes : 0;
                 return true;
         }
 

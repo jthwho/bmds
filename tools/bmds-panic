@@ -16,12 +16,14 @@
 #
 # Several logs are read as one, oldest first (system.log.1 system.log: a rotation may have put the
 # boot's start in the older file). The ELF is build/bmds.elf unless given; it must be the build
-# that panicked: the boot banner before each panic names that build (`BMDS 0.1.0 (build 0.1.0+1e6d95ac, ...`), and a different
+# that panicked: the boot banner before each panic names that build (`BMDS 0.1.0 (build 0.1.0+1e6d95ac, ...`;
+# since 2026-11-15 to the byte, `elf` and its SHA-256's first 8 bytes), and a different
 # ELF is warned about (its addresses would name the wrong functions). Only the last panic is
 # decoded unless --all. Run in ESP-IDF's environment (export.sh): it needs IDF's Python
 # (esp_idf_panic_decoder) and riscv32-esp-elf-gdb.
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -32,26 +34,31 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PANIC = re.compile(r"\bE panic: ?(.*)$")
 BANNER = re.compile(r"\bI BMDS \S+ \(build ([^,]+),")
+# Since 2026-11-15 the banner ends with the firmware ELF's SHA-256, its first 8 bytes: the exact
+# build (devplan/debuginfo.md §3).
+BANNER_ELF = re.compile(r"\bI BMDS \S+ \(build .*, elf ([0-9a-f]{16})\)")
 # esp_app_desc_t: magic, secure_version, reserv1[2], then version[32].
 APP_DESC_VERSION = slice(16, 48)
 
 
 def panics(lines):
         """Each run of panic lines, with the build named by the last banner before it."""
-        found, block, build = [], [], None
+        found, block, build, sha = [], [], None, None
         for line in lines:
                 m = PANIC.search(line)
                 if m:
                         block.append(m.group(1))
                         continue
                 if block:
-                        found.append((build, block))
+                        found.append((build, sha, block))
                         block = []
                 b = BANNER.search(line)
                 if b:
                         build = b.group(1)
+                        e = BANNER_ELF.search(line)
+                        sha = e.group(1) if e else None
         if block:
-                found.append((build, block))
+                found.append((build, sha, block))
         return found
 
 
@@ -100,11 +107,15 @@ def main():
                 found = found[-1:]
 
         version = elf_version(args.elf)
+        with open(args.elf, "rb") as f:
+                elf_sha = hashlib.sha256(f.read()).hexdigest()[:16]
         decoder = PanicOutputDecoder("riscv32-esp-elf-", args.elf, "esp32p4")
-        for build, block in found:
+        for build, sha, block in found:
                 print(f"=== {block[0]}")
                 print(f"    build {build or '(no banner before it)'}; ELF {version or '(unknown)'}")
-                if build and version and build != version:
+                # The SHA says exactly; the version string (older banners) only roughly.
+                other = (sha != elf_sha) if sha else (build and version and build != version)
+                if other:
                         print(f"    warning: {os.path.relpath(args.elf)} is another build: the names below may be wrong")
                 text = "\n".join(block) + "\n"
                 try:

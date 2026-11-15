@@ -344,7 +344,9 @@ class Process {
                 int32_t      path(const char *path, StringView &out) const;
                 FileHandle::Ptr handleOf(int32_t fd) const; // a reference to fd's handle, or none
 
-                mutable Mutex _lock;              // the fds, the memory blocks, the directories
+                mutable Mutex _lock;              // the fds, the memory blocks
+                mutable Mutex _dirLock;           // the directories (held while one reads: not _lock, which
+                                                  // a served filesystem's server needs for its own fd)
                 Mutex         _pathLock;          // _cwd while a path call uses it
                 Semaphore     _consoleTurn{1, 1}; // the console's input (_line and the modes' use of it)
 

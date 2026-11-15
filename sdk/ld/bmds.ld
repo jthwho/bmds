@@ -49,6 +49,12 @@ SECTIONS
                 LONG(__bmds_program_flags) /* flags: BMDS_PROGRAM_* */
         } :image :note
 
+        /* The build's id (-Wl,--build-id): which build this file is, so its debug information
+           is found and never another's (devplan/debuginfo.md §3). Loaders skip the note. */
+        .note.gnu.build-id : ALIGN(4) {
+                KEEP(*(.note.gnu.build-id))
+        } :image :note
+
         .rodata : {
                 *(.rodata .rodata.* .gnu.linkonce.r.* .srodata .srodata.*)
         } :image

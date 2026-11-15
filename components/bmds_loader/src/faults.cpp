@@ -257,6 +257,21 @@ namespace {
                 return;
         }
 
+        // Which build ran (its GNU build-id, devplan/debuginfo.md §3): the file may have been
+        // replaced since, and its debug information is found by this.
+        void reportBuild(const char *who, const Running &run) {
+                if (run.buildIdBytes == 0 || run.image == nullptr || run.buildIdOffset > run.imageBytes ||
+                    run.buildIdBytes > run.imageBytes - run.buildIdOffset)
+                        return;
+                char           hex[2 * 32 + 1];
+                const uint8_t *id = run.image + run.buildIdOffset;
+                size_t         n = 0;
+                for (uint32_t i = 0; i < run.buildIdBytes && i < 32; ++i)
+                        n += size_t(std::snprintf(hex + n, sizeof(hex) - n, "%02x", id[i]));
+                bmdsErr("  %s: build %s", who, hex);
+                return;
+        }
+
         // The registers, eight to a line (x0's place is the PC's).
         void reportRegisters(const char *who, const ProgramThread::Fault &f) {
                 static constexpr const char *Names[32] = {"pc", "ra", "sp",  "gp",  "tp", "t0", "t1", "t2",
@@ -331,6 +346,7 @@ void bmds_fault_exit(void) {
                 bmdsErr("%s[%s]: %s at %s, called from %s, address 0x%08x", path, who, name, pc, ra,
                         static_cast<unsigned>(f.value));
         }
+        reportBuild(who, run);
         reportTrace(who, t, run, f);
         reportRegisters(who, f);
         t.endProcess(ProcessTable::killedStatus(f.signal));

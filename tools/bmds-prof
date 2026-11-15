@@ -11,7 +11,8 @@
 #   ssh root@bmds0 'prof start'; ...; ssh root@bmds0 'prof stop; prof dump' > prof.txt
 #   tools/bmds-prof prof.txt [--task NAME] [--top N] [--program NAME=ELF]...
 #
-# The kernel's samples resolve against build/bmds.elf; a program's against its unstripped ELF,
+# The kernel's samples resolve against build/bmds.elf; a program's against its unstripped ELF of the
+# build that ran (the dump's build-id; another build's is refused, devplan/debuginfo.md §3),
 # found in the firmware's ROM build (build/rom/dist), the distribution's (build-dist) or the SDK
 # examples (build-host/sdk-examples), or given with --program (NAME: the module's last path part).
 # Samples in an interrupt handler ("(isr)") and the idle tasks are left out of the busy ones.
@@ -27,6 +28,9 @@ import shutil
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import bmdself  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -39,19 +43,6 @@ def addr2line():
     if not found:
         sys.exit("bmds-prof: riscv32-esp-elf-addr2line not found (run ESP-IDF's export.sh)")
     return found[-1]
-
-
-def find_program(name):
-    """The unstripped ELF of a program the board ran as NAME (a link's target followed)."""
-    for dist in ("build/rom/dist", "build-dist"):
-        for link in glob.glob(os.path.join(ROOT, dist, "stage", "*", "bin", name)):
-            target = os.path.basename(os.path.realpath(link))
-            package = link.split(os.sep)[-3]
-            for top, _, files in os.walk(os.path.join(ROOT, dist, "build", package)):
-                if target in files:
-                    return os.path.join(top, target)
-    example = os.path.join(ROOT, "build-host", "sdk-examples", name + ".elf")
-    return example if os.path.exists(example) else None
 
 
 def resolve(elf, addresses):
@@ -82,7 +73,9 @@ def main():
         for line in f:
             fields = line.split()
             if line.startswith("# module") and len(fields) >= 6:
-                modules[int(fields[2])] = (int(fields[3], 16), int(fields[4]), fields[5])
+                # A seventh field, when there: the program's build-id (devplan/debuginfo.md §3).
+                modules[int(fields[2])] = (int(fields[3], 16), int(fields[4]), fields[5],
+                                           fields[6] if len(fields) >= 7 else None)
             elif len(fields) == 5 and not line.startswith("#"):
                 # `prof stop`'s summary ("N samples, M busy (P%)") has five fields too: not a sample.
                 try:
@@ -95,7 +88,7 @@ def main():
 
     # Each address as (module, offset); kernel addresses stay absolute.
     def place(address, module):
-        base, size, _ = modules.get(module, (0, 0, "kernel"))
+        base, size, _, _ = modules.get(module, (0, 0, "kernel", None))
         if module != 0 and base <= address < base + size:
             return module, address - base
         return 0, address
@@ -111,7 +104,12 @@ def main():
             elf = args.kernel
         else:
             short = os.path.basename(modules[m][2])
-            elf = given.get(short) or find_program(short)
+            elf = given.get(short) or bmdself.find_program(short)
+            # Another build's ELF would name the wrong functions: refused.
+            if elf is not None and not bmdself.matches(elf, modules[m][3]):
+                print("bmds-prof: %s is build %s, %s ran build %s: not used" %
+                      (elf, bmdself.build_id(elf) or "unknown", modules[m][2], modules[m][3]), file=sys.stderr)
+                elf = None
             if elf is None:
                 print("bmds-prof: no ELF for %s (give --program %s=ELF)" % (modules[m][2], short),
                       file=sys.stderr)

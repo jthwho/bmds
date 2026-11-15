@@ -37,6 +37,11 @@
  *   isn't allocated (not loaded: the kernel reads it from the file when
  *   something shows the program, a launcher or a window's title bar).
  *   `bmds_add_program(... ICONS a.png b.png)` adds them.
+ * - Optionally, a GNU build-id (appended 2026-11-15): the note the linker's
+ *   `--build-id` makes (name "GNU", type 3), in the PT_NOTE segment. It
+ *   changes nothing about loading; a fault's report names the build by it,
+ *   and its debug information is found by it (devplan/debuginfo.md).
+ *   `bmds_add_program` and `bmds-cc` add it.
  * - The entry point is `_start` (see bmds/sys.h for the startup state).
  * - Code uses the medany model (PC-relative addressing); libraries built
  *   for medlow (absolute `lui` addressing, like the toolchain's prebuilt libraries)

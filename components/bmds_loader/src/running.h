@@ -249,6 +249,8 @@ struct Running final : ProcessOwner, ProcessControl {
                 int32_t              pid = 0;
                 uint8_t             *image = nullptr;
                 size_t               imageBytes = 0;    // its size (the profiler's modules)
+                uint32_t             buildIdOffset = 0; // its build-id in the image (debuginfo.md §3)
+                uint32_t             buildIdBytes = 0;  // 0: none
                 ImageWindow::Mapping mapping;           // its shared pages, if mapped (§14.2)
                 UserMemory          *memory =
                         nullptr; // U-mode (protection.md §15): its memory, a reference until the record goes

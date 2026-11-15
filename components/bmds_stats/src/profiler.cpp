@@ -47,7 +47,8 @@ namespace {
         }
 
         // The module of an image at @p base, added if new (a race may add one twice: harmless).
-        uint8_t IRAM_ATTR moduleOf(uint32_t base, uint32_t bytes, const char *name) {
+        uint8_t IRAM_ATTR moduleOf(uint32_t base, uint32_t bytes, const char *name, const uint8_t *buildId,
+                                   uint32_t buildIdBytes) {
                 const size_t used = moduleUsed.load(std::memory_order_acquire);
                 for (size_t i = 1; i < used && i < Profiler::MaxModules; ++i)
                         if (moduleBases[i].load(std::memory_order_acquire) == base) return static_cast<uint8_t>(i);
@@ -56,6 +57,9 @@ namespace {
                 modules[i].base = base;
                 modules[i].bytes = bytes;
                 copyName(modules[i].name, name, sizeof(modules[i].name), true);
+                const uint32_t keep = buildIdBytes < Profiler::BuildIdBytes ? buildIdBytes : Profiler::BuildIdBytes;
+                for (uint32_t b = 0; b < keep; ++b) modules[i].buildId[b] = buildId[b];
+                modules[i].buildIdBytes = uint8_t(keep);
                 moduleBases[i].store(base, std::memory_order_release);
                 return static_cast<uint8_t>(i);
         }
@@ -83,10 +87,12 @@ namespace {
                 s.pc = frame[FramePc];
                 s.ra = frame[FrameRa];
                 copyName(s.task, pcTaskGetName(task), sizeof(s.task), false);
-                uint32_t    base = 0, bytes = 0;
-                const char *name = nullptr;
-                const bool  inProgram = locator != nullptr && locator(task, s.pc, base, bytes, name) && base != 0;
-                s.module = inProgram ? moduleOf(base, bytes, name) : 0;
+                uint32_t       base = 0, bytes = 0, idBytes = 0;
+                const char    *name = nullptr;
+                const uint8_t *id = nullptr;
+                const bool     inProgram =
+                        locator != nullptr && locator(task, s.pc, base, bytes, name, id, idBytes) && base != 0;
+                s.module = inProgram ? moduleOf(base, bytes, name, id, idBytes) : 0;
                 return;
         }
 
@@ -104,7 +110,7 @@ Error Profiler::start(uint32_t coreMask) {
                 samples = static_cast<Sample *>(Memory::alloc(MemSpace::Psram, MaxSamples * sizeof(Sample)));
         if (samples == nullptr) return Error::NoMem;
         taken.store(0);
-        modules[0] = Module{0, 0, "kernel"};
+        modules[0] = Module{0, 0, "kernel", {}, 0};
         for (size_t i = 1; i < MaxModules; ++i) moduleBases[i].store(0);
         moduleUsed.store(1);
         for (uint32_t core = 0; core < portNUM_PROCESSORS; ++core) {

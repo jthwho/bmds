@@ -9,6 +9,7 @@
  * tools/bmds-prof): keep the fields and their order, and add new ones only at the end.
  */
 
+#include <cstdio>
 #include <cstring>
 #include <freertos/FreeRTOS.h>
 #include <bmds/command.h>
@@ -99,9 +100,14 @@ namespace {
                         }
                         for (size_t i = 0; i < Profiler::moduleCount(); ++i) {
                                 const Profiler::Module &m = Profiler::module(i);
-                                ctx.printf("# module %u %08lx %lu %s\n", unsigned(i),
+                                // The build-id last (appended: devplan/debuginfo.md §3), when it has one.
+                                char build[2 * Profiler::BuildIdBytes + 2] = "";
+                                for (size_t b = 0, n = 0; b < m.buildIdBytes; ++b)
+                                        n += size_t(std::snprintf(build + n, sizeof(build) - n,
+                                                                  b == 0 ? " %02x" : "%02x", m.buildId[b]));
+                                ctx.printf("# module %u %08lx %lu %s%s\n", unsigned(i),
                                            static_cast<unsigned long>(m.base), static_cast<unsigned long>(m.bytes),
-                                           m.name);
+                                           m.name, build);
                         }
                         const size_t n = Profiler::sampleCount();
                         for (size_t i = 0; i < n && !ctx.isInterrupted(); ++i) {

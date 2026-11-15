@@ -155,6 +155,8 @@ function(bmds_add_program name)
         target_link_options(${name} PRIVATE
                 # Linked at 0 with its relocations kept: the kernel moves it.
                 -static -nostdlib -L${BMDS_LIBC_LIB} -u _start -Wl,--emit-relocs
+                # Which build it is, for its debug file (devplan/debuginfo.md §3).
+                -Wl,--build-id=sha1
                 -T ${BMDS_SDK_DIR}/ld/bmds.ld
                 -Wl,--no-relax -Wl,--gc-sections
                 # The segment starts on a 512-byte boundary in the file: the

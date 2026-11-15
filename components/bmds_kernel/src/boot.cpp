@@ -77,7 +77,11 @@ namespace {
 
         void printBanner() {
                 const SystemInfo info = System::info();
-                bmdsInfo("BMDS %s (build %s, ESP-IDF %s)", info.bmdsVersion, info.buildVersion, info.idfVersion);
+                // elf: the firmware's ELF SHA-256, its first 8 bytes: which build exactly, for its debug
+                // file (devplan/debuginfo.md §3) and a panic recovered into the log.
+                const uint8_t *e = info.imageSha256;
+                bmdsInfo("BMDS %s (build %s, ESP-IDF %s, elf %02x%02x%02x%02x%02x%02x%02x%02x)", info.bmdsVersion,
+                         info.buildVersion, info.idfVersion, e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7]);
                 bmdsInfo("Board: %s", info.boardName);
                 bmdsInfo("Chip: ESP32-P4 rev v%u.%u, %u cores @ %u MHz", info.chipRevMajor, info.chipRevMinor,
                          info.cores, info.cpuMhz);

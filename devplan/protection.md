@@ -825,5 +825,22 @@ ELFs came out byte for byte the same with it. Distribution packages (`bmds-cc`) 
 card copies need checking for stripping first.
 
 **Open:** `progtest netfs` takes 60 s in both modes, twice `netfs/timeout`, and passes: a request
-the test's server never answers. `umem`'s realloc to 1.2 MB failed once in a full run right after a
+the test's server never answers (§23: a lock). `umem`'s realloc to 1.2 MB failed once in a full run right after a
 window stress test (not in ten repeats): a NULL from a window crowded at that moment.
+
+## 23. `netfs`'s minute; debug information for the distribution (2026-11-15)
+
+**A served directory was read under the process's lock.** `Process::readdir()` held `_lock` (the
+fds, the memory blocks and the directories) while the directory fetched its entries, and a
+directory of a filesystem the program serves itself is fetched by asking its server: a thread of
+the same process, whose `read()` of its fd takes `_lock` to find the handle. The request waited out
+`netfs/timeout` (30 s), twice (the first entries, then the end), and the test passed anyway: "."
+and ".." are made up, and the end came back as the timeout's error. Found by timing each line of
+`files` run through it. The directories now have a lock of their own (`_dirLock`, still held while
+one reads, so another thread's `closedir()` waits): `progtest netfs` 60 s → 0.3 s, both modes.
+
+**`-g` in `bmds-cc`** too, so the distribution's unstripped builds (BusyBox's `busybox_unstripped`,
+`dropbearmulti`, `angel` ...) have files and lines; `bmds-dist` strips every staged program for the
+card. Rebuilt with it: the ROM's five programs byte for byte the same; BusyBox the same but for the
+build date in its version string (`.text` and `.data` equal). `bmds-fault` and `bmds-prof` take a
+build's `*_unstripped` file over its stripped one (`ls_main at coreutils/ls.c:1065`).

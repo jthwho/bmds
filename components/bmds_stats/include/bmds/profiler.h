@@ -53,20 +53,27 @@ class Profiler {
                 };
 
                 /** @brief A module: the kernel, or a program's image. */
+                /** @brief The most of a program's build-id a module keeps (sha1's). */
+                static constexpr size_t BuildIdBytes = 20;
+
                 struct Module {
                                 uint32_t base;                  ///< Its image's address (0: the kernel).
                                 uint32_t bytes;                 ///< Its image's size.
                                 char     name[ModuleNameBytes]; ///< Its program ("kernel" for 0).
+                                uint8_t  buildId[BuildIdBytes]; ///< Its build-id (`devplan/debuginfo.md` §3)...
+                                uint8_t  buildIdBytes;          ///< ...and how much of it (0: none).
                 };
 
                 /**
                  * @brief Gives the program image task @p task runs in, and corrects @p pc, the
                  *        sampled PC, if it isn't where the program is (in U-mode the frame's is the
-                 *        trap's way back: the program's own is the loader's to know).
+                 *        trap's way back: the program's own is the loader's to know). @p buildId and
+                 *        @p buildIdBytes: its build-id in its image (0 bytes: none).
                  * @return false for a kernel task.
                  * @isrsafe Called from the tick hook: plain reads only.
                  */
-                using Locator = bool (*)(void *task, uint32_t &pc, uint32_t &base, uint32_t &bytes, const char *&name);
+                using Locator = bool (*)(void *task, uint32_t &pc, uint32_t &base, uint32_t &bytes, const char *&name,
+                                         const uint8_t *&buildId, uint32_t &buildIdBytes);
 
                 /** @brief Sets the locator (the loader's, at boot). */
                 static void setLocator(Locator locator);

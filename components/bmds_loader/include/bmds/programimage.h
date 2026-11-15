@@ -92,6 +92,10 @@ namespace ProgramImage {
                         uint32_t writableOffset = 0;
                         /** A bit for each `SharePageBytes` page that a patch's word touches. */
                         uint32_t patchedPages[PatchedPageWords] = {};
+                        /** Its GNU build-id (`devplan/debuginfo.md` §3): where it is in the image, and
+                            its bytes (0: none). */
+                        uint32_t buildIdOffset = 0;
+                        uint32_t buildIdBytes = 0;
         };
 
         /** @brief The pages of an image of @p imageSize bytes (the last may be partial). */

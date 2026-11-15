@@ -334,7 +334,7 @@ Error Process::setCwd(StringView cwd) {
 }
 
 int Process::openDirectories() const {
-        Mutex::Locker locker(_lock, WaitForever);
+        Mutex::Locker locker(_dirLock, WaitForever);
         int           n = 0;
         for (const Directory &d : _dirs) n += d.isOpen() ? 1 : 0;
         return n;
@@ -1354,7 +1354,7 @@ int32_t Process::opendir(const char *path) {
                 opened = Vfs::openDirectory(p, vfs());
         }
         if (opened.isError()) return fsErrno(opened.error());
-        Mutex::Locker locker(_lock, WaitForever);
+        Mutex::Locker locker(_dirLock, WaitForever);
         int           slot = 0;
         while (slot < MaxDirectories && _dirs[slot].isOpen()) ++slot;
         if (slot == MaxDirectories) return -BMDS_EMFILE; // another thread took the last
@@ -1366,8 +1366,10 @@ int32_t Process::readdir(int32_t dir, bmds_stat_t *info, char *name, uint32_t si
         if (name == nullptr && size != 0) return -BMDS_EFAULT;
         if (!canWrite(name, size) || (info != nullptr && !canRead(info, sizeof(uint32_t)))) return -BMDS_EFAULT;
         if (info != nullptr && info->size < sizeof(uint32_t)) return -BMDS_EINVAL;
-        // Held while it reads: another thread's closedir() waits.
-        Mutex::Locker locker(_lock, WaitForever);
+        // Held while it reads: another thread's closedir() waits. Not _lock: a directory of a
+        // filesystem this program serves is read by asking its server, a thread of this process
+        // whose read() of its fd takes _lock (it waited out netfs/timeout, devplan/protection.md §23).
+        Mutex::Locker locker(_dirLock, WaitForever);
         if (dir < 0 || dir >= MaxDirectories || !_dirs[dir].isOpen()) return -BMDS_EBADF;
         auto [fi, err] = _dirs[dir].next();
         if (err == Error::EndOfFile) return 0;
@@ -1388,7 +1390,7 @@ int32_t Process::readdir(int32_t dir, bmds_stat_t *info, char *name, uint32_t si
 }
 
 int32_t Process::closedir(int32_t dir) {
-        Mutex::Locker locker(_lock, WaitForever);
+        Mutex::Locker locker(_dirLock, WaitForever);
         if (dir < 0 || dir >= MaxDirectories || !_dirs[dir].isOpen()) return -BMDS_EBADF;
         _dirs[dir].close();
         return 0;

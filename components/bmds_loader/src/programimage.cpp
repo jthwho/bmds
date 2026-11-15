@@ -65,6 +65,8 @@ namespace {
         constexpr uint32_t MaxPhdrs = 16;
         constexpr uint32_t MaxShdrs = 1024;
         constexpr uint32_t MaxNoteBytes = 512;
+        constexpr uint32_t NtGnuBuildId = 3;     // the linker's --build-id note
+        constexpr uint32_t MaxBuildIdBytes = 32; // sha1's 20, md5's 16, a uuid's 16
         // A symbol table up to this size is read into memory once (one
         // sequential read), instead of a scattered read per relocation.
         constexpr uint32_t MaxCachedSymtabBytes = 512 * 1024;
@@ -236,6 +238,11 @@ namespace {
                                                                             "unknown program flags", note.flags);
                                                         info.flags = note.flags;
                                                         haveNote = true;
+                                                } else if (namesz == 4 && std::memcmp(notes + name, "GNU", 4) == 0 &&
+                                                           type == NtGnuBuildId && descsz != 0 &&
+                                                           descsz <= MaxBuildIdBytes) {
+                                                        info.buildIdOffset = uint32_t(ph.vaddr + desc);
+                                                        info.buildIdBytes = descsz;
                                                 }
                                                 at = static_cast<uint32_t>(next);
                                         }

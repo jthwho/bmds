@@ -8,7 +8,8 @@
 # Names the stack traces of program faults in a system log (devplan/protection.md §21). A program
 # that faults is reported in three parts: the fault ("PATH[PID]: Segmentation fault at +0x1234,
 # called from +0x1200, ..."), its trace ("  PID: trace +0x1234 +0x1200 ...": the PC, then what
-# looks like a return address on its stack) and its registers. Addresses written "+0x..." are
+# looks like a return address on its stack), the build that ran (its build-id, devplan/debuginfo.md
+# §3: an ELF of another build is refused) and its registers. Addresses written "+0x..." are
 # offsets in the program's image, which are its ELF's addresses: this resolves them with
 # addr2line (functions; files and lines too for a program built with -g) against the program's
 # unstripped ELF, found as bmds-prof finds it (the firmware's ROM build, the distribution's, the
@@ -30,9 +31,13 @@ import shutil
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import bmdself  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAULT = re.compile(r"\bE (\S+)\[(\d+(?:/\d+)?)\]: (.+? at \S+, called from .*)$")
 TRACE = re.compile(r"\bE   (\d+(?:/\d+)?): trace((?: \S+)+)\s*$")
+BUILD = re.compile(r"\bE   (\d+(?:/\d+)?): build ([0-9a-f]+)\s*$")
 REGS = re.compile(r"\bE   (\d+(?:/\d+)?):((?: \w+ [0-9a-f]{8})+)\s*$")
 
 
@@ -45,23 +50,6 @@ def addr2line():
     if not found:
         sys.exit("bmds-fault: riscv32-esp-elf-addr2line not found (run ESP-IDF's export.sh)")
     return found[-1]
-
-
-def find_program(name):
-    """The unstripped ELF of a program the board ran as NAME (a link's target followed)."""
-    for dist in ("build/rom/dist", "build-dist"):
-        for link in glob.glob(os.path.join(ROOT, dist, "stage", "*", "bin", name)):
-            target = os.path.basename(os.path.realpath(link))
-            package = link.split(os.sep)[-3]
-            for top, _, files in os.walk(os.path.join(ROOT, dist, "build", package)):
-                if target in files:
-                    return os.path.join(top, target)
-    stem = name[:-4] if name.endswith(".elf") else name
-    for candidate in (stem + ".debug.elf", stem + ".elf"):
-        example = os.path.join(ROOT, "build-host", "sdk-examples", candidate)
-        if os.path.exists(example):
-            return example
-    return None
 
 
 def resolve(elf, offsets):
@@ -95,9 +83,14 @@ def faults(lines):
         line = SOURCE.sub("", line.rstrip("\n"))
         m = FAULT.search(line)
         if m:
-            found.append({"path": m.group(1), "who": m.group(2), "what": m.group(3), "trace": [], "regs": []})
+            found.append({"path": m.group(1), "who": m.group(2), "what": m.group(3), "trace": [], "regs": [],
+                          "build": None})
             continue
         if not found:
+            continue
+        m = BUILD.search(line)
+        if m and m.group(1) == found[-1]["who"]:
+            found[-1]["build"] = m.group(2)
             continue
         m = TRACE.search(line)
         if m and m.group(1) == found[-1]["who"]:
@@ -130,8 +123,14 @@ def main():
         sys.exit("bmds-fault: no program fault in the log")
     for fault in (found if args.all else found[-1:]):
         name = os.path.basename(fault["path"])
-        elf = given.get(name) or find_program(name)
+        elf = given.get(name) or bmdself.find_program(name)
         print("%s[%s]: %s" % (fault["path"], fault["who"], fault["what"]))
+        if fault["build"]:
+            print("  build %s" % fault["build"])
+        # Another build's ELF would name the wrong functions: refused (devplan/debuginfo.md §3).
+        if elf is not None and not bmdself.matches(elf, fault["build"]):
+            print("  (%s is build %s, not this one: not used)" % (elf, bmdself.build_id(elf) or "unknown"))
+            elf = None
         offsets = [int(a[1:], 16) for a in fault["trace"] if a.startswith("+0x")]
         names = resolve(elf, offsets) if elf else {}
         if elf is None:
