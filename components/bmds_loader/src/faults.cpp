@@ -30,6 +30,8 @@
 
 #include "running.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 
@@ -113,10 +115,18 @@ namespace {
                 }
                 ProgramThread::Fault &f = t->fault;
                 f.cause = cause;
-                f.pc = user ? t->user->pc : static_cast<uint32_t>(frame.mepc);
                 f.value = static_cast<uint32_t>(frame.mtval);
-                f.ra = static_cast<uint32_t>(frame.ra);
-                f.sp = user ? t->user->sp : static_cast<uint32_t>(frame.sp);
+                // The frame begins with mepc, then x1-x31 in order (rvruntime-frames.h). From U-mode,
+                // its PC, SP and gp are in the block (the entry moved to the kernel's).
+                static_assert(offsetof(RvExcFrame, ra) == 4 && offsetof(RvExcFrame, t6) == 31 * 4,
+                              "the frame holds the registers in order");
+                const long *regs = &frame.mepc;
+                for (unsigned i = 0; i < 32; ++i) f.regs[i] = static_cast<uint32_t>(regs[i]);
+                if (user) {
+                        f.regs[0] = t->user->pc;
+                        f.regs[2] = t->user->sp;
+                        f.regs[3] = t->user->gp;
+                }
                 f.signal = signal;
                 f.user = user;
                 // From here it ends itself: a killer that suspends it now leaves it to (the
@@ -163,13 +173,105 @@ namespace {
                 }
         }
 
+        bool inImage(const Running &run, uint32_t address) {
+                const uintptr_t base = reinterpret_cast<uintptr_t>(run.image);
+                return base != 0 && address >= base && address < base + run.imageBytes;
+        }
+
         // "+0x1234" inside the program's image, else the absolute address.
         void describe(char *out, size_t size, const Running &run, uint32_t address) {
-                const uintptr_t base = reinterpret_cast<uintptr_t>(run.image);
-                if (base != 0 && address >= base && address < base + run.imageBytes) {
-                        std::snprintf(out, size, "+0x%x", static_cast<unsigned>(address - base));
+                if (inImage(run, address)) {
+                        std::snprintf(out, size, "+0x%x",
+                                      static_cast<unsigned>(address - reinterpret_cast<uintptr_t>(run.image)));
                 } else {
                         std::snprintf(out, size, "0x%08x", static_cast<unsigned>(address));
+                }
+                return;
+        }
+
+        // True if @p r could be a return address in the program: in its image, just past a call that
+        // links ra (jal/jalr ra, or c.jal/c.jalr).
+        bool isReturn(const Running &run, uint32_t r) {
+                if ((r & 1u) != 0 || !inImage(run, r - 4) || !inImage(run, r - 1)) return false;
+                const auto    *h = reinterpret_cast<const uint16_t *>(r);
+                const uint32_t insn = h[-2] | (uint32_t(h[-1]) << 16);
+                if ((insn & 3u) == 3u) {
+                        if ((insn & 0xfffu) == 0x0efu) return true;   // jal ra, ...
+                        if ((insn & 0x7fffu) == 0x00e7u) return true; // jalr ra, ...
+                }
+                const uint16_t c = h[-1];
+                if ((c & 0xf07fu) == 0x9002u && (c & 0x0f80u) != 0) return true; // c.jalr rs1
+                return (c & 0xe003u) == 0x2001u;                                 // c.jal (RV32)
+        }
+
+        constexpr unsigned TraceDepth = 16;        // return addresses reported
+        constexpr uint32_t TraceScanBytes = 16384; // of the stack, from SP up
+
+        // The stack the program's code ran on: [lo, hi).
+        void stackOf(const ProgramThread &t, const ProgramThread::Fault &f, uintptr_t &lo, uintptr_t &hi) {
+                if (f.user) {
+                        lo = t.userStackLo;
+                        hi = t.userStackHi;
+                } else {
+                        lo = t.task.stackBottom();
+                        hi = t.entrySp;
+                }
+                return;
+        }
+
+        // The log's stack trace: the PC, then what looks like a return address on the stack, from SP
+        // up. Programs keep no frame pointer (-fomit-frame-pointer), so this is a scan: an address
+        // left by a call that has returned may show up too. tools/bmds-fault names them. Lines go
+        // "  WHO: trace ..." (a log line is 160 bytes), eight addresses to a line.
+        void reportTrace(const char *who, const ProgramThread &t, const Running &run, const ProgramThread::Fault &f) {
+                uint32_t  found[TraceDepth];
+                unsigned  n = 0;
+                uintptr_t lo = 0, hi = 0;
+                stackOf(t, f, lo, hi);
+                found[n++] = f.pc();
+                // ra first: a leaf function never stores it.
+                if (isReturn(run, f.ra())) found[n++] = f.ra();
+                bool            skippedRa = false;
+                uintptr_t       a = (std::max<uintptr_t>(f.sp(), lo) + 3u) & ~uintptr_t(3);
+                const uintptr_t end = std::min<uintptr_t>(hi, a + TraceScanBytes);
+                for (; a + 4 <= end && n < TraceDepth; a += 4) {
+                        const uint32_t w = *reinterpret_cast<const uint32_t *>(a);
+                        // ra's own saved copy once (it is listed already); a recursion's repeats stay.
+                        if (w == f.ra() && !skippedRa) {
+                                skippedRa = true;
+                                continue;
+                        }
+                        if (isReturn(run, w)) found[n++] = w;
+                }
+                for (unsigned row = 0; row < n; row += 8) {
+                        char   line[8 * 12 + 1];
+                        size_t used = 0;
+                        for (unsigned i = row; i < n && i < row + 8; ++i) {
+                                char one[16];
+                                describe(one, sizeof(one), run, found[i]);
+                                const int w = std::snprintf(line + used, sizeof(line) - used, " %s", one);
+                                if (w > 0 && size_t(w) < sizeof(line) - used) used += size_t(w);
+                        }
+                        bmdsErr("  %s: trace%s", who, line);
+                }
+                return;
+        }
+
+        // The registers, eight to a line (x0's place is the PC's).
+        void reportRegisters(const char *who, const ProgramThread::Fault &f) {
+                static constexpr const char *Names[32] = {"pc", "ra", "sp",  "gp",  "tp", "t0", "t1", "t2",
+                                                          "s0", "s1", "a0",  "a1",  "a2", "a3", "a4", "a5",
+                                                          "a6", "a7", "s2",  "s3",  "s4", "s5", "s6", "s7",
+                                                          "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6"};
+                for (unsigned row = 0; row < 32; row += 8) {
+                        char   line[8 * 14 + 1];
+                        size_t used = 0;
+                        for (unsigned i = row; i < row + 8; ++i) {
+                                const int w = std::snprintf(line + used, sizeof(line) - used, " %s %08x", Names[i],
+                                                            static_cast<unsigned>(f.regs[i]));
+                                if (w > 0 && size_t(w) < sizeof(line) - used) used += size_t(w);
+                        }
+                        bmdsErr("  %s:%s", who, line);
                 }
                 return;
         }
@@ -209,8 +311,8 @@ void bmds_fault_exit(void) {
         const ProgramThread::Fault f = t.fault;
         const Running             &run = *t.run;
         char                       pc[16], ra[16], who[24];
-        describe(pc, sizeof(pc), run, f.pc);
-        describe(ra, sizeof(ra), run, f.ra);
+        describe(pc, sizeof(pc), run, f.pc());
+        describe(ra, sizeof(ra), run, f.ra());
         if (t.tid != run.pid) {
                 std::snprintf(who, sizeof(who), "%d/%d", static_cast<int>(run.pid), static_cast<int>(t.tid));
         } else {
@@ -220,7 +322,7 @@ void bmds_fault_exit(void) {
         const char *path = run.path[0] != '\0' ? run.path : run.command;
         if (f.cause == ETS_ASSIST_DEBUG_INUM) {
                 const uintptr_t bottom = f.user ? t.userStackLo : t.task.stackBottom();
-                const unsigned  past = f.sp < bottom ? static_cast<unsigned>(bottom - f.sp) : 0;
+                const unsigned  past = f.sp() < bottom ? static_cast<unsigned>(bottom - f.sp()) : 0;
                 bmdsErr("%s[%s]: %s (stack overflow, %u bytes past the bottom) at %s, called from %s", path, who, name,
                         past, pc, ra);
         } else if (f.cause == ProgramFault::IllegalInstruction || f.cause == ProgramFault::Breakpoint) {
@@ -229,6 +331,8 @@ void bmds_fault_exit(void) {
                 bmdsErr("%s[%s]: %s at %s, called from %s, address 0x%08x", path, who, name, pc, ra,
                         static_cast<unsigned>(f.value));
         }
+        reportTrace(who, t, run, f);
+        reportRegisters(who, f);
         t.endProcess(ProcessTable::killedStatus(f.signal));
 }
 

@@ -21,6 +21,9 @@
 #include <bmds/sys.h>
 #include "usermodeoffsets.h"
 
+// usermode.S: where a trap from U-mode returns to M-mode (a U-mode frame's PC).
+extern "C" char bmds_user_return[];
+
 BMDS_NAMESPACE_BEGIN
 
 /**

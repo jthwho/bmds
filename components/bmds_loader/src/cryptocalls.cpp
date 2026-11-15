@@ -34,9 +34,14 @@ extern "C" int32_t bmds_k_crypto(const bmds_crypto_op_t *op) {
                 case BMDS_CRYPTO_SHA512: algorithm = Algorithm::Sha512; break;
                 default: return -BMDS_ENOTSUP;
         }
-        // A U-mode program's buffers where it could reach them (devplan/protection.md §16).
-        using bmds::detail::canRead;
-        using bmds::detail::canWrite;
+        // A U-mode program's buffers where it could reach them (devplan/protection.md §16). A
+        // missing one stays Crypto's -BMDS_EINVAL, as sys.h says: only one given is checked.
+        auto canRead = [](const void *p, size_t n) {
+                return p == nullptr || bmds::detail::canRead(p, n);
+        };
+        auto canWrite = [](void *p, size_t n) {
+                return p == nullptr || bmds::detail::canWrite(p, n);
+        };
         const bool   sha = Crypto::shaBlockBytes(algorithm) != 0;
         const bool   ecb = algorithm == Algorithm::AesEcbEncrypt || algorithm == Algorithm::AesEcbDecrypt;
         const size_t stateBytes = sha ? Crypto::shaStateBytes(algorithm) : ecb ? 0 : 16;

@@ -100,6 +100,9 @@ struct ProgramThread final : ProcessOwner {
                 volatile uint32_t    *hint = nullptr;    // the program's (sig_setup): a signal is due
                 volatile int32_t     *clear = nullptr;   // thread_clear(): 0 and a wake once it has ended
                 uint32_t              callEpoch = 0;     // U-mode: its call's (UserMemory::enterCall()), 0: none
+#if CONFIG_BMDS_STACK_PROBE
+                uint32_t stackDeepest = 0; // the probe's: the lowest its stack was seen used (an address)
+#endif
                 uint32_t              hintValue = UINT32_MAX; // what was last written to `hint`
                 // Writes a word the program gave the kernel to keep (hint, clear): U-mode's only
                 // while still the program's (devplan/protection.md §16).
@@ -143,12 +146,16 @@ struct ProgramThread final : ProcessOwner {
                 float                  *audioMirror = nullptr;
                 struct Fault {
                                 uint32_t cause = 0; // mcause, or the stack guard's interrupt
-                                uint32_t pc = 0;    // mepc
                                 uint32_t value = 0; // mtval: the address, for an access fault
-                                uint32_t ra = 0;    // the caller, for a jump to a bad address
-                                uint32_t sp = 0;    // SP at the trap: an overflow's depth
+                                // The program's registers at the trap: [0] its PC, [n] xn (ra, SP, ...),
+                                // for the report's register dump and stack trace.
+                                uint32_t regs[32] = {};
                                 int      signal = 0;
-                                bool     user = false; // in U-mode: sp is on userStack
+                                bool     user = false; // in U-mode: SP is on userStack
+
+                                uint32_t pc() const { return regs[0]; }
+                                uint32_t ra() const { return regs[1]; }
+                                uint32_t sp() const { return regs[2]; }
                 } fault; // written by the trap hook, read once by the exit it sends the thread to
 
                 /** @brief The calling task's record (a program thread's: system calls only). */
@@ -354,6 +361,11 @@ namespace StackProbe {
         void enter(ProgramThread &thread, uintptr_t top);
         /** @brief Finds how deep the call went below @p top and records it for @p slot. */
         void leave(ProgramThread &thread, uintptr_t top, const char *slot);
+        /**
+         * @brief Records how much of an ended U-mode thread's kernel stack (its FreeRTOS stack,
+         *        @p bytes) was ever used, under its program's name (`devplan/protection.md` §21).
+         */
+        void threadEnded(const ProgramThread &thread, size_t bytes);
 } // namespace StackProbe
 #endif
 

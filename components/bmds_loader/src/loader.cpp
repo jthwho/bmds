@@ -859,6 +859,9 @@ namespace {
                 // An audio device may change a raised thread's priority until it forgets it.
                 if (thread.realtime) AudioDevice::forgetTask(thread.task.handle());
                 RealTimeThreads::forget(thread);
+#if CONFIG_BMDS_STACK_PROBE
+                if (thread.run->space != nullptr) StackProbe::threadEnded(thread, KernelStackBytes);
+#endif
                 (void)thread.task.stop();
                 freeUserStack(thread);
                 Running &run = *thread.run;
@@ -2403,10 +2406,16 @@ namespace {
 
         // The profiler's view of a task: its program's image (devplan/sysmon.md §9). Called from
         // the tick hook, for the task it interrupted, which is running and so its process alive.
-        bool IRAM_ATTR locateProgram(void *task, uint32_t &base, uint32_t &bytes, const char *&name) {
+        bool IRAM_ATTR locateProgram(void *task, uint32_t &pc, uint32_t &base, uint32_t &bytes, const char *&name) {
                 auto          *owner = static_cast<ProcessOwner *>(TaskOwner::of(task));
                 const Running *run = owner != nullptr ? owner->run : nullptr;
                 if (run == nullptr || run->image == nullptr) return false;
+                // Interrupted in U-mode, the frame's PC is the trampoline's: the program's own is the
+                // one its entry kept (devplan/protection.md §14).
+                const ProgramThread *thread = owner->thread;
+                if (thread != nullptr && thread->user != nullptr &&
+                    pc == static_cast<uint32_t>(reinterpret_cast<uintptr_t>(bmds_user_return)))
+                        pc = thread->user->pc;
                 base = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(run->image));
                 bytes = static_cast<uint32_t>(run->imageBytes);
                 name = run->command;

@@ -533,8 +533,8 @@ R W X: the first try rounded the boundary down and `guisurface` faulted fetching
 **Tried on the board** (`programs/protect` set for the run only):
 - The compat corpus (v1), four times, once with three 12 MB uploads and a fault loop alongside.
 - Every `progtest faults` kind, main thread and second, 120 back to back, three times over; the
-  `progtest` suites the same in both modes but timings (`threads` fails at its posix_spawn from a
-  thread in both modes alike).
+  `progtest` suites the same in both modes but timings (`threads` failed at its posix_spawn from a
+  thread in both modes alike: run without its SELF argument, §21).
 - `progtest umem` (new): 9.4 and 19.1 MB of small and large blocks written and checked, a realloc
   grown to 1.2 MB, all freed and the PSRAM back; past what the window holds, `NULL` cleanly.
 - `blittest` (2D-DMA and CPU blits into surface buffers in the program's memory): 0 bad pixels;
@@ -632,8 +632,8 @@ last call older than them leaves (`Running::oldestCallEpoch()`). The counters ar
   into the call's own bookkeeping would take most of it back.
 - The hardware-watchdog resets of §15 (one more: a boot ended by the watchdog 46 s in, while the
   U-mode benchmarks ran right after an install). Not reproduced since, with the console captured.
-- A pre-existing hang when a program's second thread faults (§15), and `progtest threads`' failing
-  posix_spawn from a thread (both modes).
+- A pre-existing hang when a program's second thread faults (§15, fixed in §17), and `progtest
+  threads`' failing posix_spawn from a thread (both modes: no bug, §21).
 
 ## 17. The thread-fault hang and the watchdog resets (2026-11-14)
 
@@ -731,3 +731,61 @@ non-goal) say it is there.
 Checked on the board with the default, nothing set: the compat corpus (v1) passes; every fault
 kind, in the main thread and another, ends the program with its signal and leaves the system up;
 `hostile` 200/200, `freerace`, `umem`.
+
+## 21. Follow-ups: the threads "failure", kernel stacks, fault traces (2026-11-15)
+
+**`progtest threads`' posix_spawn from a thread was never a bug:** every failure came from running
+it without its SELF argument (or with a folder there), so the spawn had no program; with it, ten
+runs out of ten in both modes. The suites that start copies of themselves (`spawn`, `scripts`,
+`signals`, `poll`, `threads`, `rusage`, `timers`) now refuse without a regular file for SELF, and
+make it absolute (`spawn` changes its folder first).
+
+**Kernel stacks: 12 KB stays.** The stack probe (`CONFIG_BMDS_STACK_PROBE`) now also keeps, per
+program, the most of a U-mode thread's kernel stack (its FreeRTOS stack) ever used: system calls,
+trap frames, interrupts taken in U-mode and the FPU/PIE save areas, read from FreeRTOS's fill as
+the thread is reaped (the calls' own painting noted as it goes, `stackDeepest`). The workload:
+49 `progtest` suites, every fault kind on both threads, BusyBox (pipelines, bzip2, gzip, xz,
+tar, find, du, awk, sed, ls -R, hush, nslookup, wget), angel's font scripts, `blittest`,
+`guisurface`, CoreMark. 303 progtest threads, 312 BusyBox, 47 dropbear:
+
+| Program | Deepest of 12,288 |
+|---|---:|
+| angel | 7,472 |
+| progtest | 7,464 |
+| blittest | 4,624 |
+| busybox | 3,824 |
+| dropbearmulti | 2,848 |
+
+The deepest slots as in `programs.md` §21 (`text_draw` 7,248, `image_encode` 7,124, `proc_exec`
+6,376). A U-mode thread's whole kernel stack needs what an M-mode program's stack needed for its
+calls: 12 KB keeps the same ~4.8 KB (64%) for the slots never called and frames on top, and an
+overflow there is a kernel panic, not a contained fault. Nothing to give back without that margin.
+
+**The probe painted over the FPU's saved registers.** ESP-IDF carves a task's FPU and PIE save
+areas from its stack's bottom, lazily; the probe painted down to the allocation's bottom, so a task
+whose state had been saved restored `fcsr` 0xa5a5a5a5 (an invalid rounding mode) and every FP
+instruction then trapped forever (`docs/platforms/esp32p4.md` §5a): `progtest float` hung at exit
+once in three under `timeout`, `fonts` in the kernel's `FontLibrary::openLocked`. The probe build
+only; it now keeps 1 KB above the stack's current start. (The normal build's "killed" runs of
+`timeout 3 progtest float` in a tight loop were exec failures: twenty `timeout` watchers alive at
+once, each living up to a second, filled the PSRAM window. busybox's design, not a leak.)
+
+**Found on the way:**
+- **`fs_info` gave a served filesystem's type as "" in U-mode** (`progtest netfs`): `Process::fsInfo`
+  copied the name with the member `copyText()`, the one for a program's buffers, into its own
+  struct on the kernel stack; in U-mode that isn't the program's memory, so it refused, silently.
+- **`crypto` returned `EFAULT` for a missing pointer** (both modes, since step 5): `sys.h` says
+  `-BMDS_EINVAL`. A pointer given is checked; a missing one is `Crypto`'s `EINVAL` again.
+- **The profiler put every U-mode sample at the trampoline** (`bmds_user_return`, the frame's PC):
+  the locator now gives the program's own PC, kept by its entry.
+- **`progtest sched` expected the first thread pinned**, as before 2026-11-07's fix (a thread
+  placed by the loader may move until its first float): it now moves, floats, and can't move back.
+
+**Fault reports with a trace** (§11's debugging, the part a log can hold): after its line, a fault
+logs the program's registers (all 31 and the PC; in U-mode its PC, SP and gp from the block) and a
+trace: the PC, ra, then each word on its stack, from SP up (16 KB at most, 16 entries), that is an
+address in its image just after a call linking ra (`jal`/`jalr`/`c.jal`/`c.jalr`). Programs keep
+no frame pointer, so a return address left by a finished call can show up too (Linux's "?"); a
+recursion shows its repeats. `tools/bmds-fault` names them from the program's unstripped ELF
+(functions; files and lines for a program built with `-g`). The record: 31 words more per thread
+(PSRAM). GDB's stub and IDF's panic decoder still see only kernel frames.

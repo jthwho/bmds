@@ -60,11 +60,13 @@ class Profiler {
                 };
 
                 /**
-                 * @brief Gives the program image task @p task runs in.
+                 * @brief Gives the program image task @p task runs in, and corrects @p pc, the
+                 *        sampled PC, if it isn't where the program is (in U-mode the frame's is the
+                 *        trap's way back: the program's own is the loader's to know).
                  * @return false for a kernel task.
                  * @isrsafe Called from the tick hook: plain reads only.
                  */
-                using Locator = bool (*)(void *task, uint32_t &base, uint32_t &bytes, const char *&name);
+                using Locator = bool (*)(void *task, uint32_t &pc, uint32_t &base, uint32_t &bytes, const char *&name);
 
                 /** @brief Sets the locator (the loader's, at boot). */
                 static void setLocator(Locator locator);

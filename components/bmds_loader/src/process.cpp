@@ -1561,7 +1561,10 @@ int32_t Process::fsInfo(const char *path, bmds_fs_info_t *info) {
         out.block_bytes = fs.value().clusterBytes;
         out.total_bytes = fs.value().totalBytes;
         out.free_bytes = fs.value().freeBytes;
-        (void)copyText(StringView(fs.value().type), out.type, sizeof(out.type));
+        // Into the kernel's copy, so not by copyText(): that is for the program's buffers, and in
+        // U-mode it refuses this one, on the kernel's stack. `out` is zeroed: NUL-ended.
+        const StringView type(fs.value().type);
+        std::memcpy(out.type, type.data(), type.size() < sizeof(out.type) ? type.size() : sizeof(out.type) - 1);
         return copyOut(out, info);
 }
 

@@ -990,6 +990,18 @@ Learned 2026-11-13 with a spike (wrappers that logged and fell through) and `pro
   - **The top of a task's stack isn't free:** the port puts the coprocessor (FPU, PIE) save area
     and the TLS block there (`pxPortInitialiseStack()`). A fresh SP for a task is the one its
     entry function began with, not `pxEndOfStack`.
+  - **Nor is its bottom** (2026-11-15, `devplan/protection.md` §21): the FPU's and PIE's saved
+    registers go in areas the port carves from the stack's lowest addresses, lazily (when another
+    task takes the unit on that core), moving the TCB's stack start above them
+    (`xTaskGetStackStart()`; `vPortCleanUpCoprocArea()` puts it back). The stack probe painted
+    down to the allocation's bottom and so over them: the task's next FPU restore loaded `fcsr`
+    `0xa5a5a5a5`, a rounding mode (5) that doesn't exist, and from then every FP instruction using
+    the dynamic mode raised illegal-instruction; the port's lazy-enable trap saw the task already
+    owning the FPU and returned, and the instruction trapped again, forever. It looks like a hang
+    at one PC (the profiler's samples all on one `fdiv`) with interrupts and other tasks fine:
+    unlike §5a's CLIC hang, the core still takes the exception, again and again. Anything that
+    writes a task's stack below its SP must stay above its start plus the areas' room (under 512
+    bytes; one may be carved while the writer is preempted).
 - **What the faults look like** (frame values, at the wrapper):
 
   | Fault | `mcause` | `mtval` |

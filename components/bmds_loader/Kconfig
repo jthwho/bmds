@@ -48,9 +48,11 @@ menu "BMDS loader"
         help
             Every system call paints the program's stack below it on entry
             and finds how deep it went on return; `stackprobe` lists the
-            deepest use of each slot. The floor under program stacks comes
-            from these figures (devplan/programs.md section 21): measure again
-            when a slot that may go deep is added. Slows every call by up to
+            deepest use of each slot, and of U-mode threads' kernel stacks
+            by program (devplan/protection.md section 21). The floor under
+            program stacks and the kernel stacks' size come from these
+            figures (devplan/programs.md section 21): measure again when a
+            slot that may go deep is added. Slows every call by up to
             a 16 KB fill and scan: never in a normal build.
 
     config BMDS_TRAP_ENTRY

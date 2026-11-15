@@ -94,7 +94,9 @@ taken back (§18): U-mode getpid 4.2 → 2.4 µs (M-mode 1.6), clock_gettime ans
 (2.5 µs). A three-hour U-mode soak (§19): 128 rounds of BusyBox, tests, surfaces, benchmarks and
 uploads, no reset, hang, wrong result or leak; CoreMark the same in both modes. Step 6 done (§20): on by default
 (`programs/protect` off runs programs in M-mode, unprotected); `docs/VISION.md` moves it from the
-non-goals to the goals.
+non-goals to the goals. Follow-ups (§21): kernel stacks measured in U-mode (7.5 of 12 KB at most:
+kept), fault reports with registers and a stack trace (`tools/bmds-fault`), the profiler's U-mode
+PCs; `fs_info`'s type in U-mode and `crypto`'s `EINVAL` for a missing pointer fixed.
   - [x] MMU spike (aliases, caches, DMA) and design.
   - [x] (a) The image cache with plain copies (`programs.md` §14.1): `exec` from memory, without the card.
   - [x] (b) Shared pages through the MMU window.

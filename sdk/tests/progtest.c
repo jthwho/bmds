@@ -562,7 +562,9 @@ static int netfs(void) {
         pthread_t server;
         CHECK(pthread_create(&server, NULL, netfs_server, NULL) == 0);
         bmds_fs_info_t info = {.size = sizeof(info)};
-        CHECK(bmds_fs_info(at, &info) == 0 && strcmp(info.type, "progtest") == 0 && info.total_bytes == NETFS_SPACE);
+        CHECK(bmds_fs_info(at, &info) == 0);
+        CHECK(strcmp(info.type, "progtest") == 0);
+        CHECK(info.total_bytes == NETFS_SPACE);
         CHECK(stat(at, &st) == 0 && S_ISDIR(st.st_mode));
         // A big file: 100 000 bytes written 1 000 at a time, gathered into NETFS_DATA's; read back
         // 3 000 at a time from reads ahead.
@@ -827,7 +829,8 @@ static int umem(const char *arg) {
         memset(g, 0x5a, 1000);
         for (uint32_t size = 2000; size <= 1200000; size *= 3) {
                 uint8_t *h = bmds_mem_realloc(g, size, 0);
-                CHECK(h != NULL && h[0] == 0x5a && h[999] == 0x5a);
+                CHECK(h != NULL);
+                CHECK(h[0] == 0x5a && h[999] == 0x5a && h[size / 3 - 1] == 0x5a);
                 memset(h + 1000, 0x5a, size - 1000);
                 g = h;
         }
@@ -867,6 +870,20 @@ static int mem(void) {
 
 extern char **environ;
 
+/* A suite that starts copies of itself needs SELF, this program's path: without it (or with a
+   folder) every start fails, which reads like a bug in what is tested. Made absolute, as a suite
+   may change its folder before it starts one. */
+static int need_self(const char *suite, const char **self) {
+        static char whole[BMDS_PATH_MAX + 1];
+        struct stat st;
+        if (stat(*self, &st) == 0 && S_ISREG(st.st_mode) && realpath(*self, whole) != NULL) {
+                *self = whole;
+                return 0;
+        }
+        fprintf(stderr, "progtest %s: SELF (this program's path) is needed, not \"%s\"\n", suite, *self);
+        return 2;
+}
+
 /* Starts SELF with the arguments after it (NULL-terminated); its id. */
 static pid_t start(const char *self, posix_spawn_file_actions_t *fa, char **env, ...) {
         char   *argv[8] = {"progtest"};
@@ -896,6 +913,7 @@ static volatile int shared_with_child;
 
 /* Processes (programs.md §13). */
 static int spawn(const char *self, const char *dir) {
+        if (need_self("spawn", &self) != 0) return 2;
         char buf[128], cwd[BMDS_PATH_MAX + 1], other[BMDS_PATH_MAX + 1];
         CHECK(chdir(dir) == 0);
         CHECK(getcwd(cwd, sizeof(cwd)) != NULL);
@@ -1060,6 +1078,7 @@ static int run_to_file(const char *path, const char *arg) {
 
 /* /bin/sh and scripts (programs.md §13, step 8b). */
 static int scripts(const char *self, const char *dir) {
+        if (need_self("scripts", &self) != 0) return 2;
         char buf[256];
         CHECK(chdir(dir) == 0);
         // system(): the shell runs the command, its status comes back.
@@ -1152,6 +1171,7 @@ static int ending_of(pid_t pid) {
 
 /* Signals (programs.md §15). */
 static int signals(const char *self) {
+        if (need_self("signals", &self) != 0) return 2;
         char pidbuf[16], fdbuf[16];
         // raise() runs the handler before it returns; kill() of itself too, with siginfo.
         CHECK(catch_signal(SIGUSR1, count_signal, 0) == 0);
@@ -1263,6 +1283,7 @@ static long ms_since(const struct timespec *start) {
 
 /* poll, ppoll, select (programs.md §16). */
 static int polling(const char *self) {
+        if (need_self("poll", &self) != 0) return 2;
         char            pidbuf[16], fdbuf[16], b = 0;
         struct timespec t0;
         int             fds[2];
@@ -1474,6 +1495,7 @@ static size_t program_bytes(void) {
 }
 
 static int threads(const char *self) {
+        if (need_self("threads", &self) != 0) return 2;
         // Counting under a mutex; ids, TLS and errno apart; join's values.
         pthread_t t[4];
         for (int i = 0; i < 4; ++i) CHECK(pthread_create(&t[i], NULL, counter, (void *)(intptr_t)(100 + i)) == 0);
@@ -2764,6 +2786,7 @@ static int procs(const char *self) {
    doesn't; times() and CLOCK_PROCESS_CPUTIME_ID agree with getrusage(); sysinfo() counts the
    processes and the memory. */
 static int rusage_test(const char *self) {
+        if (need_self("rusage", &self) != 0) return 2;
         bmds_stats_status_t st = {.size = sizeof(st)};
         CHECK(bmds_stats_status(&st) == 0);
         const int counted = (st.flags & BMDS_STATS_CPU_COUNTED) != 0;
@@ -3770,6 +3793,12 @@ static void *spin_rt(void *arg) {
         return NULL;
 }
 
+/* Its caller's first float, out of line: the FPU's first use pins the thread to its core. */
+static __attribute__((noinline)) float first_float(float x) {
+        volatile float v = x;
+        return v * 1.5f;
+}
+
 static int sched_test(const char *self) {
         CHECK(bmds_sys_has(BMDS_SYS_SCHED));
         /* What every thread starts with. */
@@ -3786,7 +3815,7 @@ static int sched_test(const char *self) {
         CHECK(sched_yield() == 0);
         /* Cores: the first thread is pinned to one at its start (processes.md §3.12a), and the
          * system still has two. */
-        const int cpu = sched_getcpu();
+        int cpu = sched_getcpu();
         CHECK(cpu == 0 || cpu == 1);
         cpu_set_t cpus;
         CPU_ZERO(&cpus);
@@ -3801,7 +3830,11 @@ static int sched_test(const char *self) {
         cpu_set_t other;
         CPU_ZERO(&other);
         CPU_SET(1 - cpu, &other);
-        CHECK(sched_setaffinity(0, sizeof(other), &other) == -1 && errno == EINVAL); /* pinned */
+        /* Placed there by the loader but no float yet: it may still move (processes.md §3.12a). */
+        CHECK(sched_setaffinity(0, sizeof(other), &other) == 0 && sched_getcpu() == 1 - cpu);
+        cpu = 1 - cpu;
+        CHECK(first_float(2.0f) == 3.0f); /* now pinned here */
+        CHECK(sched_setaffinity(0, sizeof(cpus), &cpus) == -1 && errno == EINVAL);
         CHECK(sched_getcpu() == cpu);
         /* The errors. */
         sp.sched_priority = 0;
@@ -4207,6 +4240,7 @@ static int ptys(const char *self) {
 }
 
 static int timers(const char *self) {
+        if (need_self("timers", &self) != 0) return 2;
         struct itimerval it, old;
         int              fds[2];
         char             b = 0;

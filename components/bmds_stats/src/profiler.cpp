@@ -85,7 +85,7 @@ namespace {
                 copyName(s.task, pcTaskGetName(task), sizeof(s.task), false);
                 uint32_t    base = 0, bytes = 0;
                 const char *name = nullptr;
-                const bool  inProgram = locator != nullptr && locator(task, base, bytes, name) && base != 0;
+                const bool  inProgram = locator != nullptr && locator(task, s.pc, base, bytes, name) && base != 0;
                 s.module = inProgram ? moduleOf(base, bytes, name) : 0;
                 return;
         }
