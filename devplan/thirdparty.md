@@ -383,3 +383,107 @@ control panel's pages are in its program on the card. The SDK tarball: about the
   store, the key gone); Update Lists (21 and 32 packages); Add Key from File through the file
   dialog; Remove Key and Yes. Settings reverted, scratch removed.
 - **Size:** the firmware grew 11 KB (3,206,800 to 3,217,776 bytes).
+
+## 16. As built: step 4, the SDK as a release asset (2026-11-15)
+
+- **`tools/mksdk VERSION OUT_DIR`** writes `bmds-sdk-VERSION.tar.gz`: under `bmds-sdk-VERSION/`,
+  the repository's own layout so every tool's relative paths hold (`sdk/` whole with
+  `sdk/VERSION`; `tools/` with `mkpkg`, `bmdscontainer.py`, `bmdself.py`, `bmds-fault`; `keys/`
+  with `dev.key`, `dev.pub`, `packages.pub`, `README.md`; `LICENSE`; a short `README.md`). Files
+  git tracks, or would (a `--dev` release from an uncommitted tree); a Git LFS pointer refused.
+  Sorted, the commit's time, no owner, gzip without a name or time: the same tree gives the same
+  bytes (checked: two runs compared equal). 1.27 MB, 1,817 files (musl's sources most of them).
+  The tools stay in `tools/` (not moved to `sdk/tools` as planned): the tarball's layout keeps
+  them beside `sdk/` as here.
+- **`tools/release`** makes it after the firmware, into the release's files and `SHA256SUMS`.
+- **`sdk/cmake/BmdsPackage.cmake`** (included by `BmdsProgram.cmake`): `bmds_add_package(NAME
+  VERSION v [TITLE] [SUMMARY] [DESCRIPTION_FILE] [CATEGORY] [LICENSE] [HOMEPAGE] [DEPENDS...]
+  [APPS...] [PROGRAMS...] [FILES PLACE=SOURCE...] [ICONS...] [ABI])` stages `apps/NAME.app`,
+  `bin/NAME` and the files and runs `mkpkg make` into `packages/NAME_VERSION.bmpk` (target
+  `NAME.bmpk`, built by default); one application's `app.desktop` gives the title and the
+  freedesktop main category, its program's `ICONS` (now a target property) the icons.
+  `bmds_add_repository(NAME PACKAGES... [BASE_URL] [LABEL])` makes `NAME/` with the packages,
+  `index.bmpi` (relative names unless `BASE_URL`) and `key.pub`, then checks the index with
+  `mkpkg info --pub` as a board would. `BMDS_KEY` (and `BMDS_KEY_PUB`, default beside it) signs;
+  unset, the dev key, with a warning at configure. Python's `cryptography` checked at configure.
+- **`mkpkg make --description-file`** (a description of several lines, from a build rule).
+- **`sdk/TOOLCHAIN`**: `esp-15.2.0_20250929` and where to get it. **`sdk/README.md`**: "Publishing
+  packages", and the table's new rows.
+- **Tried:** the tarball unpacked in a folder outside the repository; a project there (an
+  application with icons and a desktop entry, a second program in `bin/`, a description file)
+  built, packaged and indexed with a key made by the tarball's `mkpkg keygen`: the package's
+  title ("Hi There") and category (Utility) from the desktop entry, its 16 and 32 pixel icons,
+  every file checked and "signed by t.pub: SDK test"; built again: nothing to do; configured
+  without `BMDS_KEY`: the dev key's warning.
+
+## 17. As built: step 5, `bmds-apps` and Minesweeper (2026-11-15)
+
+- **`~/src/bmds-apps`** (git initialised, nothing committed; the user commits): the layout of §7,
+  with these differences: the SDK is found or downloaded by `cmake/sdk.cmake` **before
+  `project()`**, since the toolchain file is in it (`file(DOWNLOAD)` with the pinned SHA-256 and
+  `file(ARCHIVE_EXTRACT)` into the build folder; `-DBMDS_SDK_DIR` for a checkout), so a user runs
+  plain `cmake -S . -B build`; the pin is empty until a BMDS release carries the tarball, and the
+  build says to give `BMDS_SDK_DIR` until then. The rules' tests are a CMake project of their own
+  in `tests/` (the PC's compiler, ASan and UBSan). The icons are drawn by `tools/icons.py`
+  (standard library) and committed. `keys/bmds-apps.pub` is the public half.
+- **Minesweeper** (C, `bmds/guiclasses.h` only): `field.c` (the rules: mines placed after the
+  first reveal, away from it and its neighbours when there is room; an explicit-stack flood
+  fill; flags; chording; the changed cells' box for partial redraws), `draw.c` (cells, numbers in
+  a 5 x 7 font scaled, flags, mines, the end's crossed-out flags and the mine that went off, a
+  keyboard cursor; RGB565 into the program's own picture, the changed part sent with
+  `bmds_gui_put_pixels`), `main.c` (a menu bar: New F2, Beginner/Intermediate/Expert/Custom...,
+  Best Times..., Quit Ctrl+Q, How to Play F1, About; a canvas that scales the board to its size;
+  a status bar; a one-second timer; left reveal, right flag, both or the middle button or a click
+  on a number chord; arrows, Space/Enter, F; the level, the custom size and best times in the
+  app's data folder, written whole and renamed). Its own look: slate and pale cells.
+- **Packaging:** `minesweeper/CMakeLists.txt` uses `bmds_add_program`, `bmds_add_app` and
+  `bmds_add_package` (version 1.0.0; title, category and icons from the app); the top level's
+  `bmds_add_repository(repository ...)`. The package is 116 KB (232 KB installed).
+- **Releasing:** `tools/release TAG --key KEY [--sdk-dir] [--dev] [--publish [--prerelease]]`
+  (a fresh `build-release/`, the files into `release/TAG/`, `gh release create --verify-tag`);
+  `.github/workflows/release.yml` on a `v*` tag: Espressif's GCC from its release (the URL and
+  SHA-256 `sdk/TOOLCHAIN` now gives; the asset name there was wrong and is fixed), Ninja and
+  `python3-cryptography` from apt, the key from the secret `BMDS_APPS_KEY` into a mode-600 file
+  removed when the step ends; a tag with `-` is a pre-release. A `--dev` release was made here
+  (index, key.pub, the package).
+- **`README.md`:** installing (the one line, the key's id and whole key to compare, why no
+  question is asked on BMDS), the layout, building, trying on a board (a file, a PC's HTTP server,
+  or the `.app` folder), how a package is made, keys (the four kinds; the private half's keeping,
+  backup and secret; changing it), releasing, and making your own repository from this one.
+- **Fixed in BMDS on the way:** a shown window's `width` and `height` now resize it
+  (`guiprograms.md` §18): changing level couldn't fit the window before.
+- **On the board** (scratch `pkg/*`; `build/repository` served from the PC): `pkg source add
+  http://PC:8765/` took it with no question ("signed by bmds-apps (37ddce8c8eb0890a, a built-in
+  package key)"), `pkg source show` listed it, `pkg install -y minesweeper` fetched and installed
+  `apps/minesweeper.app`, `pkg info` named the signer and showed the description. The game, run
+  as the launcher would (its app id and folder): a first click opening a region; a right-click
+  flag; the keyboard's cursor; a loss showing every mine and the one that went off; the Game menu;
+  Expert (the window grew, after the fix) and back to Beginner (it shrank); Custom... (its dialog
+  remade as rows after a first try with a Form looked cramped); a 5 x 5 one-mine field won
+  ("Cleared in 13 s!"); How to Play and Best Times opened and closed twice. The level was kept
+  across a restart. Everything put back: the source removed, the settings reverted, the test's
+  data file and folders removed.
+- **Not tried:** a real win on a standard level (its best-time message): the host tests cover the
+  rules, but nothing played a whole Beginner game on the board.
+
+## 18. As built: step 6, on GitHub and a default source (2026-11-15, the user's go-ahead)
+
+- **`jthwho/bmds-apps`** made public (`gh repo create`), its first commit pushed over SSH (the
+  `gh` token has no `workflow` scope, which an HTTPS push of a workflow file needs). The secret
+  `BMDS_APPS_KEY` set from `~/.config/bmds/bmds-apps.key` on `gh`'s standard input.
+- **v1**, by hand (the user's choice: bmds-apps is used from the next BMDS release on, which only
+  adds apps to it; nothing moves from this repository then): `tools/release --sdk-dir
+  <bmds>/sdk --publish v1` from this checkout: `index.bmpi`, `key.pub`, `minesweeper_1.0.0.bmpk`.
+  The workflow on the tag stopped at its new first step: no SDK pinned, a notice to release by
+  hand (it builds and publishes only once `CMakeLists.txt` pins an SDK release).
+  `releases/latest/download/index.bmpi` answers with v1's.
+- **BMDS's default `pkg/sources`** (§9): the project's Pages list, then
+  `https://github.com/jthwho/bmds-apps/releases/latest/download signed-by=37ddce8c8eb0890a`, then
+  the card's folder.
+- **On the board** (the new firmware; scratch `pkg/root`, `db`, `cache`, `keys`): `pkg source list`
+  with the three defaults, bmds-apps' "signed by bmds-apps (37ddce8c8eb0890a, a built-in package
+  key)"; `pkg update`: 21, 1 and 32 packages; `pkg install -y minesweeper` from GitHub (116,884
+  bytes through the release-asset redirect), signed by the built-in package key. Reverted.
+- **When BMDS releases with the SDK tarball:** pin it in bmds-apps' `CMakeLists.txt`
+  (`BMDS_SDK_VERSION`, `BMDS_SDK_SHA256` from the release's `SHA256SUMS`); from then the
+  workflow releases each tag itself.

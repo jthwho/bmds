@@ -572,13 +572,16 @@ Plan: [`input.md`](input.md).
   card zip, apt/dpkg-like with dependencies and meta packages, repositories on the card or over
   HTTPS (GitHub Pages and release assets), several trusted keys (`keys/trusted.pub`, renamed),
   the board formatting the card, the first run.
-- [ ] Other people's packages (`thirdparty.md`, planned 2026-11-15 with the user): `pkg source
+- [x] Other people's packages (`thirdparty.md`, planned 2026-11-15 with the user): `pkg source
   list|add|remove` with trust on first use, built-in package-only keys (`keys/packages.pub`), the
   control panel's Software group, the SDK as a release tarball with `bmds_add_package()`, and the
   `jthwho/bmds-apps` repository (Minesweeper first) as the example and a default source. Done:
   step 1 (2026-11-15: `keys/packages.pub`, the bmds-apps key, `mkpkg keygen`); step 2
   (2026-11-15: `pkg source list|add|remove|show`); step 3 (2026-11-15: the control panel's
-  Software page, `pkg source add --trust`).
+  Software page, `pkg source add --trust`); step 4 (2026-11-15: `tools/mksdk`, the SDK tarball
+  in releases, `bmds_add_package()` and `bmds_add_repository()`); step 5 (2026-11-15: `bmds-apps`
+  with Minesweeper, its release script and workflow; a shown window's size settable); step 6
+  (2026-11-15: `jthwho/bmds-apps` on GitHub, v1 released, bmds-apps a default source).
 - [ ] Preso (`preso.md`, planned 2026-10-30 with the user): decks in Marp's Markdown, themes in
   INI files with retro ones built in, transitions, notes over SSH, the clicker and pad through
   Controls, live demos from a slide; an SDK program on the card. Revised 2026-11-03: AngelScript

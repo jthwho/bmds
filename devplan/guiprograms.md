@@ -2234,3 +2234,13 @@ and stdout, so a PC needs no listening port.
   default), so it can't drift: `gui_lock` now checks it as it checks `guiclasses.h`.
 - **Pointed there:** `docs/ABI.md`'s row, `gui.md` G1 (revised: the toolkit is a service),
   `windows.md` §6, `clipboard.md` C14, `sdk/README.md`.
+
+## 18. A shown window's size (2026-11-15)
+
+`Window`'s `width` and `height` were read only by `show`: set later, they were kept and ignored,
+so a program couldn't fit its window to new content (Minesweeper's levels, `thirdparty.md` §17).
+Now setting either on a shown window resizes it to that client size with its frame
+(`WindowManager::resize()`), moved left or up if it would cross the work area's edge, and capped
+at the work area; a maximized window keeps its size (the value waits for `show`'s next use).
+Reading them still gives the frame's outer size while shown. No new request or property: what a
+program already wrote now takes effect.

@@ -146,10 +146,35 @@ namespace {
         Value get_Window_title(GuiObject &o) {
                 return Value::string(o.window->title());
         }
+        // A shown window given a new client width or height: resized to it with its frame,
+        // kept in the work area (moved left or up if it would cross its edge); not while
+        // maximized (its normal size is then the one restored). Before it is shown, the size
+        // it shows at.
+        GuiStatus resizeShown(GuiObject &o, int width, int height) {
+                ClientWindow &win = *o.window;
+                if (!win.isShown() || win.placement().maximized) return Ok;
+                WindowManager &wm = o.connection->application().windowManager();
+                auto [now, rerr] = wm.rect(win.id());
+                if (rerr.isError()) return Ok;
+                const uint8_t frame = win.decorations();
+                const Rect    work = wm.workArea();
+                uint16_t      ow = width >= 0 ? WindowFrame::outerWidth(uint16_t(width), frame) : now.width;
+                uint16_t      oh = height >= 0 ? WindowFrame::outerHeight(uint16_t(height), frame) : now.height;
+                if (ow > work.width) ow = work.width;
+                if (oh > work.height) oh = work.height;
+                int x = now.x, y = now.y;
+                if (x + ow > work.x + work.width) x = work.x + work.width - ow;
+                if (y + oh > work.y + work.height) y = work.y + work.height - oh;
+                if (x < work.x) x = work.x;
+                if (y < work.y) y = work.y;
+                if (x != now.x || y != now.y) (void)wm.move(win.id(), uint16_t(x & ~3), uint16_t(y));
+                return wm.resize(win.id(), ow, oh).isError() ? BadValue : Ok;
+        }
+
         GuiStatus set_Window_width(GuiObject &o, const Value &v) {
                 if (v.number < 0 || v.number > 1280) return BadValue;
                 o.width = uint16_t(v.number);
-                return Ok;
+                return resizeShown(o, int(v.number), -1);
         }
         Value get_Window_width(GuiObject &o) {
                 return Value::integer(o.window->isShown() ? int32_t(o.window->screenRect().width) : o.width);
@@ -157,7 +182,7 @@ namespace {
         GuiStatus set_Window_height(GuiObject &o, const Value &v) {
                 if (v.number < 0 || v.number > 720) return BadValue;
                 o.height = uint16_t(v.number);
-                return Ok;
+                return resizeShown(o, -1, int(v.number));
         }
         Value get_Window_height(GuiObject &o) {
                 return Value::integer(o.window->isShown() ? int32_t(o.window->screenRect().height) : o.height);

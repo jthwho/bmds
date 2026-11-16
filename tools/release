@@ -31,6 +31,8 @@
 #   bmds-VERSION-packages.zip        packages/: the packages and an index naming them relatively,
 #                                    to unzip onto a card (file:/sd0/p0/packages)
 #   bmds-VERSION-sources.zip         the GPL packages' sources and recipes
+#   bmds-sdk-VERSION.tar.gz          the SDK (tools/mksdk): sdk/, mkpkg, the keys, to build and
+#                                    package programs outside this repository
 #   notes.md, SHA256SUMS
 #
 # --publish pushes HEAD to REMOTE's main and the tag (never forced), then makes the release on
@@ -440,6 +442,9 @@ def main():
         sources = os.path.join(out_dir, "bmds-%s-sources.zip" % name_version)
         listed = make_sources_zip(sources, dist_dir)
         say("%s: %s" % (os.path.basename(sources), "; ".join(listed)))
+
+    say("making bmds-sdk-%s.tar.gz" % name_version)
+    run([sys.executable, os.path.join(ROOT, "tools", "mksdk"), name_version, out_dir])
 
     names = sorted(n for n in os.listdir(out_dir) if n != "SHA256SUMS")
     with open(os.path.join(out_dir, "SHA256SUMS"), "w") as f:

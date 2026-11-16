@@ -890,7 +890,8 @@ list, deployed from Actions, so no `gh-pages` branch).
 | `bmds-X.Y.Z-sources.zip`, `SHA256SUMS`, the notes | as before |
 
 **Defaults:**
-- `pkg/sources`: `https://jthwho.github.io/bmds/packages;file:/sd0/p0/packages` (the network, and
+- `pkg/sources`: `https://jthwho.github.io/bmds/packages;file:/sd0/p0/packages` (since 2026-11-15
+  with bmds-apps between them, `thirdparty.md` §9) (the network, and
   the packages zip unzipped onto the card).
 - `update/url`: `https://github.com/jthwho/bmds/releases/latest/download/bmds-VARIANT.bmup`, the
   variant the firmware is built for (`p4r1`, or `p4r3` without `ESP32P4_SELECTS_REV_LESS_V3`).

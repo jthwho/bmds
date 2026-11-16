@@ -150,6 +150,8 @@ function(bmds_add_program name)
                 set_source_files_properties(${icons} PROPERTIES OBJECT_DEPENDS "${pngs}")
         endif()
         add_executable(${name} ${ARG_SOURCES} ${icons})
+        # For bmds_add_package(): its icons are the package's unless it names others.
+        set_property(TARGET ${name} PROPERTY BMDS_ICONS "${pngs}")
         target_link_libraries(${name} PRIVATE bmds_headers -Wl,--start-group bmds_game bmds_3d bmds_gui bmds_benchlib bmds_crt bmds_libc
                                       ${BMDS_LIBGCC} -Wl,--end-group)
         target_link_options(${name} PRIVATE
@@ -230,4 +232,9 @@ function(bmds_add_app name)
         add_custom_command(OUTPUT ${folder}/app.desktop ${commands} DEPENDS ${depends}
                            COMMENT "Making ${name}.app" VERBATIM)
         add_custom_target(${name}.app ALL DEPENDS ${folder}/app.desktop)
+        # For bmds_add_package(): where the folder is, its program and its desktop entry.
+        set_target_properties(${name}.app PROPERTIES BMDS_APP_FOLDER "${folder}" BMDS_APP_PROGRAM "${ARG_PROGRAM}"
+                                                     BMDS_APP_DESKTOP "${desktop}")
 endfunction()
+
+include(${CMAKE_CURRENT_LIST_DIR}/BmdsPackage.cmake)

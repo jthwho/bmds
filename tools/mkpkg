@@ -10,7 +10,8 @@
 #
 #   mkpkg make ROOT --name NAME --version VERSION [--arch esp32p4|all] [--depends LIST]
 #              [--title TEXT] [--summary TEXT] [--category CAT] [--license SPDX] [--homepage URL]
-#              [--description TEXT] [--icon PNG]... [--stack BYTES] [--display] [--abi N]
+#              [--description TEXT | --description-file FILE] [--icon PNG]... [--stack BYTES]
+#              [--display] [--abi N]
 #              [--key KEY] [-o OUT]
 #       A package of the files, directories and links below ROOT (its paths relative to it),
 #       signed with KEY (default keys/dev.key), to OUT (default NAME_VERSION.bmpk). With no
@@ -277,6 +278,9 @@ def cmd_make(args):
     manifest = ''.join(line + '\n' for line in lines).encode('utf-8')
 
     sections = [(MANIFEST, manifest), (DATA, bytes(data))]
+    if args.description_file:
+        with open(args.description_file, encoding='utf-8') as f:
+            args.description = f.read().strip()
     if args.description:
         sections.append((DESCRIPTION, args.description.encode('utf-8')))
     if args.icon:
@@ -482,6 +486,7 @@ def main():
     m.add_argument('--homepage')
     m.add_argument('--icon', action='append', help='a square PNG (16 and 32 pixels, as the theme)')
     m.add_argument('--description')
+    m.add_argument('--description-file', help='the description from a file (UTF-8; several lines)')
     m.add_argument('--stack', type=int)
     m.add_argument('--display', action='store_true')
     m.add_argument('--abi', type=int, help="the least BMDS_ABI_VERSION (default: the SDK's)")

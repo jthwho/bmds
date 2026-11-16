@@ -1,0 +1,12 @@
+# The compiler the SDK is built and tested with (devplan/thirdparty.md §6).
+#
+# Espressif's riscv32-esp-elf GCC, the release ESP-IDF installs:
+#
+#   esp-15.2.0_20250929
+#
+# Any of these puts it where cmake/bmds-toolchain.cmake finds it (PATH, else ~/.espressif):
+#   - ESP-IDF's installer (idf_tools.py install riscv32-esp-elf), then its export.sh;
+#   - Espressif's release tarball, unpacked, its riscv32-esp-elf/bin on PATH. For Linux on x86-64
+#     (ESP-IDF's tools/tools.json names the others):
+#     https://github.com/espressif/crosstool-NG/releases/download/esp-15.2.0_20250929/riscv32-esp-elf-15.2.0_20250929-x86_64-linux-gnu.tar.xz
+#     SHA-256 516abd1c8e9646d8b846f180d7c06d95494822df93aa967e097c6591f6e4d4d6

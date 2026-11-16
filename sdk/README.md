@@ -31,6 +31,8 @@ the headers in `include/bmds/` are the ABI and never change incompatibly
 | `tools/bmds-icon-notes` | `bmds-icon-notes -o icons.S NAME a-16.png a-32.png`: the same icon notes as `ICONS`, as an assembler file to build with `bmds-cc`, for builds without CMake (`dist/blocks`, `dist/doom`, `dist/luckyduck`). |
 | `tools/bmds-link` | Runs every program's link (`bmds_add_program()` and `bmds-cc` use it): links once, finds the input sections the loader patches (pointer and jump tables, libgcc's few absolute references), and links again with them moved next to the data, so the rest of the image is shared between a program's instances ([`devplan/programs.md`](../devplan/programs.md) §14.3). Needs Python 3. |
 | `cmake/BmdsProgram.cmake` | `bmds_add_program(name SOURCES ... [STACK_SIZE bytes] [ICONS png...] [DISPLAY])` (ICONS: the program's own icons, 16x16 and 32x32 PNGs, built in as `BMDS_NOTE_ICON` notes: `bmds/program.h`; DISPLAY: it draws to the screen continuously, so the kernel starts it away from the display's core, `BMDS_PROGRAM_DISPLAY`); generates `bmds-cc`. `bmds_add_app(name PROGRAM target DESKTOP app.desktop [FILES ...] [DIRECTORIES ...])`: an application folder, `name.app` in the build directory (its `Exec` checked to name the program), copied into a card's `apps/` to install ([`devplan/apps.md`](../devplan/apps.md)). |
+| `cmake/BmdsPackage.cmake` | `bmds_add_package()` and `bmds_add_repository()`: packages (`.bmpk`) of applications, programs and files, and a signed repository of them (`index.bmpi`, `key.pub`), with `tools/mkpkg` (below, "Publishing packages"). |
+| `TOOLCHAIN` | The compiler release the SDK is built and tested with, and where to get it. |
 | `cmake/BmdsLibc.cmake` | Builds musl's `libc.a` and assembles its headers in the build tree. |
 | `cmake/bmds-cc.in` | The compiler wrapper for other build systems (`CC=<build>/bmds-cc make`). |
 | `examples/` | `hello`; `cat` (files or stdin, with the raw calls); `ls [-al]` (portable POSIX only); `tone` (a sine on `/dev/dsp`, through OSS or the native audio calls); `player FILE` (a WAV, MP3, Ogg Vorbis, FLAC or MIDI file on `/dev/dsp`, decoded by the firmware: `bmds_audio_decode`; MIDI files play through the system synth: the FM engine on `synth/fm-bank`, or the wavetable on `synth/font`); `keytone [-p FRAMES] [-x] [-r RATE] [-m PORT]` (the keyboard as a piano octave, through a real-time audio client: `bmds_audio_cycle`; with `-m`, a MIDI port's notes too); `midimon [PORT]`, `midimon -c NAME` (MIDI events as they arrive, with their times: `bmds_midi_config`; `-c` makes a port that passes them on); `speak [-o FILE.wav] TEXT...` (text spoken aloud with `bmds_say`, or its samples read from a speech fd, `bmds_audio_speak`, and saved); `surfdemo` (a surface in a window or full screen); `appinfo` (installed as `apps/NAME.app`: its folder, id and data folder); `bounce [-i PICTURE] [-a SOUND] [-m MUSIC]` (libbmdsgame's frame loop: squares, or a picture, drawn where they move; a sound as they meet a wall, music); `guidemo` (a window from the GUI service: a label, a field and buttons, through libbmdsgui); `guigallery` (the GUI classes a part at a time through `bmds/guiclasses.h`, on tabs under a tool bar, each event shown in its status bar: windows, with their size shown, a minimum, a busy pointer, an owned modal About box and a close that asks first; a form of controls; a list view and an icon view in a splitter; a folder tree beside a details view; a code editor; a shell on the program's own pty in a terminal widget; a menu bar with shortcuts, the file, colour and message dialogs, a popup menu and a timer; images it draws itself; a canvas painted with the mouse; a field copied, offered on request as text or HTML, and pasted back, and a label taking dropped files or text; a notification with buttons and a tray icon with a menu; one gallery at a time, a second start asking the first to come forward on the service bus); `guisurface [-n FRAMES] [-p] [-s WxH]` (a plasma drawn into a canvas's surface in an ordinary window, its frame rate shown; `-n` draws that many and prints the times); `fonts [-l]` (the system's fonts, `font_open` and `text_draw`: each face in itself, sizes, smoothed and sharp, on a box; `-l` lists the faces); `guipanel [-e top|bottom] [-d FOLDER] [-t] [-v]` (a panel as an ordinary program, named in `gui/shell-clients`: a start menu of a folder's programs, Ctrl+Escape, a button for each window, a clock, and with `-t` the tray, through `SHELL`, `SERVICES` and `bmds/tray.h`). |
@@ -89,6 +91,34 @@ asks for; `BMDS_DISPLAY=1` flags it as drawing to the screen continuously
 of it in `libc.a`. BusyBox 1.37 with `CONFIG_NOMMU` builds this way
 unmodified (about 90 applets; `hush` starts programs and runs pipelines
 with `vfork`).
+
+## Publishing packages
+
+A program reaches users as a package (`.bmpk`) in a repository: a folder with `index.bmpi`, the
+packages and `key.pub`, on any web server or as a GitHub release's files. A user adds it once
+(`pkg source add URL`, or Settings > Software > Add Source...), is shown the key and asked to
+trust it, then installs with `pkg install NAME`. [`bmds-apps`](https://github.com/jthwho/bmds-apps)
+is a complete example, with a walkthrough; in short:
+
+```cmake
+bmds_add_program(mygame SOURCES main.c ICONS mygame-16.png mygame-32.png)
+bmds_add_app(mygame PROGRAM mygame DESKTOP app.desktop)
+bmds_add_package(mygame VERSION 1.0.0 SUMMARY "One line about it" LICENSE MIT
+                 DESCRIPTION_FILE DESCRIPTION APPS mygame)
+bmds_add_repository(repository PACKAGES mygame)
+```
+
+```bash
+tools/mkpkg keygen ~/.config/bmds/mine.key --comment "My apps"   # once; keep it safe
+cmake -S . -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=<sdk>/sdk/cmake/bmds-toolchain.cmake \
+      -DBMDS_KEY=$HOME/.config/bmds/mine.key
+cmake --build build          # build/repository/ is the repository to publish
+```
+
+The title, category and icons come from the one application's `app.desktop` and its program's
+`ICONS` unless given; the package needs the SDK's ABI version at least (`ABI` to say less).
+Without `BMDS_KEY` the dev key signs, and the build says so: anyone has it, so a source pinned
+to your key won't take it. `keys/README.md` says which key is which and how to keep yours.
 
 ## What a program is
 

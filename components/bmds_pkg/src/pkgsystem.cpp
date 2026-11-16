@@ -36,10 +36,13 @@ namespace {
                 return Packages::checkSources(value, why);
         }
 
-        // The project's package list on its Pages site, and the packages zip unzipped onto the card
-        // (devplan/packages.md §25).
+        // The project's package list on its Pages site (devplan/packages.md §25); bmds-apps' newest
+        // release, pinned to its key, built in as a package key (devplan/thirdparty.md §9); and
+        // the packages zip unzipped onto the card.
         BMDS_SYSCONF(pkgSources, "pkg/sources", Config::Type::String,
-                     "https://jthwho.github.io/bmds/packages;file:/sd0/p0/packages",
+                     "https://jthwho.github.io/bmds/packages;"
+                     "https://github.com/jthwho/bmds-apps/releases/latest/download signed-by=37ddce8c8eb0890a;"
+                     "file:/sd0/p0/packages",
                      "Where packages come from, ';'-separated: an http(s) URL of a folder with index.bmpi, or "
                      "file:/FOLDER (a folder of .bmpk files)",
                      0, 1023, nullptr, checkSources)
