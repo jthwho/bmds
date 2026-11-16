@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstring>
 #include <new>
+#include <bmds/chatview.h>
 #include <bmds/codeedit.h>
 #include <bmds/colordialog.h>
 #include <bmds/fontdialog.h>
@@ -1739,6 +1740,131 @@ namespace {
                 o.widget->setStretch(1);
                 terminal(o)->setTyped(terminalTyped, &o);
                 terminal(o)->setSized(terminalSized, &o);
+                return Ok;
+        }
+
+        // ---- ChatView (devplan/chatview.md): lines the client appends; links and scrolling told back
+
+        ChatView *chatView(GuiObject &o) {
+                return static_cast<ChatView *>(o.widget);
+        }
+        void chatLinkActivated(void *arg, ChatView &, StringView url) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const Value v = Value::string(url);
+                o.connection->emit(o, "linkActivated", Args(&v, 1));
+                return;
+        }
+        void chatScrolledBack(void *arg, ChatView &, bool back) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const Value v = Value::boolean(back);
+                o.connection->emit(o, "scrolledBack", Args(&v, 1));
+                return;
+        }
+        // "#rrggbb" (the # optional) into @p rgb.
+        bool readRgb(StringView text, uint32_t &rgb) {
+                if (!text.isEmpty() && text[0] == '#') text = text.mid(1);
+                if (text.size() != 6) return false;
+                rgb = 0;
+                for (char c : text) {
+                        const int d = c >= '0' && c <= '9'   ? c - '0'
+                                      : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                                      : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                                                             : -1;
+                        if (d < 0) return false;
+                        rgb = rgb << 4 | uint32_t(d);
+                }
+                return true;
+        }
+        GuiStatus set_ChatView_maxLines(GuiObject &o, const Value &v) {
+                if (v.number < 1 || v.number > int64_t(ChatView::MostLines)) return BadValue;
+                return chatView(o)->setMaxLines(size_t(v.number)).isOk() ? Ok : NoMem;
+        }
+        Value get_ChatView_maxLines(GuiObject &o) {
+                return Value::integer(int32_t(chatView(o)->maxLines()));
+        }
+        Value get_ChatView_followEnd(GuiObject &o) {
+                return Value::boolean(chatView(o)->isFollowingEnd());
+        }
+        GuiStatus set_ChatView_wrap(GuiObject &o, const Value &v) {
+                chatView(o)->setWrap(v.number != 0);
+                return Ok;
+        }
+        Value get_ChatView_wrap(GuiObject &o) {
+                return Value::boolean(chatView(o)->wraps());
+        }
+        // The first colours (at most 99), "#rrggbb" each; the rest IRC's. An empty list: all IRC's.
+        GuiStatus set_ChatView_palette(GuiObject &o, const Value &v) {
+                StringView texts[ChatText::PaletteSize];
+                uint32_t   rgb[ChatText::PaletteSize];
+                size_t     count = 0;
+                if (!readStrings(v, texts, ChatText::PaletteSize, count)) return BadValue;
+                for (size_t i = 0; i < count; ++i)
+                        if (!readRgb(texts[i], rgb[i])) return BadValue;
+                chatView(o)->resetPalette();
+                for (size_t i = 0; i < count; ++i) chatView(o)->setPaletteColour(i, rgb[i]);
+                return Ok;
+        }
+        Value get_ChatView_palette(GuiObject &o) {
+                char texts[ChatText::PaletteSize][8];
+                for (size_t i = 0; i < ChatText::PaletteSize; ++i) {
+                        static constexpr char Hex[] = "0123456789abcdef";
+                        const uint32_t        rgb = chatView(o)->paletteColour(i);
+                        texts[i][0] = '#';
+                        for (int d = 0; d < 6; ++d) texts[i][1 + d] = Hex[(rgb >> (20 - 4 * d)) & 0xf];
+                }
+                return makeStrings(o, ChatText::PaletteSize, [&](size_t i) { return StringView(texts[i], 7); });
+        }
+        Value get_ChatView_selectedText(GuiObject &o) {
+                o.text.clear();
+                (void)chatView(o)->selectedText(o.text);
+                return Value::string(o.text.view());
+        }
+        GuiStatus call_ChatView_append(GuiObject &o, Args args, Value &) {
+                return chatView(o)->append(args[0].text).isOk() ? Ok : NoMem;
+        }
+        // Laid out a batch at a time (each batch once).
+        GuiStatus call_ChatView_appendMany(GuiObject &o, Args args, Value &) {
+                const Value &v = args[0];
+                if (v.tag != Tag::List || (v.count != 0 && v.elements != Tag::String)) return BadValue;
+                constexpr size_t    Batch = 32;
+                StringView          lines[Batch];
+                size_t              n = 0;
+                GuiProtocol::Reader items(v.items);
+                for (uint32_t i = 0; i < v.count; ++i) {
+                        Value item;
+                        if (!items.element(Tag::String, item)) return BadValue;
+                        lines[n++] = item.text;
+                        if (n < Batch && i + 1 < v.count) continue;
+                        if (chatView(o)->appendMany(Span<const StringView>(lines, n)).isError()) return NoMem;
+                        n = 0;
+                }
+                return Ok;
+        }
+        GuiStatus call_ChatView_clear(GuiObject &o, Args, Value &) {
+                chatView(o)->clear();
+                return Ok;
+        }
+        GuiStatus call_ChatView_setMarker(GuiObject &o, Args args, Value &) {
+                return chatView(o)->setMarker(args[0].text).isOk() ? Ok : NoMem;
+        }
+        GuiStatus call_ChatView_clearMarker(GuiObject &o, Args, Value &) {
+                chatView(o)->clearMarker();
+                return Ok;
+        }
+        GuiStatus call_ChatView_scrollToEnd(GuiObject &o, Args, Value &) {
+                chatView(o)->scrollToEnd();
+                return Ok;
+        }
+        GuiStatus call_ChatView_copy(GuiObject &o, Args, Value &) {
+                chatView(o)->copy();
+                return Ok;
+        }
+        GuiStatus create_ChatView(GuiObject &o, GuiObject *parent) {
+                const GuiStatus s = makeWidget<ChatView>(o, parent);
+                if (s != Ok) return s;
+                o.widget->setStretch(1);
+                chatView(o)->setLinkActivated(chatLinkActivated, &o);
+                chatView(o)->setScrolledBack(chatScrolledBack, &o);
                 return Ok;
         }
 

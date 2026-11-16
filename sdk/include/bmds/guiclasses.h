@@ -1352,6 +1352,62 @@ static inline int bmds_font_button_get_filter(bmds_gui_t *gui, uint32_t id, bmds
 }
 #define BMDS_GUI_FONT_BUTTON_CHANGED "changed" /**< FontButton's event (String). */
 
+/* ---- ChatView (of Widget) */
+/** @brief A new ChatView under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_chat_view_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "ChatView", parent);
+}
+static inline int bmds_chat_view_set_max_lines(bmds_gui_t *gui, uint32_t id, int32_t value) {
+        return bmds_gui_set_named(gui, id, "maxLines", bmds_gui_int(value));
+}
+static inline int bmds_chat_view_get_max_lines(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "maxLines", out);
+}
+static inline int bmds_chat_view_get_follow_end(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "followEnd", out);
+}
+static inline int bmds_chat_view_set_wrap(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "wrap", bmds_gui_bool(value));
+}
+static inline int bmds_chat_view_get_wrap(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "wrap", out);
+}
+static inline int bmds_chat_view_set_palette(bmds_gui_t *gui, uint32_t id, const char *const *value, uint32_t value_count) {
+        return bmds_gui_set_named(gui, id, "palette", bmds_gui_strings(gui, value, value_count));
+}
+static inline int bmds_chat_view_get_palette(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "palette", out);
+}
+static inline int bmds_chat_view_get_selected_text(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "selectedText", out);
+}
+static inline int bmds_chat_view_append(bmds_gui_t *gui, uint32_t id, const char *a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0)};
+        return bmds_gui_call_named(gui, id, "append", args, 1, NULL);
+}
+static inline int bmds_chat_view_append_many(bmds_gui_t *gui, uint32_t id, const char *const *a0, uint32_t a0_count) {
+        const bmds_gui_value_t args[] = {bmds_gui_strings(gui, a0, a0_count)};
+        return bmds_gui_call_named(gui, id, "appendMany", args, 1, NULL);
+}
+static inline int bmds_chat_view_clear(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "clear", NULL, 0, NULL);
+}
+static inline int bmds_chat_view_set_marker(bmds_gui_t *gui, uint32_t id, const char *a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0)};
+        return bmds_gui_call_named(gui, id, "setMarker", args, 1, NULL);
+}
+static inline int bmds_chat_view_clear_marker(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "clearMarker", NULL, 0, NULL);
+}
+static inline int bmds_chat_view_scroll_to_end(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "scrollToEnd", NULL, 0, NULL);
+}
+static inline int bmds_chat_view_copy(bmds_gui_t *gui, uint32_t id) {
+        return bmds_gui_call_named(gui, id, "copy", NULL, 0, NULL);
+}
+#define BMDS_GUI_CHAT_VIEW_LINK_ACTIVATED "linkActivated" /**< ChatView's event (String). */
+#define BMDS_GUI_CHAT_VIEW_SCROLLED_BACK "scrolledBack" /**< ChatView's event (Bool). */
+
 #ifdef __cplusplus
 }
 #endif

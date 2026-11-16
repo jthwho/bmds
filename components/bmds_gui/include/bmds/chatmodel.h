@@ -43,6 +43,9 @@ namespace ChatText {
                 Reverse = 1u << 5,
         };
 
+        /** @brief The flags that choose a run's font (the rest are drawn over it). */
+        constexpr uint8_t FontFlags = Bold | Italic | Monospace;
+
         /** @brief A colour: none (the view's), one of the palette's 99, or any RGB. */
         struct Colour {
                         enum class Kind : uint8_t {
@@ -119,13 +122,24 @@ namespace ChatText {
         /** @brief Returns the index of the link at byte @p offset of `text`, or -1. */
         int linkAt(const Parsed &line, uint32_t offset);
 
-        /** @brief How text is measured: a run's style may change its font (bold, italic, monospace). */
+        /**
+         * @brief How text is measured: a run's style may change its font (bold, italic, monospace;
+         *        only `FontFlags` may change a width). Widths, and every x and width `wrap()` and
+         *        `hit()` take and give, are in its units: a font's pixels, or finer (`ChatView`
+         *        measures in 1/64 pixels, so that pieces measured one by one add up exactly).
+         */
         struct Measure {
                         /** @brief @p text's width in @p flags' font. */
                         uint32_t (*width)(void *arg, StringView text, uint8_t flags) = nullptr;
                         /** @brief How many bytes of @p text fit in @p most, whole characters only. */
                         size_t (*fitting)(void *arg, StringView text, uint8_t flags, uint32_t most) = nullptr;
                         void *arg = nullptr;
+                        /**
+                         * @brief Where a run's font changes on a row, it starts on a multiple of
+                         *        this (from the line's left; 0 or 1: anywhere): a painter that starts
+                         *        a font's text on a pixel column of its own (`Painter::text()`'s 4).
+                         */
+                        uint32_t align = 0;
         };
 
         /** @brief A run's part on a row, at `x` from the line's left. */
@@ -157,10 +171,15 @@ namespace ChatText {
          *        @p textX (the view's gutter column, or past a wider gutter) and every row after
          *        it from @p textX too (a hanging indent), unless @p textX is more than two thirds
          *        of @p width (then from 0). Breaks at spaces, the spaces at a break dropped; a word
-         *        wider than a row is broken where it reaches the edge. An empty line is a row.
+         *        wider than a row is broken where it reaches the edge. An empty line is a row. A
+         *        run whose font differs from the one before it on its row starts on a multiple of
+         *        `Measure::align` (@p textX should be one).
          * @return The rows it takes (whatever `out` held).
          */
         size_t wrap(const Parsed &line, const Measure &measure, uint32_t width, uint32_t textX, Layout *out);
+
+        /** @brief Returns @p line's gutter's width (0 for none), as `wrap()` places it. */
+        uint32_t gutterWidth(const Parsed &line, const Measure &measure);
 
         /**
          * @brief Returns the byte of `text` nearest @p x (from the line's left) on row @p row of

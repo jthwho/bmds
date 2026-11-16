@@ -81,28 +81,46 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         bmds::String plain;
         check(ChatText::plain(line, plain).isOk());
 
-        const ChatText::Measure m{width, fitting, nullptr};
-        static ChatText::Row    rows[4096];
-        static ChatText::Piece  pieces[8192];
-        for (uint32_t w : {0u, 7u, 40u, 333u}) {
-                for (uint32_t textX : {0u, 30u}) {
-                        ChatText::Layout l{rows, 4096, pieces, 8192};
-                        const size_t     n = ChatText::wrap(p, m, w, textX, &l);
-                        check(n >= 1 && n == ChatText::wrap(p, m, w, textX, nullptr));
-                        if (l.rowCount != n) continue; // more rows than kept: counted only
-                        // In order; each in one run; only spaces left out.
-                        uint32_t next = 0;
-                        for (size_t k = 0; k < l.pieceCount; ++k) {
-                                const ChatText::Piece &pc = pieces[k];
-                                check(pc.length > 0 && pc.start >= next);
-                                for (uint32_t b = next; b < pc.start; ++b) check(t[b] == ' ');
-                                const ChatText::Run &run = p.runs[pc.run];
-                                check(pc.start >= run.start && pc.start + pc.length <= run.start + run.length);
-                                next = pc.start + pc.length;
+        static ChatText::Row   rows[4096];
+        static ChatText::Piece pieces[8192];
+        for (uint32_t align : {0u, 4u}) {
+                for (uint32_t w : {0u, 7u, 40u, 333u}) {
+                        for (uint32_t textX : {0u, 32u}) {
+                                const ChatText::Measure m{width, fitting, nullptr, align};
+                                ChatText::Layout        l{rows, 4096, pieces, 8192};
+                                const size_t            n = ChatText::wrap(p, m, w, textX, &l);
+                                check(n >= 1 && n == ChatText::wrap(p, m, w, textX, nullptr));
+                                if (l.rowCount != n) continue; // more rows than kept: counted only
+                                // In order; each in one run; only spaces left out.
+                                uint32_t next = 0;
+                                for (size_t k = 0; k < l.pieceCount; ++k) {
+                                        const ChatText::Piece &pc = pieces[k];
+                                        check(pc.length > 0 && pc.start >= next);
+                                        for (uint32_t b = next; b < pc.start; ++b) check(t[b] == ' ');
+                                        const ChatText::Run &run = p.runs[pc.run];
+                                        check(pc.start >= run.start && pc.start + pc.length <= run.start + run.length);
+                                        next = pc.start + pc.length;
+                                }
+                                for (uint32_t b = next; b < t.size(); ++b) check(t[b] == ' ');
+                                for (size_t r = 0; r < l.rowCount; ++r) {
+                                        for (int32_t x : {-5, 0, 13, 1000})
+                                                check(ChatText::hit(p, m, l, r, x) <= t.size());
+                                        // Side by side, left to right; a font change on the measure's column.
+                                        uint32_t end = 0;
+                                        int      font = -1;
+                                        for (uint32_t k = 0; k < rows[r].pieceCount; ++k) {
+                                                const ChatText::Piece &pc = pieces[rows[r].firstPiece + k];
+                                                const uint8_t          f =
+                                                        uint8_t(p.runs[pc.run].style.flags & ChatText::FontFlags);
+                                                check(pc.x >= end);
+                                                if (align > 1 && font >= 0 && f != uint8_t(font))
+                                                        check(pc.x % align == 0);
+                                                end = pc.x + width(nullptr, t.mid(pc.start, pc.length),
+                                                                   p.runs[pc.run].style.flags);
+                                                font = f;
+                                        }
+                                }
                         }
-                        for (uint32_t b = next; b < t.size(); ++b) check(t[b] == ' ');
-                        for (size_t r = 0; r < l.rowCount; ++r)
-                                for (int32_t x : {-5, 0, 13, 1000}) check(ChatText::hit(p, m, l, r, x) <= t.size());
                 }
         }
 

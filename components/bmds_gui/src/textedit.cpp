@@ -68,7 +68,10 @@ TextEdit::~TextEdit() {
         stopBlink();
         if (_edgeTimer >= 0 && window() != nullptr) window()->application().stopTimer(_edgeTimer);
         GuiClipboard *clipboard = clipboardOf(*this);
-        if (clipboard != nullptr) clipboard->cancel(this);
+        if (clipboard != nullptr) {
+                clipboard->cancel(this);
+                clipboard->forget(this); // its primary selection's provider
+        }
         _document->removeObserver(observe, this);
         Memory::free(_cells);
 }

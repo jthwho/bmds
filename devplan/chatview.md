@@ -4,7 +4,7 @@ Planned 2026-11-16 for the IRC client (bmds-apps' `devplan/irc.md`: the client l
 bmds-apps repository and is released after the next BMDS release, which brings TLS for programs,
 network.md §35, and this class). Approved as proposed by the user (2026-11-16), the name too.
 
-Status: **step 1 built** (§7).
+Status: **steps 1 and 2 built** (§7, §8).
 
 ## 1. Why
 
@@ -22,7 +22,7 @@ build's output.
 
 | | |
 |---|---|
-| **Methods** | `append(String line)`; `appendMany(List)`; `clear()`; `setMarker()` (a line under the last one read); `scrollToEnd()`; `copy()` |
+| **Methods** | `append(String line)`; `appendMany(List)`; `clear()`; `setMarker(String words)` (a rule under the last line read); `clearMarker()`; `scrollToEnd()`; `copy()` |
 | **Properties** | `maxLines` (the oldest dropped past it; default 2000), `followEnd` (read only: at the end), `wrap` (Bool, default on), `palette` (List: the 99 colours, overridable), `selectedText` (read only); its font is every widget's `font` (`ui` by default, `mono`...) |
 | **Events** | `linkActivated(String url)`, `scrolledBack(Bool)` (left the end, or reached it again) |
 
@@ -59,10 +59,12 @@ A program that needs it on an older firmware finds the class missing (`Describe`
    covers its properties and events.
 4. Then the IRC client (bmds-apps) uses it.
 
-## 5. Budget (estimates)
+## 5. Budget
 
-About 20 KB of flash in the GUI service; per view, its lines (2000 at ~100 bytes: ~200 KB at the
-most, in PSRAM) and the shown lines' layout.
+Estimated: about 20 KB of flash in the GUI service; per view, its lines (2000 at ~100 bytes:
+~200 KB at the most, in PSRAM) and the shown lines' layout. Measured (§8): 19 KB of flash; per
+view 11 KB of PSRAM for laying out a line, and for 2000 lines 72 KB of slots and counts besides
+their bytes.
 
 ## 6. Decided (the user's, 2026-11-16)
 
@@ -93,4 +95,71 @@ most, in PSRAM) and the shown lines' layout.
   bold measuring wider, UTF-8; hits; `ChatLines`); `chatmodel_fuzz` (runs covering the text,
   links inside it, every byte but a break's spaces placed once in order at four widths, hits in
   range): 495,202 runs in 3 minutes, nothing found.
+
+## 8. As built: step 2, the widget and the class (2026-11-16)
+
+- **`bmds/chatview.h`, `chatview.cpp`** (`bmds_gui`): `ChatView`, a `ScrollArea`.
+  - **Lines:** `ChatLines` holds each line's bytes. One line at a time is laid out (parsed and
+    wrapped) into an 11 KB scratch in PSRAM, kept until another line needs it. Painting lays out
+    each line it shows. Every line is wrapped again when the width, the font or the gutter's
+    column changes (the gutters are measured again only for a font). The vertical bar's room is
+    always kept, so the bar coming and going doesn't wrap everything.
+  - **Fonts:** the widget's font, its bold and italic, and the `mono` role at its size, as the
+    library opens them (one it can't is the nearest it has). Baselines line up; the row is as
+    tall as the tallest.
+  - **Measured in 1/64 pixels** (`Font::layout()`'s pen), not `textWidth()`'s pixels, which are
+    rounded up piece by piece: the sums drifted right of where the painter, drawing a font's
+    pieces in one call, put the glyphs, about 8 px across a row, and underlines and hits fell a
+    character off (seen on the board). The model doesn't care what its units are
+    (`Measure`'s doc says so).
+  - **Drawing:** a row a font at a time: the pieces side by side in one font go in one
+    `Painter::text()` call, with a run of colours each, cut at the selection's ends.
+    `Painter::text()` starts a font's text on a 4-pixel column and fills its box, so the model
+    gained `Measure::align` (and `FontFlags`): a run whose font differs from the one before it
+    starts on a column. That leaves a gap of up to 3 px after a change of font (`italic ,`).
+    Backgrounds of their own are filled the row's height. Underlines (links too) and strikes are
+    1 px fills. Links are in `Highlight`, the selection in `Highlight`/`HighlightText`, the field
+    in `FaceHighlight`.
+  - **Scrolling:** at the end, it follows. A scroll of the user's (the bar, the wheel, the keys)
+    decides `followEnd` and tells `scrolledBack`. Scrolled back, the line at the top, its row
+    and the pixels into it are kept, and put back at the top after any change (lines appended
+    or dropped, a rewrap). Its own scrolls are marked, so they don't count as the user's.
+  - **The marker:** a row of its own before the line after it, a rule in `Highlight` with its
+    words at the text's column. Its line dropped takes it.
+  - **Selection:** a drag (scrolling past the top or bottom edge), a double click a word (the
+    gutter's end ends one too), a triple a line, Shift+click. `selectedText` is the gutter, a
+    tab, the text; lines are joined by newlines. It becomes the primary selection.
+    Ctrl+C/Ctrl+Insert copy, Ctrl+A selects all. A click without a drag (3 px) on a link,
+    released on it, tells `linkActivated` with the link's text. The pointer is the arrow over a
+    link and the I-beam elsewhere.
+  - Keys: Up, Down, Page Up/Down, Home, End.
+- **Model changes:** `Measure::align`, `FontFlags`, `gutterWidth()`. Wrapping measures each word
+  and each run of spaces once, run by run, and places them from those widths. It used to measure
+  each word four times (a row's fit, this place's fit, the break loop, placing it); a word broken
+  across rows is still measured where it goes. On the board that halved the cost.
+- **`GuiClipboard::forget()`** withdraws `copy()`'s providers too, not only `offer()`'s.
+  `TextEdit` (and `ChatView`) call it when destroyed. Before, a `TextEdit` destroyed while its
+  selection was the primary one left the clipboard a pointer to it.
+- **The class:** `ChatView` appended to `classes.def` as §2 has it, plus `clearMarker()`.
+  `setMarker` takes its words. `palette` is 99 `#rrggbb` strings (fewer set the first ones and
+  the rest go back to IRC's; an empty list sets all of IRC's). `appendMany` lays out 32 lines at
+  a time. `maxLines` is 1 to 100,000. `gui.lock` and angel's `api.lock` (angel binds every class)
+  have the new lines appended; `guiclasses.h` and `docs/gui-classes.md` are regenerated.
+- **Tests:**
+  - Host: a case for the column at a font change (and `gutterWidth()`). 7 cases, 273
+    assertions; all 13 suites pass.
+  - `chatmodel_fuzz` also checks, with `align` 4, that pieces don't overlap and that a font
+    change starts on the column: 342,156 runs in 3 minutes, and 316,800 more after the
+    measure-once change, nothing found.
+  - The board (`/sd0/p0/claude/chattest.as`, angel): styles, colours, reverse, mono, links, the
+    gutter's column widening for a longer nick, hanging rows, a long word broken, the marker,
+    the wheel and Home/End with `scrolledBack` both ways, link clicks, a selection across a
+    gutter read back as `12:03 carol<tab>A long...`, a narrower window rewrapped with the top
+    line kept, `font = "mono"`, `wrap = false` with the horizontal bar.
+  - `chatperf.as` (2000 lines): `appendMany` 405 ms, a full rewrap 326 ms (wrap off: 474 ms),
+    an append while following ~1.3 ms past the round trip. Before the measure-once change these
+    were 721, 651 and ~5.6 ms.
+- **Open:** a rewrap of 2000 lines takes about a third of a second, which is fine for the
+  window manager's one resize at the end of a drag; a live resize would want only the shown
+  lines rewrapped. Nothing caches the shown lines' layouts between paints yet.
 

@@ -65,6 +65,7 @@ only. What the protocol carries and what the classes mean are in
 | [Shell](#shell) | - | yes |
 | [FontDialog](#fontdialog) | - | yes |
 | [FontButton](#fontbutton) | Widget | yes |
+| [ChatView](#chatview) | Widget | yes |
 
 ## Widget
 
@@ -786,3 +787,30 @@ Made by `Create`; also has the entries of [Widget](#widget).
 | Event | Values | Sent |
 |---|---|---|
 | `changed` | String | on |
+
+## ChatView
+
+Made by `Create`; also has the entries of [Widget](#widget).
+
+| Property | Tag | Access | Values |
+|---|---|---|---|
+| `maxLines` | Int | read, written |  |
+| `followEnd` | Bool | read only |  |
+| `wrap` | Bool | read, written |  |
+| `palette` | List | read, written |  |
+| `selectedText` | String | read only |  |
+
+| Method | Arguments | Result |
+|---|---|---|
+| `append` | String | none |
+| `appendMany` | List | none |
+| `clear` | none | none |
+| `setMarker` | String | none |
+| `clearMarker` | none | none |
+| `scrollToEnd` | none | none |
+| `copy` | none | none |
+
+| Event | Values | Sent |
+|---|---|---|
+| `linkActivated` | String | on |
+| `scrolledBack` | Bool | on |

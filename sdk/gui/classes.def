@@ -424,3 +424,22 @@ GUI_CLASS(FontButton, Widget, Concrete)
 GUI_PROP(FontButton, filter, Atom, RW)
 GUI_VALUES(FontButton, filter, all, monospace, scalable)
 GUI_EVENT(FontButton, changed, On, String)
+
+/* ---- 2026-11-16 (devplan/chatview.md): lines of chat or a log, appended as they come; IRC's
+ * codes style them, a tab ends a line's gutter, links are found; a marker; a selection to copy;
+ * the view follows the end unless scrolled back. Its font is Widget.font */
+GUI_CLASS(ChatView, Widget, Concrete)
+GUI_PROP(ChatView, maxLines, Int, RW)
+GUI_PROP(ChatView, followEnd, Bool, RO)
+GUI_PROP(ChatView, wrap, Bool, RW)
+GUI_PROP(ChatView, palette, List, RW)
+GUI_PROP(ChatView, selectedText, String, RO)
+GUI_METHOD(ChatView, append, None, String)
+GUI_METHOD(ChatView, appendMany, None, List)
+GUI_METHOD(ChatView, clear, None)
+GUI_METHOD(ChatView, setMarker, None, String)
+GUI_METHOD(ChatView, clearMarker, None)
+GUI_METHOD(ChatView, scrollToEnd, None)
+GUI_METHOD(ChatView, copy, None)
+GUI_EVENT(ChatView, linkActivated, On, String)
+GUI_EVENT(ChatView, scrolledBack, On, Bool)

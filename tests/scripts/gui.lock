@@ -356,3 +356,19 @@ property FontDialog.sample String RW
 property FontDialog.title String RW
 values FontButton.filter all monospace scalable
 values FontDialog.filter all monospace scalable
+# 2026-11-16: ChatView, chat and log lines (devplan/chatview.md).
+class ChatView : Widget Concrete
+event ChatView.linkActivated(String) on
+event ChatView.scrolledBack(Bool) on
+method ChatView.appendMany(List) -> None
+method ChatView.append(String) -> None
+method ChatView.clearMarker() -> None
+method ChatView.clear() -> None
+method ChatView.copy() -> None
+method ChatView.scrollToEnd() -> None
+method ChatView.setMarker(String) -> None
+property ChatView.followEnd Bool RO
+property ChatView.maxLines Int RW
+property ChatView.palette List RW
+property ChatView.selectedText String RO
+property ChatView.wrap Bool RW

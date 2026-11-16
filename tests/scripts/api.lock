@@ -4048,3 +4048,41 @@ void TlsSocket::close()
 void TlsSocket::setTimeout(int)
 void TlsSocket::write(const ?&in)
 void TlsSocket::writeLine(const ?&in)
+# 2026-11-16: ChatView, chat and log lines (devplan/chatview.md).
+ChatView@ ChatView(GuiObject@ = null)
+GuiObject@ ChatView::opImplCast()
+Rect ChatView::get_geometry() const
+Widget@ ChatView::opImplCast()
+bool ChatView::get_enabled() const
+bool ChatView::get_followEnd() const
+bool ChatView::get_visible() const
+bool ChatView::get_wrap() const
+class ChatView
+int ChatView::get_maxLines() const
+int ChatView::get_stretch() const
+string ChatView::get_font() const
+string ChatView::get_selectedText() const
+string[]@ ChatView::get_dropTypes() const
+string[]@ ChatView::get_palette() const
+void ChatView::append(const string&in)
+void ChatView::appendMany(const string[]&in)
+void ChatView::clear()
+void ChatView::clearMarker()
+void ChatView::copy()
+void ChatView::destroy()
+void ChatView::onContextMenu(IntIntCallback@)
+void ChatView::onDropped(StringStringIntIntCallback@)
+void ChatView::onLinkActivated(StringCallback@)
+void ChatView::onScrolledBack(BoolCallback@)
+void ChatView::onWheel(IntCallback@)
+void ChatView::scrollToEnd()
+void ChatView::setFocus()
+void ChatView::setMarker(const string&in)
+void ChatView::set_dropTypes(const string[]&in)
+void ChatView::set_enabled(bool)
+void ChatView::set_font(const string&in)
+void ChatView::set_maxLines(int)
+void ChatView::set_palette(const string[]&in)
+void ChatView::set_stretch(int)
+void ChatView::set_visible(bool)
+void ChatView::set_wrap(bool)

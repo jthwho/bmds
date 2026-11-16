@@ -298,12 +298,32 @@ namespace ChatText {
 
         namespace {
 
-                // Wrapping's work on one line.
+                // A word's or a space's bytes measured once, run by run (at most `MaxParts` runs;
+                // more: not `whole`, and they are measured again where they go).
+                struct Measured {
+                                static constexpr size_t MaxParts = 8;
+                                struct Part {
+                                                uint32_t stop = 0;
+                                                uint32_t width = 0;
+                                                uint16_t run = 0;
+                                                uint8_t  font = 0;
+                                };
+                                Part     parts[MaxParts];
+                                size_t   count = 0;
+                                uint32_t a = 0;
+                                uint32_t b = 0;
+                                bool     whole = true;
+                };
+
+                // Wrapping's work on one line. Measuring goes from an x on the current row, after a
+                // piece in font `last` (-1: the row's start, or a jump to the text's column), so
+                // that a run in another font starts on `Measure::align`.
                 struct Wrapper {
                                 const Parsed  &p;
                                 const Measure &m;
                                 Layout        *out;
                                 size_t         rows = 0;
+                                int            last = -1; // the font flags of the row's last piece
 
                                 StringView slice(uint32_t a, uint32_t b) const { return p.text.view().mid(a, b - a); }
 
@@ -314,37 +334,125 @@ namespace ChatText {
                                         return p.runCount == 0 ? 0 : p.runCount - 1;
                                 }
 
-                                // [a, b)'s width, run by run.
-                                uint32_t width(uint32_t a, uint32_t b) const {
-                                        uint32_t w = 0;
-                                        for (size_t r = runAt(a); a < b && r < p.runCount; ++r) {
-                                                const uint32_t end = p.runs[r].start + p.runs[r].length;
-                                                const uint32_t stop = end < b ? end : b;
-                                                if (stop > a)
-                                                        w += m.width(m.arg, slice(a, stop), p.runs[r].style.flags);
-                                                a = stop;
-                                        }
-                                        return w;
+                                uint8_t fontOf(size_t r) const { return uint8_t(p.runs[r].style.flags & FontFlags); }
+
+                                // Where a run in font @p font starts at @p x after a piece in font @p prev.
+                                uint32_t startAt(uint32_t x, int prev, uint8_t font) const {
+                                        if (m.align <= 1 || prev < 0 || uint8_t(prev) == font) return x;
+                                        return (x + m.align - 1) / m.align * m.align;
                                 }
 
-                                // How many bytes of [a, b) fit in @p most, whole characters.
-                                uint32_t fit(uint32_t a, uint32_t b, uint32_t most) const {
-                                        const uint32_t from = a;
+                                // Where [a, b) ends, placed run by run from @p x after font @p prev.
+                                uint32_t endOf(uint32_t a, uint32_t b, uint32_t x, int prev) const {
                                         for (size_t r = runAt(a); a < b && r < p.runCount; ++r) {
                                                 const uint32_t end = p.runs[r].start + p.runs[r].length;
                                                 const uint32_t stop = end < b ? end : b;
+                                                if (stop <= a) continue;
+                                                x = startAt(x, prev, fontOf(r));
+                                                x += m.width(m.arg, slice(a, stop), p.runs[r].style.flags);
+                                                prev = fontOf(r);
+                                                a = stop;
+                                        }
+                                        return x;
+                                }
+
+                                // Where [a, b) ends placed from @p x on the current row.
+                                uint32_t endOf(uint32_t a, uint32_t b, uint32_t x) const {
+                                        return endOf(a, b, x, last);
+                                }
+
+                                // How many bytes of [a, b) fit between @p x and @p limit, whole characters.
+                                uint32_t fit(uint32_t a, uint32_t b, uint32_t x, uint32_t limit) const {
+                                        const uint32_t from = a;
+                                        int            prev = last;
+                                        for (size_t r = runAt(a); a < b && r < p.runCount; ++r) {
+                                                const uint32_t end = p.runs[r].start + p.runs[r].length;
+                                                const uint32_t stop = end < b ? end : b;
+                                                if (stop <= a) continue;
+                                                x = startAt(x, prev, fontOf(r));
+                                                if (x >= limit) break;
                                                 const uint32_t w =
                                                         m.width(m.arg, slice(a, stop), p.runs[r].style.flags);
-                                                if (w <= most) {
-                                                        most -= w;
+                                                if (x + w <= limit) {
+                                                        x += w;
+                                                        prev = fontOf(r);
                                                         a = stop;
                                                         continue;
                                                 }
                                                 return a - from +
                                                        uint32_t(m.fitting(m.arg, slice(a, stop), p.runs[r].style.flags,
-                                                                          most));
+                                                                          limit - x));
                                         }
                                         return a - from;
+                                }
+
+                                // [a, b) measured into @p into.
+                                void measure(uint32_t a, uint32_t b, Measured &into) const {
+                                        into.count = 0;
+                                        into.a = a;
+                                        into.b = b;
+                                        into.whole = true;
+                                        for (size_t r = runAt(a); a < b && r < p.runCount; ++r) {
+                                                const uint32_t end = p.runs[r].start + p.runs[r].length;
+                                                const uint32_t stop = end < b ? end : b;
+                                                if (stop <= a) continue;
+                                                if (into.count == Measured::MaxParts) {
+                                                        into.whole = false;
+                                                        return;
+                                                }
+                                                into.parts[into.count++] = Measured::Part{
+                                                        stop, m.width(m.arg, slice(a, stop), p.runs[r].style.flags),
+                                                        uint16_t(r), fontOf(r)};
+                                                a = stop;
+                                        }
+                                        return;
+                                }
+
+                                // Where @p s ends placed from @p x on the current row.
+                                uint32_t endOf(const Measured &s, uint32_t x) const {
+                                        if (!s.whole) return endOf(s.a, s.b, x, last);
+                                        int prev = last;
+                                        for (size_t i = 0; i < s.count; ++i) {
+                                                x = startAt(x, prev, s.parts[i].font) + s.parts[i].width;
+                                                prev = s.parts[i].font;
+                                        }
+                                        return x;
+                                }
+
+                                // Where @p s ends placed at the start of a row, from @p x.
+                                uint32_t endOfFresh(const Measured &s, uint32_t x) const {
+                                        if (!s.whole) return endOf(s.a, s.b, x, -1);
+                                        int prev = -1;
+                                        for (size_t i = 0; i < s.count; ++i) {
+                                                x = startAt(x, prev, s.parts[i].font) + s.parts[i].width;
+                                                prev = s.parts[i].font;
+                                        }
+                                        return x;
+                                }
+
+                                // @p s placed at @p x on the current row; the new x.
+                                uint32_t place(const Measured &s, uint32_t x) {
+                                        if (!s.whole) return place(s.a, s.b, x);
+                                        uint32_t a = s.a;
+                                        for (size_t i = 0; i < s.count; ++i) {
+                                                x = startAt(x, last, s.parts[i].font);
+                                                record(a, s.parts[i].stop - a, s.parts[i].run, x);
+                                                x += s.parts[i].width;
+                                                last = s.parts[i].font;
+                                                a = s.parts[i].stop;
+                                        }
+                                        return x;
+                                }
+
+                                // A piece on the current row, if there is room for it.
+                                void record(uint32_t a, uint32_t length, uint16_t run, uint32_t x) {
+                                        if (out == nullptr || out->pieces == nullptr ||
+                                            out->pieceCount >= out->maxPieces || rows > out->maxRows ||
+                                            out->rowCount != rows)
+                                                return;
+                                        out->pieces[out->pieceCount++] = Piece{a, length, run, x};
+                                        ++out->rows[rows - 1].pieceCount;
+                                        return;
                                 }
 
                                 void newRow() {
@@ -353,6 +461,7 @@ namespace ChatText {
                                                 out->rowCount = rows + 1;
                                         }
                                         ++rows;
+                                        last = -1;
                                         return;
                                 }
 
@@ -362,17 +471,12 @@ namespace ChatText {
                                                 const uint32_t end = p.runs[r].start + p.runs[r].length;
                                                 const uint32_t stop = end < b ? end : b;
                                                 if (stop <= a) continue;
+                                                x = startAt(x, last, fontOf(r));
                                                 const uint32_t w =
                                                         m.width(m.arg, slice(a, stop), p.runs[r].style.flags);
-                                                const bool room = out != nullptr && out->pieces != nullptr &&
-                                                                  out->pieceCount < out->maxPieces &&
-                                                                  rows <= out->maxRows && out->rowCount == rows;
-                                                if (room) {
-                                                        out->pieces[out->pieceCount++] =
-                                                                Piece{a, stop - a, uint16_t(r), x};
-                                                        ++out->rows[rows - 1].pieceCount;
-                                                }
+                                                record(a, stop - a, uint16_t(r), x);
                                                 x += w;
+                                                last = fontOf(r);
                                                 a = stop;
                                         }
                                         return x;
@@ -402,29 +506,39 @@ namespace ChatText {
                 uint32_t pos = 0;
                 if (line.gutter != NoGutter) {
                         x = w.place(0, line.gutter, 0);
-                        x = x > indent ? x : indent;
+                        if (x < indent) {
+                                x = indent; // the text's column: a fresh start
+                                w.last = -1;
+                        }
                         pos = line.gutter;
                 }
                 const uint32_t rowStart = indent;
                 bool           rowEmpty = line.gutter == NoGutter;
+                Measured       word, space;
                 while (pos < size) {
                         uint32_t wordEnd = pos;
                         while (wordEnd < size && t[wordEnd] != ' ') ++wordEnd;
                         uint32_t spaceEnd = wordEnd;
                         while (spaceEnd < size && t[spaceEnd] == ' ') ++spaceEnd;
                         if (wordEnd > pos) {
-                                const uint32_t ww = w.width(pos, wordEnd);
-                                // To the next row if it fits there; a word no row holds is broken
-                                // from here, rather than leaving this row (a gutter's) bare.
-                                const bool fitsARow = ww <= (width > rowStart ? width - rowStart : 0);
-                                if (!rowEmpty && x + ww > width && fitsARow) {
+                                // Measured once. To the next row if it fits there; a word no row
+                                // holds is broken from here, rather than leaving this row (a
+                                // gutter's) bare.
+                                w.measure(pos, wordEnd, word);
+                                const bool fitsARow = w.endOfFresh(word, rowStart) <= width;
+                                if (!rowEmpty && w.endOf(word, x) > width && fitsARow) {
                                         w.newRow();
                                         x = rowStart;
                                         rowEmpty = true;
                                 }
+                                if (w.endOf(word, x) <= width) {
+                                        x = w.place(word, x);
+                                        rowEmpty = false;
+                                        pos = wordEnd;
+                                }
                                 // A word wider than a row: broken where it reaches the edge.
-                                while (x + w.width(pos, wordEnd) > width) {
-                                        uint32_t n = w.fit(pos, wordEnd, width > x ? width - x : 0);
+                                while (pos < wordEnd && w.endOf(pos, wordEnd, x) > width) {
+                                        uint32_t n = w.fit(pos, wordEnd, x, width);
                                         if (n == 0 && rowEmpty) n = charLength(t, pos); // something on every row
                                         if (n > 0) {
                                                 x = w.place(pos, pos + n, x);
@@ -443,9 +557,9 @@ namespace ChatText {
                                 pos = wordEnd;
                         }
                         if (spaceEnd > pos) {
-                                const uint32_t sw = w.width(pos, spaceEnd);
-                                if (x + sw <= width || rowEmpty) {
-                                        x = w.place(pos, spaceEnd, x);
+                                w.measure(pos, spaceEnd, space);
+                                if (w.endOf(space, x) <= width || rowEmpty) {
+                                        x = w.place(space, x);
                                 } else if (spaceEnd < size) {
                                         // The break: its spaces dropped.
                                         w.newRow();
@@ -456,6 +570,12 @@ namespace ChatText {
                         }
                 }
                 return w.rows;
+        }
+
+        uint32_t gutterWidth(const Parsed &line, const Measure &measure) {
+                if (line.gutter == NoGutter) return 0;
+                const Wrapper w{line, measure, nullptr};
+                return w.endOf(0, line.gutter, 0, -1);
         }
 
         uint32_t hit(const Parsed &line, const Measure &measure, const Layout &layout, size_t row, int32_t x) {

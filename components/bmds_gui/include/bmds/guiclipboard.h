@@ -122,8 +122,8 @@ class GuiClipboard {
                 Error finish(uint32_t request);
 
                 /**
-                 * @brief @p arg is going: its copies made with `offer()` are withdrawn and its
-                 *        requests end unanswered.
+                 * @brief @p arg is going: its copies made with `copy()` or `offer()` are withdrawn
+                 *        and its requests end unanswered.
                  */
                 void forget(void *arg);
 

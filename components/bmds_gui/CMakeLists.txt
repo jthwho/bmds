@@ -32,6 +32,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_GUI_PURE_SRCS}
                                     src/backdrop.cpp
+                                    src/chatview.cpp
                                     src/colordialog.cpp
                                     src/combobox.cpp
                                     src/detailsview.cpp

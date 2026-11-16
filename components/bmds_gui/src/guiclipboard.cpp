@@ -155,7 +155,7 @@ void GuiClipboard::forget(void *arg) {
         Clipboard *c = clipboard();
         for (size_t s = 0; s < Clipboard::Selections; ++s) {
                 Own &own = _own[s];
-                if (own.asked == nullptr || own.arg != arg) continue;
+                if ((own.asked == nullptr && own.fn == nullptr) || own.arg != arg) continue;
                 if (c != nullptr) (void)c->withdraw(static_cast<Selection>(s), own.serial);
                 own = Own();
         }

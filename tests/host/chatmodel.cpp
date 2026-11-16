@@ -254,6 +254,54 @@ TEST_CASE("ChatText: wrapping") {
         CHECK(w.rows[0] == "\xe2\x9c\x93\xe2\x9c\x93");
 }
 
+TEST_CASE("ChatText: a font change starts on the measure's column") {
+        ChatText::Measure aligned = Fake;
+        aligned.align = 4;
+        ChatText::Row    rows[8];
+        ChatText::Piece  pieces[16];
+        ChatText::Layout l{rows, 8, pieces, 16};
+
+        // Bold "ab" ends at 18; "cd", back in the regular font, starts at 20.
+        const ChatText::Parsed p = parsed("\x02"
+                                          "ab\x02"
+                                          "cd ef");
+        REQUIRE(ChatText::wrap(p, aligned, 60, 0, &l) == 1);
+        REQUIRE(l.pieceCount == 4); // "ab" "cd" " " "ef"
+        CHECK(pieces[0].x == 0);
+        CHECK(pieces[1].x == 20);
+        CHECK(pieces[2].x == 36);
+        CHECK(pieces[3].x == 44);
+        CHECK(ChatText::wrap(p, aligned, 59, 0, nullptr) == 2); // "ef" ends at 60
+        REQUIRE(ChatText::wrap(p, Fake, 60, 0, &l) == 1);
+        CHECK(pieces[1].x == 18); // no column asked for
+        CHECK(ChatText::hit(p, aligned, l, 0, 19) == 2);
+
+        // A colour alone keeps the font: no column.
+        REQUIRE(ChatText::wrap(parsed("\x03"
+                                      "04ab\x03"
+                                      "cd"),
+                               aligned, 60, 0, &l) == 1);
+        CHECK(pieces[1].x == 16);
+
+        // The gutter's width; text past a gutter wider than the column starts on the next one.
+        const ChatText::Parsed g = parsed("\x02"
+                                          "nicks\x02\tmsg");
+        CHECK(ChatText::gutterWidth(g, aligned) == 45);
+        CHECK(ChatText::gutterWidth(parsed("no gutter"), aligned) == 0);
+        REQUIRE(ChatText::wrap(g, aligned, 200, 32, &l) == 1);
+        CHECK(pieces[1].x == 48);
+        REQUIRE(ChatText::wrap(g, aligned, 200, 52, &l) == 1);
+        CHECK(pieces[1].x == 52);
+
+        // A word broken at the edge counts the column too: bold "a", then "bcdefgh" from 12.
+        REQUIRE(ChatText::wrap(parsed("\x02"
+                                      "a\x02"
+                                      "bcdefgh"),
+                               aligned, 40, 0, &l) == 2);
+        CHECK(pieces[1].x == 12);
+        CHECK(pieces[1].length == 3); // 12 + 24 = 36; a fourth would reach 44
+}
+
 TEST_CASE("ChatText: a point's byte") {
         const ChatText::Parsed p = parsed("ab\tcdef ghij");
         ChatText::Row          rows[8];
