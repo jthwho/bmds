@@ -93,6 +93,14 @@ target_compile_options(pkg_fuzz PRIVATE -fno-exceptions -fno-rtti)
 target_link_libraries(pkg_fuzz PRIVATE bmds_core)
 target_link_options(pkg_fuzz PRIVATE -fsanitize=fuzzer)
 
+# ChatView's model (devplan/chatview.md): lines parsed, wrapped, hit; bmds_gui's pure chatmodel.cpp.
+add_executable(chatmodel_fuzz chatmodel.cpp ${BMDS_ROOT}/components/bmds_gui/src/chatmodel.cpp
+        ${BMDS_ROOT}/tests/host/hostmemory.cpp)
+target_include_directories(chatmodel_fuzz PRIVATE ${BMDS_ROOT}/components/bmds_gui/include)
+target_compile_options(chatmodel_fuzz PRIVATE -fno-exceptions -fno-rtti)
+target_link_libraries(chatmodel_fuzz PRIVATE bmds_core)
+target_link_options(chatmodel_fuzz PRIVATE -fsanitize=fuzzer)
+
 # HTTP (devplan/packages.md §23): responses in pieces, URLs parsed and resolved.
 add_executable(http_fuzz http.cpp ${BMDS_ROOT}/tests/host/hostmemory.cpp)
 target_compile_options(http_fuzz PRIVATE -fno-exceptions -fno-rtti)

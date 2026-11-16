@@ -91,6 +91,7 @@ add_executable(bmds_host_tests
         socket.cpp
         faketls.cpp
         tlssocket.cpp
+        chatmodel.cpp
         loader.cpp
         blockwriter.cpp
         memorystream.cpp

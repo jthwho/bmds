@@ -546,7 +546,10 @@ Plan: [`input.md`](input.md).
     decisions shared with the kernel's fetcher (`Http::next()`), `progtest http`. Step 5 done
     (§35l): angel's `Http` on libbmdshttp (HTTPS; its own client gone), `TlsSocket` and
     `Socket::startTls()`; roots cross-signed by one the bundle lacks trusted (smtp.gmail.com).
-    Next: the IRC client (step 6, its own design).
+    Step 6, the IRC client (2026-11-16, for the user's review): in bmds-apps (its
+    `devplan/irc.md`: a GUI client of our own, a portable C++ core tested on the PC), released
+    after the next BMDS release; what it needs here, a `ChatView` GUI class (`chatview.md`,
+    approved 2026-11-16; step 1, the model, built: §7).
   - [ ] HTTP serving for applications (the user, 2026-10-28; to plan): a web server in the
     kernel or the SDK that applications serve their pages and JSON APIs from, behind the system's
     users and passwords; first users the synth module's configuration (`synthmodule.md` §3h).

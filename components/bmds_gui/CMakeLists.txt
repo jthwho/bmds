@@ -8,6 +8,7 @@
 # CMake library for the host tests (tests/host).
 
 set(BMDS_GUI_PURE_SRCS
+        src/chatmodel.cpp
         src/filenamelist.cpp
         src/formmodels.cpp
         src/furniturelayout.cpp
