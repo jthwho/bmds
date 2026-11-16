@@ -2742,3 +2742,261 @@ part; the login shell instead of the command is the board's. Interactive session
 a pty, no command) and commands without a pty work. To look at: dropbear's `ptycommand()` with
 `chansess->cmd` under the vfork re-exec (patch 0001), and whether a pty's output written just
 before its slave closes reaches the master (it should be read until drained, as Linux does).
+
+## 35. TLS for programs: the design (2026-11-16, for the user's review)
+
+Asked for an IRC client (6697 and SASL want TLS); `scripting.md`'s `https://` and an HTTPS `wget`
+wait on the same thing. Today mbedTLS is in the firmware for `pkg`'s fetching alone
+(`Http::openTls()`, `httptls.cpp`); a program has sockets and no TLS.
+
+### 35a. Where TLS lives
+
+| | Choice | Rejected |
+|---|---|---|
+| T1 | **In the kernel, on the socket.** A connected TCP socket becomes a TLS socket by one call; afterwards `read`, `write`, `send`, `recv`, `poll` and `shutdown` carry plaintext, as Linux's kTLS does after its handshake, but the handshake is ours too | mbedTLS linked into each program (150-200 KB a program, the 200-certificate bundle again or a file to parse at each start, and the AES and MPI engines out of reach in U-mode but through `crypto`'s slot); Linux's kTLS split (still a handshake library in each program); a proxy service on the loopback (two more copies and a TCP connection a session) |
+| T2 | **A new slot, `tls_ctl(fd, op, arg)`**, as `term_ctl` and `ptp_ctl` are | `setsockopt(BMDS_SOL_BMDS, ...)` as `BMDS_SO_FASTPATH` is: workable for starting, but a handshake to wait for and a record of the peer to read aren't options |
+| T3 | **Handshakes on a kernel task, `tls`**, which steps every pending handshake from its sockets' readiness (mbedTLS resumes on `WANT_READ`/`WANT_WRITE`), created at the first and gone 30 s after the last | on the caller's stack (the floor is 12 KB for every slot, `programs.md` §21 d: an RSA-4096 chain and ECDHE haven't been measured against it, and a non-blocking program would have to come back to drive it, libtls's way); a task a session (a stack each) |
+| T4 | **Records in the caller's task**: `read` decrypts, `write` encrypts, on the caller's stack and CPU time, as TCP's copies are now | records through the `tls` task (a switch each way a record) |
+| T5 | **The SDK also gets libtls's API** (OpenBSD's `tls.h`, the client subset), a thin C library over the slot, so programs written for LibreSSL's libtls or libretls build: catgirl, OpenBSD's `nc`, acme clients | an OpenSSL subset (an enormous surface; nothing small enough to be honest about) |
+| T6 | **HTTP stays out of the kernel's ABI: an SDK library, `libbmdshttp`**, built from the kernel's own parser (one parser, host-tested and fuzzed), with angel moved onto it (the user's, 2026-11-16) | an HTTP slot (methods, headers, redirects, cookies, proxies, keep-alive, HTTP/2 frozen forever; the network's data parsed in M-mode, where a bug is the system's, not one program's; little saved once TLS and the bundle are the kernel's); angel's own client kept (two parsers) |
+
+What T1 gives besides size: the session belongs to the open file, so a TLS fd can be inherited by
+a child, `dup`ed or handed to a program that knows nothing of TLS (`tlsclient -e`, below); the
+session keys stay in kernel memory a U-mode program can't read; and `pkg`'s fetching and programs
+share one TLS implementation.
+
+### 35b. The ABI (frozen once shipped)
+
+**`tls_ctl`** (slot 135, the next free), `int32_t tls_ctl(int32_t fd, uint32_t op, void *arg)`;
+`linux.c` is untouched (a TLS socket is still a socket):
+
+- **`BMDS_TLS_START` (1)**, `arg` a `const bmds_tls_config_t *`: the socket becomes a TLS
+  client. Connected, the handshake starts at once; connecting (`EINPROGRESS`), when it connects.
+  The config is copied: the program's buffers are free when the call returns. Returns 0 without
+  waiting. Data the program has already read stays read, so STARTTLS (IMAP, SMTP, XMPP, IRC's
+  `STARTTLS`) is this call at the protocol's moment.
+  - Errors: `ENOTSOCK`; `EOPNOTSUPP` (not TCP); `EALREADY` (already TLS); `ENOTCONN` (neither
+    connected nor connecting); `EINVAL` (unknown flags, a bad size, a certificate or key that
+    doesn't parse); `ENOBUFS` (the sessions setting is reached); `ENOMEM`.
+- **`BMDS_TLS_HANDSHAKE` (2)**, `arg` null: waits for the handshake. 0 done; the handshake's error
+  if it failed; blocking, it waits (the socket's `SO_RCVTIMEO`, `EINTR` on a signal: the handshake
+  carries on, as an interrupted `connect` does); non-blocking, `EAGAIN` while it runs. Optional:
+  `read` and `write` wait for it the same way.
+- **`BMDS_TLS_INFO` (3)**, `arg` a `bmds_tls_info_t *`: the session's state and its peer.
+
+**`bmds_tls_config_t`** (`size` first; pointers and lengths, nothing kept):
+
+| Field | |
+|---|---|
+| `uint32_t size` | |
+| `uint32_t flags` | `BMDS_TLS_NO_VERIFY` (1): the chain, dates and name aren't checked (a self-signed server; the program checks `peer_sha256` itself, as IRC clients pin a certificate). Others `EINVAL` |
+| `const char *server_name` | SNI and the name checked against the certificate. Null: no SNI, and only with `NO_VERIFY` (`EINVAL` otherwise) |
+| `const uint8_t *ca`, `uint32_t ca_size` | more trusted roots, PEM or DER, beside the system's (35c) |
+| `const uint8_t *cert`, `uint32_t cert_size`, `const uint8_t *key`, `uint32_t key_size` | a client certificate and its key, PEM or DER (IRC's CertFP and SASL `EXTERNAL`); unencrypted keys only |
+| `const char *alpn` | protocols offered, comma separated (`"h2,http/1.1"`); null, none |
+
+**`bmds_tls_info_t`**: `size`; `state` (`HANDSHAKING` 0, `OPEN` 1, `FAILED` 2, `CLOSED` 3);
+`error` (the handshake's errno, 0); `verify` (bits, also set with `NO_VERIFY` so a program can see
+what it waived: `EXPIRED`, `NOT_YET_VALID`, `NAME`, `UNTRUSTED`, `CLOCK`, `OTHER`); `version`
+(`0x0303` for 1.2); `cipher` (IANA's number) and `cipher_name[48]`; `alpn[16]`; the peer's leaf
+`peer_sha256[32]` (of its DER: CertFP's fingerprint), `subject[128]`, `issuer[128]`,
+`not_before`, `not_after` (Unix seconds, `int64_t`); `flags` (`CLEAN_CLOSE`: the peer sent
+`close_notify`). Captured at verification (mbedTLS's callback, depth 0), so
+`MBEDTLS_SSL_KEEP_PEER_CERTIFICATE` stays off.
+
+**Errors from the handshake**, given by `HANDSHAKE`, by the first `read` or `write`, and by
+`getsockopt(SO_ERROR)`: `EKEYREJECTED` (a certificate refused; `verify` says why, `CLOCK` while
+the system clock isn't set), `EPROTO` (an alert, no cipher in common, a malformed message),
+`ETIMEDOUT` (the setting, 35c), the socket's own (`ECONNRESET`, ...). After the handshake: a
+record that fails its tag is `EBADMSG` and ends the session (each later call `EBADMSG`).
+
+**`poll`** is the TLS layer's, not TCP's, so a program never spins:
+- handshaking: nothing; done, `POLLOUT` (and `POLLIN` if data came with it); failed, `POLLERR`
+  (`SO_ERROR` says why). A program that waits for a non-blocking `connect` already does this.
+- open: `POLLIN` when plaintext is decrypted and waiting, or when TCP holds at least what the
+  record being read still lacks: the receive BIO notes the bytes mbedTLS asked for when it
+  returned `WANT_READ` (`ssl_fetch_input` asks for exactly the rest of the record), so half a
+  record doesn't wake a reader. `POLLOUT` when TCP is writable and no record is left half sent.
+  `POLLHUP` and `POLLRDHUP` as TCP's, after the plaintext before them is read.
+
+**Ending:** `read` gives 0 at the peer's `close_notify` and also at a TCP end without one
+(servers do; `CLEAN_CLOSE` tells them apart for a program that cares about truncation).
+`shutdown(SHUT_WR)` sends `close_notify`, then the FIN. The last `close` sends `close_notify`
+without waiting (`SO_LINGER` as TCP's) and frees the session.
+
+**`sys.h` appends:** the slot, the three ops, both structs, the flags and bits; `abilock.c` checks
+them. Linux's errno numbers (`EKEYREJECTED` 129, `EPROTO` 71) from musl as they stand.
+
+### 35c. The kernel side
+
+- **`TlsSession`** (`bmds_net`, target): one mbedTLS client context, its config and buffers,
+  `Http::openTls()`'s code moved into it (the suites in §33's order, the bundle, the host name, the
+  certificate's failures in words for the kernel's own callers). `pkg`'s fetching becomes its
+  first user; its blocking use stays as it is.
+- **`Socket`** gains a `TlsSession *` (a pointer: no size for plain sockets). Its `read`/`write`
+  and readiness go through the session when there is one. One mutex a session around each
+  mbedTLS call (never held while waiting), so a reader thread and a writer thread work, as IRC
+  clients have them.
+- **The `tls` task:** a queue of handshaking sessions; waits on their sockets' `WaitList`s at once;
+  steps whichever is ready until `WANT_READ`/`WANT_WRITE`, finished, or failed; then wakes the
+  socket's waiters. One slow server never holds up another's handshake. Its stack is sized from
+  `CONFIG_BMDS_STACK_PROBE`'s measure of the deepest handshake (an RSA-4096 chain; ECDSA);
+  internal RAM, only while it exists. `close` of a handshaking socket takes it off the queue.
+- **Memory:** sessions in `Psram` (`Memory`, as now): 16 KB in, 4 KB out, about 6 KB of contexts,
+  plus the chain during the handshake. Counted in sysmon (`net.tls.sessions`, `net.tls.bytes`,
+  `net.tls.handshakes`, `net.tls.failures`).
+- **Settings** (sysconf, `net/tls/...`):
+  - `sessions`: at most this many at once, 8 (`ENOBUFS` beyond);
+  - `handshake-timeout`: 30 s (`ETIMEDOUT`);
+  - `ca`: a path to more trusted roots (PEM) for every session, empty by default: a home CA once,
+    not in each program.
+- **mbedTLS's configuration:**
+  - `CONFIG_MBEDTLS_SSL_RENEGOTIATION` off: a server's renegotiation would be a handshake inside
+    a program's `read`, on its stack. Servers that insist get `EPROTO`.
+  - TLS 1.3 (`CONFIG_MBEDTLS_SSL_PROTO_TLS1_3`): measured in step 1 (flash, the handshake's
+    stack and time); taken if it costs little. Every IRC network and web host still takes 1.2.
+  - Client only still (`CONFIG_MBEDTLS_TLS_CLIENT_ONLY`); a server role is a flag for later
+    (unknown flags are refused now, so it can be added).
+  - No session resumption for now (a ticket cache is memory kept for an occasional second
+    connection).
+- **Threads in mbedTLS:** `MBEDTLS_THREADING_C` is off; contexts are per session and the shared
+  state (the bundle, read only after attaching; `TlsGcm`'s table cache, its own mutex; the
+  engines, IDF's locks) is safe. Checked by two programs' sessions at once in the tests.
+- **Budget (estimates):** flash 10-15 KB (the slot, the task, the session; mbedTLS is there), more
+  if TLS 1.3 is taken. RAM: nothing resident; about 26 KB of PSRAM an open session, the `tls`
+  task's stack while handshakes run.
+
+### 35d. The SDK and programs
+
+- **`sdk/tls`, `libtls.a` and `<tls.h>`** (T5): `tls_init`, `tls_config_new`/`_free`,
+  `tls_config_set_ca_file`/`_mem`, `tls_config_set_keypair_file`/`_mem`,
+  `tls_config_insecure_noverifycert`/`_noverifyname`, `tls_config_set_alpn`, `tls_client`,
+  `tls_configure`, `tls_connect`, `tls_connect_socket`, `tls_connect_servername`,
+  `tls_handshake`, `tls_read`, `tls_write`, `tls_close`, `tls_free`, `tls_error`,
+  `tls_peer_cert_hash` (`SHA256:...`), `tls_peer_cert_subject`/`_issuer`/`_notbefore`/
+  `_notafter`, `tls_conn_version`, `tls_conn_cipher`, `tls_conn_alpn_selected`;
+  `TLS_WANT_POLLIN`/`TLS_WANT_POLLOUT` from `EAGAIN` and the call. Server calls answer
+  `ENOTSUP` with an error string. Our own code (the API is OpenBSD's; libtls's ISC licence would
+  allow theirs, but it wraps LibreSSL). Frozen as the SDK's headers are.
+- **`tlsclient HOST PORT`** (`sdk/examples`, in `/rom/bin`): `openssl s_client`'s job: connects,
+  says who answered (subject, issuer, dates, fingerprint, version, cipher), then relays the
+  terminal; `-e COMMAND` runs a command with the TLS socket as its stdin and stdout instead (BusyBox
+  `telnet` or any plaintext program over TLS); `--insecure`, `--ca FILE`, `--cert FILE --key FILE`.
+- **`libbmdshttp`** (`sdk/http`, `<bmds/httplib.h>`: `bmds/http.h` is the kernel's parser, built
+  into it; T6): an HTTP/1.1 client for programs.
+  - **One parser:** `bmds_core`'s `Http` (`http.cpp`: URLs, references resolved, requests, the
+    response parser) compiled into the library with `String` and a program's `Memory` (musl's
+    `malloc`; no `MemSpace` but the heap's). The decisions `httpclient.cpp` makes around it
+    (redirects, `Range` and a server answering 200 to it, which body framing ends a response) move
+    into `bmds_core` too, so the kernel's fetcher and the library share them; each keeps only
+    its connection (the kernel's `Socket`; the library's POSIX sockets, `getaddrinfo` and
+    `tls_ctl`).
+  - **The API** (C99, `bmds_http_` snake case, `size` first; frozen as the SDK's headers are, the
+    code relinked as it improves): `bmds_http_open(const bmds_http_request_t *, bmds_http_t **)`
+    (`method`, `url`, extra `headers` as `"Name: value\r\n"` lines, a `body` and its length,
+    `range_from`, `timeout_ms` (negative: forever, as the SDK's other waits), `max_redirects`, a
+    `const bmds_tls_config_t *` for `https:`'s extras, `flags`: unknown ones refused) sends the
+    request and reads the head; then `bmds_http_status`, `bmds_http_header(h, name)`,
+    `bmds_http_header_at(h, i, ...)`, `bmds_http_url` (after redirects), `bmds_http_length`
+    (−1 unknown), `bmds_http_read(h, buf, n)` (the body streamed, chunks undone; 0 at its end),
+    `bmds_http_tls_info`, `bmds_http_error` (in words: "github.com: its certificate has
+    expired"), `bmds_http_close`. Errors as errno values. Blocking, one request a connection
+    (`Connection: close`), as the kernel's is; a non-blocking form and keep-alive appended if a
+    program needs them.
+  - **Size:** measured in step 4 (estimated 10-15 KB a program that links it).
+- **angel:** its own HTTP/1.1 client in `network.cpp` goes; `Http`'s script API stays as it is
+  (`get`, `post`, `request`, `HttpResponse`: frozen) on `libbmdshttp`, and `https://` works
+  through it. A `TlsSocket` for scripts (`scripting.md`'s §9 note) on `tls_ctl`.
+- **BusyBox's `wget https://`:** its own TLS doesn't check certificates; how it reaches ours
+  (its `ssl_client` helper replaced, or a patch to its connect) decided in step 3.
+
+### 35e. Testing
+
+- **Host:** the portable parts, in `bmds_core` with a fake engine: the readiness rule (the bytes a
+  record lacks), the state machine (start, wait, fail, close at each point), the config's checks;
+  the lock for the new slot, structs and constants. The redirect and `Range` decisions in
+  `bmds_core`, now shared, with cases of their own; `http_fuzz` as before.
+- **Board** (`progtest tls`, new, and `tlsclient`):
+  - against a server on sartre (`openssl s_server`, our own test CA): verified, `NO_VERIFY` with
+    its `verify` bits, each refusal (expired, the wrong name, untrusted, no clock), a client
+    certificate, ALPN, `close_notify` and a bare FIN, a record tampered with (`EBADMSG`), a
+    server that never answers (`ETIMEDOUT`);
+  - real servers: `irc.libera.chat:6697`, `github.com:443`;
+  - blocking and non-blocking (a `poll` loop that must not spin: wakeups counted), two programs'
+    handshakes at once, Ctrl-C in a blocking handshake, `close` during one, a reader thread with
+    a writer thread, the fd inherited by a child (`tlsclient -e cat`);
+  - `pkg update` and a download as before, at §33's speed;
+  - `libbmdshttp` (`progtest http`, new) against sartre's server and GitHub: GET and POST, a
+    redirect to another host, chunked and by length, `Range`, a refused certificate in words;
+    angel's network board test and script corpus unchanged in what they print;
+  - `CONFIG_BMDS_STACK_PROBE`: `tls_ctl`, `read` and `write` on TLS sockets against the 12 KB floor.
+- **Measured and written here:** flash, a session's PSRAM, the `tls` task's stack, handshake times
+  (RSA and ECDSA servers), throughput against `pkg`'s.
+
+### 35f. Steps
+
+1. **`TlsSession`** out of `httptls.cpp`, `pkg` on it; the measures (the handshake's stack and
+   time, TLS 1.3's cost); renegotiation off.
+2. **The kernel:** `Socket`'s session, the `tls` task, the slot, `sys.h`, the lock, the settings,
+   sysmon; `progtest tls`.
+3. **The SDK:** `libtls`, `tlsclient`; BusyBox's `wget`.
+4. **`libbmdshttp`:** the shared redirect and `Range` decisions into `bmds_core` (the kernel's
+   fetcher on them), the library, `progtest http`; its size measured.
+5. **angel on `libbmdshttp`**, its own client removed; HTTPS and `TlsSocket` (`scripting.md`).
+6. **Then the IRC client** (`devplan/irc.md`, its own design).
+
+### 35g. For the user to decide
+
+- T1-T5 as a whole: TLS in the kernel, a slot, a task for handshakes, libtls's API in the SDK.
+  (T6, HTTP as an SDK library and not a slot, is the user's.)
+- Client certificates in the first version (proposed: yes; CertFP is how IRC users identify).
+- TLS 1.3 by measurement in step 1, or not at all for now.
+- The sessions limit (8) and the handshake timeout (30 s) as defaults.
+
+### 35h. As built: step 1 (2026-11-16; T1-T6, client certificates, the defaults approved by the user)
+
+- **`TlsSession`** (`bmds/tlssession.h`, `tlssession.cpp`): `Http::openTls()`'s mbedTLS code as a
+  class, with what step 2 needs already: the handshake stepped without waiting (`Socket::DontWait`:
+  `WouldBlock`, `want()`, and `bytesWanted()` from the receive BIO, the rest of the record
+  mbedTLS asked for); `verifyFlags()` in §35b's bits; the server's certificate (`peer()`: SHA-256
+  of its DER, subject, issuer, dates) seen in a verify callback of our own that calls the bundle's
+  first (`docs/platforms/esp32p4.md` §5); `NoVerify` (mbedTLS's `OPTIONAL`, the reasons still
+  reported, `VerifyClock` when the dates were checked against no clock); `version()`, `cipher()`,
+  `cipherName()`; `isCleanClose()`. `httptls.cpp` is now an adapter: `pkg` runs on it.
+- **mbedTLS:** `CONFIG_MBEDTLS_HAVE_TIME_DATE=y`: **certificates' dates weren't checked at all**
+  (IDF's default); `pkg`'s "its certificate has expired" could never be said.
+  `CONFIG_MBEDTLS_SSL_RENEGOTIATION` off.
+- **`bench net.tls.handshake [host=H] [port=P]`** (`peer`): each handshake on a thread of its own
+  with a 32 KB stack: the time, the stack reached, an open session's PSRAM (the heap's free bytes
+  before and after: approximate).
+- **Flash:** +4,960 bytes (3,222,592 to 3,227,552: the session class, the bench, date checks, less
+  renegotiation).
+- **TLS 1.3: +44,496 bytes** (two fresh builds from the defaults, ephemeral key exchange only), and
+  it selects `KEEP_PEER_CERTIFICATE` (each session keeps the server's chain). Not "little": the
+  proposal is to leave it off until a server needs it; the user's call.
+- **On the board** (0.3.1+30acc480, by `tools/bmds-update`):
+  - `bench net.tls.handshake` (3-5 runs each, medians; the stack is the thread's high-water mark):
+
+    | Server | Certificate | Suite chosen | Handshake | Stack | Session's PSRAM |
+    |---|---|---|---:|---:|---:|
+    | `github.com` | ECDSA P-256, Sectigo | ECDHE-ECDSA AES-128-GCM | 725 ms | 2,436 B | 17,656 B |
+    | `irc.libera.chat:6697` | RSA, Let's Encrypt | ECDHE-RSA ChaCha20-Poly1305 (the server's order) | 714 ms | 2,448 B | 17,656 B |
+    | `rsa4096.badssl.com` | RSA-4096, Let's Encrypt | ECDHE-RSA AES-128-GCM | 339 ms | 2,400 B | 17,692 B |
+    | `ecc384.badssl.com` | ECDSA P-384, Let's Encrypt | ECDHE-ECDSA AES-128-GCM | 1,224 ms | 2,400 B | 17,692 B |
+
+    `rsa8192.badssl.com`'s certificate has expired: refused ("its certificate has expired"),
+    which before the date checks it wasn't.
+  - **The stack is small** (mbedTLS keeps its numbers on the heap): 2.5 KB at the deepest, an
+    RSA-4096 chain included. The `tls` task gets **6 KB in PSRAM** (no internal RAM; a handshake
+    writes no flash). T3 stands on its other reason: a handshake is 0.3-1.2 s of CPU, which a
+    non-blocking `read` in a GUI program's loop mustn't spend.
+  - **Refusals,** by `update fetch --check https://H/` against badssl.com: `expired` ("its
+    certificate has expired"), `wrong.host` ("is for another name"), `self-signed` and
+    `untrusted-root` ("isn't from an authority this system trusts").
+  - **`pkg update`:** all three sources read (GitHub Pages, a GitHub release, the card).
+  - **Speed:** `update fetch` of the release package (12.86 MB) to the card: 19.2 s, of which
+    10.5 s is its check after (`update check` of the same file alone), so about 1.51 MB/s against
+    §33's 1.48.
+- **Open:** where a handshake's 0.3-1.2 s goes (ECDSA P-256 slower than an RSA-4096 chain,
+  with `MBEDTLS_HARDWARE_ECC` on); profiled when it matters. `bench`'s result file is named by
+  the second, so a run starting in the same second as the last fails ("Already exists").

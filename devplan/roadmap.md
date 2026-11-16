@@ -529,6 +529,14 @@ Plan: [`input.md`](input.md).
     steps a new master's first offset, a new parent's timescale is taken at once, NTP gets its
     rate back from PTP and takes a large rate error whole. Left: the grandmaster's tests;
     where to pick up, and the hardware wanted: §31h.
+  - [ ] TLS for programs (`network.md` §35, designed 2026-11-16, for the user's review; asked for
+    an IRC client): TLS in the kernel on a TCP socket (`tls_ctl`, slot 135), handshakes on a
+    `tls` task, records in the caller's task, `poll` that never spins on half a record; libtls's
+    API in the SDK, `tlsclient`; `libbmdshttp` (HTTP for programs from the kernel's own parser,
+    not a slot) with angel moved onto it; then the IRC client. Step 1 done (§35h): `TlsSession`
+    (`pkg` on it), certificates' dates checked at last (IDF's default skipped them), renegotiation
+    off, `bench net.tls.handshake` (0.3-1.2 s, 2.5 KB of stack, 17.7 KB of PSRAM a session); TLS
+    1.3 measured at 44.5 KB of flash, left off.
   - [ ] HTTP serving for applications (the user, 2026-10-28; to plan): a web server in the
     kernel or the SDK that applications serve their pages and JSON APIs from, behind the system's
     users and passwords; first users the synth module's configuration (`synthmodule.md` §3h).

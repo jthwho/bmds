@@ -86,6 +86,7 @@ if(COMMAND idf_component_register)
                                     src/timesync.cpp
                                     src/tlsbench.cpp
                                     src/tlsgcm.cpp
+                                    src/tlssession.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS ${BMDS_LWIP_INCLUDES}
                                REQUIRES bmds_core bmds_kernel

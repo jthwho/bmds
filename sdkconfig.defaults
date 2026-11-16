@@ -102,10 +102,16 @@ CONFIG_BMDS_UPDATE_KEYS_DEV=y
 # the VFS +64%, drawing +20-39%; a random dependent load 6% slower (devplan/bench.md §19).
 CONFIG_CACHE_L2_CACHE_LINE_128B=y
 
-# mbedTLS (devplan/packages.md §23): HTTPS fetching is its only user at run time. Its allocations go
-# through Memory in PSRAM (esp_mbedtls_mem_calloc in bmds_net's httptls.cpp); a client only.
+# mbedTLS (devplan/packages.md §23, network.md §35): TLS client sessions (bmds_net's tlssession.cpp),
+# for HTTPS fetching and programs. Its allocations go through Memory in PSRAM (esp_mbedtls_mem_calloc
+# in tlssession.cpp); a client only.
 CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
 CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y
+# Certificates' dates checked (IDF's default ignores them: an expired certificate passed). Against
+# libc's time, which the kernel's Clock sets; sessions are refused while the clock isn't set.
+CONFIG_MBEDTLS_HAVE_TIME_DATE=y
+# No renegotiation: a server's would be a whole handshake inside a program's read (§35c).
+# CONFIG_MBEDTLS_SSL_RENEGOTIATION is not set
 # ChaCha20-Poly1305, offered after AES-GCM (httptls.cpp): mbedTLS's is software, 3.7 MB/s a 16 KB
 # record against AES-GCM's 6.2 with the engine and bmds's GHASH (devplan/network.md §33).
 CONFIG_MBEDTLS_CHACHA20_C=y

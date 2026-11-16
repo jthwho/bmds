@@ -871,6 +871,21 @@ until silicon v3; then test again.
   in task "main"); 6144 since (`sdkconfig.defaults`), which costs internal RAM only while booting.
   The boot report logs the high-water mark ("Main task stack high water"): check it after adding
   boot work.
+- **mbedTLS ignores certificates' dates unless `CONFIG_MBEDTLS_HAVE_TIME_DATE=y`.** IDF's default
+  is off ("valid from" and "valid to" are skipped), so an expired certificate passes a handshake
+  with `MBEDTLS_SSL_VERIFY_REQUIRED`, and a client's own "has expired" message can never be seen.
+  Found 2026-11-16 reading the configuration for programs' TLS (`devplan/network.md` §35); on
+  since. It checks against libc's `time()`, which the kernel's `Clock` sets
+  (`Detail::setLibcTime()`): before the clock is set, every certificate would be "not yet valid",
+  so `TlsSession` refuses to verify until then.
+- **IDF's certificate bundle installs its own verify callback** (`esp_crt_bundle_attach()` calls
+  `mbedtls_ssl_conf_verify()`); setting another replaces it, and the bundle then trusts nothing.
+  `esp_crt_verify_callback()` is extern though not in the header: a callback of one's own calls it
+  first (`tlssession.cpp`). Its refusal is a fatal return; ignored, the `NOT_TRUSTED` flag it
+  leaves fails the handshake as `MBEDTLS_ERR_X509_CERT_VERIFY_FAILED` with the flags readable.
+- **TLS 1.3 in mbedTLS costs 44.5 KB of flash** (ephemeral key exchange only, no PSK; measured
+  2026-11-16, two fresh builds from `sdkconfig.defaults`) and selects
+  `MBEDTLS_SSL_KEEP_PEER_CERTIFICATE`: every session keeps the server's chain while it lasts.
 - **A restart can fault in the ROM's cache write-back** (seen once, 2026-11-02, cause unknown):
   `reboot` from the shell ended in a store access fault in `Cache_WriteBack_All_Gid` on core 1
   (MEPC `0x4fc10a60`, MTVAL `0x3ff100a0`: the cache's own registers), which `esp_restart_noos`

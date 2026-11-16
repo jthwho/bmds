@@ -8,16 +8,27 @@
  * `bench net.tls.aead` (devplan/network.md §33): a TLS record's encryption and tag, 16 KB, as
  * mbedTLS makes them: AES-GCM ESP-IDF's way and with the 8-bit GHASH (tlsgcm.h), ChaCha20-Poly1305,
  * GHASH alone; and ESP-IDF's whole-engine GCM, which takes only buffers in internal memory.
+ *
+ * `bench net.tls.handshake` (§35f step 1): a `TlsSession`'s handshake with a real server, each on
+ * a thread of its own, to size the `tls` task's stack: the time, the stack it reached, and an open
+ * session's PSRAM.
  */
 
+#include <cstdio>
 #include <cstring>
 #include <aes/esp_aes_gcm.h>
 #include <mbedtls/chachapoly.h>
 #include <mbedtls/gcm.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <bmds/bench.h>
 #include <bmds/ghash.h>
 #include <bmds/memory.h>
+#include <bmds/netstack.h>
+#include <bmds/socket.h>
 #include <bmds/stopwatch.h>
+#include <bmds/thread.h>
+#include <bmds/tlssession.h>
 
 extern "C" int __real_esp_aes_gcm_crypt_and_tag(esp_gcm_context *ctx, int mode, size_t length, const unsigned char *iv,
                                                 size_t iv_len, const unsigned char *aad, size_t aad_len,
@@ -122,10 +133,124 @@ namespace {
                 return gcm(ctx, "aes128_gcm_engine_internal", MemSpace::InternalDma, true);
         }
 
+
+        // A handshake's stack: generous, so the deepest is seen rather than overflowed.
+        constexpr size_t HandshakeStackBytes = 32 * 1024;
+
+        struct Handshake {
+                        uint32_t   ipv4 = 0;
+                        uint16_t   port = 0;
+                        StringView host;
+                        // Out:
+                        Error    err;
+                        String   why;
+                        double   ms = 0;
+                        size_t   stackBytes = 0;
+                        size_t   sessionBytes = 0;
+                        uint16_t version = 0;
+                        char     cipher[48] = {};
+                        char     subject[128] = {};
+                        char     issuer[128] = {};
+        };
+
+        // One connection and handshake, on its own thread (`Handshake`'s fields out).
+        void handshakeThread(void *arg) {
+                Handshake &h = *static_cast<Handshake *>(arg);
+                auto [handle, err] = Socket::create(Socket::Type::Stream, 0);
+                if (err.isOk()) {
+                        Socket *socket = handle->stream().socket();
+                        (void)socket->setOption(Socket::Option::SendTimeoutMs, 30000);
+                        (void)socket->setOption(Socket::Option::ReceiveTimeoutMs, 30000);
+                        (void)socket->setOption(Socket::Option::NoDelay, 1);
+                        err = socket->connect(SocketAddress{h.ipv4, h.port}, 0);
+                        if (err.isOk()) {
+                                const size_t       before = Memory::stats(MemSpace::Psram).freeBytes;
+                                TlsSession::Config config;
+                                config.serverName = h.host;
+                                auto [s, cerr] = TlsSession::create(*socket, config, h.why);
+                                err = cerr;
+                                if (err.isOk()) {
+                                        Stopwatch watch;
+                                        err = s->handshake(0);
+                                        h.ms = double(watch.elapsedUs()) / 1000.0;
+                                        const size_t after = Memory::stats(MemSpace::Psram).freeBytes;
+                                        h.sessionBytes = before > after ? before - after : 0;
+                                        if (err.isError()) {
+                                                (void)h.why.append(s->why());
+                                        } else {
+                                                h.version = s->version();
+                                                (void)std::snprintf(h.cipher, sizeof(h.cipher), "%s", s->cipherName());
+                                                (void)std::snprintf(h.subject, sizeof(h.subject), "%s",
+                                                                    s->peer().subject);
+                                                (void)std::snprintf(h.issuer, sizeof(h.issuer), "%s", s->peer().issuer);
+                                                s->closeNotify();
+                                        }
+                                        TlsSession::destroy(s);
+                                }
+                        }
+                }
+                h.err = err;
+                h.stackBytes = HandshakeStackBytes - size_t(uxTaskGetStackHighWaterMark(nullptr)) * sizeof(StackType_t);
+                return;
+        }
+
+        constexpr BenchParam HandshakeParams[] = {
+                {"host", "github.com", "The server (its certificate must check out)"},
+                {"port", "443", "Its port"},
+        };
+
+        Error runHandshake(BenchContext &ctx) {
+                uint64_t port = 0;
+                if (ctx.paramUnsigned("port", port).isError() || port == 0 || port > 65535) return Error::Invalid;
+                Handshake h;
+                h.host = ctx.param("host");
+                h.port = uint16_t(port);
+                if (Error err = NetStack::resolve(h.host, h.ipv4, 10000); err.isError()) {
+                        ctx.note("%.*s: %s", int(h.host.size()), h.host.data(), err.desc());
+                        return err == Error::NotReady ? Error::NotReady : err;
+                }
+                const uint32_t total = ctx.warmup() + ctx.runs();
+                double         ms[32];
+                double         stack[32];
+                double         session[32];
+                uint32_t       kept = 0;
+                for (uint32_t i = 0; i < total && kept < 32; ++i) {
+                        if (ctx.isCancelled()) return Error::Cancelled;
+                        Thread         thread;
+                        Thread::Config config;
+                        config.name = "tlsbench";
+                        config.stackBytes = HandshakeStackBytes;
+                        config.priority = unsigned(uxTaskPriorityGet(nullptr));
+                        config.kernel = true;
+                        h.why.clear();
+                        if (Error err = thread.start(config, handshakeThread, &h); err.isError()) return err;
+                        thread.join();
+                        if (h.err.isError()) {
+                                ctx.note("%s", h.why.isEmpty() ? h.err.desc() : h.why.cStr());
+                                return h.err;
+                        }
+                        if (i < ctx.warmup()) continue;
+                        ms[kept] = h.ms;
+                        stack[kept] = double(h.stackBytes);
+                        session[kept] = double(h.sessionBytes);
+                        ++kept;
+                }
+                ctx.note("%.*s: TLS 0x%04x, %s; %s, from %s", int(h.host.size()), h.host.data(), unsigned(h.version),
+                         h.cipher, h.subject, h.issuer);
+                ctx.reportSamples("handshake", "ms", BenchBetter::Lower, Span<double>(ms, kept));
+                ctx.reportSamples("stack", "bytes", BenchBetter::Lower, Span<double>(stack, kept));
+                ctx.reportSamples("session_psram", "bytes", BenchBetter::Lower, Span<double>(session, kept));
+                return Error::Ok;
+        }
+
 } // namespace
 
 BMDS_BENCH(netTlsAead, "net.tls.aead", runAead, BenchQuick,
            "A 16 KB TLS record encrypted and tagged: AES-128-GCM ESP-IDF's and with the 8-bit GHASH, "
            "ChaCha20-Poly1305, GHASH alone, ESP-IDF's whole-engine GCM from internal memory (MB/s)")
+
+BMDS_BENCH_WITH(netTlsHandshake, "net.tls.handshake", runHandshake, BenchPeer, HandshakeParams,
+                "A TLS handshake with a real server on a thread of its own: its time, the stack it reached and an "
+                "open session's PSRAM")
 
 BMDS_NAMESPACE_END
