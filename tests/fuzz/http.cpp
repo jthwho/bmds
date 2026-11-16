@@ -31,9 +31,11 @@ namespace Http = bmds::Http;
 
 namespace {
 
-        // Feeds @p data in pieces of @p step (0: whole); the body read to @p out. Returns the outcome.
-        int read(const uint8_t *data, size_t size, size_t step, std::string &out, int &status) {
-                Http::ResponseParser p;
+        // Feeds @p data in pieces of @p step (0: whole) to a parser with @p options; the body read to
+        // @p out, the kept headers to @p headers. Returns the outcome.
+        int read(const uint8_t *data, size_t size, size_t step, uint8_t options, std::string &out, int &status,
+                 std::string &headers) {
+                Http::ResponseParser p(options);
                 size_t               at = 0;
                 while (at < size && !p.isDone()) {
                         const size_t n = step == 0 ? size - at : (step < size - at ? step : size - at);
@@ -56,6 +58,19 @@ namespace {
                 if (p.hasHead() && !p.head().chunked && p.head().length != Http::Unknown &&
                     out.size() > p.head().length)
                         std::abort();
+                // HEAD's answer has no body; kept headers are "Name: value\n" lines.
+                if ((options & Http::ResponseParser::HeadRequest) != 0 && !out.empty()) std::abort();
+                headers.assign(p.headers().data(), p.headers().size());
+                if (!headers.empty() && headers.back() != '\n') std::abort();
+                if (p.hasHead()) {
+                        // What follows the head decides without failing on anything a server sends.
+                        Http::Next next;
+                        const auto err = Http::next(p.head(), "https://example.com/a/b", "POST", 100, true, next);
+                        if (err.isOk() && next.kind == Http::Next::Kind::Redirect) {
+                                Http::Url u;
+                                if (Http::parseUrl(next.url.view(), u).isError()) std::abort();
+                        }
+                }
                 return p.end().isOk() ? 0 : 2;
         }
 
@@ -63,12 +78,13 @@ namespace {
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         if (size == 0) return 0;
-        const size_t step = data[0] % 17;
-        std::string  whole, pieces;
-        int          s1 = 0, s2 = 0;
-        const int    r1 = read(data + 1, size - 1, 0, whole, s1);
-        const int    r2 = read(data + 1, size - 1, step, pieces, s2);
-        if (r1 != r2 || whole != pieces || s1 != s2) std::abort(); // the same however it arrives
+        const size_t  step = data[0] % 17;
+        const uint8_t options = uint8_t(data[0] >> 6); // HeadRequest and KeepHeaders
+        std::string   whole, pieces, h1, h2;
+        int           s1 = 0, s2 = 0;
+        const int     r1 = read(data + 1, size - 1, 0, options, whole, s1, h1);
+        const int     r2 = read(data + 1, size - 1, step, options, pieces, s2, h2);
+        if (r1 != r2 || whole != pieces || s1 != s2 || h1 != h2) std::abort(); // the same however it arrives
 
         // Lines as URLs: each parsed; each resolved against the first, which must then parse.
         const StringView text(reinterpret_cast<const char *>(data + 1), size - 1);

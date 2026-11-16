@@ -20,11 +20,13 @@
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief HTTP/1.1 for a client that fetches (devplan/packages.md §23): URLs, the request, and the
- *        response read as it arrives. No connection here: `bmds_net`'s `Http::get()` has that.
+ * @brief HTTP/1.1 for a client (devplan/packages.md §23, network.md §35d): URLs, the request, the
+ *        response read as it arrives, and what follows a response's head (a redirect, a range).
+ *        No connection here: `bmds_net`'s `Http::get()` has the kernel's, and the SDK's libbmdshttp
+ *        (bmds/httplib.h) a program's, both on this one parser.
  *
- * Only what fetching a file needs: `GET`, one request a connection (`Connection: close`), a
- * `Range` to resume, a body by `Content-Length`, by chunks, or to the connection's end.
+ * One request a connection (`Connection: close`); any method, a body by `Content-Length`; a
+ * `Range` to resume; a response's body by `Content-Length`, by chunks, or to the connection's end.
  *
  * @par Thread Safety
  * The functions are pure; a `ResponseParser` is used by one thread at a time.
@@ -69,6 +71,29 @@ namespace Http {
          */
         Error buildRequest(const Url &url, uint64_t from, StringView userAgent, String &out);
 
+        /** @brief A request's parts, for `buildRequest()`. */
+        struct Request {
+                        StringView method = "GET"; ///< 1-16 capital letters.
+                        const Url *url = nullptr;
+                        StringView userAgent = "BMDS";
+                        uint64_t   from = 0; ///< `Range: bytes=FROM-` when not 0.
+                        /**
+                         * More header lines, each `Name: value\r\n`. Not the ones this writes
+                         * (`Host`, `User-Agent`, `Range`, `Content-Length`, `Transfer-Encoding`,
+                         * `Connection`); an `Accept` here replaces the one that takes anything.
+                         */
+                        StringView headers;
+                        bool       hasBody = false; ///< `Content-Length: bodyLength` (the body is sent after).
+                        uint64_t   bodyLength = 0;
+        };
+
+        /**
+         * @brief Writes @p request's head to @p out (the body, if any, goes after it as it is).
+         * @return `Ok`, `Invalid` (the method, a header line: one not well formed, with a control
+         *         character, or one this writes), `NoMem`.
+         */
+        Error buildRequest(const Request &request, String &out);
+
         /** @brief A size not known. */
         constexpr uint64_t Unknown = UINT64_MAX;
 
@@ -84,12 +109,19 @@ namespace Http {
 
         /**
          * @brief Reads a response as its bytes arrive: the head, then the body handed out as views of
-         *        what was fed. Interim (1xx) responses are skipped. A response to `GET`: 204 and 304
-         *        have no body.
+         *        what was fed. Interim (1xx) responses are skipped. 204 and 304 have no body, nor does
+         *        the answer to `HEAD` (`HeadRequest`).
          */
         class ResponseParser {
                 public:
-                        ResponseParser();
+                        /** @brief The parser's options. */
+                        enum Option : uint8_t {
+                                HeadRequest = 1u << 0, ///< The request was `HEAD`: no body whatever the head says.
+                                KeepHeaders = 1u << 1, ///< Every header line kept (`headers()`).
+                        };
+
+                        /** @brief A parser for one response, with `Option` bits. */
+                        explicit ResponseParser(uint8_t options = 0);
 
                         /**
                          * @brief Takes what it can of @p in: @p used is how much; body bytes among
@@ -117,6 +149,12 @@ namespace Http {
                         /** @brief Returns the head (once `hasHead()`). */
                         const Head &head() const { return _head; }
 
+                        /**
+                         * @brief Returns the final response's header lines (`KeepHeaders`), each
+                         *        `Name: value\n`, the value trimmed, in the order sent.
+                         */
+                        StringView headers() const { return _headers.view(); }
+
                 private:
                         enum class State : uint8_t {
                                 StatusLine,
@@ -137,10 +175,42 @@ namespace Http {
                         State    _state = State::StatusLine;
                         Head     _head;
                         String   _line;
+                        String   _headers; ///< `KeepHeaders`.
+                        uint8_t  _options = 0;
                         size_t   _headBytes = 0;
                         uint64_t _left = 0; ///< Of the body or the chunk.
                         bool     _sawLength = false;
         };
+
+        /** @brief Returns true for a status that redirects (301, 302, 303, 307, 308). */
+        constexpr bool isRedirect(int status) {
+                return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+        }
+
+        /** @brief What follows a response's head (`next()`). */
+        struct Next {
+                        enum class Kind : uint8_t {
+                                Body,     ///< Its body is the answer (`start`, `total`).
+                                Redirect, ///< Ask `url` instead.
+                                Whole,    ///< A 416 to a `Range` from the end: nothing more to fetch.
+                        };
+                        Kind   kind = Kind::Body;
+                        String url;           ///< `Redirect`: where.
+                        bool   asGet = false; ///< `Redirect`: as `GET` without a body (303; 301 and 302 after `POST`).
+                        uint64_t start = 0;   ///< `Body`: its first byte (a 206's; 0 when a `Range` was ignored).
+                        uint64_t total = Unknown; ///< `Body`: the whole file's size, if said.
+        };
+
+        /**
+         * @brief Decides what follows @p head, the answer to @p method on @p url asked from byte
+         *        @p from (a `Range`; 0: all): the redirect resolved against @p url (when
+         *        @p followRedirects), a 416 saying the file is whole, or the body and where it
+         *        starts. Any other status is a `Body` for the caller to judge.
+         * @return `Ok`; `IoError` (a redirect without `Location`); `Invalid` (a `Location` that
+         *         doesn't resolve to an http: or https: URL); `CorruptData` (a 206 from another byte
+         *         than asked); `NoMem`.
+         */
+        Error next(const Head &head, StringView url, StringView method, uint64_t from, bool followRedirects, Next &out);
 
 } // namespace Http
 

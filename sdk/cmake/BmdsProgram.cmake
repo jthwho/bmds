@@ -113,7 +113,52 @@ if(NOT TARGET bmds_crt)
         set_target_properties(bmds_tls PROPERTIES OUTPUT_NAME tls ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
         target_link_libraries(bmds_tls PUBLIC bmds_headers)
         target_compile_options(bmds_tls PRIVATE -Os -Wall -Wextra -Werror)
-        add_custom_target(bmds_libs DEPENDS bmds_libc bmds_crt bmds_game bmds_3d bmds_gui bmds_benchlib bmds_tls)
+        # libbmdshttp.a (bmds/httplib.h, devplan/network.md §35d): bmds_core's HTTP (the kernel's
+        # parser, C++) with its C face. Compiled against libstdc++'s headers (the SDK's own C++
+        # headers have no <string_view>; templates only: no libstdc++ is linked), which reach
+        # musl's through #include_next (freestanding, they'd take GCC's <stdint.h>, not musl's
+        # types), by commands of its own, so a project that enables only C builds it too.
+        get_filename_component(BMDS_CORE_DIR "${BMDS_SDK_DIR}/../components/bmds_core" ABSOLUTE)
+        separate_arguments(_bmds_arch UNIX_COMMAND "${BMDS_ARCH_FLAGS}")
+        execute_process(COMMAND ${CMAKE_C_COMPILER} -dumpversion OUTPUT_VARIABLE _bmds_gcc_version
+                        OUTPUT_STRIP_TRAILING_WHITESPACE)
+        execute_process(COMMAND ${CMAKE_C_COMPILER} ${_bmds_arch} -print-multi-directory
+                        OUTPUT_VARIABLE _bmds_multi OUTPUT_STRIP_TRAILING_WHITESPACE)
+        set(_bmds_cxx_include "${_bmds_toolchain_root}/riscv32-esp-elf/include/c++/${_bmds_gcc_version}")
+        get_filename_component(_bmds_cxx "${CMAKE_C_COMPILER}" DIRECTORY)
+        set(_bmds_cxx "${_bmds_cxx}/riscv32-esp-elf-g++")
+        separate_arguments(_bmds_http_maps UNIX_COMMAND "${BMDS_CC_PREFIX_MAPS}")
+        set(_bmds_http_flags ${_bmds_arch} -mcmodel=medany -mno-relax -ffunction-sections -fdata-sections -g -Os
+                             -nostdinc -std=gnu++20 -fno-exceptions -fno-rtti -fno-threadsafe-statics
+                             -Wall -Wextra -Werror ${_bmds_http_maps}
+                             "-ffile-prefix-map=${BMDS_CORE_DIR}=/components/bmds_core"
+                             -isystem "${_bmds_cxx_include}"
+                             -isystem "${_bmds_cxx_include}/riscv32-esp-elf/${_bmds_multi}"
+                             -isystem "${BMDS_LIBC_INCLUDE}" -isystem "${BMDS_GCC_INCLUDE}"
+                             -I "${BMDS_SDK_DIR}/include" -I "${BMDS_CORE_DIR}/include")
+        set(_bmds_http_objects "")
+        foreach(_bmds_src "${BMDS_CORE_DIR}/src/http.cpp" "${BMDS_CORE_DIR}/src/string.cpp"
+                          "${BMDS_SDK_DIR}/http/httplib.cpp")
+                get_filename_component(_bmds_name "${_bmds_src}" NAME_WE)
+                set(_bmds_obj "${CMAKE_BINARY_DIR}/bmds-http/${_bmds_name}.o")
+                add_custom_command(OUTPUT "${_bmds_obj}"
+                                   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/bmds-http"
+                                   COMMAND "${_bmds_cxx}" ${_bmds_http_flags} -MD -MF "${_bmds_obj}.d" -c "${_bmds_src}"
+                                           -o "${_bmds_obj}"
+                                   DEPENDS "${_bmds_src}" bmds_libc DEPFILE "${_bmds_obj}.d" VERBATIM)
+                list(APPEND _bmds_http_objects "${_bmds_obj}")
+        endforeach()
+        set(BMDS_HTTP_LIB "${BMDS_LIBC_LIB}/libbmdshttp.a")
+        add_custom_command(OUTPUT "${BMDS_HTTP_LIB}"
+                           COMMAND ${CMAKE_COMMAND} -E rm -f "${BMDS_HTTP_LIB}"
+                           COMMAND "${CMAKE_AR}" qcs "${BMDS_HTTP_LIB}" ${_bmds_http_objects}
+                           DEPENDS ${_bmds_http_objects} VERBATIM)
+        add_custom_target(bmds_http_build DEPENDS "${BMDS_HTTP_LIB}")
+        add_library(bmds_http STATIC IMPORTED GLOBAL)
+        set_target_properties(bmds_http PROPERTIES IMPORTED_LOCATION "${BMDS_HTTP_LIB}")
+        add_dependencies(bmds_http bmds_http_build)
+        add_custom_target(bmds_libs DEPENDS bmds_libc bmds_crt bmds_game bmds_3d bmds_gui bmds_benchlib bmds_tls
+                                            bmds_http_build)
         # bmds-cc: the same compiler and link for other build systems
         # (CC=.../bmds-cc make), once bmds_libs is built.
         # bmds-c++ the same for C++: g++, the SDK's C++ headers, no exceptions or RTTI.
@@ -185,7 +230,7 @@ function(bmds_add_program name)
         add_executable(${name} ${ARG_SOURCES} ${icons})
         # For bmds_add_package(): its icons are the package's unless it names others.
         set_property(TARGET ${name} PROPERTY BMDS_ICONS "${pngs}")
-        target_link_libraries(${name} PRIVATE bmds_headers -Wl,--start-group bmds_game bmds_3d bmds_gui bmds_benchlib bmds_tls bmds_crt bmds_libc
+        target_link_libraries(${name} PRIVATE bmds_headers -Wl,--start-group bmds_game bmds_3d bmds_gui bmds_benchlib bmds_tls bmds_http bmds_crt bmds_libc
                                       ${BMDS_LIBGCC} -Wl,--end-group)
         target_link_options(${name} PRIVATE
                 # Linked at 0 with its relocations kept: the kernel moves it.

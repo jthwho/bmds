@@ -13,6 +13,8 @@
 # It holds, under bmds-sdk-VERSION/, the repository's own layout so every tool's paths hold:
 #   sdk/            every file git tracks in sdk/, or would (as checked out: Git LFS files whole), and
 #                   sdk/VERSION (VERSION)
+#   components/bmds_core/  the kernel's HTTP parser and what it needs, built into libbmdshttp
+#                   (sdk/cmake/BmdsProgram.cmake, devplan/network.md §35d)
 #   tools/          mkpkg (packages, indexes, keys) and what it and bmds-fault need
 #   keys/           dev.key and dev.pub (anyone may sign with the dev key), packages.pub,
 #                   README.md (the kinds of key, and publishing your own)
@@ -30,6 +32,9 @@ import tarfile
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 TOOLS = ["mkpkg", "bmdscontainer.py", "bmdself.py", "bmds-fault"]
 KEYS = ["dev.key", "dev.pub", "packages.pub", "README.md"]
+# libbmdshttp's sources from the kernel's own library (BmdsProgram.cmake builds them).
+CORE = ["src/http.cpp", "src/string.cpp"] + ["include/bmds/%s.h" % h for h in (
+    "config", "error", "http", "memory", "memspace", "result", "span", "string", "stringview")]
 
 README = """# BMDS SDK {version}
 
@@ -70,7 +75,8 @@ def main():
     when = int(subprocess.run(["git", "log", "-1", "--format=%ct"], cwd=ROOT, capture_output=True, text=True,
                               check=True).stdout.strip() or 0)
     top = "bmds-sdk-%s" % version
-    files = tracked("sdk") + ["tools/" + t for t in TOOLS] + ["keys/" + k for k in KEYS] + ["LICENSE"]
+    files = (tracked("sdk") + ["components/bmds_core/" + c for c in CORE] + ["tools/" + t for t in TOOLS] +
+             ["keys/" + k for k in KEYS] + ["LICENSE"])
     generated = {"sdk/VERSION": version + "\n", "README.md": README.format(version=version)}
 
     def info(name, size, mode):

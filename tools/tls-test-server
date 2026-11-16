@@ -19,6 +19,11 @@
 #   7445  TCP that never says anything (a handshake's timeout).
 #   7446  7447 through a proxy that flips a byte of the first application data record's tag.
 #   7447  TLS; says "tampered", then waits for the client to close.
+#   7448  HTTP for `progtest http`: /len (1000 bytes by length), /chunked, /echo (the body back,
+#         X-Method and X-Got the request's), /redirect (302 to /len), /see-other (303 to /echo),
+#         /loop (to itself), /away (to https://github.com/), /range (206 from Range), /missing
+#         (404), /garbage (not HTTP), /short (cut short).
+#   7449  The same over TLS.
 #
 # Python's standard library and the openssl command only.
 
@@ -138,6 +143,95 @@ def tampered(ctx):
         return handle
 
 
+LEN_BODY = b"0123456789" * 100
+
+
+def http_answer(conn, peer):
+        """One request, one answer, then the connection's end (the client asks Connection: close)."""
+        data = b""
+        while b"\r\n\r\n" not in data:
+                more = conn.recv(4096)
+                if not more:
+                        return
+                data += more
+        head, _, rest = data.partition(b"\r\n\r\n")
+        lines = head.decode("latin-1").split("\r\n")
+        method, path, _ = lines[0].split(" ", 2)
+        headers = {}
+        for line in lines[1:]:
+                name, _, value = line.partition(":")
+                headers[name.strip().lower()] = value.strip()
+        length = int(headers.get("content-length", "0"))
+        while len(rest) < length:
+                more = conn.recv(4096)
+                if not more:
+                        break
+                rest += more
+        body = rest[:length]
+
+        def send(status, reason, extra=(), payload=b"", length=None):
+                out = "HTTP/1.1 %d %s\r\n" % (status, reason)
+                for k, v in extra:
+                        out += "%s: %s\r\n" % (k, v)
+                if length is None:
+                        length = len(payload)
+                out += "Content-Length: %d\r\nConnection: close\r\n\r\n" % length
+                conn.sendall(out.encode() + (b"" if method == "HEAD" else payload))
+
+        print("  http %s %s" % (method, path), flush=True)
+        if path == "/len":
+                send(200, "OK", [("Content-Type", "text/plain"), ("X-Test", "a"), ("X-Test", "b")], LEN_BODY)
+        elif path == "/chunked":
+                parts = [b"chunk one, ", b"chunk two, ", b"and three" * 50]
+                out = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                for part in parts:
+                        out += b"%x\r\n%s\r\n" % (len(part), part)
+                out += b"0\r\nX-Trailer: t\r\n\r\n"
+                conn.sendall(out)
+        elif path == "/echo":
+                send(200, "OK", [("X-Method", method), ("X-Got", headers.get("x-test", "-"))], body)
+        elif path == "/redirect":
+                send(302, "Found", [("Location", "/len")])
+        elif path == "/see-other":
+                send(303, "See Other", [("Location", "/echo")])
+        elif path == "/loop":
+                send(302, "Found", [("Location", "/loop")])
+        elif path == "/away":
+                send(302, "Found", [("Location", "https://github.com/")])
+        elif path == "/range":
+                spec = headers.get("range", "")
+                if spec.startswith("bytes=") and spec.endswith("-"):
+                        start = int(spec[6:-1])
+                        send(206, "Partial Content",
+                             [("Content-Range", "bytes %d-%d/%d" % (start, len(LEN_BODY) - 1, len(LEN_BODY)))],
+                             LEN_BODY[start:])
+                else:
+                        send(200, "OK", (), LEN_BODY)
+        elif path == "/missing":
+                send(404, "Not Found", [("Content-Type", "text/plain")], b"missing")
+        elif path == "/garbage":
+                conn.sendall(b"SSH-2.0-not-http\r\n")
+        elif path == "/short":
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nonly ten..")
+        else:
+                send(404, "Not Found")
+        try:
+                conn.shutdown(socket.SHUT_WR)
+        except OSError:
+                pass
+
+
+def https_answer(ctx):
+        def handle(conn, peer):
+                t = ctx.wrap_socket(conn, server_side=True)
+                http_answer(t, peer)
+                try:
+                        t.unwrap()
+                except (OSError, ssl.SSLError):
+                        pass
+        return handle
+
+
 def proxy(conn, peer):
         """Bytes both ways to 7447; the first application data record (type 23) from the server has
         its last byte (the tag's) flipped."""
@@ -215,11 +309,13 @@ def main():
                         (7445, silent),
                         (7446, proxy),
                         (7447, tampered(context(work, False, False))),
+                        (7448, http_answer),
+                        (7449, https_answer(context(work, False, False))),
                 ]
                 threads = [threading.Thread(target=serve, args=(p, stop, h), daemon=True) for p, h in handlers]
                 for t in threads:
                         t.start()
-                print("tls-test-server: %s, ports 7443-7447; the board's files in %s" % (args.name, args.out),
+                print("tls-test-server: %s, ports 7443-7449; the board's files in %s" % (args.name, args.out),
                       flush=True)
                 deadline = time.monotonic() + args.seconds if args.seconds > 0 else None
                 while deadline is None or time.monotonic() < deadline:

@@ -104,6 +104,9 @@
  *                         EINTR; sysca: trusted by net/tls/ca; timeout: a silent server
  *   progtest tlslib PEER DIR  libtls (tls.h) against the same: libtls's separate verify choices,
  *                         TLS_WANT_POLLOUT and _POLLIN, the peer's hash and names, tls_connect's own fd
+ *   progtest http PEER DIR  libbmdshttp (bmds/httplib.h) against tools/tls-test-server's HTTP (7448,
+ *                         7449) and GitHub: the request's checks, GET, HEAD, chunks, POST, redirects,
+ *                         Range, 404, not HTTP, cut short, refused, no answer, https with a CA, refusals
  */
 
 #define _GNU_SOURCE /* gettid() */
@@ -147,6 +150,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <bmds/errno.h>
+#include <bmds/httplib.h>
 #include <bmds/sys.h>
 #include <tls.h>
 
@@ -4988,6 +4992,203 @@ static int tls_lib_test(const char *peer, const char *dir) {
         return 0;
 }
 
+/* For http: the body of @p h into @p out (at most @p size - 1, NUL-terminated); its length, or the
+ * read's -errno. */
+static long http_body(bmds_http_t *h, char *out, size_t size) {
+        long    total = 0;
+        int32_t n;
+        char    buf[333]; /* odd, so reads end mid-chunk */
+        while ((n = bmds_http_read(h, buf, sizeof(buf))) > 0) {
+                for (int32_t i = 0; i < n; ++i)
+                        if ((size_t)total + (size_t)i + 1 < size) out[total + i] = buf[i];
+                total += n;
+        }
+        if (size > 0) out[(size_t)total < size ? (size_t)total : size - 1] = '\0';
+        return n < 0 ? n : total;
+}
+
+/* libbmdshttp (bmds/httplib.h) against tools/tls-test-server's HTTP on PEER (its CA in DIR), and
+ * real servers. */
+static int http_test(const char *peer, const char *dir) {
+        char         url[256], body[2048];
+        bmds_http_t *h;
+        signal(SIGPIPE, SIG_IGN);
+#define HTTP_URL(p) (snprintf(url, sizeof(url), "http://%s:7448%s", peer, p), url)
+
+        /* The request's checks. */
+        bmds_http_request_t r = {.size = sizeof(r), .url = "ftp://x/"};
+        CHECK(bmds_http_open(&r, &h) == -BMDS_EINVAL && strstr(bmds_http_error(h), "not an http") != NULL);
+        bmds_http_close(h);
+        CHECK(bmds_http_open(NULL, &h) == -BMDS_EINVAL);
+        bmds_http_close(h);
+        r.url = HTTP_URL("/len");
+        r.headers = "No colon\r\n";
+        CHECK(bmds_http_open(&r, &h) == -BMDS_EINVAL);
+        bmds_http_close(h);
+        r.headers = "Host: other\r\n";
+        CHECK(bmds_http_open(&r, &h) == -BMDS_EINVAL);
+        bmds_http_close(h);
+        r.headers = NULL;
+        r.method = "get";
+        CHECK(bmds_http_open(&r, &h) == -BMDS_EINVAL);
+        bmds_http_close(h);
+        r.method = NULL;
+        r.flags = 64;
+        CHECK(bmds_http_open(&r, &h) == -BMDS_EINVAL);
+        bmds_http_close(h);
+        r.flags = 0;
+
+        /* GET by length: its headers in order, a repeated one, its body. */
+        CHECK(bmds_http_open(&r, &h) == 0 && bmds_http_status(h) == 200 && bmds_http_length(h) == 1000);
+        CHECK(strcmp(bmds_http_header(h, "content-type"), "text/plain") == 0);
+        CHECK(strcmp(bmds_http_header(h, "X-TEST"), "a") == 0 && bmds_http_header(h, "nope") == NULL);
+        const char *name, *value;
+        int         tests = 0;
+        for (uint32_t i = 0; bmds_http_header_at(h, i, &name, &value) == 0; ++i)
+                if (strcmp(name, "X-Test") == 0) ++tests;
+        CHECK(tests == 2 && bmds_http_header_at(h, 99, &name, &value) == -BMDS_ENOENT);
+        CHECK(http_body(h, body, sizeof(body)) == 1000 && memcmp(body, "0123456789012", 13) == 0);
+        CHECK(bmds_http_read(h, body, 10) == 0);
+        bmds_http_close(h);
+
+        /* HEAD: the head, no body. */
+        r.method = "HEAD";
+        CHECK(bmds_http_open(&r, &h) == 0 && bmds_http_status(h) == 200 && bmds_http_length(h) == 1000);
+        CHECK(http_body(h, body, sizeof(body)) == 0);
+        bmds_http_close(h);
+        r.method = NULL;
+
+        /* Chunks undone (and the trailer read past). */
+        r.url = HTTP_URL("/chunked");
+        CHECK(bmds_http_open(&r, &h) == 0 && bmds_http_length(h) == -1);
+        const long chunked = http_body(h, body, sizeof(body));
+        CHECK(chunked == 11 + 11 + 9 * 50 && strncmp(body, "chunk one, chunk two, and three", 31) == 0);
+        bmds_http_close(h);
+
+        /* POST with a body and a header of ours; an empty POST. */
+        r.url = HTTP_URL("/echo");
+        r.method = "POST";
+        r.body = "hello body";
+        r.body_size = 10;
+        r.headers = "X-Test: yes\r\nAccept: text/plain\r\n";
+        CHECK(bmds_http_open(&r, &h) == 0 && bmds_http_status(h) == 200);
+        CHECK(strcmp(bmds_http_header(h, "X-Method"), "POST") == 0 && strcmp(bmds_http_header(h, "X-Got"), "yes") == 0);
+        CHECK(http_body(h, body, sizeof(body)) == 10 && strcmp(body, "hello body") == 0);
+        bmds_http_close(h);
+        r.body = NULL;
+        r.body_size = 0;
+        r.headers = NULL;
+        CHECK(bmds_http_open(&r, &h) == 0 && bmds_http_status(h) == 200 && http_body(h, body, sizeof(body)) == 0);
+        bmds_http_close(h);
+
+        /* Redirects: followed (302); a POST to a 303 asks again as GET; not followed; a loop. */
+        r.method = NULL;
+        r.url = HTTP_URL("/redirect");
+        CHECK(bmds_http_open(&r, &h) == 0 && bmds_http_status(h) == 200);
+        CHECK(strstr(bmds_http_url(h), ":7448/len") != NULL && http_body(h, body, sizeof(body)) == 1000);
+        bmds_http_close(h);
+        r.url = HTTP_URL("/see-other");
+        r.method = "POST";
+        r.body = "dropped";
+        r.body_size = 7;
+        CHECK(bmds_http_open(&r, &h) == 0 && strcmp(bmds_http_header(h, "X-Method"), "GET") == 0);
+        CHECK(http_body(h, body, sizeof(body)) == 0);
+        bmds_http_close(h);
+        r.method = NULL;
+        r.body = NULL;
+        r.body_size = 0;
+        r.url = HTTP_URL("/redirect");
+        r.flags = BMDS_HTTP_NO_REDIRECTS;
+        CHECK(bmds_http_open(&r, &h) == 0 && bmds_http_status(h) == 302);
+        CHECK(strcmp(bmds_http_header(h, "Location"), "/len") == 0);
+        bmds_http_close(h);
+        r.flags = 0;
+        r.url = HTTP_URL("/loop");
+        CHECK(bmds_http_open(&r, &h) == -BMDS_EPROTO && strstr(bmds_http_error(h), "more than 5 redirects") != NULL);
+        bmds_http_close(h);
+        r.max_redirects = 2;
+        CHECK(bmds_http_open(&r, &h) == -BMDS_EPROTO && strstr(bmds_http_error(h), "more than 2 redirects") != NULL);
+        bmds_http_close(h);
+        r.max_redirects = 0;
+
+        /* A range; a 404 with its body; not HTTP; cut short; refused; no such host; no answer. */
+        r.url = HTTP_URL("/range");
+        r.range_from = 990;
+        CHECK(bmds_http_open(&r, &h) == 0 && bmds_http_status(h) == 206);
+        CHECK(http_body(h, body, sizeof(body)) == 10 && strcmp(body, "0123456789") == 0);
+        bmds_http_close(h);
+        r.range_from = 0;
+        r.url = HTTP_URL("/missing");
+        CHECK(bmds_http_open(&r, &h) == 0 && bmds_http_status(h) == 404);
+        CHECK(http_body(h, body, sizeof(body)) == 7 && strcmp(body, "missing") == 0);
+        bmds_http_close(h);
+        r.url = HTTP_URL("/garbage");
+        CHECK(bmds_http_open(&r, &h) == -BMDS_EPROTO && strstr(bmds_http_error(h), "not an HTTP response") != NULL);
+        CHECK(bmds_http_status(h) == 0 && bmds_http_read(h, body, 1) == -BMDS_EINVAL);
+        bmds_http_close(h);
+        r.url = HTTP_URL("/short");
+        CHECK(bmds_http_open(&r, &h) == 0 && bmds_http_length(h) == 100);
+        CHECK(http_body(h, body, sizeof(body)) == -BMDS_EPROTO && strstr(bmds_http_error(h), "ended early") != NULL);
+        bmds_http_close(h);
+        snprintf(url, sizeof(url), "http://%s:7999/", peer);
+        r.url = url;
+        CHECK(bmds_http_open(&r, &h) == -BMDS_ECONNREFUSED);
+        printf("http: %s\n", bmds_http_error(h));
+        bmds_http_close(h);
+        r.url = "http://no-such-host.invalid/";
+        CHECK(bmds_http_open(&r, &h) == -BMDS_ENOENT);
+        bmds_http_close(h);
+        snprintf(url, sizeof(url), "http://%s:7445/", peer);
+        r.url = url;
+        r.timeout_ms = 1000;
+        CHECK(bmds_http_open(&r, &h) == -BMDS_ETIMEDOUT);
+        printf("http: %s\n", bmds_http_error(h));
+        bmds_http_close(h);
+        r.timeout_ms = 0;
+        printf("http: GET, HEAD, chunks, POST, redirects (302, 303, not followed, loops), Range, 404, not HTTP, "
+               "cut short, refused, no host, no answer\n");
+
+        /* https: our CA (the server's name isn't the URL's: INSECURE, and INFO says only that). */
+        uint32_t ca_size = 0;
+        uint8_t *ca = tls_file(dir, "ca.pem", &ca_size);
+        CHECK(ca != NULL);
+        bmds_tls_config_t tc = {.size = sizeof(tc), .ca = ca, .ca_size = ca_size};
+        snprintf(url, sizeof(url), "https://%s:7449/len", peer);
+        r.url = url;
+        r.tls = &tc;
+        r.flags = BMDS_HTTP_INSECURE;
+        CHECK(bmds_http_open(&r, &h) == 0 && bmds_http_status(h) == 200 && http_body(h, body, sizeof(body)) == 1000);
+        bmds_tls_info_t info = {.size = sizeof(info)};
+        CHECK(bmds_http_tls_info(h, &info) == 0 && info.verify == BMDS_TLS_VERIFY_NAME);
+        bmds_http_close(h);
+        r.flags = 0;
+        CHECK(bmds_http_open(&r, &h) == -BMDS_EKEYREJECTED && strstr(bmds_http_error(h), "another name") != NULL);
+        bmds_http_close(h);
+        r.tls = NULL;
+        free(ca);
+
+        /* Real servers: GitHub; a redirect from here to it; a refusal in words. */
+        r.url = "https://github.com/";
+        CHECK(bmds_http_open(&r, &h) == 0 && bmds_http_status(h) == 200);
+        CHECK(bmds_http_tls_info(h, &info) == 0 && info.version == 0x0303);
+        long n = http_body(h, body, sizeof(body));
+        CHECK(n > 0);
+        printf("http: github.com: %ld bytes, %s\n", n, info.cipher_name);
+        bmds_http_close(h);
+        r.url = HTTP_URL("/away");
+        CHECK(bmds_http_open(&r, &h) == 0 && bmds_http_status(h) == 200 &&
+              strcmp(bmds_http_url(h), "https://github.com/") == 0);
+        bmds_http_close(h);
+        r.url = "https://expired.badssl.com/";
+        CHECK(bmds_http_open(&r, &h) == -BMDS_EKEYREJECTED);
+        printf("http: %s\n", bmds_http_error(h));
+        CHECK(strstr(bmds_http_error(h), "expired") != NULL);
+        bmds_http_close(h);
+#undef HTTP_URL
+        printf("http: all passed\n");
+        return 0;
+}
+
 /* For tls: reads stdin (an inherited TLS socket) to its end; 0 if it was an HTTP response. */
 static int tls_read_stdin(void) {
         char    buf[1024];
@@ -5459,6 +5660,13 @@ int main(int argc, char **argv) {
         if (strcmp(what, "rtnet") == 0) return rt_net_test(argc > 2 ? arg : NULL);
         if (strcmp(what, "tls") == 0) return tls_test(arg, argc > 3 ? argv[3] : "github.com");
         if (strcmp(what, "tlsread") == 0) return tls_read_stdin();
+        if (strcmp(what, "http") == 0) {
+                if (argc < 4) {
+                        fprintf(stderr, "usage: progtest http PEER DIR\n");
+                        return 2;
+                }
+                return http_test(argv[2], argv[3]);
+        }
         if (strcmp(what, "tlslib") == 0) {
                 if (argc < 4) {
                         fprintf(stderr, "usage: progtest tlslib PEER DIR\n");

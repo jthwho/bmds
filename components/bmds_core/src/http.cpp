@@ -25,6 +25,41 @@ namespace {
                 return isAlpha(c) || isDigit(c) || c == '.' || c == '-';
         }
 
+        // A header name's characters (RFC 9110's token).
+        bool isTokenChar(char c) {
+                if (isAlpha(c) || isDigit(c)) return true;
+                for (const char *p = "!#$%&'*+-.^_`|~"; *p != '\0'; ++p)
+                        if (c == *p) return true;
+                return false;
+        }
+
+        // The headers buildRequest() writes itself: a caller's can't be one of them.
+        constexpr StringView Reserved[] = {"Host",           "User-Agent",        "Range",
+                                           "Content-Length", "Transfer-Encoding", "Connection"};
+
+        // A caller's header lines: each "Name: value\r\n", a token for a name, no control
+        // character but a tab in the value, none this writes. @p hasAccept: one is `Accept`.
+        bool checkHeaders(StringView headers, bool &hasAccept) {
+                hasAccept = false;
+                while (!headers.isEmpty()) {
+                        const size_t end = headers.indexOf("\r\n");
+                        if (end == StringView::NPos) return false;
+                        const StringView line = headers.left(end);
+                        headers = headers.mid(end + 2);
+                        const size_t colon = line.indexOf(':');
+                        if (colon == StringView::NPos || colon == 0) return false;
+                        const StringView name = line.left(colon);
+                        for (char c : name)
+                                if (!isTokenChar(c)) return false;
+                        for (char c : line.mid(colon + 1))
+                                if ((static_cast<unsigned char>(c) < 0x20 && c != '\t') || c == 0x7f) return false;
+                        for (StringView r : Reserved)
+                                if (name.equalsIgnoreCase(r)) return false;
+                        if (name.equalsIgnoreCase("Accept")) hasAccept = true;
+                }
+                return true;
+        }
+
         // Reads a decimal number (leading zeros allowed, as HTTP allows them) into @p out.
         bool parseDecimal(StringView s, uint64_t &out) {
                 if (s.isEmpty() || s.size() > 19) return false;
@@ -176,18 +211,39 @@ Result<String> Http::resolve(StringView base, StringView reference) {
 }
 
 Error Http::buildRequest(const Url &url, uint64_t from, StringView userAgent, String &out) {
+        Request request;
+        request.url = &url;
+        request.from = from;
+        request.userAgent = userAgent;
+        return buildRequest(request, out);
+}
+
+Error Http::buildRequest(const Request &request, String &out) {
         out.clear();
-        Error err = out.appendf("GET %s%.*s HTTP/1.1\r\nHost: %.*s", url.path.startsWith('/') ? "" : "/",
-                                int(url.path.size()), url.path.data(), int(url.host.size()), url.host.data());
+        const StringView method = request.method;
+        if (request.url == nullptr || method.isEmpty() || method.size() > 16) return Error::Invalid;
+        for (char c : method)
+                if (c < 'A' || c > 'Z') return Error::Invalid;
+        bool hasAccept = false;
+        if (!checkHeaders(request.headers, hasAccept)) return Error::Invalid;
+        const Url &url = *request.url;
+        Error      err = out.appendf("%.*s %s%.*s HTTP/1.1\r\nHost: %.*s", int(method.size()), method.data(),
+                                url.path.startsWith('/') ? "" : "/", int(url.path.size()), url.path.data(),
+                                     int(url.host.size()), url.host.data());
         if (err.isOk() && url.port != (url.tls ? 443 : 80)) err = out.appendf(":%u", unsigned(url.port));
         if (err.isOk())
-                err = out.appendf("\r\nUser-Agent: %.*s\r\nAccept: */*\r\n", int(userAgent.size()), userAgent.data());
-        if (err.isOk() && from != 0) err = out.appendf("Range: bytes=%llu-\r\n", static_cast<unsigned long long>(from));
+                err = out.appendf("\r\nUser-Agent: %.*s\r\n", int(request.userAgent.size()), request.userAgent.data());
+        if (err.isOk() && !hasAccept) err = out.append("Accept: */*\r\n");
+        if (err.isOk() && request.from != 0)
+                err = out.appendf("Range: bytes=%llu-\r\n", static_cast<unsigned long long>(request.from));
+        if (err.isOk() && request.hasBody)
+                err = out.appendf("Content-Length: %llu\r\n", static_cast<unsigned long long>(request.bodyLength));
+        if (err.isOk()) err = out.append(request.headers);
         if (err.isOk()) err = out.append("Connection: close\r\n\r\n");
         return err;
 }
 
-Http::ResponseParser::ResponseParser() {}
+Http::ResponseParser::ResponseParser(uint8_t options) : _options(options) {}
 
 Error Http::ResponseParser::feed(ByteSpan in, size_t &used, ByteSpan &body) {
         used = 0;
@@ -241,6 +297,7 @@ Error Http::ResponseParser::line(StringView text) {
                             (text.size() > 12 && text[12] != ' '))
                                 return Error::CorruptData;
                         _head = Head{};
+                        _headers.clear(); // an interim response's aren't the answer's
                         _sawLength = false;
                         _head.status = (text[9] - '0') * 100 + (text[10] - '0') * 10 + (text[11] - '0');
                         if (_head.status < 100) return Error::CorruptData;
@@ -289,6 +346,13 @@ Error Http::ResponseParser::header(StringView text) {
                 if (c <= 0x20 || c >= 0x7f) return Error::CorruptData; // a folded line, or not a name
         }
         const StringView value = trimmed(text.mid(colon + 1));
+        if ((_options & KeepHeaders) != 0) {
+                Error err = _headers.append(name);
+                if (err.isOk()) err = _headers.append(": ");
+                if (err.isOk()) err = _headers.append(value);
+                if (err.isOk()) err = _headers.append("\n");
+                if (err.isError()) return err;
+        }
         if (name.equalsIgnoreCase("Content-Length")) {
                 uint64_t length = 0;
                 if (!parseDecimal(value, length) || (_sawLength && length != _head.length)) return Error::CorruptData;
@@ -341,7 +405,7 @@ Error Http::ResponseParser::headDone() {
                 _state = State::StatusLine;
                 return Error::Ok;
         }
-        if (_head.status == 204 || _head.status == 304) {
+        if (_head.status == 204 || _head.status == 304 || (_options & HeadRequest) != 0) {
                 _state = State::Done;
         } else if (_head.chunked) {
                 _state = State::ChunkSize;
@@ -350,6 +414,37 @@ Error Http::ResponseParser::headDone() {
                 _state = _left == 0 ? State::Done : State::BodyLength;
         } else {
                 _state = State::BodyToEnd;
+        }
+        return Error::Ok;
+}
+
+Error Http::next(const Head &head, StringView url, StringView method, uint64_t from, bool followRedirects, Next &out) {
+        out = Next{};
+        if (followRedirects && isRedirect(head.status)) {
+                if (head.location.isEmpty()) return Error::IoError;
+                auto [to, err] = resolve(url, head.location.view());
+                if (err.isError()) return err == Error::NoMem ? Error(Error::NoMem) : Error(Error::Invalid);
+                out.kind = Next::Kind::Redirect;
+                out.url = std::move(to);
+                // Browsers' way: 303 is a GET (but HEAD stays HEAD); 301 and 302 make a POST a GET.
+                out.asGet = (head.status == 303 && method != StringView("HEAD")) ||
+                            ((head.status == 301 || head.status == 302) && method == StringView("POST"));
+                return Error::Ok;
+        }
+        if (head.status == 416 && from != 0 && head.rangeTotal == from) {
+                // Asked for what follows the end: it is all there already.
+                out.kind = Next::Kind::Whole;
+                out.start = from;
+                out.total = from;
+                return Error::Ok;
+        }
+        if (head.status == 206) {
+                if (head.rangeStart != from) return Error::CorruptData;
+                out.start = head.rangeStart;
+                out.total = head.rangeTotal;
+        } else {
+                out.start = 0;
+                out.total = head.chunked ? Unknown : head.length;
         }
         return Error::Ok;
 }

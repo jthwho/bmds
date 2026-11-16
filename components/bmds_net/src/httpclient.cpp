@@ -131,10 +131,6 @@ namespace {
                         uint8_t *_p;
         };
 
-        bool isRedirect(int status) {
-                return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
-        }
-
 } // namespace
 
 Error Http::get(StringView url, uint64_t from, const Environment &env, const Sink &sink, Fetched &out, String &why) {
@@ -184,45 +180,40 @@ Error Http::get(StringView url, uint64_t from, const Environment &env, const Sin
                                 if (!started) {
                                         started = true;
                                         out.status = h.status;
-                                        if (isRedirect(h.status)) {
-                                                if (h.location.isEmpty())
-                                                        return fail(why, Error::IoError,
-                                                                    "%s: a redirect without a Location",
-                                                                    out.url.cStr());
-                                                auto [next, lerr] = resolve(out.url.view(), h.location.view());
-                                                if (lerr.isError())
-                                                        return fail(why, Error::Invalid, "%s: redirected to %s",
-                                                                    out.url.cStr(), h.location.cStr());
-                                                out.url = std::move(next);
+                                        // What follows the head: bmds_core's, as libbmdshttp's.
+                                        Next next;
+                                        err = Http::next(h, out.url.view(), "GET", from, true, next);
+                                        if (err == Error::IoError)
+                                                return fail(why, err, "%s: a redirect without a Location",
+                                                            out.url.cStr());
+                                        if (err == Error::Invalid)
+                                                return fail(why, err, "%s: redirected to %s", out.url.cStr(),
+                                                            h.location.cStr());
+                                        if (err == Error::CorruptData)
+                                                return fail(why, err, "%s: asked from byte %llu, sent from %llu",
+                                                            out.url.cStr(), static_cast<unsigned long long>(from),
+                                                            static_cast<unsigned long long>(h.rangeStart));
+                                        if (err.isError()) return fail(why, err, "out of memory");
+                                        if (next.kind == Next::Kind::Redirect) {
+                                                out.url = std::move(next.url);
                                                 redirected = true;
                                                 break;
                                         }
-                                        if (h.status == 416 && from != 0 && h.rangeTotal == from) {
-                                                // Asked for what follows the end: it is all here already.
+                                        if (next.kind == Next::Kind::Whole) {
                                                 out.start = from;
                                                 out.total = from;
                                                 err = sink.begin != nullptr ? sink.begin(sink.arg, from, from)
                                                                             : Error::Ok;
                                                 return err.isError() ? fail(why, err, "%s", err.desc()) : Error::Ok;
                                         }
-                                        if (h.status == 200) {
-                                                out.start = 0;
-                                                out.total = h.chunked ? Unknown : h.length;
-                                        } else if (h.status == 206) {
-                                                out.start = h.rangeStart;
-                                                out.total = h.rangeTotal;
-                                                if (out.start != from)
-                                                        return fail(why, Error::CorruptData,
-                                                                    "%s: asked from byte %llu, sent from %llu",
-                                                                    out.url.cStr(),
-                                                                    static_cast<unsigned long long>(from),
-                                                                    static_cast<unsigned long long>(out.start));
-                                        } else {
+                                        if (h.status != 200 && h.status != 206) {
                                                 const Error e = h.status == 404 || h.status == 410 ? Error::NotExist
                                                                                                    : Error::IoError;
                                                 return fail(why, e, "%s: the server answered %d%s", out.url.cStr(),
                                                             h.status, h.status == 404 ? " (not found)" : "");
                                         }
+                                        out.start = next.start;
+                                        out.total = next.total;
                                         if (sink.begin != nullptr) {
                                                 err = sink.begin(sink.arg, out.start, out.total);
                                                 if (err.isError()) return fail(why, err, "%s", err.desc());

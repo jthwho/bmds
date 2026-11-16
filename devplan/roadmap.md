@@ -541,7 +541,9 @@ Plan: [`input.md`](input.md).
     `EKEYREJECTED`/`EPROTO`/`EBADMSG`), host-tested with a stand-in session, `progtest tls` and
     `tlslocal` (against `tools/tls-test-server`) on the board; +14.7 KB of flash. Step 3 done
     (§35j): `libtls.a` and `tls.h` (libtls's client API, 6 KB), `tlsclient` in `/rom/bin`, BusyBox's
-    `wget https://` on the kernel's TLS (1.37.0-4), `progtest tlslib`.
+    `wget https://` on the kernel's TLS (1.37.0-4), `progtest tlslib`. Step 4 done (§35k):
+    `libbmdshttp.a` (bmds/httplib.h, 13 KB) on bmds_core's own parser, the redirect and range
+    decisions shared with the kernel's fetcher (`Http::next()`), `progtest http`.
   - [ ] HTTP serving for applications (the user, 2026-10-28; to plan): a web server in the
     kernel or the SDK that applications serve their pages and JSON APIs from, behind the system's
     users and passwords; first users the synth module's configuration (`synthmodule.md` §3h).

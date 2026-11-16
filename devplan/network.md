@@ -3114,3 +3114,49 @@ As §35b-c designed, with what building it decided:
 - **Size:** the firmware unchanged; the ROM +244 KB (`tlsclient`).
 - **Open:** building catgirl against `tls.h`, to check the subset against a real libtls
   program, when the IRC work starts.
+
+### 35k. As built: step 4, libbmdshttp (2026-11-16)
+
+- **`bmds_core`'s `Http` grew what a program's client needs** (host-tested, fuzzed):
+  - `Request` and `buildRequest(Request)`: any method (1-16 capitals), extra header lines (each
+    `Name: value\r\n`, a token for a name, no control character but a tab, none of the ones it
+    writes itself; an `Accept` replaces `*/*`), `Content-Length` for a body. The old GET-only
+    `buildRequest()` is the same request through it.
+  - `ResponseParser`'s options: `HeadRequest` (no body whatever the head says), `KeepHeaders`
+    (`headers()`: the final answer's lines, an interim one's dropped).
+  - `Http::next()`: what follows a head, the redirects and ranges `httpclient.cpp` decided on its
+    own until now: a redirect resolved (303 as `GET` but `HEAD` stays `HEAD`; 301 and 302 after
+    `POST` as `GET`), a 416 to a `Range` from the end (`Whole`), a 206 from another byte refused,
+    a 200 that ignored a `Range` starting at 0. The kernel's fetcher now decides through it, as
+    the library does.
+- **`libbmdshttp.a`** (`sdk/include/bmds/httplib.h`, `sdk/http/httplib.cpp`): as §35d designed.
+  `bmds_http_open()` sets its handle in every case but no memory, so `bmds_http_error()` can say
+  why; `0` for any status. `max_redirects` 0 is 5 (`BMDS_HTTP_NO_REDIRECTS` to follow none),
+  `timeout_ms` 0 is 30 s; `user_agent` was added (default `BMDS`); `BMDS_HTTP_INSECURE` for `https:`
+  with a certificate not checked. An empty `POST`, `PUT` or `PATCH` says `Content-Length: 0`.
+- **Building C++ for a program:** `http.cpp` and `string.cpp` need `<string_view>`, `<compare>`,
+  `<concepts>` and `<array>`, which the SDK's C++ headers don't have. They compile against
+  libstdc++'s own headers (templates only: nothing of libstdc++ is linked), ordered libstdc++,
+  musl, GCC, *not* freestanding: freestanding, libstdc++'s `<cstdint>` takes GCC's
+  `stdint-gcc.h` (`int32_t` a `long`, not musl's `int`) and its `<stdlib.h>` has no `malloc`.
+  `-fno-threadsafe-statics`; `bmds::Memory` is two functions over `malloc`. `BmdsProgram.cmake`
+  builds the three files by commands of its own (a project that enables only C builds it) into
+  `libbmdshttp.a`, in `bmds_libs`, `bmds_add_program()`'s link group and `bmds-cc`'s
+  (`-lbmdshttp`). `tools/mksdk` ships the eleven `components/bmds_core` files: an SDK unpacked
+  elsewhere built a C-only program with it, which fetched GitHub's page on the board.
+- **Size:** 13 KB of code (the C face 5 KB, the parser 6.5 KB, `String` 1.5 KB); a program that
+  fetches a URL is 45 KB more than `hello`, musl's resolver and sockets the rest. The firmware
+  +4.3 KB (3,242,272 to 3,246,576: the request builder, the kept headers and `next()` in
+  `bmds_core`).
+- **Tests:**
+  - host: 3 new cases (the requests, refused methods and header lines; `HEAD` and kept headers
+    over interim answers; `next()`'s redirects and ranges); `http_fuzz` with the parser's options
+    from the input and `next()` on every head: 16.9 million runs, nothing found.
+  - `progtest http PEER DIR` (new) against `tools/tls-test-server`'s HTTP (new: 7448, and 7449
+    over TLS): the request's checks, GET with its headers in order, `HEAD`, chunks with a
+    trailer, `POST` with a body and a header and empty, a 302 followed, a 303 after `POST` asked
+    as `GET`, redirects not followed, a loop (5, and `max_redirects` 2), `Range` (206), a 404 and
+    its body, not HTTP, cut short, refused, no such host, no answer (1 s); https with our CA
+    (`INSECURE`: only the name), and without (`EKEYREJECTED`, "another name"); github.com, a
+    redirect from plain HTTP to it, badssl.com's expired certificate in words. Passed.
+  - `pkg update`, `update fetch --check` (a `Range` from 0) and its refusals: as before.
