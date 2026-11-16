@@ -82,7 +82,9 @@ class Painter {
 
                 /**
                  * @brief A painter for what of @p limit (@p outer's coordinates; its
-                 *        x and width cut inward to 4-pixel columns) @p outer draws:
+                 *        x and width cut inward to 4-pixel columns, except for fills,
+                 *        which take any rectangle and reach @p limit's every pixel) @p
+                 *        outer draws:
                  *        @p outer's clip and damage cut to it, into @p storage
                  *        (`clippedStorage()` rectangles of @p outer's suffice; past
                  *        them, pieces are left out and `Full` noted). The origin and
@@ -329,6 +331,7 @@ class Painter {
                 bool             _deferred = false;
                 Error            _error;
                 Painter         *_outer = nullptr; // a clipped painter's
+                Rect             _limit;           // a clipped painter's limit, exact (fills)
 };
 
 BMDS_NAMESPACE_END

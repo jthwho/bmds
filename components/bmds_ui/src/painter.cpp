@@ -65,7 +65,7 @@ namespace {
 
 Painter::Painter(Painter &outer, const Rect &limit, Span<Rect> storage)
     : _surface(outer._surface), _tools(outer._tools), _timeoutMs(outer._timeoutMs), _originX(outer._originX),
-      _originY(outer._originY), _outer(&outer) {
+      _originY(outer._originY), _outer(&outer), _limit(limit) {
         // The limit on the surface, its sides on columns (inward).
         const uint32_t left = (uint32_t(limit.x) + _originX + AlignMask) & ~AlignMask;
         const uint32_t right = (uint32_t(limit.right()) + _originX) & ~AlignMask;
@@ -129,6 +129,24 @@ void Painter::flush(uint32_t rgb) {
 }
 
 Error Painter::fill(Span<const Rect> rects, uint32_t rgb) {
+        if (_outer != nullptr) {
+                // A clipped painter's clip is on columns (inward), which text and copies need; a fill
+                // takes any rectangle, so it goes through the outer painter cut to the exact limit: a
+                // limit off the columns (a view inside a 2-pixel bevel) keeps no unpainted edge.
+                Rect   cut[BatchRects];
+                size_t n = 0;
+                for (const Rect &rect : rects) {
+                        const Rect r = rect.intersected(_limit);
+                        if (r.isEmpty()) continue;
+                        if (n == BatchRects) {
+                                note(_outer->fill(Span<const Rect>(cut, n), rgb));
+                                n = 0;
+                        }
+                        cut[n++] = r;
+                }
+                if (n > 0) note(_outer->fill(Span<const Rect>(cut, n), rgb));
+                return _error;
+        }
         for (const Rect &rect : rects) {
                 if (rect.isEmpty()) continue;
                 const uint32_t right = uint32_t(rect.right()) + _originX;
