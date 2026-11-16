@@ -1462,6 +1462,27 @@ As §26 designed; measured from this PC (Wi-Fi, OpenSSH 9.6):
   shell's `head` reading `/dev/zero` (a line with no end) fails with `Out of memory` (fixed: it
   streams, and has `-c`).
 
+
+### 27a. The AES engine's DMA shared with ESP-IDF's mbedtls (2026-11-16)
+
+**Found:** `pkg update` from an ssh session spun forever: the shell's task at 100% of a core in
+ESP-IDF's `esp_aes_wait_dma_done()` (`aes_ll_get_state`, the profiler from the serial console),
+and new ssh connections hung at the banner. `Crypto` connected its own AXI-GDMA pair to the AES
+engine at its first DMA call and kept it, on the comment's assumption that ESP-IDF's mbedtls DMA
+was unused; pkg's HTTPS (`packages.md` §23) runs TLS through mbedtls with
+`CONFIG_MBEDTLS_HARDWARE_AES`, by DMA through ESP-IDF's shared crypto channels. Those connect
+without checking (`esp_crypto_shared_gdma.c` ignores `gdma_connect()`'s error) and wait without a
+timeout (`esp_crypto_shared_gdma_done()` polls the channel's status): with ours holding the engine,
+its transfer never ran. dropbear's AES (slot 112, by DMA from 1 KB) takes ours early in a boot,
+so the first `pkg update` over ssh after it hung.
+
+**Now:** ours connect at the start of each DMA call and disconnect after it, under the crypto lock,
+so ESP-IDF's always can. ESP-IDF's own receive channel stays connected once made; when ours can't
+connect, that call runs in register mode and the next frees ESP-IDF's channels first
+(`esp_crypto_shared_gdma_free()`, before taking the lock: it takes it itself; ESP-IDF makes them
+again at its next use). Checked: `progtest crypto` then `pkg update`, twice each way; our DMA's
+speed back after ESP-IDF's use (AES-128-CTR 16 KB 15.7 MB/s; the first call after 14.5).
+
 ## 28. SSH downloads and the TCP path (2026-10-11)
 
 §27 left Dropbear's downloads costing twice its uploads besides the crypto. Measured with the

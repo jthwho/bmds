@@ -11,9 +11,11 @@
  * used: its DMA path allocates on each call.
  */
 
+#include <atomic>
 #include <cstring>
 #include <esp_cache.h>
 #include <esp_crypto_lock.h>
+#include <esp_crypto_shared_gdma.h>
 #include <esp_crypto_periph_clk.h>
 #include <esp_memory_utils.h>
 #include <esp_private/gdma.h>
@@ -111,9 +113,11 @@ namespace {
 
         using Desc = dma_descriptor_align8_t;
 
-        // Our GDMA channel pair, connected to the AES engine at the first DMA call and kept (ESP-IDF's
-        // mbedtls DMA, which BMDS doesn't use, can't connect to it after), the descriptors and
-        // bounce lines in one block of internal DMA memory, and the end-of-frame wake.
+        // Our GDMA channel pair, connected to the AES engine for each call and disconnected after:
+        // ESP-IDF's mbedtls (the TLS of pkg's HTTPS) runs the same engine by DMA through its own
+        // shared channels, connected without checking, and with ours kept connected its transfer
+        // never ran and it polled forever (devplan/network.md §27a). The descriptors and bounce lines
+        // in one block of internal DMA memory, and the end-of-frame wake.
         struct Dma {
                         gdma_channel_handle_t tx = nullptr;
                         gdma_channel_handle_t rx = nullptr;
@@ -125,6 +129,10 @@ namespace {
                         bool                  tried = false;
                         bool                  ready = false;
         };
+        // ESP-IDF's channels held the engine when ours tried: the next call frees them first (its
+        // free takes the crypto lock itself, so not while we hold it). They are made again at its
+        // next use.
+        constinit std::atomic<bool>       idfHoldsAes{false};
         constinit Dma                     dma;
         constinit StaticObject<Semaphore> dmaDone;
 
@@ -160,13 +168,33 @@ namespace {
                 if (gdma_config_transfer(dma.tx, &transfer) != ESP_OK) return false;
                 transfer.max_data_burst_size = 0;
                 if (gdma_config_transfer(dma.rx, &transfer) != ESP_OK) return false;
-                if (gdma_connect(dma.tx, GDMA_MAKE_TRIGGER(GDMA_TRIG_PERIPH_AES, 0)) != ESP_OK) return false;
-                if (gdma_connect(dma.rx, GDMA_MAKE_TRIGGER(GDMA_TRIG_PERIPH_AES, 0)) != ESP_OK) return false;
                 gdma_rx_event_callbacks_t callbacks = {};
                 callbacks.on_recv_eof = &dmaEof;
                 if (gdma_register_rx_event_callbacks(dma.rx, &callbacks, nullptr) != ESP_OK) return false;
                 dma.ready = true;
                 return true;
+        }
+
+        // Connects our channels to the AES engine (the crypto lock held). False if ESP-IDF's hold it:
+        // register mode for this call, and they are freed before the next.
+        bool connectDma() {
+                if (gdma_connect(dma.tx, GDMA_MAKE_TRIGGER(GDMA_TRIG_PERIPH_AES, 0)) != ESP_OK) {
+                        idfHoldsAes.store(true, std::memory_order_relaxed);
+                        return false;
+                }
+                if (gdma_connect(dma.rx, GDMA_MAKE_TRIGGER(GDMA_TRIG_PERIPH_AES, 0)) != ESP_OK) {
+                        (void)gdma_disconnect(dma.tx);
+                        idfHoldsAes.store(true, std::memory_order_relaxed);
+                        return false;
+                }
+                return true;
+        }
+
+        // Leaves the engine's DMA to whoever comes next (the crypto lock held).
+        void disconnectDma() {
+                (void)gdma_disconnect(dma.rx);
+                (void)gdma_disconnect(dma.tx);
+                return;
         }
 
         // Cache maintenance in whole lines (the neighbours' bytes written back too is harmless).
@@ -291,14 +319,17 @@ Error Crypto::aes(Algorithm algorithm, const uint8_t *key, size_t keyBytes, uint
         if (key == nullptr || (!ecb && state == nullptr)) return Error::Invalid;
         if (length == 0) return Error::Ok;
         if (in == nullptr || out == nullptr) return Error::Invalid;
+        const bool wantDma = length >= DmaMinBytes && dmaReaches(in, out, length);
+        if (wantDma && idfHoldsAes.exchange(false, std::memory_order_relaxed)) esp_crypto_shared_gdma_free();
         Engine engine(true);
         aes_ll_dma_enable(false);
         aes_ll_set_mode(decrypt ? ESP_AES_DECRYPT : ESP_AES_ENCRYPT, static_cast<uint8_t>(keyBytes));
         (void)aes_ll_write_key(key, keyBytes / 4);
         uint32_t chain[4], block[4], result[4];
         if (!ecb) std::memcpy(chain, state, sizeof(chain));
-        if (length >= DmaMinBytes && dmaReaches(in, out, length) && startDma()) {
+        if (wantDma && startDma() && connectDma()) {
                 const Error err = aesDma(algorithm, chain, in, out, length);
+                disconnectDma();
                 if (err.isError()) {
                         std::memset(out, 0, length);
                         return err;

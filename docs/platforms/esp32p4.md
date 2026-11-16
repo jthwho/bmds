@@ -466,6 +466,12 @@ until silicon v3; then test again.
 
 ## 4b. The crypto engines (`devplan/network.md` §26-27)
 
+- **ESP-IDF's crypto DMA can't share the engine** (2026-11-16, `devplan/network.md` §27a): its
+  shared channels (`esp_crypto_shared_gdma.c`) ignore `gdma_connect()`'s error and then poll for
+  the transfer's end with no timeout, so another GDMA channel connected to the AES engine hangs the
+  next mbedtls AES call (TLS) forever, at 100% of a core. Connect ours per call and disconnect
+  after; free ESP-IDF's (`esp_crypto_shared_gdma_free()`, not under the crypto lock) when they
+  hold it.
 - **Register mode beats ESP-IDF's DMA for SSH's sizes** (our own beats both from 1 KB, below).
   The CPU writing each block to the engine and reading it back: AES-128 about 15.7 MB/s at any
   size, SHA-256 and SHA-512 41-44 MB/s even for one 64-byte block, from PSRAM. ESP-IDF's
