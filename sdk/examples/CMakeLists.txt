@@ -27,6 +27,7 @@ bmds_add_program(fonts SOURCES fonts/fonts.c DISPLAY)
 bmds_add_program(wire SOURCES wire/wire.c DISPLAY)
 bmds_add_program(solids SOURCES solids/solids.c DISPLAY)
 bmds_add_program(beat SOURCES beat/beat.c DISPLAY)
+bmds_add_program(tlsclient SOURCES tlsclient/tlsclient.c)
 
 # Application folders (devplan/apps.md): copied into a card's apps/, each a command in /apps.
 bmds_add_app(surfdemo PROGRAM surfdemo DESKTOP surfdemo/app.desktop)

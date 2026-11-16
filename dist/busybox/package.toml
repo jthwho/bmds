@@ -2,7 +2,8 @@
 name = "busybox"
 version = "1.37.0"
 # 2: uname and which (2026-11-01). 3: builds without warnings (patches 0004, 0005; 2026-11-02).
-revision = 3
+# 4: wget's https:// on the kernel's TLS sockets (patch 0006; 2026-11-16).
+revision = 4
 description = "Unix tools in one binary: coreutils, sed, awk, vi, less, diff, find, tar, compressors, hush"
 title = "BusyBox"
 category = "System"

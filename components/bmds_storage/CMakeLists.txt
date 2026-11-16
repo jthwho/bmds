@@ -102,9 +102,9 @@ elseif(NOT BOOTLOADER_BUILD)
                 message(STATUS "zic not found: the ROM has no time zone database (devplan/rom.md §3g)")
         endif()
         # The SSH programs (devplan/network.md §24, netfs.md): Dropbear, our sftp-server, sshfs and ssh-copy-id,
-        # and angel (devplan/scripting.md), built by tools/bmds-dist into this build directory
-        # (nested: no build wrapper, one job at a time; Dropbear's release is fetched once into
-        # ~/.cache/bmds-dist) and put in /rom/bin.
+        # angel (devplan/scripting.md) and tlsclient (network.md §35d), built by tools/bmds-dist into
+        # this build directory (nested: no build wrapper, one job at a time; Dropbear's release is
+        # fetched once into ~/.cache/bmds-dist) and put in /rom/bin.
         set(BMDS_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/../..)
         # The ROM's time (its header's build time, which every entry shows) and its programs'
         # builds: the caller's SOURCE_DATE_EPOCH (tools/release), else the last commit's, so the
@@ -127,6 +127,7 @@ elseif(NOT BOOTLOADER_BUILD)
         set(BMDS_ROM_SSHFS ${BMDS_ROM_DIST}/stage/sshfs)
         set(BMDS_ROM_COPYID ${BMDS_ROM_DIST}/stage/ssh-copy-id)
         set(BMDS_ROM_ANGEL ${BMDS_ROM_DIST}/stage/angel)
+        set(BMDS_ROM_TLSCLIENT ${BMDS_ROM_DIST}/stage/tlsclient)
         file(GLOB BMDS_ROM_ANGEL_EXAMPLES CONFIGURE_DEPENDS ${BMDS_ROOT_DIR}/programs/angel/examples/*
              ${BMDS_ROOT_DIR}/programs/angel/guide/*)
         file(GLOB_RECURSE BMDS_ROM_DIST_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT_DIR}/dist/dropbear/*
@@ -134,6 +135,7 @@ elseif(NOT BOOTLOADER_BUILD)
              ${BMDS_ROOT_DIR}/dist/sshfs/* ${BMDS_ROOT_DIR}/programs/sshfs/*
              ${BMDS_ROOT_DIR}/dist/ssh-copy-id/* ${BMDS_ROOT_DIR}/programs/ssh-copy-id/*
              ${BMDS_ROOT_DIR}/dist/angel/* ${BMDS_ROOT_DIR}/programs/angel/*
+             ${BMDS_ROOT_DIR}/dist/tlsclient/* ${BMDS_ROOT_DIR}/sdk/examples/tlsclient/* ${BMDS_ROOT_DIR}/sdk/tls/*
              # angel's stage: Preso's scene code (devplan/preso.md §8c) and md4c
              ${BMDS_ROOT_DIR}/programs/preso/core/* ${BMDS_ROOT_DIR}/programs/preso/script/*
              ${BMDS_ROOT_DIR}/programs/preso/bmds/* ${BMDS_ROOT_DIR}/thirdparty/md4c/*
@@ -144,9 +146,9 @@ elseif(NOT BOOTLOADER_BUILD)
              ${BMDS_ROOT_DIR}/sdk/ld/*)
         add_custom_command(OUTPUT ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
                                   ${BMDS_ROM_SSHFS}/bin/sshfs ${BMDS_ROM_COPYID}/bin/ssh-copy-id
-                                  ${BMDS_ROM_ANGEL}/bin/angel
+                                  ${BMDS_ROM_ANGEL}/bin/angel ${BMDS_ROM_TLSCLIENT}/bin/tlsclient
                            COMMAND ${BMDS_ROM_ENV} ${BMDS_STORAGE_PYTHON} ${BMDS_ROOT_DIR}/tools/bmds-dist --out ${BMDS_ROM_DIST}
-                                   --nested build dropbear sftp-server sshfs ssh-copy-id angel
+                                   --nested build dropbear sftp-server sshfs ssh-copy-id angel tlsclient
                            DEPENDS ${BMDS_ROOT_DIR}/tools/bmds-dist ${BMDS_ROM_DIST_SOURCES}
                            VERBATIM)
         set(BMDS_ROM_SSH
@@ -159,6 +161,7 @@ elseif(NOT BOOTLOADER_BUILD)
             --file bin/ssh-copy-id=${BMDS_ROM_COPYID}/bin/ssh-copy-id
             --file share/licenses/dropbear/LICENSE=${BMDS_ROM_DROPBEAR}/share/licenses/dropbear/LICENSE
             --file bin/angel=${BMDS_ROM_ANGEL}/bin/angel
+            --file bin/tlsclient=${BMDS_ROM_TLSCLIENT}/bin/tlsclient
             --dir share/angel/examples=${BMDS_ROOT_DIR}/programs/angel/examples
             --dir share/angel/guide=${BMDS_ROOT_DIR}/programs/angel/guide
             --file share/licenses/angelscript/LICENSE=${BMDS_ROM_ANGEL}/share/licenses/angel/angelscript.LICENSE)

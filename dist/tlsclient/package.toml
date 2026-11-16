@@ -1,0 +1,10 @@
+# tlsclient (sdk/examples/tlsclient): OpenSSL's s_client job on the kernel's TLS sockets, through
+# libtls (devplan/network.md §35d). In the firmware's ROM (/rom/bin).
+name = "tlsclient"
+version = "1"
+description = "Connects to a TLS server, says who answered, then relays the terminal or runs a command over it"
+title = "TLS client"
+category = "Network"
+license = "MIT"
+source_tree = "sdk/examples/tlsclient"
+license_files = ["../../../LICENSE"]

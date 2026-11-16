@@ -1,0 +1,105 @@
+wget: https:// on the kernel's TLS sockets (BMDS)
+
+Without CONFIG_FEATURE_WGET_OPENSSL or _HTTPS, and with BMDS's <bmds/sys.h>, wget makes its
+connection's socket a TLS client with tls_ctl (devplan/network.md §35d): the certificate is checked
+against the system's roots (BusyBox's own TLS checks none), a refusal is said in words, and
+--no-check-certificate lets one pass. No helper process, and no SHUT_WR after the request (it would
+be close_notify).
+
+--- a/networking/wget.c
++++ b/networking/wget.c
+@@ -183,7 +183,19 @@
+ #endif
+ 
+ 
+-#define SSL_SUPPORTED (ENABLE_FEATURE_WGET_OPENSSL || ENABLE_FEATURE_WGET_HTTPS)
++/* BMDS: the kernel's TLS sockets (tls_ctl): the connection's own socket becomes TLS, its
++ * certificate checked against the system's roots; no helper process. */
++#if defined(__has_include)
++# if __has_include(<bmds/sys.h>)
++#  include <bmds/sys.h>
++#  define BMDS_TLS 1
++# endif
++#endif
++#ifndef BMDS_TLS
++# define BMDS_TLS 0
++#endif
++
++#define SSL_SUPPORTED (ENABLE_FEATURE_WGET_OPENSSL || ENABLE_FEATURE_WGET_HTTPS || BMDS_TLS)
+ #define FTPS_SUPPORTED (ENABLE_FEATURE_WGET_FTP && ENABLE_FEATURE_WGET_HTTPS)
+ 
+ struct host_info {
+@@ -822,6 +834,51 @@
+ }
+ #endif
+ 
++#if BMDS_TLS && !ENABLE_FEATURE_WGET_OPENSSL && !ENABLE_FEATURE_WGET_HTTPS
++/* TLS on the connected socket @p fd for @p host: the kernel's handshake, its refusal in words. */
++static void bmds_start_tls(const char *host, int fd)
++{
++	bmds_tls_config_t config;
++	bmds_tls_info_t info;
++	char *servername, *p;
++	int r;
++
++	servername = xstrdup(host);
++	p = strrchr(servername, ':');
++	if (p) *p = '\0';
++	memset(&config, 0, sizeof(config));
++	config.size = sizeof(config);
++	config.server_name = servername;
++	if (option_mask32 & WGET_OPT_NO_CHECK_CERT)
++		config.flags = BMDS_TLS_NO_VERIFY;
++	r = bmds_tls_ctl(fd, BMDS_TLS_START, &config);
++	if (r == 0)
++		r = bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL);
++	if (r == -BMDS_EKEYREJECTED) {
++		const char *why = "it was refused";
++		memset(&info, 0, sizeof(info));
++		info.size = sizeof(info);
++		if (bmds_tls_ctl(fd, BMDS_TLS_INFO, &info) == 0) {
++			if (info.verify & BMDS_TLS_VERIFY_CLOCK)
++				why = "the clock isn't set, so its dates can't be checked";
++			else if (info.verify & BMDS_TLS_VERIFY_EXPIRED)
++				why = "it has expired";
++			else if (info.verify & BMDS_TLS_VERIFY_NOT_YET_VALID)
++				why = "it isn't valid yet";
++			else if (info.verify & BMDS_TLS_VERIFY_NAME)
++				why = "it is for another name";
++			else if (info.verify & BMDS_TLS_VERIFY_UNTRUSTED)
++				why = "it isn't from an authority this system trusts";
++		}
++		bb_error_msg_and_die("%s: TLS certificate refused: %s (--no-check-certificate to go on)",
++				servername, why);
++	}
++	if (r < 0)
++		bb_error_msg_and_die("%s: TLS: %s", servername, strerror(-r));
++	free(servername);
++}
++#endif
++
+ #if ENABLE_FEATURE_WGET_FTP
+ static FILE* prepare_ftp_session(FILE **dfpp, struct host_info *target, len_and_sockaddr *lsa)
+ {
+@@ -1216,6 +1273,11 @@
+ 		sfp = open_socket(lsa);
+ 		if (server.protocol == P_HTTPS)
+ 			spawn_ssl_client(server.host, fileno(sfp), /*flags*/ 0);
++#elif BMDS_TLS
++		/* BMDS: the socket itself becomes TLS */
++		sfp = open_socket(lsa);
++		if (server.protocol == P_HTTPS)
++			bmds_start_tls(server.host, fileno(sfp));
+ #else
+ 		/* ssl (https) support is not configured */
+ 		sfp = open_socket(lsa);
+@@ -1290,7 +1352,8 @@
+ /* Tried doing this unconditionally.
+  * Cloudflare and nginx/1.11.5 are shocked to see SHUT_WR on non-HTTPS.
+  */
+-#if SSL_SUPPORTED
++#if SSL_SUPPORTED && (ENABLE_FEATURE_WGET_OPENSSL || ENABLE_FEATURE_WGET_HTTPS)
++		/* (BMDS: no helper, and a SHUT_WR would be close_notify, ending the session.) */
+ 		if (target.protocol == P_HTTPS) {
+ 			/* If we use SSL helper, keeping our end of the socket open for writing
+ 			 * makes our end (i.e. the same fd!) readable (EAGAIN instead of EOF)

@@ -3067,3 +3067,50 @@ As §35b-c designed, with what building it decided:
 - **For step 3:** a signal's handler runs as a *libc* call returns (`__bmds_syscall` in `linux.c`),
   so a raw `bmds_tls_ctl()` returns `-EINTR` before it has run; the libtls layer should make its
   calls through `syscall()` or check, as `progtest tlslocal` does.
+
+### 35j. As built: step 3, the SDK (2026-11-16)
+
+- **`libtls.a`** (`sdk/include/tls.h`, `sdk/tls/tls.c`; 6.1 KB of code): libtls's client calls
+  (libtls 3.x's signatures, `TLS_API 20200120`) over `tls_ctl`, in `bmds_libs`, `bmds_add_program()`'s
+  and `bmds-cc`'s link groups (`-ltls`). As §35d planned, with:
+  - **libtls's three "no verify" choices** (`noverifycert`, `noverifyname`, `noverifytime`) from
+    the kernel's one: any of them starts the session `NO_VERIFY`, and the handshake then refuses
+    what the others still forbid, from INFO's `verify` bits (a wrong name passes `noverifyname`, an
+    untrusted chain doesn't).
+  - **Non-blocking:** `tls_handshake()` answers `TLS_WANT_POLLOUT` while the kernel's handshake
+    runs (its end makes the socket writable; `POLLIN` might never come from a server that waits
+    for the client), `tls_read()` `TLS_WANT_POLLIN`, `tls_write()` `TLS_WANT_POLLOUT`. Reads and
+    writes are `read()` and `send(MSG_NOSIGNAL)`: libc calls, so `O_NONBLOCK` and signals are
+    `linux.c`'s as for any socket.
+  - **`EINTR` in a blocking `tls_handshake()`:** a `getppid()` runs the handler (§35i's note), then
+    -1 with errno `EINTR`; the handshake goes on.
+  - **The system's roots:** `tls_default_ca_cert_file()` is `/etc/ssl/cert.pem`, which as a CA file
+    adds nothing (the kernel's bundle and `net/tls/ca`); `tls_config_set_ca_path()` fails.
+    `tls_close()` is `shutdown(SHUT_WR)` (close_notify, then the FIN), and closes the socket only
+    if `tls_connect()` opened it. Failures in words from INFO (`"github.com: its certificate has
+    expired"`).
+- **`tlsclient`** (`sdk/examples/tlsclient`; `dist/tlsclient`, in the ROM's `/rom/bin`, 244 KB):
+  `[-k] [-q] [-r] [-a ALPN] [-n NAME] [-C CAFILE] [-c CERT -K KEY] HOST [PORT]`, and `-e HOST PORT
+  COMMAND...` with the socket as the command's stdin and stdout. The terminal's end stops sending
+  and the server's end stops it (OpenSSL's `-ign_eof`: a close_notify after a request would end
+  the session before the answer).
+- **BusyBox 1.37.0-4** (`dist/busybox/patches/0006-wget-bmds-tls.patch`): `wget`'s HTTPS on the
+  kernel's TLS socket when `<bmds/sys.h>` is there and neither of BusyBox's own TLS options is set
+  (its internal TLS checks no certificate). A refusal is said in words and names
+  `--no-check-certificate`; no helper process, and no `SHUT_WR` after the request (it would be
+  close_notify).
+- **On the board:**
+  - `tlsclient`: github.com (ALPN `h2`, its certificate's subject, issuer, dates, fingerprint),
+    Libera's greeting with `-r`, `-e` running `sh` over the connection, `-k` on a self-signed
+    server ("not checked"), and against `tools/tls-test-server` through libtls's files: `-C` our CA,
+    `-c`/`-K` a client certificate (`client=progtest alpn=irc`), each refusal in words.
+  - `progtest tlslib PEER DIR` (new): `noverifyname` alone, not blocking (`TLS_WANT_POLLOUT`, then
+    `TLS_WANT_POLLIN`), the peer's hash (`SHA256:` and 64 hex digits), names and dates,
+    `tls_connect_servername()` with `host:port` and `tls_close()` closing its socket, the
+    protocol and CA-path refusals, `tls_server()`'s `ENOTSUP`. `tls` and `tlslocal` again: passed.
+  - `wget https://github.com/` (525 KB); `expired`, `wrong.host`, `self-signed` refused with
+    their reasons (exit 1); `--no-check-certificate` passes. GitHub's release package (12.86 MB,
+    a redirect to its storage host, two handshakes) to `/tmp` in 9.8 s end to end, ~1.3 MB/s.
+- **Size:** the firmware unchanged; the ROM +244 KB (`tlsclient`).
+- **Open:** building catgirl against `tls.h`, to check the subset against a real libtls
+  program, when the IRC work starts.

@@ -108,7 +108,12 @@ if(NOT TARGET bmds_crt)
         set_target_properties(bmds_benchlib PROPERTIES OUTPUT_NAME bmdsbench ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
         target_link_libraries(bmds_benchlib PUBLIC bmds_headers)
         target_compile_options(bmds_benchlib PRIVATE -Os -Wall -Wextra -Werror)
-        add_custom_target(bmds_libs DEPENDS bmds_libc bmds_crt bmds_game bmds_3d bmds_gui bmds_benchlib)
+        # libtls.a (tls.h, devplan/network.md §35d): libtls's client calls over the kernel's TLS sockets.
+        add_library(bmds_tls STATIC ${BMDS_SDK_DIR}/tls/tls.c)
+        set_target_properties(bmds_tls PROPERTIES OUTPUT_NAME tls ARCHIVE_OUTPUT_DIRECTORY "${BMDS_LIBC_LIB}")
+        target_link_libraries(bmds_tls PUBLIC bmds_headers)
+        target_compile_options(bmds_tls PRIVATE -Os -Wall -Wextra -Werror)
+        add_custom_target(bmds_libs DEPENDS bmds_libc bmds_crt bmds_game bmds_3d bmds_gui bmds_benchlib bmds_tls)
         # bmds-cc: the same compiler and link for other build systems
         # (CC=.../bmds-cc make), once bmds_libs is built.
         # bmds-c++ the same for C++: g++, the SDK's C++ headers, no exceptions or RTTI.
@@ -180,7 +185,7 @@ function(bmds_add_program name)
         add_executable(${name} ${ARG_SOURCES} ${icons})
         # For bmds_add_package(): its icons are the package's unless it names others.
         set_property(TARGET ${name} PROPERTY BMDS_ICONS "${pngs}")
-        target_link_libraries(${name} PRIVATE bmds_headers -Wl,--start-group bmds_game bmds_3d bmds_gui bmds_benchlib bmds_crt bmds_libc
+        target_link_libraries(${name} PRIVATE bmds_headers -Wl,--start-group bmds_game bmds_3d bmds_gui bmds_benchlib bmds_tls bmds_crt bmds_libc
                                       ${BMDS_LIBGCC} -Wl,--end-group)
         target_link_options(${name} PRIVATE
                 # Linked at 0 with its relocations kept: the kernel moves it.
