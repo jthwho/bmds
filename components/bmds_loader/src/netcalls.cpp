@@ -15,11 +15,13 @@
 #include <type_traits>
 #include <bmds/clock.h>
 #include <bmds/errno.h>
+#include <bmds/log.h>
 #include <bmds/netstatus.h>
 #include <bmds/process.h>
 #include <bmds/ptpclock.h>
 #include <bmds/socket.h>
 #include <bmds/sys.h>
+#include <bmds/tlsservice.h>
 #include "running.h"
 #include "structcopy.h"
 
@@ -30,7 +32,9 @@ using bmds::KernelCall;
 using bmds::Socket;
 using bmds::SocketAddress;
 using bmds::Span;
+using bmds::String;
 using bmds::StringView;
+using bmds::TlsSession;
 using bmds::WritableByteSpan;
 namespace NetStatus = bmds::NetStatus;
 using Option = Socket::Option;
@@ -360,6 +364,99 @@ namespace {
                         if (total == INT32_MAX) break;
                 }
                 return 0;
+        }
+
+
+        // TLS's limits on what a program hands in (sys.h's bmds_tls_config_t).
+        constexpr uint32_t MaxTlsRoots = 256 * 1024;
+        constexpr uint32_t MaxTlsCertificate = 16 * 1024;
+        constexpr size_t   MaxServerName = 253;
+        constexpr size_t   MaxAlpnText = 127;
+
+        // A program's string, at most @p max bytes, as a view; -errno (EINVAL past @p max).
+        int32_t programString(const char *text, size_t max, StringView &out) {
+                out = StringView();
+                if (text == nullptr) return 0;
+                const int32_t n = bmds::detail::stringLength(text, max);
+                if (n == -BMDS_ENAMETOOLONG) return -BMDS_EINVAL;
+                if (n < 0) return n;
+                out = StringView(text, size_t(n));
+                return 0;
+        }
+
+        int32_t tlsStart(Socket &s, const bmds_tls_config_t *in) {
+                bmds_tls_config_t c;
+                if (const int32_t r = bmds::detail::copyIn(in, c); r < 0) return r;
+                if ((c.flags & ~BMDS_TLS_NO_VERIFY) != 0) return -BMDS_EINVAL;
+                if (s.type() != Socket::Type::Stream) return -BMDS_ENOTSUP;
+                TlsSession::Config config;
+                config.flags = (c.flags & BMDS_TLS_NO_VERIFY) != 0 ? uint32_t(TlsSession::NoVerify) : 0u;
+                if (const int32_t r = programString(c.server_name, MaxServerName, config.serverName); r < 0) return r;
+                if (const int32_t r = programString(c.alpn, MaxAlpnText, config.alpn); r < 0) return r;
+                const uint32_t caSize = c.ca != nullptr ? c.ca_size : 0;
+                const uint32_t certSize = c.cert != nullptr ? c.cert_size : 0;
+                const uint32_t keySize = c.key != nullptr ? c.key_size : 0;
+                if (caSize > MaxTlsRoots || certSize > MaxTlsCertificate || keySize > MaxTlsCertificate ||
+                    (certSize == 0) != (keySize == 0))
+                        return -BMDS_EINVAL;
+                using bmds::detail::canRead;
+                if (!canRead(c.ca, caSize) || !canRead(c.cert, certSize) || !canRead(c.key, keySize))
+                        return -BMDS_EFAULT;
+                config.cert = ByteSpan(c.cert, certSize);
+                config.key = ByteSpan(c.key, keySize);
+                // The program's roots, and the system's (net/tls/ca): a file that can't be read is
+                // said and left out (fewer roots refuse more, never less).
+                String roots;
+                String why;
+                if (Error err = bmds::TlsService::systemRoots(roots, why); err.isError())
+                        bmdsWarn("tls: %s", why.cStr());
+                ByteSpan cas[2];
+                size_t   count = 0;
+                if (caSize > 0) cas[count++] = ByteSpan(c.ca, caSize);
+                if (!roots.isEmpty())
+                        cas[count++] = ByteSpan(reinterpret_cast<const uint8_t *>(roots.data()), roots.size());
+                config.ca = Span<const ByteSpan>(cas, count);
+                const Error err = s.startTls(config, why);
+                switch (err.code()) {
+                        case Error::Ok: return 0;
+                        case Error::NotSupported: return -BMDS_ENOTSUP;
+                        case Error::NotConnected: return -BMDS_ENOTCONN;
+                        case Error::AlreadyInProgress: return -BMDS_EALREADY;
+                        case Error::Full: return -BMDS_ENOBUFS;
+                        case Error::Invalid: return -BMDS_EINVAL;
+                        default: return errnoOf(err);
+                }
+        }
+
+        int32_t tlsInfo(Socket &s, bmds_tls_info_t *out) {
+                TlsSession::Info i;
+                if (s.tlsInfo(i).isError()) return -BMDS_EINVAL;
+                bmds_tls_info_t o = {};
+                switch (i.state) {
+                        case TlsSession::State::Handshaking: o.state = BMDS_TLS_HANDSHAKING; break;
+                        case TlsSession::State::Open: o.state = i.ended ? BMDS_TLS_CLOSED : BMDS_TLS_OPEN; break;
+                        case TlsSession::State::Failed: o.state = BMDS_TLS_FAILED; break;
+                }
+                o.error = i.state == TlsSession::State::Failed ? -errnoOf(i.failure) : 0;
+                // The same bits (tlssession.h's Verify, sys.h's BMDS_TLS_VERIFY_*).
+                static_assert(TlsSession::VerifyExpired == BMDS_TLS_VERIFY_EXPIRED &&
+                              TlsSession::VerifyNotYetValid == BMDS_TLS_VERIFY_NOT_YET_VALID &&
+                              TlsSession::VerifyName == BMDS_TLS_VERIFY_NAME &&
+                              TlsSession::VerifyUntrusted == BMDS_TLS_VERIFY_UNTRUSTED &&
+                              TlsSession::VerifyClock == BMDS_TLS_VERIFY_CLOCK &&
+                              TlsSession::VerifyOther == BMDS_TLS_VERIFY_OTHER);
+                o.verify = i.verify;
+                o.version = i.version;
+                o.cipher = i.cipher;
+                o.flags = i.cleanClose ? BMDS_TLS_CLEAN_CLOSE : 0;
+                o.not_before = i.peer.notBefore;
+                o.not_after = i.peer.notAfter;
+                std::memcpy(o.peer_sha256, i.peer.sha256, sizeof(o.peer_sha256));
+                bmds::detail::copyText(i.cipherName, o.cipher_name, sizeof(o.cipher_name));
+                bmds::detail::copyText(i.alpn, o.alpn, sizeof(o.alpn));
+                bmds::detail::copyText(i.peer.subject, o.subject, sizeof(o.subject));
+                bmds::detail::copyText(i.peer.issuer, o.issuer, sizeof(o.issuer));
+                return bmds::detail::copyOut(o, out);
         }
 
 } // namespace
@@ -953,6 +1050,28 @@ int32_t bmds_k_ptp_ctl(int32_t fd, uint32_t op, void *arg) {
                         value = clock->frequencyPpt();
                         std::memcpy(arg, &value, sizeof(value));
                         return 0;
+                default: return -BMDS_EINVAL;
+        }
+}
+
+int32_t bmds_k_tls_ctl(int32_t fd, uint32_t op, void *arg) {
+        KernelCall call;
+        Target     t;
+        if (const int32_t r = find(call, fd, t); r < 0) return r;
+        switch (op) {
+                case BMDS_TLS_START: return tlsStart(*t.socket, static_cast<const bmds_tls_config_t *>(arg));
+                case BMDS_TLS_HANDSHAKE: {
+                        uint32_t flags = 0;
+                        if (arg != nullptr) {
+                                if (!bmds::detail::canRead(arg, sizeof(flags))) return -BMDS_EFAULT;
+                                std::memcpy(&flags, arg, sizeof(flags));
+                        }
+                        if ((flags & ~BMDS_TLS_DONTWAIT) != 0) return -BMDS_EINVAL;
+                        const Error err =
+                                t.socket->waitTls((flags & BMDS_TLS_DONTWAIT) != 0 ? uint32_t(Socket::DontWait) : 0u);
+                        return err == Error::NotSupported ? -BMDS_EINVAL : errnoOf(err);
+                }
+                case BMDS_TLS_INFO: return tlsInfo(*t.socket, static_cast<bmds_tls_info_t *>(arg));
                 default: return -BMDS_EINVAL;
         }
 }

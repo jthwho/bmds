@@ -13,7 +13,7 @@
 #pragma once
 
 /* The system call table's slots (systable.c; the stub page has one stub each). */
-#define BMDS_K_SLOTS 135
+#define BMDS_K_SLOTS 136
 
 /* bmds_sys_t's header (sys.h; usermode.cpp checks them). */
 #define BMDS_K_SYS_MAGIC 0x53444d42

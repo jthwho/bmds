@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+# @file      tls-test-server
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# The servers `progtest tlslocal` tests TLS sockets against (devplan/network.md §35e), with a CA,
+# a server certificate and a client certificate of their own:
+#
+#   tools/tls-test-server --out DIR [--name bmds-tls-test] [--seconds 0]
+#
+# DIR gets ca.pem, client.pem and client.key for the board (copy them to the folder progtest is
+# given). The keys live in a temporary folder under ~/.cache, removed when this ends.
+#
+#   7443  TLS; a client certificate from the CA required; ALPN irc or http/1.1. Says
+#         "client=CN alpn=PROTO", then echoes lines; answers close_notify with its own.
+#   7444  TLS; says "bye" and closes the connection without close_notify.
+#   7445  TCP that never says anything (a handshake's timeout).
+#   7446  7447 through a proxy that flips a byte of the first application data record's tag.
+#   7447  TLS; says "tampered", then waits for the client to close.
+#
+# Python's standard library and the openssl command only.
+
+import argparse
+import os
+import shutil
+import signal
+import socket
+import ssl
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+
+def openssl(*args, cwd):
+        subprocess.run(["openssl", *args], cwd=cwd, check=True, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)
+
+
+def make_certificates(work, name):
+        """A CA, a server certificate for NAME and a client certificate (CN progtest), all EC P-256."""
+        openssl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", "ca.key", cwd=work)
+        openssl("req", "-x509", "-new", "-key", "ca.key", "-days", "30", "-subj", "/CN=BMDS test CA",
+                "-out", "ca.pem", cwd=work)
+        for who, cn, ext in (("server", name, "subjectAltName=DNS:%s" % name),
+                             ("client", "progtest", "extendedKeyUsage=clientAuth")):
+                with open(os.path.join(work, who + ".ext"), "w") as f:
+                        f.write(ext + "\n")
+                openssl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", who + ".ec", cwd=work)
+                # PKCS#8, as most tools write keys now.
+                openssl("pkcs8", "-topk8", "-nocrypt", "-in", who + ".ec", "-out", who + ".key", cwd=work)
+                openssl("req", "-new", "-key", who + ".key", "-subj", "/CN=" + cn, "-out", who + ".csr", cwd=work)
+                openssl("x509", "-req", "-in", who + ".csr", "-CA", "ca.pem", "-CAkey", "ca.key",
+                        "-CAcreateserial", "-days", "30", "-extfile", who + ".ext", "-out", who + ".pem", cwd=work)
+
+
+def context(work, client_cert, alpn):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(os.path.join(work, "server.pem"), os.path.join(work, "server.key"))
+        if client_cert:
+                ctx.verify_mode = ssl.CERT_REQUIRED
+                ctx.load_verify_locations(os.path.join(work, "ca.pem"))
+        if alpn:
+                ctx.set_alpn_protocols(["irc", "http/1.1"])
+        return ctx
+
+
+def listen(port):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("", port))
+        s.listen(8)
+        s.settimeout(0.5)
+        return s
+
+
+def serve(port, stop, handle):
+        s = listen(port)
+        while not stop.is_set():
+                try:
+                        conn, peer = s.accept()
+                except socket.timeout:
+                        continue
+                threading.Thread(target=guarded, args=(handle, conn, peer), daemon=True).start()
+        s.close()
+
+
+def guarded(handle, conn, peer):
+        try:
+                handle(conn, peer)
+        except (OSError, ssl.SSLError) as e:
+                print("  %s: %s" % (peer[0], e), flush=True)
+        finally:
+                conn.close()
+
+
+def echo(ctx):
+        def handle(conn, peer):
+                t = ctx.wrap_socket(conn, server_side=True)
+                cert = t.getpeercert()
+                cn = dict(x[0] for x in cert["subject"]).get("commonName", "?") if cert else "none"
+                print("  7443: %s, client %s, alpn %s" % (peer[0], cn, t.selected_alpn_protocol()), flush=True)
+                t.sendall(("client=%s alpn=%s\n" % (cn, t.selected_alpn_protocol())).encode())
+                while True:
+                        data = t.recv(4096)
+                        if not data:  # the client's close_notify
+                                break
+                        t.sendall(data)
+                t.unwrap()  # ours back
+        return handle
+
+
+def bye(ctx):
+        def handle(conn, peer):
+                t = ctx.wrap_socket(conn, server_side=True)
+                t.sendall(b"bye\n")
+                # close() without unwrap(): the connection ends with no close_notify.
+                t.close()
+        return handle
+
+
+def silent(conn, peer):
+        time.sleep(120)
+
+
+def tampered(ctx):
+        def handle(conn, peer):
+                t = ctx.wrap_socket(conn, server_side=True)
+                t.sendall(b"tampered\n")
+                try:
+                        t.recv(1)
+                except (OSError, ssl.SSLError):
+                        pass
+        return handle
+
+
+def proxy(conn, peer):
+        """Bytes both ways to 7447; the first application data record (type 23) from the server has
+        its last byte (the tag's) flipped."""
+        up = socket.create_connection(("127.0.0.1", 7447))
+
+        def forward(src, dst, tamper):
+                buf = b""
+                done = not tamper
+                try:
+                        while True:
+                                data = src.recv(65536)
+                                if not data:
+                                        break
+                                if done:
+                                        dst.sendall(data)
+                                        continue
+                                buf += data
+                                out = b""
+                                while len(buf) >= 5:
+                                        length = int.from_bytes(buf[3:5], "big")
+                                        if len(buf) < 5 + length:
+                                                break
+                                        rec = bytearray(buf[:5 + length])
+                                        buf = buf[5 + length:]
+                                        if rec[0] == 23 and not done:
+                                                rec[-1] ^= 0x01
+                                                done = True
+                                        out += bytes(rec)
+                                if done:
+                                        out += buf
+                                        buf = b""
+                                dst.sendall(out)
+                except OSError:
+                        pass
+                for s in (src, dst):
+                        try:
+                                s.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                                pass
+
+        a = threading.Thread(target=forward, args=(conn, up, False), daemon=True)
+        b = threading.Thread(target=forward, args=(up, conn, True), daemon=True)
+        a.start()
+        b.start()
+        a.join()
+        b.join()
+        up.close()
+
+
+def on_term(signum, frame):
+        """A kill ends it as Ctrl-C does: the keys' folder removed."""
+        raise KeyboardInterrupt
+
+
+def main():
+        ap = argparse.ArgumentParser(description=__doc__)
+        ap.add_argument("--out", required=True, help="where ca.pem, client.pem and client.key go")
+        ap.add_argument("--name", default="bmds-tls-test", help="the server certificate's name")
+        ap.add_argument("--seconds", type=float, default=0, help="stop after this long (0: Ctrl-C)")
+        args = ap.parse_args()
+
+        cache = os.path.join(os.path.expanduser("~"), ".cache")
+        os.makedirs(cache, exist_ok=True)
+        work = tempfile.mkdtemp(prefix="tls-test-server-", dir=cache)
+        stop = threading.Event()
+        signal.signal(signal.SIGTERM, on_term)
+        try:
+                make_certificates(work, args.name)
+                os.makedirs(args.out, exist_ok=True)
+                for f in ("ca.pem", "client.pem", "client.key"):
+                        shutil.copy(os.path.join(work, f), os.path.join(args.out, f))
+                handlers = [
+                        (7443, echo(context(work, True, True))),
+                        (7444, bye(context(work, False, False))),
+                        (7445, silent),
+                        (7446, proxy),
+                        (7447, tampered(context(work, False, False))),
+                ]
+                threads = [threading.Thread(target=serve, args=(p, stop, h), daemon=True) for p, h in handlers]
+                for t in threads:
+                        t.start()
+                print("tls-test-server: %s, ports 7443-7447; the board's files in %s" % (args.name, args.out),
+                      flush=True)
+                deadline = time.monotonic() + args.seconds if args.seconds > 0 else None
+                while deadline is None or time.monotonic() < deadline:
+                        time.sleep(0.2)
+        except KeyboardInterrupt:
+                pass
+        finally:
+                stop.set()
+                shutil.rmtree(work, ignore_errors=True)
+        return 0
+
+
+if __name__ == "__main__":
+        sys.exit(main())

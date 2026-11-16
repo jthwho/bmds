@@ -95,6 +95,13 @@
  *                         timestamp options and their control messages on loopback, the error
  *                         queue's errors, BMDS_SO_FASTPATH's; with PEER (a UDP reflector on port
  *                         5004), hardware send and receive stamps through the fast path and not
+ *   progtest tls SELF [HOST]  TLS sockets (network.md §35; HOST: github.com): tls_ctl's errors, blocking
+ *                         and not (a poll loop that mustn't spin), INFO, ALPN, an inherited fd read by
+ *                         a child (tlsread), two handshakes at once, badssl.com's refusals, NO_VERIFY
+ *   progtest tlslocal PEER DIR [sysca|timeout]  TLS against tools/tls-test-server on PEER (its CA and
+ *                         client certificate in DIR): a client certificate, our roots, ALPN, a reader
+ *                         thread and a writer, close_notify both ways, a bare end, a tampered record,
+ *                         EINTR; sysca: trusted by net/tls/ca; timeout: a silent server
  */
 
 #define _GNU_SOURCE /* gettid() */
@@ -115,6 +122,7 @@
 #include <pty.h>
 #include <semaphore.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -4456,6 +4464,444 @@ static int64_t ts_ns(const struct timespec *t) {
 
 /* CLOCK_TAI and /dev/ptp0 (network.md §31e). "busy": the PTP service runs, so setting the clock
    is refused; otherwise a step and a frequency there and back. */
+/* --- TLS on a socket (network.md §35) ---------------------------------------------------------- */
+
+/* A TCP connection to @p host's @p port (non-blocking: connecting); -1 with errno. */
+static int tls_connect(const char *host, const char *port, int nonblock) {
+        struct addrinfo  hints = {.ai_family = AF_INET, .ai_socktype = SOCK_STREAM};
+        struct addrinfo *ai = NULL;
+        if (getaddrinfo(host, port, &hints, &ai) != 0 || ai == NULL) {
+                errno = EHOSTUNREACH;
+                return -1;
+        }
+        const int fd = socket(AF_INET, SOCK_STREAM | (nonblock ? SOCK_NONBLOCK : 0), 0);
+        if (fd >= 0 && connect(fd, ai->ai_addr, ai->ai_addrlen) < 0 && errno != EINPROGRESS) {
+                close(fd);
+                freeaddrinfo(ai);
+                return -1;
+        }
+        freeaddrinfo(ai);
+        return fd;
+}
+
+static int tls_start(int fd, const char *name, uint32_t flags, const char *alpn) {
+        bmds_tls_config_t c = {.size = sizeof(c), .flags = flags, .server_name = name, .alpn = alpn};
+        return bmds_tls_ctl(fd, BMDS_TLS_START, &c);
+}
+
+static int tls_info(int fd, bmds_tls_info_t *info) {
+        memset(info, 0, sizeof(*info));
+        info->size = sizeof(*info);
+        return bmds_tls_ctl(fd, BMDS_TLS_INFO, info);
+}
+
+static void tls_say(const char *what, int fd) {
+        bmds_tls_info_t i;
+        if (tls_info(fd, &i) != 0) return;
+        printf("tls: %s: state %u, TLS 0x%04x, %s, alpn \"%s\", verify 0x%x\n      %s, from %s, sha256 "
+               "%02x%02x%02x%02x...\n",
+               what, (unsigned)i.state, (unsigned)i.version, i.cipher_name, i.alpn, (unsigned)i.verify, i.subject,
+               i.issuer, i.peer_sha256[0], i.peer_sha256[1], i.peer_sha256[2], i.peer_sha256[3]);
+}
+
+/* Writes all of @p text to a blocking socket. */
+static int tls_write_all(int fd, const char *text) {
+        size_t n = strlen(text);
+        while (n > 0) {
+                const ssize_t w = write(fd, text, n);
+                if (w <= 0) return -1;
+                text += w;
+                n -= (size_t)w;
+        }
+        return 0;
+}
+
+static void tls_request(char *out, size_t size, const char *host) {
+        snprintf(out, size, "GET / HTTP/1.1\r\nHost: %s\r\nUser-Agent: progtest\r\nConnection: close\r\n\r\n", host);
+}
+
+/* GET / from @p host over a blocking TLS socket: the response's bytes, or -1. */
+static long tls_get(const char *host) {
+        const int fd = tls_connect(host, "443", 0);
+        if (fd < 0 || tls_start(fd, host, 0, NULL) != 0 || bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL) != 0) {
+                if (fd >= 0) close(fd);
+                return -1;
+        }
+        char req[256], buf[2048];
+        tls_request(req, sizeof(req), host);
+        long total = -1;
+        if (tls_write_all(fd, req) == 0) {
+                total = 0;
+                ssize_t n;
+                while ((n = read(fd, buf, sizeof(buf))) > 0) {
+                        if (total == 0 && (n < 9 || memcmp(buf, "HTTP/1.1 ", 9) != 0)) {
+                                total = -1;
+                                break;
+                        }
+                        total += n;
+                }
+                if (n < 0) total = -1;
+        }
+        close(fd);
+        return total;
+}
+
+static void *tls_parallel(void *arg) {
+        return (void *)(intptr_t)(tls_get((const char *)arg) > 0 ? 0 : 1);
+}
+
+/* @p host's certificate refused for @p bit: the handshake's error, INFO, SO_ERROR once, reads, poll. */
+static int tls_refused(const char *host, uint32_t bit) {
+        const int fd = tls_connect(host, "443", 0);
+        CHECK(fd >= 0);
+        CHECK(tls_start(fd, host, 0, NULL) == 0);
+        CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL) == -BMDS_EKEYREJECTED);
+        bmds_tls_info_t i;
+        CHECK(tls_info(fd, &i) == 0);
+        CHECK(i.state == BMDS_TLS_FAILED && i.error == BMDS_EKEYREJECTED && (i.verify & bit) != 0);
+        int       e = 0;
+        socklen_t el = sizeof(e);
+        CHECK(getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) == 0 && e == EKEYREJECTED);
+        CHECK(getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) == 0 && e == 0);
+        char c;
+        CHECK(read(fd, &c, 1) < 0 && errno == EKEYREJECTED);
+        struct pollfd p = {.fd = fd, .events = POLLIN | POLLOUT};
+        CHECK(poll(&p, 1, 0) == 1 && (p.revents & (POLLERR | POLLHUP)) != 0);
+        printf("tls: %s refused, verify 0x%x\n", host, (unsigned)i.verify);
+        close(fd);
+        return 0;
+}
+
+static int tls_test(const char *self, const char *host) {
+        if (need_self("tls", &self) != 0) return 2;
+        CHECK(bmds_sys_has(BMDS_SYS_TLS_CTL));
+        signal(SIGPIPE, SIG_IGN);
+        bmds_tls_info_t i;
+
+        /* What isn't a TLS socket. */
+        int p[2];
+        CHECK(pipe(p) == 0);
+        CHECK(tls_info(p[0], &i) == -BMDS_ENOTSOCK);
+        close(p[0]);
+        close(p[1]);
+        CHECK(tls_info(99, &i) == -BMDS_EBADF);
+        int u = socket(AF_INET, SOCK_DGRAM, 0);
+        CHECK(u >= 0 && tls_start(u, "x", 0, NULL) == -BMDS_ENOTSUP);
+        close(u);
+        u = socket(AF_INET, SOCK_STREAM, 0);
+        CHECK(u >= 0 && tls_start(u, "x", 0, NULL) == -BMDS_ENOTCONN);
+        close(u);
+
+        /* A plain connection: INFO and HANDSHAKE say it isn't TLS; START's checks. */
+        int fd = tls_connect(host, "443", 0);
+        CHECK(fd >= 0);
+        CHECK(tls_info(fd, &i) == -BMDS_EINVAL);
+        CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL) == -BMDS_EINVAL);
+        CHECK(bmds_tls_ctl(fd, BMDS_TLS_START, NULL) == -BMDS_EFAULT);
+        CHECK(bmds_tls_ctl(fd, 99, NULL) == -BMDS_EINVAL);
+        CHECK(tls_start(fd, host, 2, NULL) == -BMDS_EINVAL);
+        CHECK(tls_start(fd, NULL, 0, NULL) == -BMDS_EINVAL); /* a name, unless NO_VERIFY */
+        CHECK(tls_start(fd, host, 0, "h2,,x") == -BMDS_EINVAL);
+        {
+                bmds_tls_config_t c = {
+                        .size = sizeof(c), .server_name = host, .cert = (const uint8_t *)"x", .cert_size = 1};
+                CHECK(bmds_tls_ctl(fd, BMDS_TLS_START, &c) == -BMDS_EINVAL); /* a certificate without its key */
+                c.cert = NULL;
+                c.cert_size = 0;
+                c.ca = (const uint8_t *)"-----BEGIN CERTIFICATE-----\nnot one\n-----END CERTIFICATE-----\n";
+                c.ca_size = (uint32_t)strlen((const char *)c.ca);
+                CHECK(bmds_tls_ctl(fd, BMDS_TLS_START, &c) == -BMDS_EINVAL); /* a root that doesn't parse */
+        }
+        uint32_t dontwait = BMDS_TLS_DONTWAIT, bad = 2;
+        CHECK(tls_start(fd, host, 0, "h2,http/1.1") == 0);
+        CHECK(tls_start(fd, host, 0, NULL) == -BMDS_EALREADY);
+        CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, &bad) == -BMDS_EINVAL);
+        CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL) == 0);
+        CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, &dontwait) == 0);
+        CHECK(tls_info(fd, &i) == 0 && i.state == BMDS_TLS_OPEN && i.version == 0x0303 && i.error == 0);
+        CHECK(i.verify == 0 && i.not_after > i.not_before && strstr(i.subject, "CN=") != NULL);
+        CHECK(strcmp(i.alpn, "h2") == 0 || strcmp(i.alpn, "http/1.1") == 0);
+        {
+                /* A short INFO gets what fits. */
+                bmds_tls_info_t s = {.size = offsetof(bmds_tls_info_t, flags)};
+                memset((char *)&s + s.size, 0x55, sizeof(s) - s.size);
+                CHECK(bmds_tls_ctl(fd, BMDS_TLS_INFO, &s) == 0 && s.version == 0x0303 && s.issuer[0] == 0x55);
+        }
+        tls_say(host, fd);
+        close(fd);
+
+        /* Blocking: a whole response through read(), to the end. */
+        long n = tls_get(host);
+        CHECK(n > 0);
+        printf("tls: %s: GET / %ld bytes (blocking)\n", host, n);
+
+        /* Not blocking: connect, START at once (still connecting), then a poll loop that mustn't spin:
+         * a POLLIN with nothing to read at most once a record. */
+        fd = tls_connect(host, "443", 1);
+        CHECK(fd >= 0);
+        CHECK(tls_start(fd, host, 0, NULL) == 0);
+        CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, &dontwait) == -BMDS_EAGAIN);
+        struct pollfd pf = {.fd = fd, .events = POLLOUT};
+        int           waits = 0;
+        while (bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, &dontwait) == -BMDS_EAGAIN) {
+                CHECK(poll(&pf, 1, 30000) == 1);
+                ++waits;
+        }
+        CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, &dontwait) == 0);
+        char req[256], buf[1500];
+        tls_request(req, sizeof(req), host);
+        CHECK(write(fd, req, strlen(req)) == (ssize_t)strlen(req));
+        long got = 0;
+        int  polls = 0, empty = 0, reads = 0;
+        pf.events = POLLIN;
+        for (;;) {
+                CHECK(poll(&pf, 1, 30000) == 1);
+                ++polls;
+                const ssize_t r = read(fd, buf, sizeof(buf));
+                if (r == 0) break;
+                if (r < 0) {
+                        CHECK(errno == EAGAIN);
+                        ++empty;
+                        continue;
+                }
+                ++reads;
+                got += r;
+        }
+        CHECK(tls_info(fd, &i) == 0 && i.state == BMDS_TLS_CLOSED);
+        printf("tls: %s: GET / %ld bytes (not blocking): %d polls for the handshake, %d for the body, %d reads, "
+               "%d found nothing; closed %s\n",
+               host, got, waits, polls, reads, empty, (i.flags & BMDS_TLS_CLEAN_CLOSE) ? "with close_notify" : "bare");
+        CHECK(got > 0 && empty <= reads);
+        close(fd);
+
+        /* Inherited: the TLS socket as a child's stdin, which reads plaintext knowing nothing of TLS. */
+        fd = tls_connect(host, "443", 0);
+        CHECK(fd >= 0 && tls_start(fd, host, 0, NULL) == 0 && bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL) == 0);
+        CHECK(tls_write_all(fd, req) == 0);
+        posix_spawn_file_actions_t fa;
+        posix_spawn_file_actions_init(&fa);
+        posix_spawn_file_actions_adddup2(&fa, fd, 0);
+        fflush(stdout);
+        const pid_t child = start(self, &fa, NULL, "tlsread", NULL);
+        posix_spawn_file_actions_destroy(&fa);
+        CHECK(child > 0);
+        CHECK(status_of(child) == 0);
+        close(fd);
+
+        /* Two handshakes at once, from two threads. */
+        pthread_t t[2];
+        void     *r0 = (void *)1, *r1 = (void *)1;
+        CHECK(pthread_create(&t[0], NULL, tls_parallel, (void *)host) == 0);
+        CHECK(pthread_create(&t[1], NULL, tls_parallel, (void *)host) == 0);
+        CHECK(pthread_join(t[0], &r0) == 0 && pthread_join(t[1], &r1) == 0);
+        CHECK(r0 == NULL && r1 == NULL);
+        printf("tls: two at once: both well\n");
+
+        /* Refusals (badssl.com), and NO_VERIFY letting one pass with its reasons. */
+        if (tls_refused("expired.badssl.com", BMDS_TLS_VERIFY_EXPIRED) != 0) return 1;
+        if (tls_refused("wrong.host.badssl.com", BMDS_TLS_VERIFY_NAME) != 0) return 1;
+        if (tls_refused("self-signed.badssl.com", BMDS_TLS_VERIFY_UNTRUSTED) != 0) return 1;
+        fd = tls_connect("self-signed.badssl.com", "443", 0);
+        CHECK(fd >= 0 && tls_start(fd, "self-signed.badssl.com", BMDS_TLS_NO_VERIFY, NULL) == 0);
+        CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL) == 0);
+        CHECK(tls_info(fd, &i) == 0 && i.state == BMDS_TLS_OPEN && (i.verify & BMDS_TLS_VERIFY_UNTRUSTED) != 0);
+        printf("tls: self-signed.badssl.com with NO_VERIFY: open, verify 0x%x\n", (unsigned)i.verify);
+        close(fd);
+
+        printf("tls: all passed\n");
+        return 0;
+}
+
+/* For tlslocal: all of @p dir/@p name, its size in @p size; NULL if it can't be read. */
+static uint8_t *tls_file(const char *dir, const char *name, uint32_t *size) {
+        char path[256];
+        snprintf(path, sizeof(path), "%s/%s", dir, name);
+        FILE *f = fopen(path, "rb");
+        if (f == NULL) return NULL;
+        uint8_t *buf = malloc(16384);
+        *size = buf != NULL ? (uint32_t)fread(buf, 1, 16384, f) : 0;
+        fclose(f);
+        return buf;
+}
+
+/* A line (without its newline) from a TLS socket, a byte at a time; its length, or -1. */
+static int tls_line(int fd, char *out, size_t size) {
+        size_t n = 0;
+        while (n + 1 < size) {
+                char          c;
+                const ssize_t r = read(fd, &c, 1);
+                if (r <= 0) return -1;
+                if (c == '\n') break;
+                out[n++] = c;
+        }
+        out[n] = '\0';
+        return (int)n;
+}
+
+typedef struct {
+                int  fd;
+                int  lines;
+                long bytes;
+} tls_reader_t;
+
+/* For tlslocal: a reader thread's lines until the end, while the main thread writes. */
+static void *tls_reader(void *arg) {
+        tls_reader_t *r = arg;
+        char          line[64];
+        int           n;
+        while ((n = tls_line(r->fd, line, sizeof(line))) >= 0) {
+                ++r->lines;
+                r->bytes += n + 1;
+        }
+        return NULL;
+}
+
+static volatile sig_atomic_t tls_alarmed;
+
+static void tls_on_alarm(int sig) {
+        (void)sig;
+        tls_alarmed = 1;
+}
+
+/* TLS against tools/tls-test-server on PEER, with its CA and client certificate in DIR. */
+static int tls_local_test(const char *peer, const char *dir, const char *mode) {
+        static const char *const Name = "bmds-tls-test";
+        signal(SIGPIPE, SIG_IGN);
+        uint32_t       caSize = 0, certSize = 0, keySize = 0;
+        uint8_t *const ca = tls_file(dir, "ca.pem", &caSize);
+        uint8_t *const cert = tls_file(dir, "client.pem", &certSize);
+        uint8_t *const key = tls_file(dir, "client.key", &keySize);
+        CHECK(ca != NULL && cert != NULL && key != NULL);
+        bmds_tls_info_t i;
+        char            line[128];
+        int             fd;
+
+        if (strcmp(mode, "sysca") == 0) {
+                /* Trusted through net/tls/ca, not the program's roots. */
+                fd = tls_connect(peer, "7444", 0);
+                CHECK(fd >= 0 && tls_start(fd, Name, 0, NULL) == 0);
+                CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL) == 0);
+                CHECK(tls_line(fd, line, sizeof(line)) == 3 && strcmp(line, "bye") == 0);
+                close(fd);
+                printf("tlslocal: trusted through net/tls/ca\n");
+                return 0;
+        }
+        if (strcmp(mode, "timeout") == 0) {
+                /* A server that never answers: net/tls/handshake-timeout. */
+                fd = tls_connect(peer, "7445", 0);
+                CHECK(fd >= 0 && tls_start(fd, Name, 0, NULL) == 0);
+                struct timespec t0, t1;
+                clock_gettime(CLOCK_MONOTONIC, &t0);
+                CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL) == -BMDS_ETIMEDOUT);
+                clock_gettime(CLOCK_MONOTONIC, &t1);
+                CHECK(tls_info(fd, &i) == 0 && i.state == BMDS_TLS_FAILED && i.error == BMDS_ETIMEDOUT);
+                printf("tlslocal: a silent server: ETIMEDOUT after %ld ms\n",
+                       (long)((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000));
+                close(fd);
+                return 0;
+        }
+
+        /* Our roots but no client certificate: the server's alert. */
+        bmds_tls_config_t c = {.size = sizeof(c), .server_name = Name, .ca = ca, .ca_size = caSize};
+        fd = tls_connect(peer, "7443", 0);
+        CHECK(fd >= 0 && bmds_tls_ctl(fd, BMDS_TLS_START, &c) == 0);
+        CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL) == -BMDS_EPROTO);
+        close(fd);
+        /* Not our roots: the server's certificate refused. */
+        fd = tls_connect(peer, "7443", 0);
+        CHECK(fd >= 0 && tls_start(fd, Name, 0, NULL) == 0);
+        CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL) == -BMDS_EKEYREJECTED);
+        CHECK(tls_info(fd, &i) == 0 && (i.verify & BMDS_TLS_VERIFY_UNTRUSTED) != 0);
+        close(fd);
+        printf("tlslocal: without a client certificate EPROTO; without the roots EKEYREJECTED\n");
+
+        /* Everything: our roots, our certificate, ALPN; a reader thread while this one writes. */
+        c.cert = cert;
+        c.cert_size = certSize;
+        c.key = key;
+        c.key_size = keySize;
+        c.alpn = "irc,http/1.1";
+        fd = tls_connect(peer, "7443", 0);
+        CHECK(fd >= 0 && bmds_tls_ctl(fd, BMDS_TLS_START, &c) == 0);
+        CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL) == 0);
+        CHECK(tls_info(fd, &i) == 0 && strcmp(i.alpn, "irc") == 0 && i.verify == 0);
+        CHECK(tls_line(fd, line, sizeof(line)) > 0 && strcmp(line, "client=progtest alpn=irc") == 0);
+        tls_reader_t reader = {.fd = fd};
+        pthread_t    t;
+        CHECK(pthread_create(&t, NULL, tls_reader, &reader) == 0);
+        for (int n = 0; n < 200; ++n) {
+                char text[32];
+                snprintf(text, sizeof(text), "line %d\n", n);
+                CHECK(tls_write_all(fd, text) == 0);
+        }
+        /* close_notify, then the FIN: the server's close_notify ends the reader's reads. */
+        CHECK(shutdown(fd, SHUT_WR) == 0);
+        CHECK(pthread_join(t, NULL) == 0);
+        CHECK(reader.lines == 200);
+        CHECK(tls_info(fd, &i) == 0 && i.state == BMDS_TLS_CLOSED && (i.flags & BMDS_TLS_CLEAN_CLOSE) != 0);
+        tls_say("7443", fd);
+        close(fd);
+        printf("tlslocal: client certificate, our roots, ALPN irc; 200 lines echoed to a reader thread; "
+               "close_notify both ways\n");
+
+        /* The connection's end without close_notify. */
+        fd = tls_connect(peer, "7444", 0);
+        c.cert = c.key = NULL;
+        c.cert_size = c.key_size = 0;
+        c.alpn = NULL;
+        CHECK(fd >= 0 && bmds_tls_ctl(fd, BMDS_TLS_START, &c) == 0);
+        CHECK(tls_line(fd, line, sizeof(line)) == 3 && strcmp(line, "bye") == 0); /* the handshake first */
+        CHECK(read(fd, line, sizeof(line)) == 0);
+        CHECK(tls_info(fd, &i) == 0 && i.state == BMDS_TLS_CLOSED && (i.flags & BMDS_TLS_CLEAN_CLOSE) == 0);
+        close(fd);
+        printf("tlslocal: a bare end read as 0, not clean\n");
+
+        /* A record that fails its check. */
+        fd = tls_connect(peer, "7446", 0);
+        CHECK(fd >= 0 && bmds_tls_ctl(fd, BMDS_TLS_START, &c) == 0);
+        CHECK(read(fd, line, sizeof(line)) < 0 && errno == EBADMSG);
+        CHECK(read(fd, line, sizeof(line)) < 0 && errno == EBADMSG);
+        CHECK(tls_info(fd, &i) == 0 && i.state == BMDS_TLS_FAILED && i.error == EBADMSG);
+        close(fd);
+        printf("tlslocal: a tampered record: EBADMSG, and the session failed\n");
+
+        /* A signal in a blocking handshake: EINTR, and it goes on; closed while it does. */
+        struct sigaction sa = {.sa_handler = tls_on_alarm};
+        sigemptyset(&sa.sa_mask);
+        CHECK(sigaction(SIGALRM, &sa, NULL) == 0);
+        fd = tls_connect(peer, "7445", 0);
+        CHECK(fd >= 0 && bmds_tls_ctl(fd, BMDS_TLS_START, &c) == 0);
+        alarm(1);
+        CHECK(bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL) == -BMDS_EINTR);
+        /* The handler runs as a libc call returns (linux.c's __bmds_syscall), not a raw slot's. */
+        (void)getppid();
+        CHECK(tls_alarmed);
+        CHECK(tls_info(fd, &i) == 0 && i.state == BMDS_TLS_HANDSHAKING);
+        close(fd);
+        signal(SIGALRM, SIG_DFL);
+        printf("tlslocal: EINTR in a handshake, which went on; closed in it\n");
+
+        free(ca);
+        free(cert);
+        free(key);
+        printf("tlslocal: all passed\n");
+        return 0;
+}
+
+/* For tls: reads stdin (an inherited TLS socket) to its end; 0 if it was an HTTP response. */
+static int tls_read_stdin(void) {
+        char    buf[1024];
+        long    total = 0;
+        int     http = 0;
+        ssize_t n;
+        while ((n = read(0, buf, sizeof(buf))) > 0) {
+                if (total == 0) http = n >= 9 && memcmp(buf, "HTTP/1.1 ", 9) == 0;
+                total += n;
+        }
+        printf("tls: a child read %ld bytes of plaintext from its stdin (%s)\n", total, http ? "HTTP" : "not HTTP");
+        return n == 0 && http ? 0 : 1;
+}
+
 static int ptp_test(const char *mode) {
         struct timespec utc, tai;
         CHECK(clock_gettime(CLOCK_REALTIME, &utc) == 0);
@@ -4881,7 +5327,7 @@ int main(int argc, char **argv) {
                         "threads|"
                         "threadspin|filetype|audio|decode|rt|midi|synth|speech|mididecode|hog|stats|tasks|"
                         "procs|"
-                        "system|notify|expand|image|fonts|net|netwatch|rtnet|sched|ptp|netfs|faults|umode [arg]\n");
+                        "system|notify|expand|image|fonts|net|netwatch|rtnet|tls|sched|ptp|netfs|faults|umode [arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -4911,6 +5357,15 @@ int main(int argc, char **argv) {
         if (strcmp(what, "net") == 0) return net_test();
         if (strcmp(what, "netwatch") == 0) return net_watch_test(argc > 2 ? atoi(arg) : 1);
         if (strcmp(what, "rtnet") == 0) return rt_net_test(argc > 2 ? arg : NULL);
+        if (strcmp(what, "tls") == 0) return tls_test(arg, argc > 3 ? argv[3] : "github.com");
+        if (strcmp(what, "tlsread") == 0) return tls_read_stdin();
+        if (strcmp(what, "tlslocal") == 0) {
+                if (argc < 4) {
+                        fprintf(stderr, "usage: progtest tlslocal PEER DIR [sysca|timeout]\n");
+                        return 2;
+                }
+                return tls_local_test(argv[2], argv[3], argc > 4 ? argv[4] : "");
+        }
         if (strcmp(what, "sched") == 0) return sched_test(arg);
         if (strcmp(what, "ptp") == 0) return ptp_test(argc > 2 ? arg : "");
         if (strcmp(what, "schedof") == 0) return sched_getscheduler(0) & 0xff;

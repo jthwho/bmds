@@ -100,6 +100,9 @@ class [[nodiscard]] Error {
                         HostUnreachable,        ///< The host doesn't answer (EHOSTUNREACH).
                         MessageTooLong,         ///< The datagram is too big to send (EMSGSIZE).
                         BadAddress,             ///< A program's pointer it can't use itself (EFAULT).
+                        KeyRejected,            ///< A certificate or key was refused (EKEYREJECTED).
+                        ProtocolError,          ///< The peer broke the protocol (EPROTO).
+                        BadMessage,             ///< A message failed its check (EBADMSG).
                         CodeCount               ///< Number of codes (not an error code).
                 };
 

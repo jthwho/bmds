@@ -22,6 +22,7 @@
 #include <bmds/memory.h>
 #include <bmds/mutex.h>
 #include <bmds/netstack.h>
+#include <bmds/tlsservice.h>
 #include <bmds/random.h>
 #include <bmds/semaphore.h>
 #include <bmds/spinlock.h>
@@ -172,6 +173,8 @@ Error NetStack::init() {
         err = PtpService::init();
         if (err.isError()) return err;
         err = NetMdns::init();
+        if (err.isError()) return err;
+        err = TlsService::init(); // TLS sockets' settings and statistics: its thread starts at a handshake
         if (err.isError()) return err;
         Task::Config tc;
         tc.name = "net";

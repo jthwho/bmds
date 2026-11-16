@@ -764,6 +764,7 @@ _Static_assert(BMDS_ENOTEMPTY == 39 && BMDS_ELOOP == 40 && BMDS_EOVERFLOW == 75 
                "ABI: errno 39-84");
 _Static_assert(BMDS_ENOTSUP == 95 && BMDS_ETIMEDOUT == 110 && BMDS_ENOMEDIUM == 123, "ABI: errno 95-123");
 _Static_assert(BMDS_ECANCELED == 125, "ABI: errno 125 (Linux's values throughout)");
+_Static_assert(BMDS_EPROTO == 71 && BMDS_EBADMSG == 74 && BMDS_EKEYREJECTED == 129, "ABI: errno 71, 74, 129 (TLS)");
 _Static_assert(BMDS_ENOTSOCK == 88 && BMDS_EDESTADDRREQ == 89 && BMDS_EMSGSIZE == 90 && BMDS_EPROTOTYPE == 91,
                "ABI: errno 88-91");
 _Static_assert(BMDS_ENOPROTOOPT == 92 && BMDS_EPROTONOSUPPORT == 93 && BMDS_EAFNOSUPPORT == 97, "ABI: errno 92-97");
@@ -911,6 +912,32 @@ _Static_assert(offsetof(bmds_syntax_scan_t, language) == 4 && offsetof(bmds_synt
                        offsetof(bmds_syntax_scan_t, spans) == 20 && offsetof(bmds_syntax_scan_t, max_spans) == 24 &&
                        offsetof(bmds_syntax_scan_t, count) == 28 && sizeof(bmds_syntax_scan_t) == 32,
                "ABI: bmds_syntax_scan_t");
+
+/* TLS on a socket (devplan/network.md §35). */
+_Static_assert(BMDS_SYS_TLS_CTL == 135, "ABI: slot TLS_CTL");
+_Static_assert(BMDS_TLS_START == 1 && BMDS_TLS_HANDSHAKE == 2 && BMDS_TLS_INFO == 3 && BMDS_TLS_DONTWAIT == 1 &&
+                       BMDS_TLS_NO_VERIFY == 1,
+               "ABI: BMDS_TLS_* ops and flags");
+_Static_assert(BMDS_TLS_HANDSHAKING == 0 && BMDS_TLS_OPEN == 1 && BMDS_TLS_FAILED == 2 && BMDS_TLS_CLOSED == 3 &&
+                       BMDS_TLS_CLEAN_CLOSE == 1,
+               "ABI: BMDS_TLS_* states");
+_Static_assert(BMDS_TLS_VERIFY_EXPIRED == 1 && BMDS_TLS_VERIFY_NOT_YET_VALID == 2 && BMDS_TLS_VERIFY_NAME == 4 &&
+                       BMDS_TLS_VERIFY_UNTRUSTED == 8 && BMDS_TLS_VERIFY_CLOCK == 16 && BMDS_TLS_VERIFY_OTHER == 32,
+               "ABI: BMDS_TLS_VERIFY_*");
+_Static_assert(offsetof(bmds_tls_config_t, flags) == 4 && offsetof(bmds_tls_config_t, server_name) == 8 &&
+                       offsetof(bmds_tls_config_t, ca) == 12 && offsetof(bmds_tls_config_t, ca_size) == 16 &&
+                       offsetof(bmds_tls_config_t, cert) == 20 && offsetof(bmds_tls_config_t, cert_size) == 24 &&
+                       offsetof(bmds_tls_config_t, key) == 28 && offsetof(bmds_tls_config_t, key_size) == 32 &&
+                       offsetof(bmds_tls_config_t, alpn) == 36 && sizeof(bmds_tls_config_t) == 40,
+               "ABI: bmds_tls_config_t");
+_Static_assert(offsetof(bmds_tls_info_t, state) == 4 && offsetof(bmds_tls_info_t, error) == 8 &&
+                       offsetof(bmds_tls_info_t, verify) == 12 && offsetof(bmds_tls_info_t, version) == 16 &&
+                       offsetof(bmds_tls_info_t, cipher) == 18 && offsetof(bmds_tls_info_t, flags) == 20 &&
+                       offsetof(bmds_tls_info_t, not_before) == 24 && offsetof(bmds_tls_info_t, not_after) == 32 &&
+                       offsetof(bmds_tls_info_t, peer_sha256) == 40 && offsetof(bmds_tls_info_t, cipher_name) == 72 &&
+                       offsetof(bmds_tls_info_t, alpn) == 120 && offsetof(bmds_tls_info_t, subject) == 136 &&
+                       offsetof(bmds_tls_info_t, issuer) == 264 && sizeof(bmds_tls_info_t) == 392,
+               "ABI: bmds_tls_info_t");
 #endif
 
 /* Frame times and a MIDI port's latency (devplan/sequencer.md §7, K1 and K2; 2026-11-06). */

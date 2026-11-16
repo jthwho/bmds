@@ -26,6 +26,7 @@
 #include <bmds/netstack.h>
 #include <bmds/socket.h>
 #include <bmds/thread.h>
+#include <bmds/tlsservice.h>
 
 #include "lwipport.h"
 #include "pbufmarks.h"
@@ -544,6 +545,16 @@ void Socket::dropReceived() {
 
 void Socket::handleClosed(uint8_t mode) {
         (void)mode; // opened read and write: the one handle's last reference
+        if (TlsSession *tls = _tls.load(std::memory_order_acquire); tls != nullptr) {
+                // Off the tls thread first (a step in progress ends), then close_notify, best effort.
+                TlsService::remove(*this);
+                {
+                        Mutex::Locker lock(_tlsLock, WaitForever);
+                        tls->closeNotify();
+                        _tls.store(nullptr, std::memory_order_release);
+                }
+                TlsSession::destroy(tls);
+        }
         closeFastPath();
         forgetStamps();
         {
@@ -787,10 +798,22 @@ Result<int32_t> Socket::option(Option option) {
 }
 
 Error Socket::takeError() {
-        NetStack::QuietLocker lock;
-        const Error           err = _error;
-        _error = Error::Ok;
-        return err;
+        {
+                NetStack::QuietLocker lock;
+                const Error           err = _error;
+                _error = Error::Ok;
+                if (err.isError()) return err;
+        }
+        // A failed TLS handshake, said once (SO_ERROR), as a failed connect is.
+        if (isTls() && TlsSession::State(_tlsState.load(std::memory_order_acquire)) == TlsSession::State::Failed) {
+                Mutex::Locker lock(_tlsLock, WaitForever);
+                TlsSession   *tls = _tls.load(std::memory_order_acquire);
+                if (tls != nullptr && !_tlsErrorTaken) {
+                        _tlsErrorTaken = true;
+                        return tls->failure();
+                }
+        }
+        return Error::Ok;
 }
 
 Error Socket::joinGroup(uint32_t group, uint32_t interface) {
@@ -1392,6 +1415,15 @@ Error Socket::connect(const SocketAddress &address, uint32_t flags) {
 }
 
 Error Socket::shutdown(bool receiving, bool sending) {
+        if (sending && isTls()) {
+                // close_notify before the FIN (best effort: never waits for room).
+                Mutex::Locker lock(_tlsLock, WaitForever);
+                TlsSession   *tls = _tls.load(std::memory_order_acquire);
+                if (tls != nullptr) {
+                        tls->closeNotify();
+                        publishTls(*tls);
+                }
+        }
         NetStack::Locker lock;
         if (!_connected && !_listening) return Error::NotConnected;
         if (receiving && !_receiveShut) {
@@ -1419,10 +1451,14 @@ Result<size_t> Socket::send(Span<const ByteSpan> pieces, const SocketAddress *to
 Result<size_t> Socket::sendWithin(Span<const ByteSpan> pieces, const SocketAddress *to, uint32_t flags,
                                   unsigned int timeoutMs) {
         const Deadline deadline(timeoutOf(_sendTimeoutMs, timeoutMs));
-        if (_writeLock.lock(deadline).isError()) return makeError<size_t>(Error::WouldBlock);
+        // A TLS session's own bytes: its lock serializes them, and the program's writer may be
+        // the one waiting in it.
+        const bool underlying = (flags & Underlying) != 0;
+        flags &= ~uint32_t(Underlying);
+        if (!underlying && _writeLock.lock(deadline).isError()) return makeError<size_t>(Error::WouldBlock);
         Result<size_t> r;
         if (_type == Type::Stream) {
-                r = sendTcp(pieces, flags, deadline);
+                r = !underlying && isTls() ? sendTls(pieces, flags, deadline) : sendTcp(pieces, flags, deadline);
         } else {
                 bool sent = false;
                 if (_type == Type::Datagram) r = sendFast(pieces, to, flags, deadline, sent);
@@ -1431,7 +1467,7 @@ Result<size_t> Socket::sendWithin(Span<const ByteSpan> pieces, const SocketAddre
                         r = sendDatagram(pieces, to);
                 }
         }
-        _writeLock.unlock();
+        if (!underlying) _writeLock.unlock();
         return r;
 }
 
@@ -1609,7 +1645,14 @@ Result<Socket::Received> Socket::receive(Span<const WritableByteSpan> pieces, ui
 Result<Socket::Received> Socket::receiveWithin(Span<const WritableByteSpan> pieces, uint32_t flags,
                                                unsigned int timeoutMs) {
         const Deadline deadline(timeoutOf(_receiveTimeoutMs, timeoutMs));
-        if (_readLock.lock(deadline).isError()) return makeError<Received>(Error::WouldBlock);
+        const bool     underlying = (flags & Underlying) != 0;
+        flags &= ~uint32_t(Underlying);
+        if (!underlying && _readLock.lock(deadline).isError()) return makeError<Received>(Error::WouldBlock);
+        if (_type == Type::Stream && !underlying && isTls()) {
+                Result<Received> r = receiveTls(pieces, flags, deadline);
+                _readLock.unlock();
+                return r;
+        }
         const size_t     room = totalOf(pieces);
         const bool       all = _type == Type::Stream && (flags & WaitAll) != 0 && (flags & Peek) == 0;
         Received         got;
@@ -1671,7 +1714,7 @@ Result<Socket::Received> Socket::receiveWithin(Span<const WritableByteSpan> piec
                         }
                 }
         }
-        _readLock.unlock();
+        if (!underlying) _readLock.unlock();
         return r;
 }
 
@@ -1765,6 +1808,7 @@ bool Socket::isWritable() const {
 }
 
 uint8_t Socket::readiness() {
+        if (_type == Type::Stream && isTls()) return tlsReadiness();
         uint8_t ready = 0;
         if (_type == Type::Stream) {
                 NetStack::QuietLocker lock;
@@ -1787,6 +1831,266 @@ uint8_t Socket::readiness() {
         if (fast != nullptr && fast->readable()) ready |= Readable;
         giveFast();
         if ((_timestamping & TxFlags) != 0 && hasReport()) ready |= ErrorQueue | (_selectErrorQueue ? Urgent : 0);
+        return ready;
+}
+
+
+// --- TLS (devplan/network.md §35) --------------------------------------------------------------
+
+namespace {
+
+        // The piece and offset byte @p at of @p pieces is in.
+        template <typename Piece> bool locate(Span<const Piece> pieces, size_t at, size_t &piece, size_t &offset) {
+                piece = 0;
+                offset = at;
+                while (piece < pieces.size() && offset >= pieces[piece].size()) offset -= pieces[piece++].size();
+                return piece < pieces.size();
+        }
+
+} // namespace
+
+void Socket::publishTls(const TlsSession &session) {
+        _tlsWanted.store(session.bytesWanted(), std::memory_order_relaxed);
+        _tlsPending.store(session.pendingBytes(), std::memory_order_relaxed);
+        _tlsFlush.store(session.isFlushPending(), std::memory_order_relaxed);
+        _tlsState.store(uint8_t(session.state()), std::memory_order_release);
+        return;
+}
+
+Error Socket::startTls(const TlsSession::Config &config, String &why) {
+        why.clear();
+        if (_type != Type::Stream) return Error::NotSupported;
+        {
+                NetStack::Locker lock;
+                if (_listening || (!_connected && !_connecting)) return Error::NotConnected;
+        }
+        Mutex::Locker lock(_tlsLock, WaitForever);
+        if (_tls.load(std::memory_order_acquire) != nullptr) return Error::AlreadyInProgress;
+        auto [session, err] = TlsSession::create(*this, config, why);
+        if (err.isError()) return err;
+        publishTls(*session);
+        _tls.store(session, std::memory_order_release);
+        // The tls thread may step it at once: it waits for our lock.
+        err = TlsService::add(*this);
+        if (err.isError()) {
+                _tls.store(nullptr, std::memory_order_release);
+                TlsSession::destroy(session);
+                return err;
+        }
+        return Error::Ok;
+}
+
+Socket::TlsStep Socket::stepTls(bool late) {
+        Mutex::Locker lock(_tlsLock, WaitForever);
+        TlsSession   *tls = _tls.load(std::memory_order_acquire);
+        if (tls == nullptr || tls->state() == TlsSession::State::Failed) return TlsStep::Failed;
+        if (tls->state() == TlsSession::State::Open) {
+                // A record's rest (TlsService::flushLater()).
+                if (!tls->isFlushPending()) return TlsStep::Done;
+                auto [n, err] = tls->send(ByteSpan(), DontWait);
+                (void)n;
+                publishTls(*tls);
+                if (err == Error::WouldBlock) return TlsStep::Waiting;
+                wakeAll();
+                return err.isOk() ? TlsStep::Done : TlsStep::Failed;
+        }
+        bool  connecting;
+        bool  failed;
+        Error connectError;
+        {
+                NetStack::Locker net;
+                connecting = _connecting;
+                failed = _gone || (!_connected && !_connecting);
+                connectError = _error; // left for takeError(): SO_ERROR says the connect's
+        }
+        if (late) {
+                tls->abandon(Error::Timeout, "the TLS handshake took too long");
+        } else if (connecting) {
+                return TlsStep::Waiting;
+        } else if (failed || connectError.isError()) {
+                const Error err = connectError.isError() ? connectError : Error::ConnectionReset;
+                tls->abandon(err, err.desc());
+        } else if (tls->handshake(DontWait) == Error::WouldBlock) {
+                publishTls(*tls);
+                return TlsStep::Waiting;
+        }
+        publishTls(*tls);
+        wakeAll(); // readers, writers and pollers: the handshake has ended
+        return tls->isOpen() ? TlsStep::Done : TlsStep::Failed;
+}
+
+Error Socket::waitTls(uint32_t flags) {
+        if (!isTls()) return Error::NotSupported;
+        const Deadline deadline(timeoutOf(_receiveTimeoutMs, WaitForever));
+        if (_writeLock.lock(deadline).isError()) return Error::WouldBlock;
+        Error result;
+        for (;;) {
+                const auto state = TlsSession::State(_tlsState.load(std::memory_order_acquire));
+                if (state == TlsSession::State::Open) break;
+                if (state == TlsSession::State::Failed) {
+                        Mutex::Locker lock(_tlsLock, WaitForever);
+                        result = _tls.load(std::memory_order_acquire)->failure();
+                        break;
+                }
+                if ((flags & DontWait) != 0) {
+                        result = Error::WouldBlock;
+                        break;
+                }
+                // The handshake's end wakes every waiter (stepTls()).
+                const Error w = Interrupt::waitCurrent(_writable, deadline);
+                if (w.isError()) {
+                        result = w == Error::Timeout ? Error::WouldBlock : w;
+                        break;
+                }
+        }
+        _writeLock.unlock();
+        return result;
+}
+
+Error Socket::tlsInfo(TlsSession::Info &out) {
+        Mutex::Locker lock(_tlsLock, WaitForever);
+        TlsSession   *tls = _tls.load(std::memory_order_acquire);
+        if (tls == nullptr) return Error::NotSupported;
+        tls->info(out);
+        return Error::Ok;
+}
+
+String Socket::tlsWhy() {
+        String        why;
+        Mutex::Locker lock(_tlsLock, WaitForever);
+        TlsSession   *tls = _tls.load(std::memory_order_acquire);
+        if (tls != nullptr && tls->state() == TlsSession::State::Failed) (void)why.append(tls->why());
+        return why;
+}
+
+Result<size_t> Socket::sendTls(Span<const ByteSpan> pieces, uint32_t flags, const Deadline &deadline) {
+        const size_t total = totalOf(pieces);
+        size_t       done = 0;
+        for (;;) {
+                Error err;
+                bool  flushing = false;
+                {
+                        if (_tlsLock.lock(deadline).isError())
+                                return done > 0 ? Result<size_t>(done, Error::Ok)
+                                                : makeError<size_t>(Error::WouldBlock);
+                        TlsSession &tls = *_tls.load(std::memory_order_acquire);
+                        switch (tls.state()) {
+                                case TlsSession::State::Handshaking: err = Error::WouldBlock; break;
+                                case TlsSession::State::Failed: err = tls.failure(); break;
+                                case TlsSession::State::Open: {
+                                        size_t   piece = 0;
+                                        size_t   offset = 0;
+                                        ByteSpan chunk;
+                                        if (locate(pieces, done, piece, offset)) chunk = pieces[piece].mid(offset);
+                                        // All taken: a blocking send waits for its last record to go.
+                                        if (chunk.isEmpty() && !tls.isFlushPending()) {
+                                                _tlsLock.unlock();
+                                                return Result<size_t>(done, Error::Ok);
+                                        }
+                                        auto [n, serr] = tls.send(chunk, DontWait);
+                                        err = serr;
+                                        if (err.isOk()) {
+                                                done += n;
+                                                TlsService::count(0, n);
+                                        }
+                                        flushing = tls.isFlushPending();
+                                        break;
+                                }
+                        }
+                        if (TlsSession *t = _tls.load(std::memory_order_acquire); t != nullptr) publishTls(*t);
+                        _tlsLock.unlock();
+                }
+                if (err.isOk()) {
+                        if (done < total || (flags & DontWait) == 0) continue;
+                        // Not waiting: the record's rest goes when there is room.
+                        if (flushing) TlsService::flushLater(*this);
+                        return Result<size_t>(done, Error::Ok);
+                }
+                if (err != Error::WouldBlock)
+                        return done > 0 ? Result<size_t>(done, Error::Ok) : makeError<size_t>(err);
+                if ((flags & DontWait) != 0) {
+                        if (flushing) TlsService::flushLater(*this);
+                        return done > 0 ? Result<size_t>(done, Error::Ok) : makeError<size_t>(Error::WouldBlock);
+                }
+                const Error w = Interrupt::waitCurrent(_writable, deadline);
+                if (w.isError()) {
+                        if (done > 0) return Result<size_t>(done, Error::Ok);
+                        return makeError<size_t>(w == Error::Timeout ? Error::WouldBlock : w);
+                }
+        }
+}
+
+Result<Socket::Received> Socket::receiveTls(Span<const WritableByteSpan> pieces, uint32_t flags,
+                                            const Deadline &deadline) {
+        if ((flags & Peek) != 0) return makeError<Received>(Error::NotSupported);
+        const size_t room = totalOf(pieces);
+        const bool   all = (flags & WaitAll) != 0;
+        Received     got;
+        for (;;) {
+                Error err;
+                {
+                        if (_tlsLock.lock(deadline).isError()) {
+                                if (got.bytes > 0) break;
+                                return makeError<Received>(Error::WouldBlock);
+                        }
+                        TlsSession &tls = *_tls.load(std::memory_order_acquire);
+                        switch (tls.state()) {
+                                case TlsSession::State::Handshaking: err = Error::WouldBlock; break;
+                                case TlsSession::State::Failed: err = tls.failure(); break;
+                                case TlsSession::State::Open: {
+                                        size_t piece = 0;
+                                        size_t offset = 0;
+                                        if (!locate(pieces, got.bytes, piece, offset)) break; // full (or empty)
+                                        auto [n, rerr] = tls.receive(pieces[piece].mid(offset), DontWait);
+                                        err = rerr;
+                                        if (err.isOk() && n == 0) err = Error::EndOfFile;
+                                        if (err.isOk()) {
+                                                got.bytes += n;
+                                                TlsService::count(n, 0);
+                                        }
+                                        break;
+                                }
+                        }
+                        publishTls(tls);
+                        _tlsLock.unlock();
+                }
+                if (err.isOk()) {
+                        if (!all || got.bytes == room) break;
+                        continue;
+                }
+                if (got.bytes > 0 && err != Error::WouldBlock) break; // what came before the end or error
+                if (err != Error::WouldBlock) return makeError<Received>(err);
+                if ((flags & DontWait) != 0) {
+                        if (got.bytes > 0) break;
+                        return makeError<Received>(Error::WouldBlock);
+                }
+                const Error w = Interrupt::waitCurrent(_readable, deadline);
+                if (w.isError()) {
+                        if (got.bytes > 0) break;
+                        return makeError<Received>(w == Error::Timeout ? Error::WouldBlock : w);
+                }
+        }
+        got.length = got.bytes;
+        if (auto [p, perr] = peer(); perr.isOk()) got.from = p;
+        return makeResult(got);
+}
+
+uint8_t Socket::tlsReadiness() {
+        const auto            state = TlsSession::State(_tlsState.load(std::memory_order_acquire));
+        NetStack::QuietLocker lock;
+        // Failed, or the connection gone: everything at once, as a reset TCP socket says.
+        if (state == TlsSession::State::Failed || _gone) return Readable | Writable | HungUp | Broken;
+        // Handshaking: nothing a program could do yet (the tls thread wakes it at the end).
+        if (state == TlsSession::State::Handshaking) return 0;
+        uint8_t ready = 0;
+        // Readable: plaintext waiting, or the rest of the record being read (half a record wakes
+        // nobody: §35b), or the end.
+        if (_tlsPending.load(std::memory_order_relaxed) > 0 ||
+            _receivedBytes >= _tlsWanted.load(std::memory_order_relaxed) || _peerFinished || _receiveShut ||
+            _error.isError())
+                ready |= Readable;
+        if (isWritable()) ready |= Writable;
+        if (_peerFinished && _sendShut) ready |= HungUp;
         return ready;
 }
 

@@ -89,6 +89,8 @@ add_executable(bmds_host_tests
         lwip.cpp
         lwipwire.cpp
         socket.cpp
+        faketls.cpp
+        tlssocket.cpp
         loader.cpp
         blockwriter.cpp
         memorystream.cpp

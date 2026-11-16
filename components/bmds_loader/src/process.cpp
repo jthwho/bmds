@@ -511,6 +511,9 @@ int32_t Process::errnoFor(Error err) {
                 case Error::HostUnreachable: return -BMDS_EHOSTUNREACH;
                 case Error::MessageTooLong: return -BMDS_EMSGSIZE;
                 case Error::BadAddress: return -BMDS_EFAULT;
+                case Error::KeyRejected: return -BMDS_EKEYREJECTED;
+                case Error::ProtocolError: return -BMDS_EPROTO;
+                case Error::BadMessage: return -BMDS_EBADMSG;
                 default: return -BMDS_EIO;
         }
 }
@@ -549,6 +552,9 @@ Error Process::errorFor(int32_t error) {
                 case BMDS_ENETUNREACH: return Error::NetworkUnreachable;
                 case BMDS_EHOSTUNREACH: return Error::HostUnreachable;
                 case BMDS_EFAULT: return Error::BadAddress;
+                case BMDS_EKEYREJECTED: return Error::KeyRejected;
+                case BMDS_EPROTO: return Error::ProtocolError;
+                case BMDS_EBADMSG: return Error::BadMessage;
                 default: return Error::IoError;
         }
 }

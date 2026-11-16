@@ -22,7 +22,8 @@ set(BMDS_NET_PORTABLE_SRCS
         src/ntp.cpp
         src/ptp.cpp
         src/ptpport.cpp
-        src/rxcopies.cpp)
+        src/rxcopies.cpp
+        src/tlsservice.cpp)
 
 # lwIP: the core, IPv4, DNS and mDNS's responder (IPv6 is vendored for later, not built yet).
 set(BMDS_LWIP_SRCS
@@ -87,6 +88,7 @@ if(COMMAND idf_component_register)
                                     src/tlsbench.cpp
                                     src/tlsgcm.cpp
                                     src/tlssession.cpp
+                                    src/tlssettings.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS ${BMDS_LWIP_INCLUDES}
                                REQUIRES bmds_core bmds_kernel

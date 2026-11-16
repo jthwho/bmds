@@ -72,6 +72,9 @@ namespace {
                 {"HostUnreachable", "No route to host"},
                 {"MessageTooLong", "Message too long"},
                 {"BadAddress", "Bad address"},
+                {"KeyRejected", "Key was rejected"},
+                {"ProtocolError", "Protocol error"},
+                {"BadMessage", "Bad message"},
         };
         static_assert(sizeof(CodeTexts) / sizeof(CodeTexts[0]) == Error::CodeCount,
                       "CodeTexts must have one entry per Error::Code");
@@ -147,6 +150,11 @@ namespace {
                 {EHOSTUNREACH, Error::HostUnreachable},
                 {EMSGSIZE, Error::MessageTooLong},
                 {EFAULT, Error::BadAddress},
+                {EPROTO, Error::ProtocolError},
+                {EBADMSG, Error::BadMessage},
+#ifdef EKEYREJECTED
+                {EKEYREJECTED, Error::KeyRejected},
+#endif
         };
 
         template <typename Table> Error lookup(const Table &table, int32_t value, Error::Code fallback) {

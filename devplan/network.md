@@ -3000,3 +3000,70 @@ them. Linux's errno numbers (`EKEYREJECTED` 129, `EPROTO` 71) from musl as they 
 - **Open:** where a handshake's 0.3-1.2 s goes (ECDSA P-256 slower than an RSA-4096 chain,
   with `MBEDTLS_HARDWARE_ECC` on); profiled when it matters. `bench`'s result file is named by
   the second, so a run starting in the same second as the last fails ("Already exists").
+
+### 35i. As built: step 2, the kernel (2026-11-16)
+
+As §35b-c designed, with what building it decided:
+
+- **`Socket`** (`socket.h`): `startTls()`, `waitTls()`, `tlsInfo()`, `tlsWhy()`, `isTls()`, and
+  `stepTls()` for the `tls` thread. A TCP socket with a session sends and receives through it in
+  `sendWithin()`/`receiveWithin()` (so `read`, `write`, `sendmsg`, `recvmsg` all do), never
+  holding the session's lock (`_tlsLock`) while it waits; the reader and writer locks still
+  serve one of each at a time. The session's own I/O is the new flag `Socket::Underlying`
+  (bypassing both the TLS routing and those locks: `_tlsLock` serializes it). `readiness()` is
+  TLS's from atomics the socket publishes after each call into the session (state, the bytes the
+  record lacks, plaintext waiting, a record half sent), so `poll` never takes the session's lock.
+  The readiness list is 5 long (was 4): one for the `tls` thread. `takeError()` (`SO_ERROR`) says
+  a failed handshake once. `MSG_PEEK` on a TLS socket is `ENOTSUP`.
+- **A record half sent:** `mbedtls_ssl_write()` after `WANT_WRITE` has already made the record
+  and wants the same data again; instead the session says the data was taken and sends the rest
+  first at its next call (a write of nothing flushes it). A blocking write returns once its last
+  record is out; a non-blocking one leaves the rest to the `tls` thread (`TlsService::flushLater()`),
+  as Linux's TCP would push what it buffered.
+- **`TlsService`** (`tlsservice.h`, portable): the thread, its entries (handshakes, and flushes
+  with no deadline), the session count, `net.tls` statistics (`sessions`, `handshaking`,
+  `handshakes`, `failures`, `rx_bytes`, `tx_bytes`). Priority 2, the programs'. A close waits for a
+  step of its socket in progress, then the socket frees its session. The settings are the
+  platform's (`tlssettings.cpp`; `net/tls/ca` became `Paths`: PEM files, `;`-separated; `sessions`
+  1-64; `handshake-timeout` 1-600 s).
+- **The clock** (§35b): a session is made without it; its handshake then fails at once, nothing
+  sent, `EKEYREJECTED` with `VERIFY_CLOCK`. `Http::openTls()` still answers `NotReady` for it.
+- **`Error`** gained `KeyRejected`, `ProtocolError`, `BadMessage` (`EKEYREJECTED` 129, `EPROTO` 71,
+  `EBADMSG` 74, appended to `errno.h` and locked). `pkg`'s adapter maps them back to what
+  `Http::get()` documents.
+- **The slot** (`netcalls.cpp`, slot 135, `BMDS_K_SLOTS` 136): `HANDSHAKE`'s `arg` is null (wait) or
+  a `uint32_t` of `BMDS_TLS_DONTWAIT`: the kernel doesn't know a descriptor's `O_NONBLOCK` (it is
+  `linux.c`'s). `INFO`'s `error` is a positive errno, as `SO_ERROR`'s. START's limits: `ca` 256 KB,
+  `cert` and `key` 16 KB each, a server name 253 bytes, ALPN 127. A `net/tls/ca` file that can't be
+  read is logged and left out (fewer roots refuse more, never less).
+- **Host tests:** `tests/host/faketls.cpp` stands in for `TlsSession` (a toy protocol with TLS's
+  shape: a handshake, length-prefixed records, the record asked for as mbedTLS asks) and for the
+  settings; `tlssocket.cpp`, 4 cases over lwIP's two wired interfaces: the handshake on the
+  thread, blocking and not, records both ways, half a record not readable, refusal and
+  `NoVerify`, a failed record, the handshake's time, the session limit, a close mid-handshake,
+  not TCP or not connected.
+- **On the board:**
+  - `progtest tls SELF [HOST]`: the slot's errors, github.com blocking (531 KB) and not
+    (374 polls and 368 reads for the body, 5 of the polls finding nothing: it doesn't spin),
+    ALPN `h2`, a short INFO, the socket as a child's stdin (`tlsread`: 531 KB of plaintext), two
+    handshakes at once, badssl.com's `expired` (verify 0x9), `wrong.host` (0x4), `self-signed`
+    (0x8, and open with `NO_VERIFY`).
+  - `progtest tlslocal PEER DIR` against `tools/tls-test-server` (new: its own CA, server and
+    client certificates; ports 7443-7447): `EPROTO` without the client certificate the server
+    requires, `EKEYREJECTED` without its roots; with both and ALPN `irc,http/1.1`, `irc` chosen,
+    200 lines echoed to a reader thread while the main thread wrote, close_notify both ways
+    (`CLOSED`, clean); a bare end (`CLOSED`, not clean); a tampered record (`EBADMSG` twice, the
+    session failed); `EINTR` in a blocking handshake, which went on, and a close in it.
+    `sysca`: trusted through `net/tls/ca`; `timeout` with the setting at 3: `ETIMEDOUT` after
+    3000 ms.
+  - The `tls` thread: 2,576 of its 6,144 bytes of stack after handshakes with an RSA-4096
+    chain; gone 30 s after the last. `stats net.tls`: 14 handshakes, 8 failures (all the tests'),
+    0 sessions after.
+  - `CONFIG_BMDS_STACK_PROBE` (build-probe) over both suites: `recvmsg` 2,656 bytes (a record
+    decrypted in the caller), `tls_ctl` 2,448 (START parsing certificates), `read` 2,032,
+    `sendmsg` 1,952, `write` 1,840: well under the 12 KB floor.
+  - `pkg update` and `update fetch` as before, their refusals in the same words.
+- **Flash:** +14,720 bytes (3,227,552 to 3,242,272).
+- **For step 3:** a signal's handler runs as a *libc* call returns (`__bmds_syscall` in `linux.c`),
+  so a raw `bmds_tls_ctl()` returns `-EINTR` before it has run; the libtls layer should make its
+  calls through `syscall()` or check, as `progtest tlslocal` does.

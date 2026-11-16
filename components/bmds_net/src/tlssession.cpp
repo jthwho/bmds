@@ -5,9 +5,10 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * TLS client sessions (devplan/network.md §35): mbedTLS over a connected `Socket` (its BIO), the
- * server's certificate checked against IDF's bundle, its dates and the server's name. And
- * mbedTLS's allocations, through `Memory` in PSRAM (`CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC`).
+ * TLS client sessions (devplan/network.md §35): mbedTLS over a connected `Socket` (its BIO, on the
+ * socket's own bytes), the server's certificate checked against IDF's bundle and any roots given,
+ * its dates and the server's name; a client certificate, ALPN. And mbedTLS's allocations, through
+ * `Memory` in PSRAM (`CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC`).
  */
 
 #include <cstdio>
@@ -17,6 +18,7 @@
 #include <esp_log.h>
 #include <esp_random.h>
 #include <mbedtls/net_sockets.h>
+#include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509.h>
@@ -49,9 +51,15 @@ struct TlsSession::Impl {
                 TlsSession          session;
                 mbedtls_ssl_context ssl;
                 mbedtls_ssl_config  conf;
+                mbedtls_x509_crt    roots; ///< `Config::ca`.
+                mbedtls_x509_crt    cert;  ///< `Config::cert`.
+                mbedtls_pk_context  key;   ///< `Config::key`.
+                char                alpnNames[MaxAlpn][MaxAlpnName + 1] = {};
+                const char         *alpn[MaxAlpn + 1] = {};
                 Socket             *socket = nullptr;
                 uint32_t            ioFlags = 0; ///< `Socket::DontWait` while stepping without waiting.
                 Error               ioError;     ///< What the socket said, when mbedTLS failed through it.
+                bool                ended = false; ///< `receive()` gave the end.
 
                 static int bioSend(void *arg, const unsigned char *data, size_t bytes);
                 static int bioReceive(void *arg, unsigned char *into, size_t bytes);
@@ -63,7 +71,6 @@ namespace {
                 esp_fill_random(out, bytes);
                 return 0;
         }
-
 
         // What `NoVerify` and a refusal report: mbedTLS's flags as ours.
         uint32_t verifyBits(uint32_t flags) {
@@ -126,12 +133,48 @@ namespace {
                 0,
         };
 
+        bool isPem(ByteSpan data) {
+                static constexpr char Begin[] = "-----BEGIN";
+                const size_t          n = sizeof(Begin) - 1;
+                for (size_t i = 0; i + n <= data.size(); ++i)
+                        if (std::memcmp(data.data() + i, Begin, n) == 0) return true;
+                return false;
+        }
+
+        // mbedTLS's PEM parsers want the text with its NUL, counted.
+        template <typename Fn> int withPem(ByteSpan data, Fn &&parse) {
+                auto *copy = static_cast<unsigned char *>(Memory::alloc(MemSpace::Psram, data.size() + 1));
+                if (copy == nullptr) return MBEDTLS_ERR_SSL_ALLOC_FAILED;
+                std::memcpy(copy, data.data(), data.size());
+                copy[data.size()] = '\0';
+                const int ret = parse(copy, data.size() + 1);
+                Memory::free(copy);
+                return ret;
+        }
+
+        // Certificates into @p chain: a PEM (one or more; any that fails fails it) or a DER.
+        int parseCertificates(mbedtls_x509_crt &chain, ByteSpan data) {
+                if (!isPem(data)) return mbedtls_x509_crt_parse_der(&chain, data.data(), data.size());
+                return withPem(data, [&](const unsigned char *p, size_t n) {
+                        const int ret = mbedtls_x509_crt_parse(&chain, p, n);
+                        return ret > 0 ? MBEDTLS_ERR_X509_INVALID_FORMAT : ret;
+                });
+        }
+
+        int parseKey(mbedtls_pk_context &key, ByteSpan data) {
+                if (!isPem(data))
+                        return mbedtls_pk_parse_key(&key, data.data(), data.size(), nullptr, 0, random, nullptr);
+                return withPem(data, [&](const unsigned char *p, size_t n) {
+                        return mbedtls_pk_parse_key(&key, p, n, nullptr, 0, random, nullptr);
+                });
+        }
+
 } // namespace
 
 int TlsSession::Impl::bioSend(void *arg, const unsigned char *data, size_t bytes) {
         Impl          &m = *static_cast<Impl *>(arg);
         const ByteSpan piece(data, bytes);
-        auto [n, err] = m.socket->send(Span<const ByteSpan>(&piece, 1), nullptr, m.ioFlags);
+        auto [n, err] = m.socket->send(Span<const ByteSpan>(&piece, 1), nullptr, m.ioFlags | Socket::Underlying);
         if (err == Error::WouldBlock && (m.ioFlags & Socket::DontWait) != 0) return MBEDTLS_ERR_SSL_WANT_WRITE;
         if (err.isError()) {
                 m.ioError = err == Error::WouldBlock ? Error::Timeout : err;
@@ -143,7 +186,7 @@ int TlsSession::Impl::bioSend(void *arg, const unsigned char *data, size_t bytes
 int TlsSession::Impl::bioReceive(void *arg, unsigned char *into, size_t bytes) {
         Impl                  &m = *static_cast<Impl *>(arg);
         const WritableByteSpan piece(into, bytes);
-        auto [r, err] = m.socket->receive(Span<const WritableByteSpan>(&piece, 1), m.ioFlags);
+        auto [r, err] = m.socket->receive(Span<const WritableByteSpan>(&piece, 1), m.ioFlags | Socket::Underlying);
         if (err == Error::EndOfFile) return 0;
         if (err == Error::WouldBlock && (m.ioFlags & Socket::DontWait) != 0) {
                 // mbedTLS asks for exactly what the record still lacks: what a reader's readiness
@@ -161,25 +204,54 @@ int TlsSession::Impl::bioReceive(void *arg, unsigned char *into, size_t bytes) {
 Result<TlsSession *> TlsSession::create(Socket &socket, const Config &config, String &why) {
         why.clear();
         const bool noVerify = (config.flags & NoVerify) != 0;
-        if ((config.flags & ~uint32_t(NoVerify)) != 0 || (config.serverName.isEmpty() && !noVerify))
+        if ((config.flags & ~uint32_t(NoVerify)) != 0 || (config.serverName.isEmpty() && !noVerify) ||
+            config.cert.isEmpty() != config.key.isEmpty())
                 return Result<TlsSession *>(nullptr, Error::Invalid);
-        if (!noVerify && !Clock::isSet()) {
-                (void)why.appendf("%.*s: %s", int(config.serverName.size()), config.serverName.data(),
-                                  verifyWords(VerifyClock));
-                return Result<TlsSession *>(nullptr, Error::NotReady);
-        }
         void *block = Memory::alloc(MemSpace::Psram, sizeof(Impl));
         if (block == nullptr) return Result<TlsSession *>(nullptr, Error::NoMem);
         Impl *m = new (block) Impl();
         m->session._impl = m;
         m->session._flags = config.flags;
         m->socket = &socket;
-        if (m->session._name.append(config.serverName).isError()) {
-                destroy(&m->session);
-                return Result<TlsSession *>(nullptr, Error::NoMem);
-        }
         mbedtls_ssl_init(&m->ssl);
         mbedtls_ssl_config_init(&m->conf);
+        mbedtls_x509_crt_init(&m->roots);
+        mbedtls_x509_crt_init(&m->cert);
+        mbedtls_pk_init(&m->key);
+        auto refuse = [&](Error err, const char *what) {
+                if (what != nullptr) (void)why.append(what);
+                destroy(&m->session);
+                return Result<TlsSession *>(nullptr, err);
+        };
+        if (m->session._name.append(config.serverName).isError()) return refuse(Error::NoMem, nullptr);
+
+        // ALPN: names 1-15 bytes, at most 8.
+        size_t count = 0;
+        for (size_t start = 0; start < config.alpn.size();) {
+                size_t end = start;
+                while (end < config.alpn.size() && config.alpn.data()[end] != ',') ++end;
+                const size_t n = end - start;
+                if (n == 0 || n > MaxAlpnName || count == MaxAlpn)
+                        return refuse(Error::Invalid, "ALPN: 1-15 bytes a protocol, at most 8");
+                std::memcpy(m->alpnNames[count], config.alpn.data() + start, n);
+                m->alpn[count] = m->alpnNames[count];
+                ++count;
+                start = end + 1;
+                if (end + 1 == config.alpn.size()) return refuse(Error::Invalid, "ALPN: an empty protocol");
+        }
+        for (const ByteSpan &roots : config.ca) {
+                const int ret = parseCertificates(m->roots, roots);
+                if (ret == MBEDTLS_ERR_SSL_ALLOC_FAILED || ret == MBEDTLS_ERR_X509_ALLOC_FAILED)
+                        return refuse(Error::NoMem, nullptr);
+                if (ret != 0) return refuse(Error::Invalid, "a trusted root doesn't parse (PEM or DER)");
+        }
+        if (!config.cert.isEmpty()) {
+                if (parseCertificates(m->cert, config.cert) != 0)
+                        return refuse(Error::Invalid, "the client certificate doesn't parse (PEM or DER)");
+                if (parseKey(m->key, config.key) != 0)
+                        return refuse(Error::Invalid, "the client key doesn't parse (PEM or DER, not encrypted)");
+        }
+
         // The bundle's log says what `why` says, on the console in the middle of a command's output.
         esp_log_level_set("esp-x509-crt-bundle", ESP_LOG_NONE);
         int ret = mbedtls_ssl_config_defaults(&m->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
@@ -192,15 +264,18 @@ Result<TlsSession *> TlsSession::create(Socket &socket, const Config &config, St
                 ret = esp_crt_bundle_attach(&m->conf) == ESP_OK ? 0 : MBEDTLS_ERR_SSL_ALLOC_FAILED;
         }
         if (ret == 0) {
+                // Roots of our own in place of the bundle's placeholder chain: mbedTLS checks a chain
+                // against them, and a chain that isn't theirs is left untrusted for the bundle's
+                // check (verify()).
+                if (!config.ca.isEmpty()) mbedtls_ssl_conf_ca_chain(&m->conf, &m->roots, nullptr);
                 mbedtls_ssl_conf_verify(&m->conf, verify, &m->session._peer);
                 mbedtls_ssl_conf_ciphersuites(&m->conf, Suites);
-                ret = mbedtls_ssl_setup(&m->ssl, &m->conf);
+                if (!config.cert.isEmpty()) ret = mbedtls_ssl_conf_own_cert(&m->conf, &m->cert, &m->key);
         }
+        if (ret == 0 && count > 0) ret = mbedtls_ssl_conf_alpn_protocols(&m->conf, m->alpn);
+        if (ret == 0) ret = mbedtls_ssl_setup(&m->ssl, &m->conf);
         if (ret == 0 && !m->session._name.isEmpty()) ret = mbedtls_ssl_set_hostname(&m->ssl, m->session._name.cStr());
-        if (ret != 0) {
-                destroy(&m->session);
-                return Result<TlsSession *>(nullptr, Error::NoMem);
-        }
+        if (ret != 0) return refuse(Error::NoMem, nullptr);
         mbedtls_ssl_set_bio(&m->ssl, m, Impl::bioSend, Impl::bioReceive, nullptr);
         return Result<TlsSession *>(&m->session, Error::Ok);
 }
@@ -210,6 +285,9 @@ void TlsSession::destroy(TlsSession *session) {
         Impl *m = session->_impl;
         mbedtls_ssl_free(&m->ssl);
         mbedtls_ssl_config_free(&m->conf);
+        mbedtls_x509_crt_free(&m->roots);
+        mbedtls_x509_crt_free(&m->cert);
+        mbedtls_pk_free(&m->key);
         m->~Impl();
         Memory::free(m);
         return;
@@ -226,13 +304,29 @@ Error TlsSession::fail(Error err) {
 Error TlsSession::ioError(int ret) const {
         if (ret == MBEDTLS_ERR_NET_SEND_FAILED || ret == MBEDTLS_ERR_NET_RECV_FAILED) return _impl->ioError;
         if (ret == MBEDTLS_ERR_SSL_ALLOC_FAILED) return Error::NoMem;
-        return Error::CorruptData;
+        if (ret == MBEDTLS_ERR_SSL_INVALID_MAC) return Error::BadMessage;
+        return Error::ProtocolError;
+}
+
+void TlsSession::abandon(Error err, const char *reason) {
+        if (_state != State::Handshaking) return;
+        _why.clear();
+        (void)_why.appendf("%s: %s", _name.isEmpty() ? "the server" : _name.cStr(), reason);
+        (void)fail(err);
+        return;
 }
 
 Error TlsSession::handshake(uint32_t flags) {
         if (_state == State::Open) return Error::Ok;
         if (_state == State::Failed) return _failure;
         Impl &m = *_impl;
+        if ((_flags & NoVerify) == 0 && !Clock::isSet()) {
+                // A certificate's dates can't be checked: refused before a byte is sent.
+                _verify = VerifyClock;
+                _why.clear();
+                (void)_why.appendf("%s: %s", _name.isEmpty() ? "the server" : _name.cStr(), verifyWords(VerifyClock));
+                return fail(Error::KeyRejected);
+        }
         m.ioFlags = flags & Socket::DontWait;
         _want = Want::Nothing;
         int ret;
@@ -255,17 +349,18 @@ Error TlsSession::handshake(uint32_t flags) {
         if (ret == 0) {
                 if (_verify != 0 && (_flags & NoVerify) == 0) {
                         (void)_why.appendf("%s: %s", name, verifyWords(_verify));
-                        return fail(Error::PermissionDenied);
+                        return fail(Error::KeyRejected);
                 }
                 _state = State::Open;
+                _bytesWanted = 1;
                 return Error::Ok;
         }
         if (ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED && _verify != 0) {
                 (void)_why.appendf("%s: %s", name, verifyWords(_verify));
-                return fail(Error::PermissionDenied);
+                return fail(Error::KeyRejected);
         }
         const Error err = ioError(ret);
-        if (err == Error::CorruptData)
+        if (err == Error::ProtocolError || err == Error::BadMessage)
                 (void)_why.appendf("%s: the TLS handshake failed (mbedTLS -0x%04x)", name, unsigned(-ret));
         else
                 (void)_why.appendf("%s: %s", name, err.desc());
@@ -277,39 +372,71 @@ Result<size_t> TlsSession::send(ByteSpan data, uint32_t flags) {
         Impl &m = *_impl;
         m.ioFlags = flags & Socket::DontWait;
         _want = Want::Nothing;
-        for (;;) {
-                const int ret = mbedtls_ssl_write(&m.ssl, data.data(), data.size());
-                if (ret >= 0) return Result<size_t>(size_t(ret), Error::Ok);
-                if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-                        if (m.ioFlags == 0) continue;
-                        _want = ret == MBEDTLS_ERR_SSL_WANT_READ ? Want::Read : Want::Write;
+        // The rest of a record the socket took part of first: mbedTLS sends what is left of it
+        // when called with nothing new.
+        while (_flushPending) {
+                const int ret = mbedtls_ssl_write(&m.ssl, data.data(), 0);
+                if (ret >= 0) {
+                        _flushPending = false;
+                        break;
+                }
+                if (ret == MBEDTLS_ERR_SSL_WANT_WRITE && m.ioFlags != 0) {
+                        _want = Want::Write;
                         return Result<size_t>(size_t(0), Error::WouldBlock);
                 }
-                return Result<size_t>(size_t(0), ioError(ret));
+                if (ret != MBEDTLS_ERR_SSL_WANT_WRITE) return Result<size_t>(size_t(0), fail(ioError(ret)));
+        }
+        if (data.isEmpty()) return Result<size_t>(size_t(0), Error::Ok);
+        const int largest = mbedtls_ssl_get_max_out_record_payload(&m.ssl);
+        if (largest <= 0) return Result<size_t>(size_t(0), fail(Error::ProtocolError));
+        const size_t n = data.size() < size_t(largest) ? data.size() : size_t(largest);
+        for (;;) {
+                const int ret = mbedtls_ssl_write(&m.ssl, data.data(), n);
+                if (ret >= 0) return Result<size_t>(size_t(ret), Error::Ok);
+                if (ret == MBEDTLS_ERR_SSL_WANT_WRITE && m.ioFlags != 0) {
+                        // The record is made: what the socket didn't take goes first next time
+                        // (mbedTLS would otherwise want this same data again).
+                        _flushPending = true;
+                        _want = Want::Write;
+                        return Result<size_t>(n, Error::Ok);
+                }
+                if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+                        if (m.ioFlags == 0) continue;
+                        _want = Want::Read;
+                        return Result<size_t>(size_t(0), Error::WouldBlock);
+                }
+                const Error err = ioError(ret);
+                return Result<size_t>(size_t(0), err == Error::ProtocolError ? fail(err) : err);
         }
 }
 
 Result<size_t> TlsSession::receive(WritableByteSpan into, uint32_t flags) {
         if (Error err = handshake(flags); err.isError()) return Result<size_t>(size_t(0), err);
         Impl &m = *_impl;
+        if (m.ended) return Result<size_t>(size_t(0), Error::Ok);
         m.ioFlags = flags & Socket::DontWait;
         _want = Want::Nothing;
         for (;;) {
                 const int ret = mbedtls_ssl_read(&m.ssl, into.data(), into.size());
-                if (ret >= 0) return Result<size_t>(size_t(ret), Error::Ok);
-                if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
-                        _cleanClose = true;
+                if (ret > 0) {
+                        _bytesWanted = 1;
+                        return Result<size_t>(size_t(ret), Error::Ok);
+                }
+                if (ret == 0 || ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || ret == MBEDTLS_ERR_SSL_CONN_EOF) {
+                        // The server's close_notify, or the connection's end without it (servers do:
+                        // a body that ends by closing must have sent its length to be trusted).
+                        if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) _cleanClose = true;
+                        m.ended = true;
                         return Result<size_t>(size_t(0), Error::Ok);
                 }
-                // The connection's end without `close_notify` (servers do: a body that ends by
-                // closing must have sent its length to be trusted).
-                if (ret == MBEDTLS_ERR_SSL_CONN_EOF) return Result<size_t>(size_t(0), Error::Ok);
                 if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
                         if (m.ioFlags == 0) continue;
                         _want = ret == MBEDTLS_ERR_SSL_WANT_READ ? Want::Read : Want::Write;
                         return Result<size_t>(size_t(0), Error::WouldBlock);
                 }
-                return Result<size_t>(size_t(0), ioError(ret));
+                const Error err = ioError(ret);
+                const bool  fatal = err == Error::BadMessage || err == Error::ProtocolError;
+                return Result<size_t>(size_t(0), fatal ? fail(err) : err);
         }
 }
 
@@ -318,6 +445,10 @@ void TlsSession::closeNotify() {
         _impl->ioFlags = Socket::DontWait;
         (void)mbedtls_ssl_close_notify(&_impl->ssl);
         return;
+}
+
+size_t TlsSession::pendingBytes() const {
+        return _state == State::Open ? mbedtls_ssl_get_bytes_avail(&_impl->ssl) : 0;
 }
 
 uint16_t TlsSession::version() const {
@@ -332,6 +463,24 @@ const char *TlsSession::cipherName() const {
         if (_state != State::Open) return "";
         const char *name = mbedtls_ssl_get_ciphersuite(&_impl->ssl);
         return name != nullptr ? name : "";
+}
+
+void TlsSession::info(Info &out) const {
+        out = Info{};
+        out.state = _state;
+        out.failure = _failure;
+        out.verify = _verify;
+        out.version = version();
+        out.cipher = cipher();
+        (void)std::snprintf(out.cipherName, sizeof(out.cipherName), "%s", cipherName());
+        if (_state == State::Open) {
+                const char *alpn = mbedtls_ssl_get_alpn_protocol(&_impl->ssl);
+                if (alpn != nullptr) (void)std::snprintf(out.alpn, sizeof(out.alpn), "%s", alpn);
+        }
+        out.peer = _peer;
+        out.cleanClose = _cleanClose;
+        out.ended = _impl->ended;
+        return;
 }
 
 BMDS_NAMESPACE_END

@@ -23,7 +23,9 @@
 #include <bmds/semaphore.h>
 #include <bmds/span.h>
 #include <bmds/stream.h>
+#include <bmds/string.h>
 #include <bmds/stringview.h>
+#include <bmds/tlssession.h>
 #include <bmds/waitlist.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -81,6 +83,19 @@ class Socket final : public Stream {
                         Peek = 1u << 1,     ///< Receive without taking.
                         WaitAll = 1u << 2,  ///< TCP: wait until the buffers are full (or the end).
                         More = 1u << 3,     ///< TCP: more follows; don't push yet.
+                        /**
+                         * The TCP bytes themselves, under a TLS session: its own reads and writes
+                         * (`TlsSession`), never a program's. Without the socket's reader and writer
+                         * locks: the session's lock serializes them.
+                         */
+                        Underlying = 1u << 30,
+                };
+
+                /** @brief What a step of a TLS socket's handshake or flush came to (`stepTls()`). */
+                enum class TlsStep : uint8_t {
+                        Waiting, ///< More to do when the socket can.
+                        Done,    ///< The handshake finished well, or the record went.
+                        Failed,  ///< The session failed.
                 };
 
                 /** @brief Options set and read as integers (`setOption()`, `option()`). */
@@ -344,6 +359,49 @@ class Socket final : public Stream {
                 /** @brief Datagrams dropped because the queue was full. */
                 uint32_t dropped() const { return _dropped; }
 
+                /**
+                 * @brief Makes a connected (or connecting) TCP socket a TLS client
+                 *        (devplan/network.md §35b): the handshake starts now, or once it connects,
+                 *        on the `tls` thread (`TlsService`); afterwards `send()`, `receive()`,
+                 *        `read()`, `write()` and `readiness()` carry plaintext. Returns without
+                 *        waiting.
+                 * @return `Ok`; `NotSupported` (not TCP); `NotConnected` (neither connected nor
+                 *         connecting, or listening); `AlreadyInProgress` (TLS already);
+                 *         `Full` (`net/tls/sessions` reached); `Invalid`, `NotReady` (@p why: as
+                 *         `TlsSession::create()`); `NoMem`.
+                 */
+                Error startTls(const TlsSession::Config &config, String &why);
+
+                /**
+                 * @brief Waits for the TLS handshake (the receive timeout; `Interrupted` leaves it
+                 *        going).
+                 * @param flags `DontWait`.
+                 * @return `Ok` (done); `WouldBlock` (going on); `NotSupported` (not TLS); the
+                 *         handshake's error (`KeyRejected`, `ProtocolError`, `Timeout`, ...).
+                 * @blocking
+                 */
+                Error waitTls(uint32_t flags);
+
+                /**
+                 * @brief Fills @p out with the TLS session's state and the server's certificate.
+                 * @return `Ok`, or `NotSupported` (not TLS).
+                 * @blocking Waits for a handshake step in progress (at most one step's time).
+                 */
+                Error tlsInfo(TlsSession::Info &out);
+
+                /** @brief Returns true once `startTls()` has made this a TLS socket. */
+                bool isTls() const { return _tls.load(std::memory_order_acquire) != nullptr; }
+
+                /** @brief Returns what failed the TLS handshake, in words ("" if it didn't). */
+                String tlsWhy();
+
+                /**
+                 * @brief One step of the handshake, or of sending the rest of a record (`TlsService`'s
+                 *        thread). @p late: the handshake's time is up.
+                 * @nonblocking
+                 */
+                TlsStep stepTls(bool late);
+
                 // Stream
                 Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override;
                 Result<size_t> write(ByteSpan data, unsigned int timeoutMs) override;
@@ -396,6 +454,12 @@ class Socket final : public Stream {
 
                 Result<size_t>   sendWithin(Span<const ByteSpan> pieces, const SocketAddress *to, uint32_t flags,
                                             unsigned int timeoutMs);
+                // TLS (§35): plaintext through the session, never holding _tlsLock while waiting.
+                Result<size_t>   sendTls(Span<const ByteSpan> pieces, uint32_t flags, const Deadline &deadline);
+                Result<Received> receiveTls(Span<const WritableByteSpan> pieces, uint32_t flags,
+                                            const Deadline &deadline);
+                void             publishTls(const TlsSession &session); // _tlsLock held
+                uint8_t          tlsReadiness();
                 Result<Received> receiveWithin(Span<const WritableByteSpan> pieces, uint32_t flags,
                                                unsigned int timeoutMs);
                 unsigned int     timeoutOf(const std::atomic<int32_t> &optionMs, unsigned int timeoutMs) const;
@@ -507,7 +571,16 @@ class Socket final : public Stream {
                 Mutex                _writeLock;
                 Semaphore            _readable{1, 0};
                 Semaphore            _writable{1, 0};
-                WaitListOf<4>        _pollers;
+                WaitListOf<5>        _pollers; // pollers, and TlsService's while it steps this one
+
+                // TLS (§35): the session, set once; its state for readiness() without its lock.
+                std::atomic<TlsSession *> _tls{nullptr};
+                Mutex                     _tlsLock;               // around each call into the session
+                std::atomic<uint8_t>      _tlsState{0};           // TlsSession::State
+                std::atomic<size_t>       _tlsWanted{1};          // bytes the record being read lacks
+                std::atomic<size_t>       _tlsPending{0};         // plaintext decrypted, not yet received
+                std::atomic<bool>         _tlsFlush{false};       // a record partly sent
+                bool                      _tlsErrorTaken = false; // takeError() said the failure
 };
 
 BMDS_NAMESPACE_END

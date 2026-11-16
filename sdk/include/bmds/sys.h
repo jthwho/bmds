@@ -220,6 +220,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_FONT_CLOSE 132u   /**< `int32_t font_close(int32_t font)`. */
 #define BMDS_SYS_SYNTAX_FIND 133u  /**< `int32_t syntax_find(const char *name, uint32_t length)`: a language. */
 #define BMDS_SYS_SYNTAX_SCAN 134u  /**< `int32_t syntax_scan(bmds_syntax_scan_t *scan)`. */
+#define BMDS_SYS_TLS_CTL 135u      /**< `int32_t tls_ctl(int32_t fd, uint32_t op, void *arg)`: TLS on a TCP socket. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1299,6 +1300,75 @@ typedef struct bmds_fastpath_t {
                 uint32_t depth;     /**< Datagrams it holds unread, 1-8 (all fast paths' together at most 8). */
 } bmds_fastpath_t;
 
+/* --- TLS on a socket (devplan/network.md §35) ---------------------------------------------------
+ *
+ * `tls_ctl(fd, BMDS_TLS_START, &config)` makes a connected (or connecting) TCP socket a TLS
+ * client: the kernel does the handshake, and afterwards read, write, send, recv, poll and shutdown
+ * carry plaintext. The session belongs to the open file: a dup'd or inherited fd shares it. */
+
+#define BMDS_TLS_START 1u     /**< `arg`: a `const bmds_tls_config_t *`. Starts the handshake; never waits. */
+#define BMDS_TLS_HANDSHAKE 2u /**< `arg`: null (wait), or a `const uint32_t *` of `BMDS_TLS_DONTWAIT`. */
+#define BMDS_TLS_INFO 3u      /**< `arg`: a `bmds_tls_info_t *` (its `size` set): the session and its peer. */
+
+/** @brief `BMDS_TLS_HANDSHAKE`'s flag: `-BMDS_EAGAIN` while the handshake runs, rather than waiting. */
+#define BMDS_TLS_DONTWAIT 1u
+
+/** @brief `bmds_tls_config_t::flags`: the chain, dates and name aren't checked (`verify` still says). */
+#define BMDS_TLS_NO_VERIFY 1u
+
+/**
+ * @brief How to start TLS (`BMDS_TLS_START`). Everything is copied: the buffers are the
+ *        program's again when the call returns. Sizes: `ca` at most 256 KB, `cert` and `key` 16 KB
+ *        each, `server_name` 253 bytes, `alpn` 127.
+ */
+typedef struct bmds_tls_config_t {
+                uint32_t       size;        /**< `sizeof(bmds_tls_config_t)`. */
+                uint32_t       flags;       /**< `BMDS_TLS_NO_VERIFY`; others `-BMDS_EINVAL`. */
+                const char    *server_name; /**< SNI and the name checked; null only with `BMDS_TLS_NO_VERIFY`. */
+                const uint8_t *ca;          /**< More trusted roots (PEM, one or more, or a DER); null: none. */
+                uint32_t       ca_size;     /**< Its bytes. */
+                const uint8_t *cert;        /**< A client certificate (PEM or DER); null: none. */
+                uint32_t       cert_size;   /**< Its bytes. */
+                const uint8_t *key;         /**< Its private key (PEM or DER, unencrypted); with `cert`. */
+                uint32_t       key_size;    /**< Its bytes. */
+                const char    *alpn;        /**< Protocols offered, comma separated (`"h2,http/1.1"`); null: none. */
+} bmds_tls_config_t;
+
+/** @brief `bmds_tls_info_t::state`. */
+#define BMDS_TLS_HANDSHAKING 0u /**< The handshake runs. */
+#define BMDS_TLS_OPEN 1u        /**< Records both ways. */
+#define BMDS_TLS_FAILED 2u      /**< The handshake or a record failed (`error`). */
+#define BMDS_TLS_CLOSED 3u      /**< A read has given the end (`BMDS_TLS_CLEAN_CLOSE` if by close_notify). */
+
+/** @brief `bmds_tls_info_t::verify`: why the certificate was refused, or what `BMDS_TLS_NO_VERIFY` let pass. */
+#define BMDS_TLS_VERIFY_EXPIRED 1u       /**< Past its end. */
+#define BMDS_TLS_VERIFY_NOT_YET_VALID 2u /**< Before its start. */
+#define BMDS_TLS_VERIFY_NAME 4u          /**< For another name. */
+#define BMDS_TLS_VERIFY_UNTRUSTED 8u     /**< Not from an authority this system (or `ca`) trusts. */
+#define BMDS_TLS_VERIFY_CLOCK 16u        /**< The system clock isn't set: dates can't be checked. */
+#define BMDS_TLS_VERIFY_OTHER 32u        /**< Another reason. */
+
+/** @brief `bmds_tls_info_t::flags`: the server ended with close_notify (not just its connection's end). */
+#define BMDS_TLS_CLEAN_CLOSE 1u
+
+/** @brief A TLS socket's session and its server's certificate (`BMDS_TLS_INFO`). */
+typedef struct bmds_tls_info_t {
+                uint32_t size;            /**< `sizeof(bmds_tls_info_t)`. */
+                uint32_t state;           /**< `BMDS_TLS_HANDSHAKING`, `_OPEN`, `_FAILED`, `_CLOSED`. */
+                int32_t  error;           /**< The errno it failed with (positive, as `SO_ERROR`'s); 0. */
+                uint32_t verify;          /**< `BMDS_TLS_VERIFY_*` bits. */
+                uint16_t version;         /**< `0x0303` for TLS 1.2; 0 before the handshake's end. */
+                uint16_t cipher;          /**< The cipher suite's IANA number; 0 before. */
+                uint32_t flags;           /**< `BMDS_TLS_CLEAN_CLOSE`. */
+                int64_t  not_before;      /**< The server's certificate: from (Unix seconds). */
+                int64_t  not_after;       /**< Until (Unix seconds). */
+                uint8_t  peer_sha256[32]; /**< SHA-256 of its DER (IRC's CertFP fingerprint); zeros before. */
+                char     cipher_name[48]; /**< `"TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256"`; "" before. */
+                char     alpn[16];        /**< The protocol the server chose; "" none. */
+                char     subject[128];    /**< Its subject (`"CN=irc.libera.chat"`). */
+                char     issuer[128];     /**< Its issuer. */
+} bmds_tls_info_t;
+
 /** @brief `shutdown` sides. */
 #define BMDS_SHUT_RD 0u   /**< Receiving: reads end. */
 #define BMDS_SHUT_WR 1u   /**< Sending: TCP sends its FIN. */
@@ -2247,6 +2317,7 @@ typedef int32_t (*bmds_sys_font_list_fn)(uint32_t index, bmds_font_face_t *face)
 typedef int32_t (*bmds_sys_font_close_fn)(int32_t font);
 typedef int32_t (*bmds_sys_syntax_find_fn)(const char *name, uint32_t length);
 typedef int32_t (*bmds_sys_syntax_scan_fn)(bmds_syntax_scan_t *scan);
+typedef int32_t (*bmds_sys_tls_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -3650,6 +3721,28 @@ static inline int32_t bmds_syntax_find(const char *name, uint32_t length) {
 static inline int32_t bmds_syntax_scan(bmds_syntax_scan_t *scan) {
         if (!bmds_sys_has(BMDS_SYS_SYNTAX_SCAN)) return -BMDS_ENOSYS;
         return ((bmds_sys_syntax_scan_fn)bmds_sys->slot[BMDS_SYS_SYNTAX_SCAN])(scan);
+}
+
+/**
+ * @brief TLS on TCP socket @p fd (devplan/network.md §35): `BMDS_TLS_START`, `BMDS_TLS_HANDSHAKE`,
+ *        `BMDS_TLS_INFO` with their @p arg.
+ * @return 0, or: `-BMDS_ENOTSOCK`, `-BMDS_EBADF`; START: `-BMDS_ENOTSUP` (not TCP), `-BMDS_ENOTCONN`,
+ *         `-BMDS_EALREADY` (TLS already), `-BMDS_EINVAL` (flags, sizes, a certificate, key or root
+ *         that doesn't parse), `-BMDS_ENOBUFS` (the `net/tls/sessions` setting reached),
+ *         `-BMDS_ENOMEM`; HANDSHAKE (and a TLS socket's first read or write, and `SO_ERROR`):
+ *         `-BMDS_EKEYREJECTED` (the certificate: INFO's `verify` says why), `-BMDS_EPROTO`,
+ *         `-BMDS_ETIMEDOUT` (`net/tls/handshake-timeout`), the connection's errors, `-BMDS_EAGAIN`
+ *         (`BMDS_TLS_DONTWAIT`, or `SO_RCVTIMEO` passed), `-BMDS_EINTR` (it goes on); INFO:
+ *         `-BMDS_EINVAL` (not TLS). `-BMDS_EFAULT`, `-BMDS_ENOSYS`.
+ *
+ * A TLS socket's `poll` is TLS's: nothing while handshaking; then `POLLOUT` (or `POLLERR` if it
+ * failed); `POLLIN` only when plaintext, or the whole of a record, is there. A record that fails
+ * its check is `-BMDS_EBADMSG` and ends the session.
+ * @blocking `BMDS_TLS_HANDSHAKE` without `BMDS_TLS_DONTWAIT`.
+ */
+static inline int32_t bmds_tls_ctl(int32_t fd, uint32_t op, void *arg) {
+        if (!bmds_sys_has(BMDS_SYS_TLS_CTL)) return -BMDS_ENOSYS;
+        return ((bmds_sys_tls_ctl_fn)bmds_sys->slot[BMDS_SYS_TLS_CTL])(fd, op, arg);
 }
 
 /**

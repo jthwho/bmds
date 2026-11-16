@@ -536,7 +536,10 @@ Plan: [`input.md`](input.md).
     not a slot) with angel moved onto it; then the IRC client. Step 1 done (§35h): `TlsSession`
     (`pkg` on it), certificates' dates checked at last (IDF's default skipped them), renegotiation
     off, `bench net.tls.handshake` (0.3-1.2 s, 2.5 KB of stack, 17.7 KB of PSRAM a session); TLS
-    1.3 measured at 44.5 KB of flash, left off.
+    1.3 measured at 44.5 KB of flash, left off. Step 2 done (§35i): TLS sockets in the kernel
+    (`tls_ctl`, slot 135; `Socket`'s session, the `tls` thread, `net/tls/*`, `net.tls` stats,
+    `EKEYREJECTED`/`EPROTO`/`EBADMSG`), host-tested with a stand-in session, `progtest tls` and
+    `tlslocal` (against `tools/tls-test-server`) on the board; +14.7 KB of flash.
   - [ ] HTTP serving for applications (the user, 2026-10-28; to plan): a web server in the
     kernel or the SDK that applications serve their pages and JSON APIs from, behind the system's
     users and passwords; first users the synth module's configuration (`synthmodule.md` §3h).
