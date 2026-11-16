@@ -136,6 +136,33 @@ namespace TextWrap {
          */
         size_t wrap(StringView text, uint32_t width, Measure measure, void *arg, Span<StringView> lines);
 
+        /**
+         * @brief Markdown's soft line breaks joined: each LF inside a paragraph or a list
+         *        item becomes one space, and the next line's leading spaces go, so the
+         *        text is wrapped at the width it is shown at rather than the one it was
+         *        written at (release notes broken at 100 columns, shown in 70).
+         *
+         * An LF stays when the line after it is blank or starts a block (a list item:
+         * `-`, `*`, `+`, `1.`, `1)`; a heading `#`; a quote `>`; a table row `|`; a
+         * fence; a rule `---`, `***`, `___`), when the line before it is blank, a
+         * heading, a rule, a table row or a fence, or ends in a hard break (two
+         * spaces, or `\`), and inside a fenced code block. Indentation that opens a
+         * line is kept.
+         *
+         * @param text The Markdown.
+         * @param out  At least `text.size()` bytes; may be @p text's own (in place: it
+         *             is written no further on than it is read).
+         * @return The bytes written to @p out (at most `text.size()`).
+         */
+        size_t joinSoftBreaks(StringView text, char *out);
+
+        /**
+         * @brief Returns the column a line's wrapped continuation hangs at: its leading
+         *        spaces, and a list marker's width with its space (`"  - item"`: 4;
+         *        `"10. item"`: 4; a paragraph: its leading spaces).
+         */
+        size_t hangingIndent(StringView line);
+
 } // namespace TextWrap
 
 BMDS_NAMESPACE_END

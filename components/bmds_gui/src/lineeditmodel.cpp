@@ -180,4 +180,89 @@ size_t TextWrap::wrap(StringView text, uint32_t columns, Measure measure, void *
         return count;
 }
 
+namespace {
+
+        // A line's leading spaces.
+        size_t indentOf(StringView line) {
+                size_t i = 0;
+                while (i < line.size() && line[i] == ' ') ++i;
+                return i;
+        }
+
+        bool isBlank(StringView line) {
+                return indentOf(line) == line.size();
+        }
+
+        // A list marker's width with its space ("- ", "12. "), 0 for none: @p s starts after the indent.
+        size_t listMarker(StringView s) {
+                if (s.size() >= 1 && (s[0] == '-' || s[0] == '*' || s[0] == '+') && (s.size() == 1 || s[1] == ' '))
+                        return s.size() == 1 ? 1 : 2;
+                size_t d = 0;
+                while (d < s.size() && d < 9 && s[d] >= '0' && s[d] <= '9') ++d;
+                if (d > 0 && d < s.size() && (s[d] == '.' || s[d] == ')') && (d + 1 == s.size() || s[d + 1] == ' '))
+                        return d + 1 == s.size() ? d + 1 : d + 2;
+                return 0;
+        }
+
+        bool isFence(StringView line) {
+                const StringView s = line.mid(indentOf(line));
+                return s.startsWith("```") || s.startsWith("~~~");
+        }
+
+        // A heading, a rule or a table row: a line whose next can't continue it.
+        bool endsBlock(StringView line) {
+                const StringView s = line.mid(indentOf(line));
+                return s.startsWith('#') || s.startsWith('|') || s.startsWith("---") || s.startsWith("***") ||
+                       s.startsWith("___");
+        }
+
+        // A line that can't continue the paragraph before it.
+        bool startsBlock(StringView line) {
+                const StringView s = line.mid(indentOf(line));
+                if (s.isEmpty()) return true;
+                if (listMarker(s) > 0) return true;
+                if (s[0] == '#' || s[0] == '>' || s[0] == '|') return true;
+                return isFence(line) || s.startsWith("---") || s.startsWith("***") || s.startsWith("___");
+        }
+
+        bool endsInHardBreak(StringView line) {
+                return line.endsWith("  ") || line.endsWith('\\');
+        }
+
+} // namespace
+
+size_t TextWrap::joinSoftBreaks(StringView text, char *out) {
+        // Written behind the reading, so @p out may be @p text's bytes: each piece is moved, never ahead.
+        // What the line before allows is kept as a flag, not a view: in place, moving it overwrote it.
+        size_t written = 0;
+        bool   inFence = false;
+        bool   continuable = false; // the line before is text a soft break may continue
+        size_t at = 0;
+        while (at < text.size()) {
+                size_t end = at;
+                while (end < text.size() && text[end] != '\n') ++end;
+                const StringView line = text.mid(at, end - at);
+                const bool       fence = isFence(line);
+                const bool       joins = continuable && !isBlank(line) && !startsBlock(line);
+                const bool next = !inFence && !fence && !isBlank(line) && !endsBlock(line) && !endsInHardBreak(line);
+                StringView piece = line;
+                if (joins) {
+                        out[written - 1] = ' '; // the LF before it
+                        piece = line.mid(indentOf(line));
+                }
+                std::memmove(out + written, piece.data(), piece.size());
+                written += piece.size();
+                if (end < text.size()) out[written++] = '\n';
+                if (fence) inFence = !inFence;
+                continuable = next;
+                at = end + 1;
+        }
+        return written;
+}
+
+size_t TextWrap::hangingIndent(StringView line) {
+        const size_t indent = indentOf(line);
+        return indent + listMarker(line.mid(indent));
+}
+
 BMDS_NAMESPACE_END

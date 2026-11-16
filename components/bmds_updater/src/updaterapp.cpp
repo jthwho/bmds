@@ -24,11 +24,13 @@
 #include <bmds/dialog.h>
 #include <bmds/fdtable.h>
 #include <bmds/foldermodel.h>
+#include <bmds/formlayout.h>
 #include <bmds/bitmapfont.h>
 #include <bmds/furniture.h>
 #include <bmds/guiapplication.h>
 #include <bmds/guiwindow.h>
 #include <bmds/inputevent.h>
+#include <bmds/lineeditmodel.h>
 #include <bmds/list.h>
 #include <bmds/memory.h>
 #include <bmds/painter.h>
@@ -49,8 +51,10 @@ namespace {
         constexpr size_t   MaxNotesBytes = 64 * 1024;
         constexpr uint32_t RestartDelayMs = 1000; // "Restarting to install..." seen first
         constexpr size_t   WorkerStackBytes = 8 * 1024;
+        constexpr uint16_t ColumnMargin = 12; // the window's column, each side
 
-        // Release notes: plain text, wrapped to the width at word ends, scrolled.
+        // Release notes: Markdown shown as text, its soft breaks joined, wrapped to the width at word ends
+        // (a list item's lines hanging under its text), scrolled.
         class NotesView final : public ScrollArea {
                 public:
                         explicit NotesView(Widget *parent)
@@ -79,7 +83,8 @@ namespace {
                         }
 
                         void setText(StringView text) {
-                                (void)_text.assign(text);
+                                if (_text.assign(text).isOk())
+                                        _text.truncate(TextWrap::joinSoftBreaks(_text.view(), _text.data()));
                                 rewrap();
                                 update();
                                 return;
@@ -102,8 +107,10 @@ namespace {
                                         if (y >= viewport.bottom()) break;
                                         if (x >= viewport.right()) break;
                                         const Line &l = _lines[i];
-                                        (void)painter.text(x, y, StringView(_text.view().data() + l.at, l.bytes),
-                                                           Fonts::unscii16, fg, bg, uint16_t(viewport.right() - x));
+                                        const int   lx = x + int(l.indent) * Fonts::unscii16.width();
+                                        if (lx >= viewport.right()) continue;
+                                        (void)painter.text(lx, y, StringView(_text.view().data() + l.at, l.bytes),
+                                                           Fonts::unscii16, fg, bg, uint16_t(viewport.right() - lx));
                                 }
                                 return;
                         }
@@ -112,6 +119,7 @@ namespace {
                         struct Line {
                                         uint32_t at = 0;
                                         uint16_t bytes = 0;
+                                        uint8_t  indent = 0; // columns: a wrapped line hangs under its text
                         };
 
                         // Wrapped to the viewport; again if that made the vertical bar appear (or go), which
@@ -125,7 +133,8 @@ namespace {
                                 return;
                         }
 
-                        // Lines of at most @p viewportWidth's columns, broken after a space where there is one.
+                        // Lines of at most @p viewportWidth's columns, broken after a space where there is one;
+                        // a paragraph's lines after its first hang at its text's column (at most half the width).
                         void wrapTo(uint16_t viewportWidth) {
                                 _lines.clear();
                                 const uint16_t   width = viewportWidth > 2 * NotesPad + 160
@@ -134,9 +143,18 @@ namespace {
                                 const size_t     columns = width / Fonts::unscii16.width();
                                 const StringView t = _text.view();
                                 size_t           start = 0;
+                                size_t           hang = 0; // this paragraph's, for its lines after the first
+                                bool             first = true;
                                 while (start < t.size()) {
+                                        if (first) {
+                                                const size_t nl = t.indexOf('\n', start);
+                                                hang = TextWrap::hangingIndent(t.mid(
+                                                        start, nl == StringView::NPos ? StringView::NPos : nl - start));
+                                                if (hang > columns / 2) hang = 0;
+                                        }
+                                        const size_t indent = first ? 0 : hang;
                                         size_t i = start, chars = 0, lastSpace = StringView::NPos;
-                                        while (i < t.size() && t[i] != '\n' && chars < columns) {
+                                        while (i < t.size() && t[i] != '\n' && chars < columns - indent) {
                                                 if (t[i] == ' ') lastSpace = i;
                                                 i += 1;
                                                 while (i < t.size() && (uint8_t(t[i]) & 0xc0) == 0x80)
@@ -144,13 +162,16 @@ namespace {
                                                 ++chars;
                                         }
                                         size_t end = i, next = i;
+                                        first = false;
                                         if (i < t.size() && t[i] == '\n') {
                                                 next = i + 1;
+                                                first = true;
                                         } else if (i < t.size() && lastSpace != StringView::NPos) {
                                                 end = lastSpace;
                                                 next = lastSpace + 1;
                                         }
-                                        (void)_lines.append(Line{uint32_t(start), uint16_t(end - start)});
+                                        (void)_lines.append(
+                                                Line{uint32_t(start), uint16_t(end - start), uint8_t(indent)});
                                         start = next;
                                 }
                                 setContentSize(viewportWidth, uint32_t(_lines.size()) * CellHeight + 2 * NotesPad);
@@ -159,6 +180,82 @@ namespace {
 
                         String     _text;
                         List<Line> _lines;
+        };
+
+        // A line of the window's column (a verdict, a status) as a Label shows it, but wrapped below
+        // when it is longer than the column is wide or a Label holds (63 bytes): a package's problem
+        // ("Can't be installed: it isn't signed by a key this firmware accepts") is shown whole.
+        class MessageLine final : public Widget {
+                public:
+                        static constexpr size_t MaxText = 255;
+                        static constexpr size_t MaxLines = 4;
+
+                        explicit MessageLine(Widget *parent) : Widget(parent) {}
+
+                        // Sets the text; the column lays out again when its lines changed.
+                        void setText(StringView text) {
+                                const uint16_t before = sizeHint().height;
+                                size_t         n = text.size() < MaxText ? text.size() : MaxText;
+                                while (n > 0 && n < text.size() && (uint8_t(text[n]) & 0xc0) == 0x80) --n;
+                                std::memcpy(_text, text.data(), n);
+                                _text[n] = '\0';
+                                if (sizeHint().height != before && parent() != nullptr)
+                                        static_cast<BoxLayout *>(parent())->relayout();
+                                update();
+                                return;
+                        }
+
+                        // A Label's height, a line more for each wrapped one: measured at the column's
+                        // width, which its layout has before it asks.
+                        GuiSize sizeHint() const override {
+                                StringView     lines[MaxLines];
+                                const size_t   n = wrapped(lines);
+                                const uint16_t more = n > 1 ? uint16_t((n - 1) * textHeight()) : 0;
+                                return GuiSize{0, uint16_t(buttonHeight() + more)};
+                        }
+
+                        void paint(Painter &painter) override {
+                                const Rect    &r = geometry();
+                                const uint32_t bg = painter.palette().color(WindowPalette::Role::Face);
+                                const uint32_t fg =
+                                        painter.palette().color(isEnabled() ? WindowPalette::Role::FaceText
+                                                                            : WindowPalette::Role::DisabledText);
+                                (void)painter.fill(r, bg);
+                                const uint16_t x = textX();
+                                if (x >= r.right()) return;
+                                StringView   lines[MaxLines];
+                                const size_t n = wrapped(lines);
+                                // The first where a Label's text is (centred in a button's height).
+                                uint32_t y = GuiStyle::textTop(Rect{r.x, r.y, r.width, buttonHeight()}, font());
+                                for (size_t i = 0; i < n && y + textHeight() <= r.bottom(); ++i, y += textHeight())
+                                        (void)painter.text(x, int(y), lines[i], font(), fg, bg,
+                                                           static_cast<uint16_t>(r.right() - x));
+                                return;
+                        }
+
+                private:
+                        // Where a Label starts its text: past the pad, on a text column.
+                        uint16_t textX() const {
+                                return uint16_t((geometry().x + GuiStyle::ButtonPad) & ~uint32_t(GuiStyle::Column - 1));
+                        }
+
+                        // The lines at the column's width (inside its margins), less the pad.
+                        size_t wrapped(StringView (&lines)[MaxLines]) const {
+                                if (_text[0] == '\0') return 0;
+                                const Widget  *column = parent();
+                                const uint32_t outer = column != nullptr && column->geometry().width > 2 * ColumnMargin
+                                                               ? column->geometry().width - 2 * ColumnMargin
+                                                               : geometry().width;
+                                const uint32_t room =
+                                        outer > 2 * GuiStyle::ButtonPad ? outer - 2 * GuiStyle::ButtonPad : 0;
+                                if (room == 0) {
+                                        lines[0] = StringView(_text);
+                                        return 1;
+                                }
+                                return GuiStyle::wrap(StringView(_text), font(), room, Span<StringView>(lines));
+                        }
+
+                        char _text[MaxText + 1] = {};
         };
 
         void say(Label *label, const char *fmt, ...) BMDS_PRINTF_FORMAT(2, 3);
@@ -173,11 +270,23 @@ namespace {
                 return;
         }
 
+        void say(MessageLine *line, const char *fmt, ...) BMDS_PRINTF_FORMAT(2, 3);
+
+        void say(MessageLine *line, const char *fmt, ...) {
+                char    text[MessageLine::MaxText + 1];
+                va_list args;
+                va_start(args, fmt);
+                std::vsnprintf(text, sizeof(text), fmt, args);
+                va_end(args);
+                line->setText(StringView(text));
+                return;
+        }
+
         class UpdaterWindow final : public GuiWindow {
                 public:
                         UpdaterWindow(GuiApplication &app, const Config &config)
                             : GuiWindow(app, config), _confirm(app, "Install", 440, 48),
-                              _bootConfirm(app, "Install the Bootloader?", 500, 112), _path(MemSpace::Psram),
+                              _bootConfirm(app, "Install the Bootloader?", 440, 0), _path(MemSpace::Psram),
                               _notesText(MemSpace::Psram) {}
 
                         ~UpdaterWindow() override {
@@ -213,15 +322,17 @@ namespace {
                         void        showReport();
                         void        askBootloader(bool force);
                         void        install(bool force, bool bootloader);
+                        void        showOnlyBootloaderLeft();
+                        bool        onlyBootloaderNew() const;
 
                         Dialog       _confirm;
                         Dialog       _bootConfirm; // a package with a new bootloader (devplan/update.md §20)
                         Label       *_title = nullptr;
                         Label       *_versions = nullptr;
                         Label       *_made = nullptr;
-                        Label       *_verdict = nullptr;
+                        MessageLine *_verdict = nullptr;
                         Label       *_notesLabel = nullptr;
-                        Label       *_status = nullptr;
+                        MessageLine *_status = nullptr;
                         NotesView   *_notes = nullptr;
                         ProgressBar *_bar = nullptr;
                         Button      *_install = nullptr;
@@ -231,6 +342,7 @@ namespace {
                         Job                   _job = Job::Check;
                         bool                  _force = false;
                         bool                  _bootloader = false; // the user said yes to writing it
+                        bool                  _withoutAsked = false; // "not newer?" asked after Install Without
                         bool                  _busy = false; // installing: not closed
                         String                _path;
                         String                _notesText;
@@ -269,12 +381,12 @@ namespace {
                 auto *column = Widget::create<BoxLayout>(this, BoxLayout::Direction::Vertical);
                 if (column == nullptr) return Error::NoMem;
                 setCentral(column);
-                column->setMargins(12, 12, 12, 12);
+                column->setMargins(ColumnMargin, ColumnMargin, ColumnMargin, ColumnMargin);
                 column->setSpacing(6);
                 _title = Widget::create<Label>(column);
                 _versions = Widget::create<Label>(column);
                 _made = Widget::create<Label>(column);
-                _verdict = Widget::create<Label>(column);
+                _verdict = Widget::create<MessageLine>(column);
                 _notesLabel = Widget::create<Label>(column, "Release notes:");
                 // The notes in a field's frame, so they read as their own pane.
                 auto *notesFrame = Widget::create<BoxLayout>(column, BoxLayout::Direction::Vertical);
@@ -283,7 +395,7 @@ namespace {
                 notesFrame->setMargins(2, 2, 2, 2); // the bevel's
                 notesFrame->setStretch(1);
                 _notes = Widget::create<NotesView>(notesFrame);
-                _status = Widget::create<Label>(column);
+                _status = Widget::create<MessageLine>(column);
                 _bar = Widget::create<ProgressBar>(column);
                 auto *buttons = Widget::create<BoxLayout>(column, BoxLayout::Direction::Horizontal);
                 if (_title == nullptr || _versions == nullptr || _made == nullptr || _verdict == nullptr ||
@@ -310,13 +422,15 @@ namespace {
 
                 // Asked only for a package whose bootloader differs: the one write a power cut can't be
                 // recovered from without a cable.
-                for (const char *line : {"This update also brings a new bootloader, which starts the system.",
-                                         "It is written last, in under a second. Keep the board powered",
-                                         "until the system is back: if the power is cut while it is written,",
-                                         "the board must be installed again over USB (the web installer).",
-                                         "Without it, the update installs and the bootloader stays as it is."}) {
-                        (void)Widget::create<Label>(_bootConfirm.content(), line);
-                }
+                // One block wrapped at the dialog's width (a Label is cut at 63 bytes), stretching to the
+                // height the dialog grows to for it.
+                auto *warning = Widget::create<TextBlock>(
+                        _bootConfirm.content(),
+                        "This update also brings a new bootloader, which starts the system. It is written last, in "
+                        "under a second. Keep the board powered until the system is back: if the power is cut "
+                        "while it is written, the board must be installed again over USB (the web installer).\n\n"
+                        "Without it, the update installs and the bootloader stays as it is.");
+                if (warning != nullptr) warning->setStretch(1);
                 _bootConfirm.addButton("Install &with It", 2);
                 _bootConfirm.addButton("Install With&out", 1);
                 _bootConfirm.addButton("&Cancel", 0);
@@ -464,7 +578,15 @@ namespace {
         }
 
         void UpdaterWindow::confirmed(void *arg, Dialog &, int result) {
-                if (result == 1) static_cast<UpdaterWindow *>(arg)->askBootloader(true);
+                auto      *self = static_cast<UpdaterWindow *>(arg);
+                const bool without = self->_withoutAsked;
+                self->_withoutAsked = false;
+                if (result != 1) return;
+                if (without) {
+                        self->install(true, false); // the bootloader was declined already
+                } else {
+                        self->askBootloader(true);
+                }
                 return;
         }
 
@@ -481,7 +603,40 @@ namespace {
 
         void UpdaterWindow::bootConfirmed(void *arg, Dialog &, int result) {
                 auto *self = static_cast<UpdaterWindow *>(arg);
-                if (result != 0) self->install(self->_force, result == 2);
+                if (result == 0) return;
+                // Without, at the version installed (asked here with no "not newer?" first, the bootloader
+                // being the news): nothing to do when that was all, a reinstall asked as one when another
+                // part differs (another build of the version). Update::apply() would refuse it either way.
+                if (result == 1 && !self->_force && self->_report.order == 0) {
+                        if (self->onlyBootloaderNew()) {
+                                self->showOnlyBootloaderLeft();
+                        } else {
+                                self->_withoutAsked = true;
+                                (void)self->_confirm.open();
+                        }
+                        return;
+                }
+                self->install(self->_force, result == 2);
+                return;
+        }
+
+        // True when the bootloader is the only part that differs from what is flashed.
+        bool UpdaterWindow::onlyBootloaderNew() const {
+                const UpdatePackage::Package &p = _report.package;
+                for (size_t i = 0; i < p.sectionCount; ++i) {
+                        const auto type = UpdatePackage::SectionType(p.sections[i].type);
+                        if ((type == UpdatePackage::SectionType::Firmware || type == UpdatePackage::SectionType::Rom ||
+                             type == UpdatePackage::SectionType::Recovery) &&
+                            _report.flashed[i] == Update::Flashed::Differs)
+                                return false;
+                }
+                return true;
+        }
+
+        void UpdaterWindow::showOnlyBootloaderLeft() {
+                say(_status, "Everything else in it is installed already; not its bootloader");
+                _install->setEnabled(true); // Install with It stays a choice
+                static_cast<BoxLayout *>(_bar->parent())->relayout();
                 return;
         }
 

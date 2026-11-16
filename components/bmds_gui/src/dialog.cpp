@@ -71,14 +71,29 @@ Error Dialog::open() {
         uint16_t widths[MaxButtons];
         for (size_t i = 0; i < _count; ++i) widths[i] = textWidthOf(*_buttons[i]);
         const uint16_t row = ButtonRow::width(Span<const uint16_t>(widths, _count));
-        uint16_t       clientWidth = static_cast<uint16_t>(_width + 2 * Margin);
+        const Rect     area = application().windowManager().workArea();
+        // The content area as asked, its height grown to what the rows take at its width (more lines than
+        // the caller measured, or text wrapping at it): never cut off at the bottom, though never past the
+        // work area. The width stays the caller's: wrapping text would otherwise ask for its unwrapped width.
+        const uint16_t buttons = static_cast<uint16_t>(_count > 0 ? Gap + buttonHeight() : 0);
+        const uint16_t frameHeight =
+                static_cast<uint16_t>(WindowFrame::outerHeight(0, Decorations) + 2 * Margin + buttons);
+        uint32_t wanted = 0;
+        size_t   rows = 0;
+        for (Widget *c = _content != nullptr ? _content->firstChild() : nullptr; c != nullptr; c = c->next()) {
+                if (!c->isVisible()) continue;
+                wanted += c->heightForWidth(_width) + (rows++ > 0 ? Spacing : 0);
+        }
+        uint16_t contentHeight =
+                wanted > _height ? static_cast<uint16_t>(wanted < UINT16_MAX ? wanted : UINT16_MAX) : _height;
+        if (area.height > frameHeight && contentHeight > area.height - frameHeight)
+                contentHeight = static_cast<uint16_t>(area.height - frameHeight);
+        uint16_t clientWidth = static_cast<uint16_t>(_width + 2 * Margin);
         if (clientWidth < row + 2 * Margin) clientWidth = static_cast<uint16_t>(row + 2 * Margin);
         clientWidth = static_cast<uint16_t>((clientWidth + 3u) & ~3u);
-        const uint16_t clientHeight =
-                static_cast<uint16_t>(Margin + _height + (_count > 0 ? Gap + buttonHeight() : 0) + Margin);
+        const uint16_t clientHeight = static_cast<uint16_t>(Margin + contentHeight + buttons + Margin);
         const uint16_t width = WindowFrame::outerWidth(clientWidth, Decorations);
         const uint16_t height = WindowFrame::outerHeight(clientHeight, Decorations);
-        const Rect     area = application().windowManager().workArea();
         const Rect     at{uint16_t((area.x + (area.width > width ? (area.width - width) / 2 : 0)) & ~3u),
                       uint16_t(area.y + (area.height > height ? (area.height - height) / 2 : 0)), width, height};
         _finishedOnce = false;

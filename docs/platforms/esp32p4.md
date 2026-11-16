@@ -1106,6 +1106,25 @@ reset it was meant to catch (lost three captures before this was noticed).
   `riscv32-esp-elf-objdump -d -C -j .iram0.text build/bmds.elf`, then each `jalr` whose target is
   a `0x40...` address. Only interrupts allowed while the flash is busy matter (the DW-GDMA's and
   I2S's here: `CONFIG_DW_GDMA_ISR_IRAM_SAFE`, `CONFIG_I2S_ISR_IRAM_SAFE`).
+- **`spi_flash_cache_enabled()` read in an IRAM-safe ISR is stale by the time it is used.** Nothing
+  holds a flash operation off while such an interrupt runs on the other core: IDF stalls that core
+  at task level only, so its IRAM-safe interrupts keep coming, and the cache can be suspended
+  between the check and the access it guards. (`cache_hal_suspend()` also stops the cache before
+  it clears the flag the function reads.) The scanout's interrupt checks it once at its start
+  (`notify`, `scanout.cpp`) and calls `Surface::notifyFromIsr()`, which is in flash, some
+  microseconds later: on 2026-11-15 an update's flash write on core 0 caught one between the two,
+  and core 1 took a cache error at `notifyFromIsr` (RA just after `surface.frameFromIsr(notify)`;
+  core 0 in `spi_flash_hal_disable_auto_suspend_mode`). A check-then-act on the cache's state
+  isn't a guard: code an IRAM-safe interrupt may reach must be in IRAM and touch only internal
+  RAM, or the flash writer must wait for it. **Fixed** (0.3.1) by the second: `FlashCache`
+  (`bmds_drivers`, `bmds/flashcache.h`) wraps IDF's
+  `spi_flash_{disable,enable}_interrupts_caches_and_other_cpu`, marking the flash busy and waiting
+  for the interrupts inside before the cache is suspended; an interrupt counts itself, then reads
+  the flag (seq_cst both sides). **Reproduced in seconds** by `surfdemo` (a present a frame, so the
+  interrupt wakes waiters) beside a shell loop writing 64 KB to `/flash` with `sync`: 0.3.0
+  panicked within 20 s; with the fix, 740 rounds (15 minutes) clean, 60 Hz held, no underruns.
+  The writes themselves hold surfdemo to ~6 presents a second (52 without): the cache is
+  suspended for the erases, and it runs from PSRAM.
 - **A panic on a task with a small stack can hang in the handler,** which runs on that stack:
   the console shows nothing and the chip resets later by the hardware watchdog
   (`rst:0x7 (HP_SYS_HP_WDT_RESET)`, the other core's saved PC in `panic_handler`'s busy-wait).

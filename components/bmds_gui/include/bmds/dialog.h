@@ -43,7 +43,13 @@ class Dialog : public GuiWindow {
                 static constexpr size_t   MaxButtons = 4;
                 static constexpr uint16_t Margin = 12;
 
-                /** @brief A dialog titled @p title whose content area is @p width × @p height. */
+                /**
+                 * @brief A dialog titled @p title whose content area is @p width wide and at
+                 *        least @p height high: `open()` grows the height to what the content's
+                 *        rows take at that width (`heightForWidth()`, so more lines than
+                 *        measured are never cut off), up to the work area. Text that wraps
+                 *        (a `TextBlock`) is laid out at its hint's height unless it stretches.
+                 */
                 Dialog(GuiApplication &app, StringView title, uint16_t width, uint16_t height);
 
                 /** @brief Returns the content area's column, to fill. */

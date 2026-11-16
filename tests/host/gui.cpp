@@ -807,6 +807,52 @@ TEST_CASE("TextWrap: words in lines") {
         CHECK(wrapped("", 10).empty());
 }
 
+namespace {
+
+        std::string joined(const char *text) {
+                std::string out(std::strlen(text), '\0');
+                out.resize(bmds::TextWrap::joinSoftBreaks(StringView(text), out.data()));
+                return out;
+        }
+
+} // namespace
+
+TEST_CASE("TextWrap: Markdown's soft breaks joined, blocks kept apart") {
+        using bmds::TextWrap::joinSoftBreaks;
+        // A paragraph and a list item's continuation (indented) each become one line.
+        CHECK(joined("one\ntwo\n\nthree") == "one two\n\nthree");
+        CHECK(joined("- item\n  more\n- next") == "- item more\n- next");
+        CHECK(joined("1. step\n   on\n2. step") == "1. step on\n2. step");
+        // A nested item, a heading, a quote, a table and a rule start their own lines.
+        CHECK(joined("- a\n  - b\n    c") == "- a\n  - b c");
+        CHECK(joined("## Head\ntext\nmore") == "## Head\ntext more");
+        CHECK(joined("a\n> q\n| t |\n---\nb") == "a\n> q\n| t |\n---\nb");
+        CHECK(joined("10. ten\n11) eleven\n-x") == "10. ten\n11) eleven -x"); // "-x" isn't a marker
+        // Hard breaks, and a fence's insides, kept as written.
+        CHECK(joined("a  \nb\\\nc\nd") == "a  \nb\\\nc d");
+        CHECK(joined("p\n```\nx\n  y\n```\nq\nr") == "p\n```\nx\n  y\n```\nq r");
+        // Ends: a final LF kept, nothing, a lone LF.
+        CHECK(joined("a\nb\n") == "a b\n");
+        CHECK(joined("").empty());
+        CHECK(joined("\n") == "\n");
+        // The release notes' shape, in place.
+        char         text[] = "**Bold** opening\nwritten at 100.\n1. Update as\n   usual.\n- Fixed:\n  - one\n    more";
+        const size_t n = joinSoftBreaks(StringView(text), text);
+        CHECK(std::string(text, n) == "**Bold** opening written at 100.\n1. Update as usual.\n- Fixed:\n  - one more");
+}
+
+TEST_CASE("TextWrap: a line's hanging indent") {
+        using bmds::TextWrap::hangingIndent;
+        CHECK(hangingIndent("plain") == 0);
+        CHECK(hangingIndent("  indented") == 2);
+        CHECK(hangingIndent("- item") == 2);
+        CHECK(hangingIndent("  - item") == 4);
+        CHECK(hangingIndent("1. step") == 3);
+        CHECK(hangingIndent("10) step") == 4);
+        CHECK(hangingIndent("-x") == 0);
+        CHECK(hangingIndent("") == 0);
+}
+
 TEST_CASE("Mnemonic: marks taken out, the key found, typed keys matched") {
         using bmds::Mnemonic::None;
         char       out[16];

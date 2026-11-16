@@ -21,7 +21,6 @@
 #include <esp_timer.h>
 #include <esp_rom_sys.h>
 #include <esp_private/dw_gdma.h>
-#include <esp_private/cache_utils.h>
 #include <esp_private/esp_clk_tree_common.h>
 #include <esp_private/periph_ctrl.h>
 #include <freertos/FreeRTOS.h>
@@ -32,6 +31,7 @@
 #include <hal/mipi_dsi_ll.h>
 #include <hal/mipi_dsi_periph.h>
 #include <soc/reg_base.h>
+#include <bmds/flashcache.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/placement.h>
@@ -238,14 +238,21 @@ struct ScanoutIsr {
                         return __atomic_load_n(reinterpret_cast<const bool *>(&flag), __ATOMIC_RELAXED);
                 }
 
+                // While the flash is written this runs with the cache off (an IRAM-safe interrupt):
+                // only internal RAM may be touched, so the surface's waiters (notifyFromIsr(), in
+                // flash, on PSRAM stacks) are woken at the next interrupt that may. FlashCache holds a
+                // flash write off until this has left: checking the cache's state instead raced it.
                 BMDS_ISR_ATTR static bool blockSent(dw_gdma_channel_handle_t, const dw_gdma_trans_done_event_data_t *,
                                                     void *arg) {
+                        const bool notify = FlashCache::enterFromIsr();
+                        const bool woke = blockSentWith(*static_cast<Scanout *>(arg), notify);
+                        if (notify) FlashCache::leaveFromIsr();
+                        return woke;
+                }
+
+                // @p notify: the cache may be touched (FlashCache entered).
+                BMDS_ISR_ATTR static bool blockSentWith(Scanout &s, bool notify) {
                         const uint32_t started = esp_cpu_get_cycle_count();
-                        auto          &s = *static_cast<Scanout *>(arg);
-                        // While the flash is written this runs with the cache off (an IRAM-safe
-                        // interrupt): only internal RAM may be touched, so the surface's waiters
-                        // are woken at the next interrupt with the cache on.
-                        const bool notify = spi_flash_cache_enabled();
                         if (notify && s._notifyPending) {
                                 s._notifyPending = false;
                                 s._surface->notifyFromIsr();

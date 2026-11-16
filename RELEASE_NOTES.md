@@ -5,6 +5,27 @@ Each release has a section headed `## X.Y.Z` (the version in
 the update package, where the Updater shows it, and on the GitHub release; it refuses to make a
 release without one.
 
+## 0.3.1
+
+A fix release. Update from 0.3.0 with the Updater (or `update fetch`). From 0.2.0, the two steps
+in 0.3.0's notes below still apply.
+
+- **A crash when writing to the board's flash is fixed.** If the screen finished a frame just as
+  something was written to the flash (a file saved in `/home` or `/flash`, an update starting),
+  the system could stop with a "Cache error" and restart. It was rare in normal use, more likely
+  while a program was drawing, and was in 0.2.0 and 0.3.0 too.
+- **The bootloader question shows all of its text.** Its lines were cut off at the right, and the
+  last one ("Without it, the update installs and the bootloader stays as it is.") didn't show.
+  Dialogs now grow taller to fit what is in them.
+- **Release notes read properly in the Updater:** paragraphs and list items wrap at the window's
+  width, instead of breaking where the notes file breaks its lines.
+- **The Updater shows its messages whole.** One longer than its window is wide, or than a line
+  could hold (such as "Can't be installed: it isn't signed by a key this firmware accepts"), was
+  cut off; it now wraps onto a second line.
+- **Install Without at the version installed** (the second step from 0.2.0, declined) now says
+  everything else is installed already and leaves Install with It a choice. Before, it showed a
+  message cut short and the Install button stayed off.
+
 ## 0.3.0
 
 **This release brings a new bootloader**, which memory protection needs. Updating takes two steps

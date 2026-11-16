@@ -23,6 +23,7 @@ if(COMMAND idf_component_register)
                                     src/displaycommand.cpp
                                     src/displayppa.cpp
                                     src/displayregs.cpp
+                                    src/flashcache.cpp
                                     src/i2cbus.cpp
                                     src/jpegcodec.cpp
                                     src/lt8912b.cpp
@@ -39,6 +40,10 @@ if(COMMAND idf_component_register)
         bmds_target_options(${COMPONENT_LIB})
         # The JPEG codec loads full-range YUV-to-RGB coefficients into the 2D-DMA (jpegcodec.cpp).
         target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=dma2d_configure_color_space_conversion")
+        # A flash operation's start waits for the IRAM-safe interrupts using the cache (flashcache.cpp).
+        target_link_libraries(${COMPONENT_LIB} INTERFACE
+                              "-Wl,--wrap=spi_flash_disable_interrupts_caches_and_other_cpu"
+                              "-Wl,--wrap=spi_flash_enable_interrupts_caches_and_other_cpu")
         # `display dsi`'s register tables, from the register headers IDF builds with (the
         # chip revision picks them): tools/gen-regtable.py.
         if(CONFIG_ESP32P4_SELECTS_REV_LESS_V3)
