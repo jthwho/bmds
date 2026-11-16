@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 #include <bmds/blake2s.h>
+#include <bmds/clock.h>
 #include <bmds/ed25519.h>
 #include <bmds/pkgcommand.h>
 #include <bmds/shell.h>
@@ -86,6 +87,13 @@ namespace {
 
         // pkg source add and remove keep pkg/sources here.
         int saves = 0;
+
+        // The clock indexes are dated by (0: not set, as a board before NTP).
+        int64_t testNow = 0;
+
+        int64_t nowForTests() {
+                return testNow;
+        }
 
         Error saveSources(StringView value, bmds::String &) {
                 sources.assign(value.data(), value.size());
@@ -157,6 +165,7 @@ namespace {
                 c.sources = sv(sources);
                 c.fetch = web.on ? fakeFetch : nullptr;
                 c.saveSources = saveSources;
+                c.now = testNow != 0 ? nowForTests : nullptr;
                 return c;
         }
 
@@ -319,6 +328,7 @@ namespace {
                         Fixture() {
                                 sources = "file:/t/repo";
                                 devPolicy = Packages::DevPolicy::Allow;
+                                testNow = 0;
                                 web = Web{};
                                 REQUIRE(Vfs::init().isOk());
                                 REQUIRE(Vfs::mountTmpfs("/t", 8 * 1024 * 1024).isOk());
@@ -1271,4 +1281,58 @@ TEST_CASE("Packages: pkg source add, what it refuses and how else it finds a key
         CHECK(contains(f.run("pkg source remove 9", Shell::ExitFailure), "no such source"));
         CHECK(contains(f.run("pkg source remove http://nowhere", Shell::ExitFailure), "no such source"));
         CHECK(f.run("pkg source", Shell::ExitUsage).size() > 0);
+}
+
+TEST_CASE("Packages: on a terminal, a status line says what is under way, and goes") {
+        Fixture f;
+        webRepo();
+        sources = "http://web/repo";
+        const std::string out = f.run("pkg update");
+        // Shown while reading the source, then erased before the result line.
+        CHECK(contains(out, "\rreading http://web/repo ...\x1b[K"));
+        CHECK(contains(out, "\r\x1b[Khttp://web/repo: 2 packages\n"));
+        const std::string installed = f.run("pkg install -y app");
+        CHECK(contains(installed, "\rfetching lib: "));
+        CHECK(contains(installed, "(100%)\x1b[K"));
+        CHECK(contains(installed, "\rinstalling app: "));
+        // --json never has one.
+        CHECK_FALSE(contains(f.run("pkg --json update"), "\x1b[K"));
+}
+
+TEST_CASE("Packages: a folder indexed here once, its list kept while the folder is the same") {
+        Fixture f;
+        // The packages written at a known time (the system clock dates the files), then the lists
+        // dated by pkg's clock (testNow): a minute later, the list is newer than every package.
+        constexpr int64_t Written = 2000000000;
+        REQUIRE(bmds::Clock::set(bmds::Timestamp::fromSeconds(Written), bmds::ClockSource::Manual).isOk());
+        Repo r;
+        testNow = Written + 60;
+        std::string out = f.run("pkg update");
+        CHECK(contains(out, "indexing /t/repo: 1 of 5 packages"));
+        CHECK(contains(out, "file:/t/repo: 5 packages (indexed here"));
+        // Again: the same packages, none newer than the list: kept, not indexed.
+        out = f.run("pkg update");
+        CHECK_FALSE(contains(out, "indexing /t/repo"));
+        CHECK(contains(out, "file:/t/repo: 5 packages (as indexed here before: its index.bmpi is missing"));
+        CHECK(contains(f.run("pkg --json update"), "\"indexedHere\":true,\"listKept\":true}"));
+        CHECK(lineOf(f.run("pkg list"), "lib") == "lib 2 available ");
+
+        // A package more: indexed again.
+        make({"lib", "3", "", {"share"}, {{"share/lib", "lib 3"}}, {}}, "/t/repo");
+        out = f.run("pkg update");
+        CHECK(contains(out, "indexing /t/repo: 1 of 6 packages"));
+        CHECK(contains(out, "file:/t/repo: 6 packages (indexed here"));
+        CHECK_FALSE(contains(f.run("pkg update"), "indexing /t/repo"));
+
+        // A list made with the clock behind the packages (so they look newer): made again each time.
+        f.run("pkg clean");
+        testNow = Written - 3600;
+        CHECK(contains(f.run("pkg update"), "indexing /t/repo"));
+        CHECK(contains(f.run("pkg update"), "indexing /t/repo"));
+
+        // Made without a clock: dated 0, never taken as current.
+        f.run("pkg clean");
+        testNow = 0;
+        CHECK(contains(f.run("pkg update"), "indexing /t/repo"));
+        CHECK(contains(f.run("pkg update"), "indexing /t/repo"));
 }

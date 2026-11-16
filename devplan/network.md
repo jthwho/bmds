@@ -2730,3 +2730,15 @@ heap (64 KB of internal DMA memory). §4's plan had TCP's windows in PSRAM; this
   against AES-GCM; per-position tables for GHASH (64 KB a key: twice as fast at best, the caches
   permitting) or the PIE unit's 128-bit registers.
 
+
+## 34. Open: `ssh -t HOST COMMAND` (found 2026-11-15)
+
+A pty and a command at once, from the PC's OpenSSH (`ssh -tt root@bmds0 'pkg update'`), while
+testing `pkg`'s status line (`packages.md` §27): once the board ran a login shell (`-sh`, no
+command) on the pty and left it waiting for input; other tries closed at once with no output
+(status 0 with stdin at `/dev/null`, else 255 with the client disconnecting within 30 ms). The
+client ran without a local terminal (a tool's harness), which may account for the client-side
+part; the login shell instead of the command is the board's. Interactive sessions (`ssh HOST`,
+a pty, no command) and commands without a pty work. To look at: dropbear's `ptycommand()` with
+`chansess->cmd` under the vfork re-exec (patch 0001), and whether a pty's output written just
+before its slave closes reaches the master (it should be read until drained, as Linux does).

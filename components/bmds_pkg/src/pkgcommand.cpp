@@ -10,9 +10,11 @@
  */
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <bmds/console.h>
 #include <bmds/datetime.h>
 #include <bmds/glob.h>
 #include <bmds/http.h>
@@ -45,10 +47,75 @@ namespace {
                         bool        keepKey = false;  ///< source remove --keep-key
         };
 
-        // Where output goes, and how.
+        // Where output goes, and how. On a terminal (not --json), a status line says what is under
+        // way, redrawn in place as it changes and erased before anything else is printed: every
+        // line goes through printf() and eprintf() here.
         struct Out {
                         CommandContext &ctx;
                         bool            json;
+                        bool            live = false;  // stdout is a terminal: the status line shows
+                        bool            shown = false; // it is on the screen now
+                        uint16_t        columns = 80;
+                        String          last; // what it says
+
+                        Out(CommandContext &c, bool j) : ctx(c), json(j) {
+                                FileHandle *out = j ? nullptr : ctx.fds().handle(FdTable::Stdout);
+                                live = out != nullptr && out->stream().isTerminal();
+                                if (live) {
+                                        const uint16_t c2 = ctx.shell().console().size().columns;
+                                        if (c2 > 10) columns = c2;
+                                }
+                        }
+
+                        // The status line says @p fmt's text (cut to the terminal's width), if it changed.
+                        void status(const char *fmt, ...) BMDS_PRINTF_FORMAT(2, 3) {
+                                if (!live) return;
+                                String  text;
+                                va_list args;
+                                va_start(args, fmt);
+                                (void)text.vappendf(fmt, args);
+                                va_end(args);
+                                size_t n = text.size() < size_t(columns - 1) ? text.size() : size_t(columns - 1);
+                                while (n > 0 && n < text.size() && (uint8_t(text.view()[n]) & 0xc0) == 0x80) --n;
+                                const StringView shownText = text.view().left(n);
+                                if (shown && shownText == last.view()) return;
+                                String line;
+                                (void)line.appendf("\r%.*s\x1b[K", int(shownText.size()), shownText.data());
+                                ctx.print(line.view());
+                                (void)last.assign(shownText);
+                                shown = true;
+                                return;
+                        }
+
+                        // The status line erased (before any other output, and at the end).
+                        void clear() {
+                                if (!shown) return;
+                                ctx.print("\r\x1b[K");
+                                shown = false;
+                                return;
+                        }
+
+                        void printf(const char *fmt, ...) BMDS_PRINTF_FORMAT(2, 3) {
+                                clear();
+                                String  text;
+                                va_list args;
+                                va_start(args, fmt);
+                                (void)text.vappendf(fmt, args);
+                                va_end(args);
+                                ctx.print(text.view());
+                                return;
+                        }
+
+                        void eprintf(const char *fmt, ...) BMDS_PRINTF_FORMAT(2, 3) {
+                                clear();
+                                String  text;
+                                va_list args;
+                                va_start(args, fmt);
+                                (void)text.vappendf(fmt, args);
+                                va_end(args);
+                                ctx.eprint(text.view());
+                                return;
+                        }
 
                         // A JSON record, written by @p fill between its braces, as one line.
                         template <typename F> void record(const char *type, F fill) {
@@ -72,6 +139,8 @@ namespace {
                         case Packages::Step::Replacing: return "replacing";
                         case Packages::Step::Removing: return "removing";
                         case Packages::Step::Fetching: return "fetching";
+                        case Packages::Step::Reading: return "reading";
+                        case Packages::Step::Indexing: return "indexing";
                 }
                 return "?";
         }
@@ -138,18 +207,67 @@ namespace {
                                 w.member("text", why.isEmpty() ? StringView(err.desc()) : why);
                         });
                 } else if (why.isEmpty()) {
-                        out.ctx.eprintf("pkg: %.*s%s%s\n", int(package.size()), package.data(),
-                                        package.isEmpty() ? "" : ": ", err.desc());
+                        out.eprintf("pkg: %.*s%s%s\n", int(package.size()), package.data(),
+                                    package.isEmpty() ? "" : ": ", err.desc());
                 } else {
-                        out.ctx.eprintf("pkg: %.*s\n", int(why.size()), why.data());
+                        out.eprintf("pkg: %.*s\n", int(why.size()), why.data());
                 }
                 return;
         }
 
         // The listener: notes always, progress as records in JSON.
+        // A size for people: bytes, KB, or MB with a tenth (coarse, so a status line changes seldom).
+        void sizeText(uint64_t bytes, char (&out)[24]) {
+                if (bytes < 1024)
+                        std::snprintf(out, sizeof(out), "%u bytes", unsigned(bytes));
+                else if (bytes < 1024 * 1024)
+                        std::snprintf(out, sizeof(out), "%u KB", unsigned(bytes / 1024));
+                else
+                        std::snprintf(out, sizeof(out), "%u.%u MB", unsigned(bytes / (1024 * 1024)),
+                                      unsigned(bytes % (1024 * 1024) * 10 / (1024 * 1024)));
+                return;
+        }
+
+        // On a terminal: what is under way, on the status line.
+        void showProgress(Out &out, StringView name, Packages::Step step, uint64_t done, uint64_t total) {
+                const int      n = int(name.size());
+                const char    *s = name.data();
+                const unsigned percent = total > 0 ? unsigned(done * 100 / total) : 0;
+                char           have[24], all[24];
+                sizeText(done, have);
+                sizeText(total, all);
+                switch (step) {
+                        case Packages::Step::Reading: out.status("reading %.*s ...", n, s); break;
+                        case Packages::Step::Indexing:
+                                out.status("indexing %.*s: %llu of %llu packages", n, s,
+                                           static_cast<unsigned long long>(done + 1),
+                                           static_cast<unsigned long long>(total));
+                                break;
+                        case Packages::Step::Fetching:
+                                if (total > 0)
+                                        out.status("fetching %.*s: %s of %s (%u%%)", n, s, have, all, percent);
+                                else
+                                        out.status("fetching %.*s: %s", n, s, have);
+                                break;
+                        case Packages::Step::Checking: out.status("checking %.*s", n, s); break;
+                        case Packages::Step::Writing: out.status("installing %.*s: %u%%", n, s, percent); break;
+                        case Packages::Step::Replacing:
+                                out.status("installing %.*s: putting files in place", n, s);
+                                break;
+                        case Packages::Step::Removing:
+                                out.status("removing %.*s: %llu of %llu", n, s, static_cast<unsigned long long>(done),
+                                           static_cast<unsigned long long>(total));
+                                break;
+                }
+                return;
+        }
+
         void onProgress(void *arg, StringView package, Packages::Step step, uint64_t done, uint64_t total) {
                 Out &out = *static_cast<Out *>(arg);
-                if (!out.json) return;
+                if (!out.json) {
+                        showProgress(out, package, step, done, total);
+                        return;
+                }
                 out.record("progress", [&](JsonWriter &w) {
                         w.member("package", package);
                         w.member("step", stepName(step));
@@ -167,8 +285,7 @@ namespace {
                                 w.member("text", text);
                         });
                 } else {
-                        out.ctx.printf("%.*s: %.*s\n", int(package.size()), package.data(), int(text.size()),
-                                       text.data());
+                        out.printf("%.*s: %.*s\n", int(package.size()), package.data(), int(text.size()), text.data());
                 }
                 return;
         }
@@ -182,7 +299,9 @@ namespace {
         }
 
         // Asks a yes-or-no question on the terminal: true for y.
-        bool ask(CommandContext &ctx, const char *question) {
+        bool ask(Out &out, const char *question) {
+                out.clear();
+                CommandContext &ctx = out.ctx;
                 ctx.printf("%s [y/N] ", question);
                 char   line[16];
                 size_t n = 0;
@@ -259,14 +378,13 @@ namespace {
                                         if (e.kind == PkgManifest::Kind::Link) w.member("target", e.target);
                                 });
                         } else if (e.kind == PkgManifest::Kind::File) {
-                                out.ctx.printf("  %4o %10llu %.*s\n", unsigned(e.mode),
-                                               static_cast<unsigned long long>(e.size), int(e.path.size()),
-                                               e.path.data());
+                                out.printf("  %4o %10llu %.*s\n", unsigned(e.mode),
+                                           static_cast<unsigned long long>(e.size), int(e.path.size()), e.path.data());
                         } else if (e.kind == PkgManifest::Kind::Link) {
-                                out.ctx.printf("  link            %.*s -> %.*s\n", int(e.path.size()), e.path.data(),
-                                               int(e.target.size()), e.target.data());
+                                out.printf("  link            %.*s -> %.*s\n", int(e.path.size()), e.path.data(),
+                                           int(e.target.size()), e.target.data());
                         } else {
-                                out.ctx.printf("  dir             %.*s/\n", int(e.path.size()), e.path.data());
+                                out.printf("  dir             %.*s/\n", int(e.path.size()), e.path.data());
                         }
                 }
                 return;
@@ -360,9 +478,8 @@ namespace {
                                                  : row.installed.automatic ? "auto"
                                                                            : "installed";
                         const StringView about = !shown.summary.isEmpty() ? shown.summary : shown.title;
-                        out.ctx.printf("%-*.*s  %-*s  %-10s  %.*s\n", nameWidth, int(shown.name.size()),
-                                       shown.name.data(), versionWidth, v.cStr(), state, int(about.size()),
-                                       about.data());
+                        out.printf("%-*.*s  %-*s  %-10s  %.*s\n", nameWidth, int(shown.name.size()), shown.name.data(),
+                                   versionWidth, v.cStr(), state, int(about.size()), about.data());
                 }
                 return;
         }
@@ -462,6 +579,7 @@ namespace {
                                 });
                         }
                 } else {
+                        out.clear();
                         printInfo(out.ctx, config, info, description.view(), installed);
                 }
                 if (o.files) printFiles(out, info.name, manifest.view());
@@ -489,24 +607,23 @@ namespace {
                         });
                         return;
                 }
-                out.ctx.printf("%s %.*s %.*s", action, int(info.name.size()), info.name.data(),
-                               int(info.version.size()), info.version.data());
-                if (have && order != 0) out.ctx.printf(" (from %.*s)", int(old.version.size()), old.version.data());
+                out.printf("%s %.*s %.*s", action, int(info.name.size()), info.name.data(), int(info.version.size()),
+                           info.version.data());
+                if (have && order != 0) out.printf(" (from %.*s)", int(old.version.size()), old.version.data());
                 if (p.remote) {
                         // Who signed it shows once it is here; its list was signed.
                         Http::Url url;
                         (void)Http::parseUrl(p.path.view(), url);
-                        out.ctx.printf(", %llu bytes, %llu to fetch from %.*s%s\n",
-                                       static_cast<unsigned long long>(info.installedBytes),
-                                       static_cast<unsigned long long>(info.fileBytes), int(url.host.size()),
-                                       url.host.data(), p.automatic ? " (a dependency)" : "");
+                        out.printf(", %llu bytes, %llu to fetch from %.*s%s\n",
+                                   static_cast<unsigned long long>(info.installedBytes),
+                                   static_cast<unsigned long long>(info.fileBytes), int(url.host.size()),
+                                   url.host.data(), p.automatic ? " (a dependency)" : "");
                         return;
                 }
                 String name, what;
                 Packages::describeSigner(config, info, name, what);
-                out.ctx.printf(", %llu bytes, signed by %s (%s)%s\n",
-                               static_cast<unsigned long long>(info.installedBytes), name.cStr(), what.cStr(),
-                               p.automatic ? " (a dependency)" : "");
+                out.printf(", %llu bytes, signed by %s (%s)%s\n", static_cast<unsigned long long>(info.installedBytes),
+                           name.cStr(), what.cStr(), p.automatic ? " (a dependency)" : "");
                 return;
         }
 
@@ -519,8 +636,8 @@ namespace {
                                 if (automatic) w.member("automatic", true);
                         });
                 } else {
-                        out.ctx.printf("%.*s %.*s: %s%s\n", int(name.size()), name.data(), int(version.size()),
-                                       version.data(), action, automatic ? " (a dependency)" : "");
+                        out.printf("%.*s %.*s: %s%s\n", int(name.size()), name.data(), int(version.size()),
+                                   version.data(), action, automatic ? " (a dependency)" : "");
                 }
                 return;
         }
@@ -538,7 +655,7 @@ namespace {
                                         w.member("text", text);
                                 });
                         } else {
-                                out.ctx.printf("%s: %s\n", name.cStr(), text);
+                                out.printf("%s: %s\n", name.cStr(), text);
                         }
                 }
                 return;
@@ -574,6 +691,7 @@ namespace {
                                         Packages::Request{isFile ? paths[file++].view() : StringView(arg), isFile});
                         }
                         String      why;
+                        out.status("working out what to do ...");
                         const Error err = Packages::plan(requests.span(), mode, config, listener, plan, why);
                         if (err.isError()) {
                                 errorOut(out, "", err, why.view());
@@ -582,22 +700,22 @@ namespace {
                 }
                 if (plan.isEmpty()) {
                         if (!out.json)
-                                out.ctx.printf("%s\n", mode == Packages::PlanMode::Upgrade ? "nothing to upgrade"
-                                                                                           : "nothing to do");
+                                out.printf("%s\n", mode == Packages::PlanMode::Upgrade ? "nothing to upgrade"
+                                                                                       : "nothing to do");
                         return Shell::ExitSuccess;
                 }
                 // The plan first: asked about, a dry run, or (with --json) always, as remove does.
                 if (asking || o.dryRun || out.json) {
                         for (const Packages::Planned &p : plan) planInstall(out, p, config);
                 }
-                if (asking && !ask(out.ctx, "Go ahead?")) return Shell::ExitFailure;
+                if (asking && !ask(out, "Go ahead?")) return Shell::ExitFailure;
                 // What comes from the network, fetched: then who signed it is known.
                 for (Packages::Planned &p : plan) {
                         if (!p.remote || o.dryRun) continue;
                         if (!out.json)
-                                out.ctx.printf("fetching %.*s %.*s (%llu bytes)\n", int(p.info.name.size()),
-                                               p.info.name.data(), int(p.info.version.size()), p.info.version.data(),
-                                               static_cast<unsigned long long>(p.info.fileBytes));
+                                out.printf("fetching %.*s %.*s (%llu bytes)\n", int(p.info.name.size()),
+                                           p.info.name.data(), int(p.info.version.size()), p.info.version.data(),
+                                           static_cast<unsigned long long>(p.info.fileBytes));
                         String      why;
                         const Error err = Packages::fetchPlanned(p, config, listener, why);
                         if (err.isError()) {
@@ -614,9 +732,8 @@ namespace {
                                                           p.info.name.data());
                         }
                         if (!dev.isEmpty()) {
-                                out.ctx.printf("Signed by the dev key, so anyone could have made them: %s\n",
-                                               dev.cStr());
-                                if (!ask(out.ctx, "Install them anyway?")) return Shell::ExitFailure;
+                                out.printf("Signed by the dev key, so anyone could have made them: %s\n", dev.cStr());
+                                if (!ask(out, "Install them anyway?")) return Shell::ExitFailure;
                         }
                 }
 
@@ -686,8 +803,8 @@ namespace {
                                         w.member("version", info.version);
                                 });
                         } else if (!o.yes) {
-                                out.ctx.printf("remove %.*s %.*s\n", int(info.name.size()), info.name.data(),
-                                               int(info.version.size()), info.version.data());
+                                out.printf("remove %.*s %.*s\n", int(info.name.size()), info.name.data(),
+                                           int(info.version.size()), info.version.data());
                         }
                 }
                 const bool asking = !o.yes && !o.dryRun;
@@ -699,7 +816,7 @@ namespace {
                         noteUnneeded(out, config, all.span(), true);
                         return Shell::ExitSuccess;
                 }
-                if (asking && !ask(out.ctx, "Go ahead?")) return Shell::ExitFailure;
+                if (asking && !ask(out, "Go ahead?")) return Shell::ExitFailure;
                 const int status = removeAll(out, config, all.span());
                 if (status == Shell::ExitSuccess) noteUnneeded(out, config, Span<const StringView>(), false);
                 return status;
@@ -713,7 +830,7 @@ namespace {
                         return Shell::ExitFailure;
                 }
                 if (names.isEmpty()) {
-                        if (!out.json) out.ctx.printf("nothing to remove\n");
+                        if (!out.json) out.printf("nothing to remove\n");
                         return Shell::ExitSuccess;
                 }
                 List<StringView> all(MemSpace::Psram);
@@ -728,8 +845,8 @@ namespace {
                                         w.member("version", info.version);
                                 });
                         } else if (!o.yes) {
-                                out.ctx.printf("remove %.*s %.*s (needed no more)\n", int(info.name.size()),
-                                               info.name.data(), int(info.version.size()), info.version.data());
+                                out.printf("remove %.*s %.*s (needed no more)\n", int(info.name.size()),
+                                           info.name.data(), int(info.version.size()), info.version.data());
                         }
                 }
                 const bool asking = !o.yes && !o.dryRun;
@@ -738,7 +855,7 @@ namespace {
                         return Shell::ExitFailure;
                 }
                 if (o.dryRun) return Shell::ExitSuccess;
-                if (asking && !ask(out.ctx, "Go ahead?")) return Shell::ExitFailure;
+                if (asking && !ask(out, "Go ahead?")) return Shell::ExitFailure;
                 return removeAll(out, config, all.span());
         }
 
@@ -768,21 +885,24 @@ namespace {
                                         w.member("source", r.source.view());
                                         w.member("packages", r.packages);
                                         w.member("indexedHere", r.indexedHere);
+                                        if (r.listKept) w.member("listKept", true);
                                         if (r.error.isError()) {
                                                 w.member("error", r.error.name());
                                                 w.member("text", r.why.view());
                                         }
                                 });
                         } else if (r.error.isError()) {
-                                out.ctx.eprintf("pkg: %s\n", r.why.cStr());
+                                out.eprintf("pkg: %s\n", r.why.cStr());
                         } else {
-                                out.ctx.printf("%s: %u packages%s\n", r.source.cStr(), unsigned(r.packages),
-                                               r.indexedHere
-                                                       ? " (indexed here: its index.bmpi is missing or out of date)"
-                                                       : "");
+                                out.printf(
+                                        "%s: %u packages%s\n", r.source.cStr(), unsigned(r.packages),
+                                        r.listKept
+                                                ? " (as indexed here before: its index.bmpi is missing or out of date)"
+                                        : r.indexedHere ? " (indexed here: its index.bmpi is missing or out of date)"
+                                                        : "");
                         }
                 }
-                if (!out.json && results.isEmpty()) out.ctx.printf("no sources (the setting pkg/sources)\n");
+                if (!out.json && results.isEmpty()) out.printf("no sources (the setting pkg/sources)\n");
                 return err.isError() ? Shell::ExitFailure : Shell::ExitSuccess;
         }
 
@@ -803,7 +923,7 @@ namespace {
                                 w.member("packages", count);
                         });
                 } else {
-                        out.ctx.printf("%s/index.bmpi: %u packages\n", path.cStr(), unsigned(count));
+                        out.printf("%s/index.bmpi: %u packages\n", path.cStr(), unsigned(count));
                 }
                 return Shell::ExitSuccess;
         }
@@ -835,9 +955,9 @@ namespace {
                                 w.member("comment", e.comment.view());
                         });
                 } else if (action == nullptr) {
-                        out.ctx.printf("%s  %-7s  %s\n", id, kind, e.comment.cStr());
+                        out.printf("%s  %-7s  %s\n", id, kind, e.comment.cStr());
                 } else {
-                        out.ctx.printf("%s: %s%s%s\n", id, action, e.comment.isEmpty() ? "" : ": ", e.comment.cStr());
+                        out.printf("%s: %s%s%s\n", id, action, e.comment.isEmpty() ? "" : ": ", e.comment.cStr());
                 }
                 return;
         }
@@ -952,7 +1072,7 @@ namespace {
                                 });
                                 continue;
                         }
-                        out.ctx.printf("%u  %s\n", unsigned(i + 1), s.location.cStr());
+                        out.printf("%u  %s\n", unsigned(i + 1), s.location.cStr());
                         String state;
                         if (!s.listed) {
                                 (void)state.append("not read yet (pkg update)");
@@ -965,12 +1085,12 @@ namespace {
                                 }
                         }
                         const bool network = !s.location.view().startsWith("file:");
-                        out.ctx.printf("   %s; %s%s\n", state.cStr(), s.signedBy.isEmpty() ? "" : "signed by ",
-                                       !s.signedBy.isEmpty() ? keys.cStr()
-                                       : network             ? "signed by any key in the keyring"
-                                                             : "any index (its packages are checked one by one)");
+                        out.printf("   %s; %s%s\n", state.cStr(), s.signedBy.isEmpty() ? "" : "signed by ",
+                                   !s.signedBy.isEmpty() ? keys.cStr()
+                                   : network             ? "signed by any key in the keyring"
+                                                         : "any index (its packages are checked one by one)");
                 }
-                if (!out.json && all.isEmpty()) out.ctx.printf("no sources (pkg source add URL)\n");
+                if (!out.json && all.isEmpty()) out.printf("no sources (pkg source add URL)\n");
                 return Shell::ExitSuccess;
         }
 
@@ -991,6 +1111,7 @@ namespace {
                 }
                 Packages::SourceLook look;
                 String               why;
+                out.status("looking at %.*s ...", int(location.size()), location.data());
                 Error                err = Packages::lookSource(location, keyFrom.view(), config, look, why);
                 if (err.isError()) {
                         errorOut(out, location, err, why.view());
@@ -1028,26 +1149,26 @@ namespace {
                                 });
                         }
                 } else if (look.isUnsigned) {
-                        out.ctx.printf("%s: %u packages, no signed index (each package is checked as it installs)\n",
-                                       look.location.cStr(), unsigned(look.packages));
+                        out.printf("%s: %u packages, no signed index (each package is checked as it installs)\n",
+                                   look.location.cStr(), unsigned(look.packages));
                 } else if (look.known) {
-                        out.ctx.printf("%s: %u packages, signed by %s (%s, %s)\n", look.location.cStr(),
-                                       unsigned(look.packages), look.key.comment.cStr(), id, kindWords(look.key.kind));
+                        out.printf("%s: %u packages, signed by %s (%s, %s)\n", look.location.cStr(),
+                                   unsigned(look.packages), look.key.comment.cStr(), id, kindWords(look.key.kind));
                 } else {
-                        out.ctx.printf("%s\n  %u packages, signed by a key this system doesn't know:\n"
-                                       "    %s\n    key %s: ed25519 %s\n    from %s\n"
-                                       "  Anyone who controls that address can publish packages you would then "
-                                       "install.\n",
-                                       look.location.cStr(), unsigned(look.packages),
-                                       look.key.comment.isEmpty() ? "(no comment)" : look.key.comment.cStr(), id,
-                                       hexKey, look.keyFrom.cStr());
+                        out.printf("%s\n  %u packages, signed by a key this system doesn't know:\n"
+                                   "    %s\n    key %s: ed25519 %s\n    from %s\n"
+                                   "  Anyone who controls that address can publish packages you would then "
+                                   "install.\n",
+                                   look.location.cStr(), unsigned(look.packages),
+                                   look.key.comment.isEmpty() ? "(no comment)" : look.key.comment.cStr(), id, hexKey,
+                                   look.keyFrom.cStr());
                 }
                 if (o.dryRun) {
                         if (!look.list.isEmpty())
                                 (void)Vfs::remove(look.list.view(), Vfs::Context{out.ctx.cwd(), nullptr});
                         return Shell::ExitSuccess;
                 }
-                if (asking && !o.yes && o.trust == nullptr && !ask(out.ctx, "Trust this key and add the source?")) {
+                if (asking && !o.yes && o.trust == nullptr && !ask(out, "Trust this key and add the source?")) {
                         if (!look.list.isEmpty())
                                 (void)Vfs::remove(look.list.view(), Vfs::Context{out.ctx.cwd(), nullptr});
                         return Shell::ExitFailure;
@@ -1065,9 +1186,9 @@ namespace {
                                 w.member("packages", look.packages);
                         });
                 } else {
-                        out.ctx.printf("Added: %s\n", added.cStr());
-                        if (asking) out.ctx.printf("Key %s added to the keyring (pkg key list)\n", id);
-                        out.ctx.printf("Its packages: pkg source show %s\n", look.location.cStr());
+                        out.printf("Added: %s\n", added.cStr());
+                        if (asking) out.printf("Key %s added to the keyring (pkg key list)\n", id);
+                        out.printf("Its packages: pkg source show %s\n", look.location.cStr());
                 }
                 return Shell::ExitSuccess;
         }
@@ -1086,7 +1207,7 @@ namespace {
                                 w.member("name", removed.view());
                         });
                 } else {
-                        out.ctx.printf("Removed: %s\n", removed.cStr());
+                        out.printf("Removed: %s\n", removed.cStr());
                 }
                 // The keys only it named: asked (-y yes; --json without -y keeps them).
                 for (const Packages::KeyEntry &e : orphans) {
@@ -1098,7 +1219,7 @@ namespace {
                                 String question;
                                 (void)question.appendf("No other source uses key %s (%s). Remove it from the keyring?",
                                                        id, e.comment.cStr());
-                                drop = ask(out.ctx, question.cStr());
+                                drop = ask(out, question.cStr());
                         }
                         if (!drop) continue;
                         Packages::KeyEntry gone;
@@ -1134,11 +1255,10 @@ namespace {
                 }
                 if (found == nullptr) {
                         errorOut(out, which, Error::NotFound, "");
-                        if (!out.json) out.ctx.eprintf("pkg: no such source (pkg source list)\n");
+                        if (!out.json) out.eprintf("pkg: no such source (pkg source list)\n");
                         return Shell::ExitFailure;
                 }
-                if (!found->listed && !out.json)
-                        out.ctx.printf("%s: not read yet (pkg update)\n", found->location.cStr());
+                if (!found->listed && !out.json) out.printf("%s: not read yet (pkg update)\n", found->location.cStr());
                 Packages::Config one = config;
                 one.sources = found->source.view();
                 List<Packages::Available> listed(MemSpace::Psram);
@@ -1182,9 +1302,8 @@ namespace {
                                 w.member("problem", what);
                         });
                 } else {
-                        s.out->ctx.printf("%.*s: %.*s: %s\n", int(s.package.size()), s.package.data(), int(path.size()),
-                                          path.data(),
-                                          problem == Packages::Problem::NotLink ? "no longer a link" : what);
+                        s.out->printf("%.*s: %.*s: %s\n", int(s.package.size()), s.package.data(), int(path.size()),
+                                      path.data(), problem == Packages::Problem::NotLink ? "no longer a link" : what);
                 }
                 return;
         }
@@ -1207,6 +1326,7 @@ namespace {
                 size_t problems = 0;
                 for (const String &name : all) {
                         VerifyState s{&out, name.view(), 0};
+                        out.status("verifying %.*s", int(name.view().size()), name.view().data());
                         const Error err = Packages::verify(name.view(), config, onProblem, &s);
                         if (err.isError()) {
                                 String why;
@@ -1217,7 +1337,7 @@ namespace {
                         problems += s.problems;
                         if (out.ctx.isInterrupted()) return Shell::ExitInterrupted;
                 }
-                if (!out.json && problems == 0) out.ctx.printf("every file matches\n");
+                if (!out.json && problems == 0) out.printf("every file matches\n");
                 return problems == 0 ? Shell::ExitSuccess : Shell::ExitFailure;
         }
 
@@ -1304,27 +1424,33 @@ int PkgCommand::run(CommandContext &ctx, const Packages::Config &baseConfig) {
                 config.sources = sources.view();
         }
         Out                     out{ctx, o.json};
-        const StringView        cmd(operands[0]);
-        const Span<char *const> rest(operands.data() + 1, operands.size() - 1);
-        if (cmd == StringView("list") && rest.size() <= 1) return list(out, config, o, rest.size() == 1 ? rest[0] : "");
-        if (cmd == StringView("search") && rest.size() > 0) return search(out, config, rest);
-        if (cmd == StringView("update") && rest.size() == 0) return update(out, config);
-        if (cmd == StringView("upgrade") && rest.size() == 0)
-                return install(out, config, rest, Packages::PlanMode::Upgrade, o);
-        if (cmd == StringView("index") && rest.size() == 1) return index(out, config, rest[0]);
-        if (cmd == StringView("clean") && rest.size() == 0) return clean(out, config);
-        if (cmd == StringView("key")) return key(out, config, rest);
-        if (cmd == StringView("source")) return source(out, config, rest, o);
-        if (cmd == StringView("info") && rest.size() == 1) return info(out, config, rest[0], o);
-        if (cmd == StringView("install") && rest.size() > 0)
-                return install(out, config, rest, Packages::PlanMode::Install, o);
-        if (cmd == StringView("remove") && rest.size() > 0) return remove(out, config, rest, o);
-        if (cmd == StringView("autoremove") && rest.size() == 0) return autoremove(out, config, o);
-        if (cmd == StringView("mark") && rest.size() > 1)
-                return mark(out, config, rest[0], Span<char *const>(rest.data() + 1, rest.size() - 1));
-        if (cmd == StringView("verify")) return verify(out, config, rest);
-        if (cmd == StringView("icon") && rest.size() == 1) return icon(out, config, rest[0], o);
-        return ctx.usage();
+        // Whatever ends the command, the status line goes with it.
+        const int status = [&]() -> int {
+                const StringView        cmd(operands[0]);
+                const Span<char *const> rest(operands.data() + 1, operands.size() - 1);
+                if (cmd == StringView("list") && rest.size() <= 1)
+                        return list(out, config, o, rest.size() == 1 ? rest[0] : "");
+                if (cmd == StringView("search") && rest.size() > 0) return search(out, config, rest);
+                if (cmd == StringView("update") && rest.size() == 0) return update(out, config);
+                if (cmd == StringView("upgrade") && rest.size() == 0)
+                        return install(out, config, rest, Packages::PlanMode::Upgrade, o);
+                if (cmd == StringView("index") && rest.size() == 1) return index(out, config, rest[0]);
+                if (cmd == StringView("clean") && rest.size() == 0) return clean(out, config);
+                if (cmd == StringView("key")) return key(out, config, rest);
+                if (cmd == StringView("source")) return source(out, config, rest, o);
+                if (cmd == StringView("info") && rest.size() == 1) return info(out, config, rest[0], o);
+                if (cmd == StringView("install") && rest.size() > 0)
+                        return install(out, config, rest, Packages::PlanMode::Install, o);
+                if (cmd == StringView("remove") && rest.size() > 0) return remove(out, config, rest, o);
+                if (cmd == StringView("autoremove") && rest.size() == 0) return autoremove(out, config, o);
+                if (cmd == StringView("mark") && rest.size() > 1)
+                        return mark(out, config, rest[0], Span<char *const>(rest.data() + 1, rest.size() - 1));
+                if (cmd == StringView("verify")) return verify(out, config, rest);
+                if (cmd == StringView("icon") && rest.size() == 1) return icon(out, config, rest[0], o);
+                return ctx.usage();
+        }();
+        out.clear();
+        return status;
 }
 
 BMDS_NAMESPACE_END

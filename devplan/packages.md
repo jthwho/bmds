@@ -958,3 +958,54 @@ or a trial the user agrees to.
 
 `pkg source`, built-in package keys, the SDK as a release asset and the `bmds-apps` repository:
 `thirdparty.md` (planned 2026-11-15).
+
+## 27. Feedback while `pkg` works (2026-11-15, the user's ask)
+
+`pkg update` looked frozen: nothing was printed until every source was read, and indexing the
+card's folder (32 packages hashed whole) takes about 25 s.
+
+- **A status line on a terminal** (standard output a terminal, not `--json`): what is under way,
+  redrawn in place (`\r`, the text cut to the terminal's width, `ESC [K`) only when its text
+  changes, and erased before anything else is printed and when the command ends. Every line of
+  `pkg`'s text goes through `Out::printf()`/`eprintf()` (and its questions through `ask(Out&)`),
+  which erase it first. Never in a pipe, a script or `--json`.
+- **What it says:** "reading SOURCE ..." (by its address), "fetching SOURCE: 4 KB of 12 KB (32%)"
+  (a network index; the size from the server, else the bytes alone), "indexing FOLDER: 12 of 32
+  packages", "working out what to do ...", "fetching NAME: 45 KB of 114 KB (39%)", "checking
+  NAME", "installing NAME: 40%", "installing NAME: putting files in place", "removing NAME: 3 of
+  4", "verifying NAME", "looking at URL ..." (`source add`). Sizes coarse (whole KB, tenths of a
+  MB), so a big download redraws a few hundred times, not once a block.
+- **`Packages::Step`** gains `Reading` and `Indexing` (append-only; JSON `progress` records'
+  `step` gains `reading` and `indexing`): `update()` reports each source as it starts, a network
+  index's fetch reports its bytes, and indexing a folder reports each package.
+- **Tests:** host, the status line shown while reading a source and installing, erased before the
+  result line, and never with `--json` (the test console is a terminal). On the board's serial
+  console (a terminal; raw bytes read from hilbert): `pkg update` (the three default sources, the
+  card folder's 32 packages one by one), `install` (planning, fetching to 100%, checking,
+  installing, putting in place), `verify`, `remove`.
+- **Found, not fixed:** `ssh -t HOST COMMAND` to the board (a pty and a command) didn't behave from
+  this PC's harness (no output; once a login shell instead of the command, left waiting): see
+  `network.md` §34. Interactive sessions (`ssh HOST`) are fine.
+
+## 28. A card folder indexed once (2026-11-15, the user's ask)
+
+A `file:` folder whose own `index.bmpi` is missing or out of date was indexed on the board at
+every `pkg update` (every package hashed whole: 17 s for the card's 32), because only the
+folder's own index was ever compared with its contents, never the list made here last time.
+
+- **Kept while it holds:** before indexing, the source's list in the cache is tried: kept, and
+  not even written again, when it lists exactly the folder's packages by name and size (the
+  check the folder's own index gets) and no package is newer than the list (its modified time
+  against the list's date). A list made before the clock was set is dated 0 and never kept.
+  Missed: a package replaced under the same name and size with its old time kept (a package's
+  name carries its version, so this means a rebuilt file); its own signature and section hashes
+  are still checked when it installs.
+- **Said:** "file:/sd0/p0/packages: 32 packages (as indexed here before: its index.bmpi is
+  missing or out of date)"; JSON `source` records gain `listKept` (append-only).
+- **Tests:** host (the clock set so the packages have a known time): indexed once, kept while the
+  same, indexed again with a package more, every time when the packages are newer than the list,
+  and every time when the list was made without a clock. On the board: the first update 17 s,
+  the next ones 2 to 3 s (the two network sources), the kept list said as such, kept across a
+  reboot.
+- **Better still:** `pkg index /sd0/p0/packages` writes the folder's own (unsigned) index, which
+  a `file:` source takes as it is.

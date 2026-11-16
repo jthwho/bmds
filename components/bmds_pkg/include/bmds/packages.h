@@ -115,7 +115,9 @@ namespace Packages {
                 Writing,   ///< Writing its files.
                 Replacing, ///< Moving them into place.
                 Removing,  ///< Removing files.
-                Fetching,  ///< Fetching it from its source (`fetchPlanned()`).
+                Fetching,  ///< Fetching it from its source (`fetchPlanned()`), or a source's index (`update()`).
+                Reading,   ///< `update()` starts on a source (the name is the source; no counts).
+                Indexing,  ///< A folder indexed (the name is the folder; done of total packages).
         };
 
         /** @brief Who hears about progress and what was decided along the way. */
@@ -265,6 +267,7 @@ namespace Packages {
                         String   source;
                         uint32_t packages = 0;        ///< In its list.
                         bool     indexedHere = false; ///< The folder's index was missing or out of date.
+                        bool     listKept = false;    ///< ...and the list indexed here before still holds.
                         Error    error;
                         String   why; ///< When `error` isn't `Ok`.
         };

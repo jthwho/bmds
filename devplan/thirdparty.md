@@ -487,3 +487,12 @@ control panel's pages are in its program on the card. The SDK tarball: about the
 - **When BMDS releases with the SDK tarball:** pin it in bmds-apps' `CMakeLists.txt`
   (`BMDS_SDK_VERSION`, `BMDS_SDK_SHA256` from the release's `SHA256SUMS`); from then the
   workflow releases each tag itself.
+
+## 19. A whole `tools/release --dev` with the SDK (2026-11-15)
+
+Run from this tree (0.2.0+7866623d-dirty): the recovery and main firmware, 21 packages, the
+packages zip, the sources zip, and `bmds-sdk-0.2.0-7866623d-dirty.tar.gz` (1,267,094 bytes, in
+`SHA256SUMS`; `sdk/VERSION` says the release). That tarball unpacked elsewhere built bmds-apps
+(`-DBMDS_SDK_DIR` at it, the bmds-apps key): no warnings, the index and package signed by
+`packages.pub: bmds-apps`. Not tried: `cmake/sdk.cmake`'s download of a pinned release (it needs
+one published).

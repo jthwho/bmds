@@ -201,6 +201,7 @@ namespace Packages::Detail {
         struct FolderFile {
                         String   name;
                         uint64_t size = 0;
+                        int64_t  modified = 0; ///< Seconds since 1970; 0 if not known.
         };
 
         Error folderPackages(StringView folder, List<FolderFile> &out) {
@@ -211,7 +212,7 @@ namespace Packages::Detail {
                         if (nerr == Error::EndOfFile) break;
                         if (nerr.isError()) return nerr;
                         if (entry.type != FileType::File || !isPackageName(entry.name.view())) continue;
-                        err = out.append(FolderFile{std::move(entry.name), entry.size});
+                        err = out.append(FolderFile{std::move(entry.name), entry.size, entry.modified.seconds()});
                         if (err.isError()) return err;
                 }
                 std::sort(out.begin(), out.end(),
@@ -271,7 +272,9 @@ namespace Packages::Detail {
                 List<uint8_t> icons(MemSpace::Psram);
                 Buffer        buf(ChunkBytes);
                 if (buf.data() == nullptr) return fail(why, Error::NoMem, "out of memory");
-                for (const FolderFile &f : files) {
+                for (size_t nth = 0; nth < files.size(); ++nth) {
+                        const FolderFile &f = files[nth];
+                        progress(listener, folder, Step::Indexing, nth, files.size());
                         auto [path, jerr] = join(folder, f.name.view());
                         if (jerr.isError()) return fail(why, jerr, "out of memory");
                         Loaded pkg;
@@ -361,6 +364,7 @@ namespace Packages::Detail {
                         BlockWriter     gather;
                         uint64_t        written = 0;
                         uint64_t        limit = UINT64_MAX;
+                        uint64_t total = 0; ///< Its size, for progress: the limit's, or the server's (0: not known).
                         const Listener *listener = nullptr;
                         StringView      name; ///< For progress.
         };
@@ -393,8 +397,9 @@ namespace Packages::Detail {
 
         FetchSink sinkOf(FileFetch &f) {
                 FetchSink sink;
-                sink.begin = [](void *arg, uint64_t start, uint64_t) -> Error {
+                sink.begin = [](void *arg, uint64_t start, uint64_t total) -> Error {
                         FileFetch &to = *static_cast<FileFetch *>(arg);
+                        if (to.total == 0 && total != UINT64_MAX) to.total = total;
                         if (start == to.written) return Error::Ok;
                         if (start != 0) return Error::CorruptData;
                         return openFetch(to, false); // it starts again
@@ -406,7 +411,7 @@ namespace Packages::Detail {
                         if (err.isError()) return err;
                         to.written += bytes.size();
                         if (to.listener != nullptr)
-                                progress(*to.listener, to.name, Packages::Step::Fetching, to.written, to.limit);
+                                progress(*to.listener, to.name, Packages::Step::Fetching, to.written, to.total);
                         return Error::Ok;
                 };
                 sink.arg = &f;
@@ -414,7 +419,8 @@ namespace Packages::Detail {
         }
 
         // Fetches a network source's index, checks its signature, and keeps it as its list.
-        Error updateNetwork(const Source &spec, const Config &config, Packages::SourceResult &result) {
+        Error updateNetwork(const Source &spec, const Config &config, const Listener &listener,
+                            Packages::SourceResult &result) {
                 const StringView source = spec.text;
                 if (config.fetch == nullptr)
                         return fail(result.why, Error::NotSupported, "%.*s: no fetching in this system",
@@ -429,6 +435,8 @@ namespace Packages::Detail {
                 FileFetch f;
                 f.path = std::move(part);
                 f.limit = MaxListBytes;
+                f.listener = &listener;
+                f.name = spec.url;
                 err = openFetch(f, false);
                 if (err.isError()) return fail(result.why, err, "%s: %s", f.path.cStr(), err.desc());
                 String why;
@@ -471,13 +479,32 @@ namespace Packages::Detail {
                 return Error::Ok;
         }
 
+        // A folder indexed here before (its own index.bmpi missing or out of date) needn't be again
+        // while that list still holds: it lists exactly the folder's packages, by name and size,
+        // and none is newer than the list (a package replaced under the same name and size, with
+        // its time kept, is the case this misses; its own signature and hashes are still checked
+        // when it installs). Without the clock set the list's time is 0, and it is made again.
+        bool indexedBefore(StringView source, const List<FolderFile> &files, const Config &config, List<uint8_t> &list,
+                           uint32_t &packages) {
+                auto [bmpi, berr] = listFile(config, source, ".bmpi");
+                PkgFile::Index index;
+                StringView     stanzas;
+                if (berr.isError() || readBytes(bmpi.view(), MaxListBytes, list).isError() ||
+                    !indexMatches(list, files) || readList(list, index, stanzas).isError() || index.madeAt <= 0)
+                        return false;
+                for (const FolderFile &f : files)
+                        if (f.modified > index.madeAt) return false;
+                packages = index.packageCount;
+                return true;
+        }
+
         // Updates one source's list.
         Error updateSource(StringView source, const Config &config, const Listener &listener,
                            Packages::SourceResult &result) {
                 Source      spec;
                 const Error perr = parseSource(source, spec, result.why);
                 if (perr.isError()) return perr;
-                if (spec.network) return updateNetwork(spec, config, result);
+                if (spec.network) return updateNetwork(spec, config, listener, result);
                 const StringView folder = spec.folder;
                 List<FolderFile> files(MemSpace::Psram);
                 Error            err = folderPackages(folder, files);
@@ -514,6 +541,11 @@ namespace Packages::Detail {
                 }
                 if (usable) {
                         result.packages = index.packageCount;
+                } else if (indexedBefore(source, files, config, list, result.packages)) {
+                        // Still the list made here last time: kept as it is (no write).
+                        result.indexedHere = true;
+                        result.listKept = true;
+                        return Error::Ok;
                 } else {
                         result.indexedHere = true;
                         err = indexOf(folder, files, config, listener, result.packages, list, result.why);
@@ -789,6 +821,8 @@ Error Packages::update(const Config &config, const Listener &listener, List<Sour
         (void)eachSource(config.sources, [&](StringView source) -> Error {
                 SourceResult r;
                 (void)r.source.append(source);
+                progress(listener, source.left(source.indexOf(' ')), Step::Reading, 0, 0); // its address
+
                 r.error = updateSource(source, config, listener, r);
                 if (r.error.isError() && first.isOk()) first = r.error;
                 char id[17];
@@ -1111,6 +1145,7 @@ Error Packages::fetchPlanned(Planned &planned, const Config &config, const Liste
                 if (perr.isError()) return fail(why, perr, "out of memory");
                 f.path = std::move(part);
                 f.limit = info.fileBytes;
+                f.total = info.fileBytes;
                 f.listener = &listener;
                 f.name = info.name;
                 err = openFetch(f, true);
