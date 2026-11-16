@@ -386,6 +386,9 @@ def main():
         check_tree(version)
     if opts.publish:
         check_publishing(opts.repo, opts.remote)
+    # Every timestamp a build writes (the ROM's, BusyBox's build date...) is the release commit's,
+    # so the same commit makes the same files (devplan/debuginfo.md §13b).
+    os.environ.setdefault("SOURCE_DATE_EPOCH", git("log", "-1", "--format=%ct"))
 
     # The firmware, for each variant: the recovery first (the main build carries it).
     built = {}

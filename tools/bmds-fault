@@ -16,7 +16,11 @@
 # SDK examples) or given with --program NAME=ELF.
 #
 #   ssh root@bmds0 'log show' | tools/bmds-fault
-#   tools/bmds-fault [--program NAME=ELF]... [--all] [LOG...]
+#   tools/bmds-fault [--program NAME=ELF]... [--source-root DIR]... [--all] [LOG...]
+#
+# Programs name their sources as if the project they were built in were / (devplan/debuginfo.md
+# §3a: /sdk/..., /dist/src/NAME-VERSION/...); each is shown under the first --source-root that
+# holds it (this repository by default: give a project's for programs built there).
 #
 # Programs keep no frame pointer, so the trace is a scan of the stack: a return address left there
 # by a call that has since returned can show up too (Linux marks such entries "?"; a log can't
@@ -108,7 +112,11 @@ def main():
     parser.add_argument("--program", action="append", default=[], metavar="NAME=ELF",
                         help="the unstripped ELF for the program file NAME")
     parser.add_argument("--all", action="store_true", help="every fault, not only the last")
+    parser.add_argument("--source-root", action="append", default=[], metavar="DIR",
+                        help="where a program's relative source paths are found, tried in order "
+                             "(default: this repository; give a project's for programs built there)")
     args = parser.parse_args()
+    roots = args.source_root or [bmdself.ROOT]
 
     given = dict(p.split("=", 1) for p in args.program)
     lines = []
@@ -137,7 +145,7 @@ def main():
             print("  (no ELF for %s: give --program %s=ELF)" % (name, name))
         for i, a in enumerate(fault["trace"]):
             where = names.get(int(a[1:], 16)) if a.startswith("+0x") else None
-            text = "  ".join(where) if where else ("outside the image" if not a.startswith("+0x") else "?")
+            text = bmdself.rooted("  ".join(where), roots) if where else ("outside the image" if not a.startswith("+0x") else "?")
             print("  #%-2d %-10s %s" % (i, a, text))
         for row in fault["regs"]:
             print("     " + row)

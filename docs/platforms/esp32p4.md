@@ -1060,6 +1060,17 @@ every system call's path (`devplan/protection.md` §18).
 reset but not every reset; a capture must reopen the port when it goes, or it silently stops at the
 reset it was meant to catch (lost three captures before this was noticed).
 
+**`CONFIG_APP_REPRODUCIBLE_BUILD` maps less than it seems** (IDF v6.1-dev, 2026-11-15,
+`devplan/debuginfo.md` §13): `-fdebug-prefix-map` for IDF, the project's folder, the build and
+each component's folder, by their text. A component folder given with `..` in it
+(`EXTRA_COMPONENT_DIRS ${CMAKE_CURRENT_LIST_DIR}/../components`) matches nothing: normalize it
+(`get_filename_component(... ABSOLUTE)`). Sources outside every component folder
+(`thirdparty/...`, named by a component's CMakeLists) are covered only if they are under the
+project's folder, and `COMPILER_HIDE_PATHS_MACROS` hides `__FILE__` only under the project and IDF:
+the recovery project (`recovery/`) left both with this machine's paths until it added its own
+`-ffile-prefix-map` for the repository, set before `project()` so IDF's maps, appended during it,
+still win. Checked by building in two worktrees at different paths and comparing the bytes.
+
 ## 6. The ROM
 
 - **Has:** miniz's `tdefl` (PNG writing) and `tinfl` (inflate: PNG decoding, through

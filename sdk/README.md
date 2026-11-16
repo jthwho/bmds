@@ -87,7 +87,19 @@ riscv32-esp-elf-objcopy --strip-unneeded busybox_unstripped busybox
 
 `BMDS_STACK=bytes` in the environment sets the stack the linked program
 asks for; `BMDS_DISPLAY=1` flags it as drawing to the screen continuously
-(`BMDS_PROGRAM_DISPLAY`). `-lm`, `-lpthread`, `-lrt`... find empty archives: musl keeps all
+(`BMDS_PROGRAM_DISPLAY`). `BMDS_PREFIX_MAPS="OLD=NEW ..."` names your own folders in the
+debug information (see below), the outermost first.
+
+**Reproducible builds.** Programs name their source files by fixed names, never by where your
+machine keeps them: as if the project were `/`, with the SDK at `/sdk`, the build folder at
+`/build` and the compiler's headers at `/riscv32-esp-elf` (`-ffile-prefix-map`, in
+`bmds_add_program()` and `bmds-cc` alike; `__FILE__` too). The same sources built with the same
+toolchain give the same program, build-id included, in any folder on any machine.
+`tools/bmds-fault --source-root DIR` shows them under a real folder again; in GDB,
+`set substitute-path /sdk <bmds>/sdk`. `bmds-cc` maps the SDK and its build; give it your own tree
+with `BMDS_PREFIX_MAPS="$PWD/=/"`.
+
+`-lm`, `-lpthread`, `-lrt`... find empty archives: musl keeps all
 of it in `libc.a`. BusyBox 1.37 with `CONFIG_NOMMU` builds this way
 unmodified (about 90 applets; `hush` starts programs and runs pipelines
 with `vfork`).

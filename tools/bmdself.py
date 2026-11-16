@@ -10,6 +10,7 @@
 
 import glob
 import os
+import re
 import struct
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -54,6 +55,27 @@ def matches(path, wanted):
         return True
     have = build_id(path)
     return have is not None and (have.startswith(wanted) or wanted.startswith(have))
+
+
+# addr2line's "... at FILE:LINE" (-p), FILE without spaces.
+_AT = re.compile(r"( at )([^\s:]+)(:\d+)")
+
+
+def rooted(text, roots):
+    """@p text with each "at FILE:LINE" given the first of @p roots that holds FILE: programs name
+    their sources by fixed names, as if the project they were built in were / (/sdk/...,
+    /minesweeper/..., /dist/src/NAME-VERSION/...: devplan/debuginfo.md §3a). A path under none of
+    them (the toolchain's own, /builds/...) stays as it is."""
+    def one(m):
+        path = m.group(2)
+        if path.startswith("??"):
+            return m.group(0)
+        for root in roots:
+            full = os.path.normpath(os.path.join(root, path.lstrip("/")))
+            if os.path.exists(full):
+                return m.group(1) + full + m.group(3)
+        return m.group(0)
+    return _AT.sub(one, text)
 
 
 def find_program(name):

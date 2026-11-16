@@ -67,22 +67,29 @@ are the linker's other choices; `sha1` is GNU's default and what GDB and debugin
 an identity, not a security check. The firmware's identity is IDF's `app_elf_sha256` instead (the
 whole ELF's SHA-256, §3).
 
-**Source paths go in relative.** DWARF records each source file's absolute path
+**Source paths go in by fixed names.** DWARF records each source file's absolute path
 (`/home/jth/src/esp-pc/sdk/tests/progtest.c`), and those bytes feed the hash. So the same source
 built in another folder or on another machine gets another id, and every published debug package
 would carry the builder's home folder. Built with `-ffile-prefix-map=OLD=NEW`, which rewrites the
-paths in the debug information and in `__FILE__` alike:
+paths in the debug information and in `__FILE__` alike, files are named as if the project were `/`:
 
-- **The source tree:** `ROOT=.` (the repository: the SDK, its examples, the programs);
-- **Build folders:** generated sources (`build-host/...`, `build/...`) to their path from the
-  repository's root, so a file says where it was made;
-- **The distribution's sources** (unpacked under `build/rom/dist/src/` and `build-dist/src/`): to
-  `dist/src/NAME-VERSION`, the same whichever build unpacked them;
+- **The project:** its root as `/` (`/minesweeper/main.c`); this repository's, for the
+  distribution, likewise (`/thirdparty/monocypher/...`);
+- **The SDK** as `/sdk` (in this repository, its real place), **the build folder** as `/build`
+  (musl's generated headers: `/build/bmds-libc/include`), **the compiler's headers** as
+  `/riscv32-esp-elf`;
+- **The distribution's sources** (unpacked under `build-dist/src/`, `build/rom/dist/src/`) as
+  `/dist/src/NAME-VERSION`, its build folders as `/dist/build/NAME`, the same whichever build
+  unpacked them;
 - **The firmware:** IDF's `CONFIG_APP_REPRODUCIBLE_BUILD` does the same for its ELF (paths become
-  `/IDF`, `/COMPONENT_...`); turned on with this step if it costs nothing else (to check: what it
-  changes beyond the paths, and that `bmds-panic`'s decoder still finds IDF's sources);
+  `/IDF`, `/COMPONENT_...`); on since 2026-11-15, with the ROM's time fixed (§13a-b);
 - **The toolchain's own libraries** (libgcc: `/builds/idf/crosstool-NG/...`) are as Espressif built
   them: left alone.
+
+*Changed 2026-11-15:* the names were to be relative (`sdk/...`, `./...`). Tried, `addr2line`
+printed `build/sdk/tests/progtest.c`: DWARF takes a relative name as relative to the compile
+directory, itself mapped (`/build`), and tools join the two. Absolute names aren't joined; IDF's
+reproducible build uses them for the same reason.
 
 Then a build is the same everywhere: same sources, same toolchain and flags, same ids, so a debug
 package built by anyone serves everyone's identical build. The host tools put the root back to show
@@ -153,9 +160,10 @@ without any debug files.
 1. **Build-ids** (§3): the links, `bmds.ld`'s note, the loader keeping it, the fault line and the
    banner, the host tools' check. Check: every program still loads and the card copies differ by
    the note alone; a mismatched ELF refused by `bmds-fault`.
-2. **Debug files** (§4): first reproducible ids (§3a: `-ffile-prefix-map` in `BmdsProgram.cmake`
-   and `bmds-cc`, the distribution's sources mapped by `bmds-dist`, the firmware's by IDF's option,
-   the host tools' `--source-root`; checked by two builds in different folders giving the same ids),
+2. **Debug files** (§4): first reproducible ids (*done 2026-11-15, §13*; §3a: `-ffile-prefix-map`
+   in `BmdsProgram.cmake` and `bmds-cc`, the distribution's sources mapped by `bmds-dist`, the
+   firmware's by IDF's option, the host tools' `--source-root`; checked by two builds in different
+   folders giving the same ids),
    then `objcopy --only-keep-debug` per program in the SDK build and `bmds-dist`; the `debug/paths`
    setting. Measure whether the toolchain already compresses the programs' DWARF (§2's zlib column
    suggests it), for §10.
@@ -239,3 +247,66 @@ is a command with subcommands from the start, each in its own source file over s
   before); `bmds-panic` by the banner's SHA when it has one, else the version string as before.
 - **Checked:** the suites (148) and the compat corpus pass; a rebuilt BusyBox and a GUI program
   with the note run; a wrong `--program` ELF and a wrong banner SHA are each refused or warned of.
+
+## 13. As built: reproducible ids (step 2's first part, 2026-11-15)
+
+Found when bmds-apps' release workflow built Minesweeper: the same code as a local build, 20 bytes
+apart, all of them the build-id (the debug information's paths).
+
+- **`BmdsProgram.cmake`** maps the SDK (`/sdk`), the build folder (`/build`), the toolchain's root
+  (`/riscv32-esp-elf`) and the project (`/`, unless it is inside the SDK: the examples keep
+  `/sdk/examples`). GCC uses the last map that matches, so they are given shortest path first: a
+  nested folder (an SDK downloaded into the build folder, a build folder in the project) gets its
+  own name. **`bmds-cc`** gets the same list (`BMDS_CC_PREFIX_MAPS`), after the caller's
+  `BMDS_PREFIX_MAPS` (new, in the environment: OLD=NEW, space-separated), so a caller's folder
+  holding the SDK leaves the SDK its names.
+- **`bmds-dist`** gives each package `BMDS_PREFIX_MAPS`: the repository as `/`, its recipe folder,
+  its sources (`/dist/src/NAME-VERSION`, or their path here) and its build folder
+  (`/dist/build/NAME`).
+- **`tools/bmds-fault --source-root DIR`** (repeatable; default this repository) shows each file
+  under the first root holding it (`tools/bmdself.py`'s `rooted()`); a name under none stays.
+- **Checked,** each route built twice in different folders, the second through a symlinked
+  toolchain: the SDK examples (48 ELFs), `bmds-dist`'s netlat and dropbear, and bmds-apps with its
+  SDK inside its build folder: byte-identical, build-ids included, and no path of the building
+  machine left in the debug ELFs (only Espressif's `/builds/...` in libgcc). A fault on bmds0
+  decoded by `bmds-fault` names `<repo>/sdk/tests/progtest.c:4789`.
+- **Still open:** the rest of step 2 (the firmware: §13b).
+
+### 13a. The firmware's `CONFIG_APP_REPRODUCIBLE_BUILD`, checked (2026-11-15)
+
+- **What it does** (IDF's `tools/cmake/prefix_map.cmake`): `-fdebug-prefix-map` for IDF (`/IDF`),
+  the project (`/IDF_PROJECT`), the build (`/IDF_BUILD`), each component
+  (`/COMPONENT_<NAME>_DIR`) and the toolchain (`/TOOLCHAIN`), writing `build/gdbinit/prefix_map`
+  (GDB's `set substitute-path` back); and it forces `APP_COMPILE_TIME_DATE` and
+  `BOOTLOADER_COMPILE_TIME_DATE` off. `__FILE__` is already hidden (`COMPILER_HIDE_PATHS_MACROS`).
+- **What it costs:** nothing in the image. BMDS reads only the app description's version, ELF
+  SHA and IDF version, never its date and time; the bootloader's date is already off
+  (`sdkconfig.defaults`), and the bootloader built with it is byte-for-byte 0.3.1's (no
+  bootloader question for boards). `bmds-panic`'s backtraces would name `/COMPONENT_..._DIR/...`:
+  it should read `gdbinit/prefix_map` beside the ELF and put the real folders back.
+- **Measured:** the app and bootloader built from one commit in two worktrees at different paths
+  with it on: the bootloader identical, `bmds.elf` 62 bytes apart, all of them `RomContentHash`
+  (`.flash.rodata`, and its value in `.debug_info`): the firmware pins the ROM's hash, and the ROM
+  isn't reproducible (`romimage.h`'s `buildTime` in its header; BusyBox's build date). No host path
+  left in the ELF. So the firmware is reproducible once the ROM is.
+
+### 13b. As built: the firmware reproducible (2026-11-15)
+
+- **On:** `CONFIG_APP_REPRODUCIBLE_BUILD=y` in `sdkconfig.defaults` (and the two developer
+  `sdkconfig`s, which keep their own value).
+- **The ROM's time is the commit's:** `components/bmds_storage` runs `mkrom.py image` and the
+  ROM's `bmds-dist` with `SOURCE_DATE_EPOCH`, the caller's or else `git log -1 --format=%ct`,
+  taken at configure (mkrom used the newest input file's mtime). `tools/release` sets it for
+  everything it builds (BusyBox's build date honours it too). `rom` on the board says
+  `Built: <the commit's time>`.
+- **The recovery firmware:** its project is `recovery/`, so IDF's maps missed the repository's
+  `thirdparty/` sources and the components' `__FILE__`, and `EXTRA_COMPONENT_DIRS` had a `..`
+  that matched no component map. `recovery/CMakeLists.txt` normalizes it and maps the repository
+  as `/BMDS` (before `project()`, so IDF's maps win where they match). `esp32p4.md` §5.
+- **`tools/bmds-panic`** puts the real folders back: IDF's `gdbinit/prefix_map` beside the ELF,
+  `/IDF_BUILD`, `/IDF_PROJECT` (its `CMakeCache.txt`), `/IDF` (`IDF_PATH`) and `/BMDS`.
+- **Checked:** the whole firmware from one commit in two worktrees at different paths, with no
+  `SOURCE_DATE_EPOCH` given: `bmds.bin`, `bmds.elf`, `rom.bin`, the bootloader and the recovery
+  firmware byte-identical, no host path left, the bootloader still 0.3.1's. Installed on bmds0:
+  it runs, `rom` names the commit's time and matches the firmware; a deliberate panic
+  (`progtest faults syscall` in M-mode) decoded by `bmds-panic` with real paths.

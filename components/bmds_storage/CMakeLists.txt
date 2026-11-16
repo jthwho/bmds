@@ -106,6 +106,21 @@ elseif(NOT BOOTLOADER_BUILD)
         # (nested: no build wrapper, one job at a time; Dropbear's release is fetched once into
         # ~/.cache/bmds-dist) and put in /rom/bin.
         set(BMDS_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/../..)
+        # The ROM's time (its header's build time, which every entry shows) and its programs'
+        # builds: the caller's SOURCE_DATE_EPOCH (tools/release), else the last commit's, so the
+        # same sources make the same ROM, and the firmware that pins its hash is the same too
+        # (devplan/debuginfo.md §13b). Taken when this is configured.
+        if(DEFINED ENV{SOURCE_DATE_EPOCH})
+                set(BMDS_SOURCE_DATE_EPOCH "$ENV{SOURCE_DATE_EPOCH}")
+        else()
+                execute_process(COMMAND git -C ${BMDS_ROOT_DIR} log -1 --format=%ct
+                                OUTPUT_VARIABLE BMDS_SOURCE_DATE_EPOCH OUTPUT_STRIP_TRAILING_WHITESPACE
+                                RESULT_VARIABLE BMDS_GIT_RESULT ERROR_QUIET)
+                if(NOT BMDS_GIT_RESULT EQUAL 0 OR BMDS_SOURCE_DATE_EPOCH STREQUAL "")
+                        message(FATAL_ERROR "No commit time for the ROM (git log -1): set SOURCE_DATE_EPOCH")
+                endif()
+        endif()
+        set(BMDS_ROM_ENV ${CMAKE_COMMAND} -E env SOURCE_DATE_EPOCH=${BMDS_SOURCE_DATE_EPOCH})
         set(BMDS_ROM_DIST ${BMDS_ROM_OUT}/dist)
         set(BMDS_ROM_DROPBEAR ${BMDS_ROM_DIST}/stage/dropbear)
         set(BMDS_ROM_SFTP ${BMDS_ROM_DIST}/stage/sftp-server)
@@ -130,7 +145,7 @@ elseif(NOT BOOTLOADER_BUILD)
         add_custom_command(OUTPUT ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
                                   ${BMDS_ROM_SSHFS}/bin/sshfs ${BMDS_ROM_COPYID}/bin/ssh-copy-id
                                   ${BMDS_ROM_ANGEL}/bin/angel
-                           COMMAND ${BMDS_STORAGE_PYTHON} ${BMDS_ROOT_DIR}/tools/bmds-dist --out ${BMDS_ROM_DIST}
+                           COMMAND ${BMDS_ROM_ENV} ${BMDS_STORAGE_PYTHON} ${BMDS_ROOT_DIR}/tools/bmds-dist --out ${BMDS_ROM_DIST}
                                    --nested build dropbear sftp-server sshfs ssh-copy-id angel
                            DEPENDS ${BMDS_ROOT_DIR}/tools/bmds-dist ${BMDS_ROM_DIST_SOURCES}
                            VERBATIM)
@@ -211,7 +226,7 @@ elseif(NOT BOOTLOADER_BUILD)
                 list(APPEND BMDS_ROM_NOTICE_FILES ${source})
         endforeach()
         add_custom_command(OUTPUT ${BMDS_ROM_BIN} ${BMDS_ROM_HASH}
-                           COMMAND ${BMDS_STORAGE_PYTHON} ${BMDS_MKROM} image ${BMDS_ROM_BIN}
+                           COMMAND ${BMDS_ROM_ENV} ${BMDS_STORAGE_PYTHON} ${BMDS_MKROM} image ${BMDS_ROM_BIN}
                                    --max-bytes ${BMDS_ROM_PARTITION_BYTES} ${BMDS_ROM_TREE}
                                    --file share/icons/bmds.icons=${BMDS_ROM_OUT}/bmds.icons
                                    --file share/icons/bmds.LICENSES=${BMDS_ROM_OUT}/bmds.LICENSES

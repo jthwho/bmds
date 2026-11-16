@@ -5,13 +5,22 @@
 
 cmake_minimum_required(VERSION 3.22)
 
-set(EXTRA_COMPONENT_DIRS ${CMAKE_CURRENT_LIST_DIR}/../components)
+# Normalized: IDF's reproducible build maps each component's folder by its text, and ".." in it
+# matches none, leaving this machine's paths in the debug information (devplan/debuginfo.md §13b).
+get_filename_component(BMDS_COMPONENTS "${CMAKE_CURRENT_LIST_DIR}/../components" ABSOLUTE)
+set(EXTRA_COMPONENT_DIRS ${BMDS_COMPONENTS})
 set(SDKCONFIG_DEFAULTS
     "${CMAKE_CURRENT_LIST_DIR}/../sdkconfig.defaults;${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults")
 # Size-checked against its own slot (components/bmds_storage/project_include.cmake).
 set(BMDS_APP_PARTITION ota_1)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+# The repository's files outside this project (thirdparty/..., and __FILE__ in its components) as
+# /BMDS/..., not this machine's path: IDF's reproducible build maps this project's folder, IDF and
+# each component's folder only (the main project's folder is the repository). Given before
+# project(), IDF's own maps come after it and win where they match (devplan/debuginfo.md §13b).
+get_filename_component(BMDS_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+idf_build_set_property(COMPILE_OPTIONS "-ffile-prefix-map=${BMDS_ROOT}=/BMDS" APPEND)
 
 idf_build_set_property(MINIMAL_BUILD ON)
 

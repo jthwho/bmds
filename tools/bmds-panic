@@ -41,6 +41,42 @@ BANNER_ELF = re.compile(r"\bI BMDS \S+ \(build .*, elf ([0-9a-f]{16})\)")
 APP_DESC_VERSION = slice(16, 48)
 
 
+def real_paths(elf):
+        """The firmware's fixed source names (CONFIG_APP_REPRODUCIBLE_BUILD: /IDF, /IDF_PROJECT,
+        /IDF_BUILD, /COMPONENT_<NAME>_DIR, /TOOLCHAIN) and where they are here, from the ELF's
+        build folder: IDF's gdbinit/prefix_map, its CMakeCache.txt, and IDF_PATH (devplan/
+        debuginfo.md §13). Longest name first, so /IDF_BUILD isn't taken for /IDF."""
+        build = os.path.dirname(os.path.abspath(elf))
+        pairs = []
+        try:
+                with open(os.path.join(build, "gdbinit", "prefix_map")) as f:
+                        for line in f:
+                                parts = line.split()
+                                if len(parts) == 4 and parts[:2] == ["set", "substitute-path"]:
+                                        pairs.append((parts[2], parts[3]))
+        except OSError:
+                return []  # built without the option: real paths already
+        pairs.append(("/IDF_BUILD", build))
+        try:
+                with open(os.path.join(build, "CMakeCache.txt")) as f:
+                        for line in f:
+                                if line.startswith("CMAKE_HOME_DIRECTORY:"):
+                                        pairs.append(("/IDF_PROJECT", line.split("=", 1)[1].strip()))
+        except OSError:
+                pass
+        if os.environ.get("IDF_PATH"):
+                pairs.append(("/IDF", os.environ["IDF_PATH"]))
+        pairs.append(("/BMDS", ROOT))  # the recovery firmware's name for this repository
+        return sorted(pairs, key=lambda p: -len(p[0]))
+
+
+def with_real_paths(text, pairs):
+        """@p text with each fixed source name, as a whole path part, put back as its real folder."""
+        for fake, real in pairs:
+                text = re.sub(re.escape(fake) + r"(?=/)", lambda m: real, text)
+        return text
+
+
 def panics(lines):
         """Each run of panic lines, with the build named by the last banner before it."""
         found, block, build, sha = [], [], None, None
@@ -110,6 +146,7 @@ def main():
         with open(args.elf, "rb") as f:
                 elf_sha = hashlib.sha256(f.read()).hexdigest()[:16]
         decoder = PanicOutputDecoder("riscv32-esp-elf-", args.elf, "esp32p4")
+        paths = real_paths(args.elf)
         for build, sha, block in found:
                 print(f"=== {block[0]}")
                 print(f"    build {build or '(no banner before it)'}; ELF {version or '(unknown)'}")
@@ -126,7 +163,7 @@ def main():
                 # gdb's backtrace lines: "#0  0x4ff092f0 in panic_abort (details=...) at file:line".
                 frames = [l for l in out.decode(errors="replace").splitlines() if re.match(r"#\d+\s", l)]
                 for f in frames or out.decode(errors="replace").splitlines():
-                        print(f"    {f}")
+                        print(f"    {with_real_paths(f, paths)}")
         return 0
 
 

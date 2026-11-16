@@ -23,6 +23,34 @@ get_filename_component(BMDS_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 # same with it, and <name>.elf, on the card, is stripped of it (devplan/protection.md §22).
 add_compile_options(-g)
 
+# Paths by fixed names (devplan/debuginfo.md §3a): the debug information and __FILE__ name files as
+# if the project were /, with the SDK at /sdk, the build at /build and the toolchain's headers at
+# /riscv32-esp-elf, never where this machine keeps them, so a program built from the same sources
+# with the same toolchain has the same build-id in any folder on any machine. Absolute, so tools
+# don't join them to the (mapped) compile directory; tools/bmds-fault --source-root puts a real
+# root before them. GCC uses the last map that matches, so the longest (innermost) path goes last;
+# a project inside the SDK (its examples) keeps the SDK's, its real path there.
+get_filename_component(_bmds_toolchain_root "${CMAKE_C_COMPILER}" DIRECTORY)
+get_filename_component(_bmds_toolchain_root "${_bmds_toolchain_root}/.." ABSOLUTE)
+set(_bmds_maps "${BMDS_SDK_DIR}=/sdk" "${CMAKE_BINARY_DIR}=/build" "${_bmds_toolchain_root}=/riscv32-esp-elf")
+string(FIND "${CMAKE_SOURCE_DIR}/" "${BMDS_SDK_DIR}/" _bmds_in_sdk)
+if(NOT _bmds_in_sdk EQUAL 0)
+        list(APPEND _bmds_maps "${CMAKE_SOURCE_DIR}/=/")
+endif()
+set(_bmds_sorted "")
+foreach(_bmds_map IN LISTS _bmds_maps)
+        string(FIND "${_bmds_map}" "=" _bmds_eq REVERSE)
+        math(EXPR _bmds_key "100000 + ${_bmds_eq}") # the path's length, padded to sort as text
+        list(APPEND _bmds_sorted "${_bmds_key}|${_bmds_map}")
+endforeach()
+list(SORT _bmds_sorted)
+set(BMDS_CC_PREFIX_MAPS "") # bmds-cc's, the same
+foreach(_bmds_entry IN LISTS _bmds_sorted)
+        string(REGEX REPLACE "^[0-9]+\\|" "" _bmds_map "${_bmds_entry}")
+        add_compile_options("-ffile-prefix-map=${_bmds_map}")
+        string(APPEND BMDS_CC_PREFIX_MAPS " -ffile-prefix-map=${_bmds_map}")
+endforeach()
+
 include(${CMAKE_CURRENT_LIST_DIR}/BmdsLibc.cmake)
 
 # bmds-link (sdk/tools) runs every program's link.

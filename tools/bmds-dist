@@ -200,6 +200,15 @@ def build_package(recipe, cc):
         "VERSION": recipe["version"],
     })
     if uses_sdk(recipe):
+        # Paths by fixed names (devplan/debuginfo.md §3a): this repository as / (sources shared
+        # from it: /thirdparty/...), the package's folders by names that don't depend on where this
+        # build is; bmds-cc's own maps, after these, keep the SDK's names (/sdk, /build).
+        source_name = ("/" + os.path.relpath(src, ROOT) if "source_tree" in recipe
+                       else "/dist/src/%s-%s" % (name, recipe["version"]))
+        maps = [(ROOT + "/", "/"), (recipe["dir"], "/" + os.path.relpath(recipe["dir"], ROOT)),
+                (src, source_name), (build, "/dist/build/" + name)]
+        maps.sort(key=lambda m: len(m[0]))  # GCC uses the last that matches: the innermost last
+        env["BMDS_PREFIX_MAPS"] = " ".join("%s=%s" % m for m in maps)
         env.update({"CC": cc, "CXX": os.path.join(os.path.dirname(cc), "bmds-c++"), "AR": find_tool("ar"), "STRIP": find_tool("strip"), "OBJCOPY": find_tool("objcopy")})
     run(["bash", "-e", os.path.join(recipe["dir"], "build.sh")], cwd=build, env=env)
     # Programs as the loader needs them: symbols it doesn't use gone, relocations kept; bin/'s,

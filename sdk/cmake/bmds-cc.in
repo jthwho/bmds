@@ -16,6 +16,13 @@ GCC="@BMDS_CC_DRIVER@"
 # -g: the unstripped build (bmds-fault, bmds-prof, GDB) has files and lines; GCC's code is the same
 # with it, and what goes on the card is stripped (tools/bmds-dist).
 ARCH="@BMDS_ARCH_FLAGS@ -mcmodel=medany -mno-relax -ffunction-sections -fdata-sections -g"
+# Paths by fixed names (devplan/debuginfo.md §3a), as bmds_add_program's: the SDK as /sdk/..., its
+# build (musl's generated headers) as /build/..., the toolchain's headers as /riscv32-esp-elf/..., so
+# the same sources give the same build-id anywhere. BMDS_PREFIX_MAPS adds the caller's folders (OLD=NEW,
+# space-separated, the outermost first: its tree, sources, build folder). GCC uses the last map that
+# matches, so the caller's go first: a folder of theirs holding the SDK leaves the SDK's names.
+for map in ${BMDS_PREFIX_MAPS:-}; do ARCH="$ARCH -ffile-prefix-map=$map"; done
+ARCH="$ARCH@BMDS_CC_PREFIX_MAPS@"
 INC="-nostdinc @BMDS_CC_LANGUAGE_FLAGS@ -isystem @BMDS_LIBC_INCLUDE@ -isystem @BMDS_GCC_INCLUDE@ -I@BMDS_SDK_DIR@/include"
 
 link=1
