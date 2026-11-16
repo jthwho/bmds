@@ -364,9 +364,12 @@ target_compile_options(bmds_angelscript PRIVATE -std=gnu++20 -fno-exceptions -fn
 # main.cpp and debug.cpp. A program gets the parts it reaches: Preso's decks the language's.
 file(GLOB BMDS_LIBANGEL_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT}/programs/angel/*.cpp)
 list(REMOVE_ITEM BMDS_LIBANGEL_SOURCES ${BMDS_ROOT}/programs/angel/main.cpp ${BMDS_ROOT}/programs/angel/debug.cpp)
-add_library(bmds_libangel STATIC ${BMDS_LIBANGEL_SOURCES})
+# Its HTTP is libbmdshttp's (sdk/http/httplib.cpp on bmds_core's parser), here without TLS
+# (there are no TLS sockets on the host: https: says so).
+add_library(bmds_libangel STATIC ${BMDS_LIBANGEL_SOURCES} ${BMDS_ROOT}/sdk/http/httplib.cpp)
+set_source_files_properties(${BMDS_ROOT}/sdk/http/httplib.cpp PROPERTIES COMPILE_DEFINITIONS BMDS_HTTP_NO_TLS)
 target_include_directories(bmds_libangel PUBLIC ${BMDS_ROOT}/programs/angel PRIVATE ${BMDS_ROOT}/sdk/include)
-target_link_libraries(bmds_libangel PUBLIC bmds_angelscript m)
+target_link_libraries(bmds_libangel PUBLIC bmds_angelscript bmds_core m)
 bmds_target_options(bmds_libangel)
 # The drawing is libbmdsgame's; a window on the host is only its picture (no ANGEL_BMDS).
 # The GUI's client (libbmdsgui) too: a host has no GUI service, so scripts' GUI objects can't be
@@ -408,10 +411,10 @@ file(GLOB PRESO_SCRIPT_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT}/programs/preso/scr
 add_library(preso_script STATIC ${PRESO_SCRIPT_SOURCES})
 target_link_libraries(preso_script PUBLIC preso_core bmds_libangel)
 bmds_target_options(preso_script)
-add_executable(preso ${BMDS_ROOT}/programs/preso/main.cpp)
+add_executable(preso ${BMDS_ROOT}/programs/preso/main.cpp hostmemory.cpp) # bmds_core's, for angel's HTTP
 target_link_libraries(preso PRIVATE preso_script)
 bmds_target_options(preso)
-add_executable(preso_tests preso/main.cpp preso/deck.cpp preso/layout.cpp preso/images.cpp preso/themes.cpp preso/present.cpp preso/scripts.cpp preso/notes.cpp preso/export.cpp)
+add_executable(preso_tests hostmemory.cpp preso/main.cpp preso/deck.cpp preso/layout.cpp preso/images.cpp preso/themes.cpp preso/present.cpp preso/scripts.cpp preso/notes.cpp preso/export.cpp)
 target_include_directories(preso_tests PRIVATE ${BMDS_ROOT}/thirdparty/doctest ${BMDS_ROOT}/programs/preso)
 target_compile_definitions(preso_tests PRIVATE DOCTEST_CONFIG_NO_EXCEPTIONS_BUT_WITH_ALL_ASSERTS)
 target_link_libraries(preso_tests PRIVATE preso_script)

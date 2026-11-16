@@ -1,9 +1,8 @@
 #!/rom/bin/angel
 // Fetches a page from the web and shows it, with what the server said about it:
-//     angel fetch.as http://example.com/
-// (Only http:// for now; https:// needs encryption the system can't offer scripts yet.)
+//     angel fetch.as https://example.com/
 
-string url = args.length() > 1 ? args[1] : "http://example.com/";
+string url = args.length() > 1 ? args[1] : "https://example.com/";
 println("Fetching " + url + "...");
 uint start = millis();
 HttpResponse@ page = Http::request("GET", url);

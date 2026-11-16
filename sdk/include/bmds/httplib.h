@@ -85,6 +85,9 @@ int32_t bmds_http_open(const bmds_http_request_t *request, bmds_http_t **out);
 /** @brief The answer's status (200, 404...); 0 if `bmds_http_open()` failed. */
 int32_t bmds_http_status(const bmds_http_t *http);
 
+/** @brief The status line's words ("OK", "Not Found"); "" if none. */
+const char *bmds_http_reason(const bmds_http_t *http);
+
 /** @brief The URL that answered (after redirects). */
 const char *bmds_http_url(const bmds_http_t *http);
 

@@ -32,7 +32,13 @@ try {
 } catch {
         println(getExceptionInfo().replace(base, "BASE"));
 }
-string[] bad = {"https://example.com/", "ftp://example.com/", "http:///path", "http://host:99999/"};
+// https: on the test's own server (the host has no TLS sockets: it says so, after connecting).
+try {
+        Http::get(base.replace("http://", "https://") + "/hello");
+} catch {
+        println(getExceptionInfo().replace(base.replace("http://", "https://"), "HTTPS-BASE"));
+}
+string[] bad = {"ftp://example.com/", "http:///path", "http://host:99999/"};
 for (uint i = 0; i < bad.length(); i++) {
         try {
                 Http::get(bad[i]);

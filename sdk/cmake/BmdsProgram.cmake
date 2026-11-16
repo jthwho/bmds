@@ -138,7 +138,7 @@ if(NOT TARGET bmds_crt)
                              -I "${BMDS_SDK_DIR}/include" -I "${BMDS_CORE_DIR}/include")
         set(_bmds_http_objects "")
         foreach(_bmds_src "${BMDS_CORE_DIR}/src/http.cpp" "${BMDS_CORE_DIR}/src/string.cpp"
-                          "${BMDS_SDK_DIR}/http/httplib.cpp")
+                          "${BMDS_SDK_DIR}/http/httplib.cpp" "${BMDS_SDK_DIR}/http/memory.cpp")
                 get_filename_component(_bmds_name "${_bmds_src}" NAME_WE)
                 set(_bmds_obj "${CMAKE_BINARY_DIR}/bmds-http/${_bmds_name}.o")
                 add_custom_command(OUTPUT "${_bmds_obj}"

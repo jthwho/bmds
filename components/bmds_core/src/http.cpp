@@ -301,6 +301,10 @@ Error Http::ResponseParser::line(StringView text) {
                         _sawLength = false;
                         _head.status = (text[9] - '0') * 100 + (text[10] - '0') * 10 + (text[11] - '0');
                         if (_head.status < 100) return Error::CorruptData;
+                        if (text.size() > 13) {
+                                const Error err = _head.reason.append(trimmed(text.mid(13)));
+                                if (err.isError()) return err;
+                        }
                         _state = State::Headers;
                         return Error::Ok;
                 }

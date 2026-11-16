@@ -7,8 +7,9 @@
  *
  * libbmdshttp (bmds/httplib.h, devplan/network.md §35d): the C face of bmds_core's `Http` (the
  * URL, the request, the response parser, what follows a head: the kernel's own, compiled into
- * the library with libstdc++'s freestanding headers) over POSIX sockets and the kernel's TLS.
- * bmds_core's `Memory` is the program's heap here.
+ * the library with libstdc++'s headers) over POSIX sockets and the kernel's TLS. bmds_core's
+ * `Memory` is the program's heap (memory.cpp). Built with BMDS_HTTP_NO_TLS (the host's angel),
+ * `https:` fails: there are no TLS sockets.
  */
 
 #include <errno.h>
@@ -26,22 +27,6 @@
 #include <bmds/errno.h>
 #include <bmds/http.h>
 #include <bmds/httplib.h>
-#include <bmds/memory.h>
-
-namespace bmds {
-
-        // bmds_core's allocations in a program: its heap (there is one kind of memory here).
-        void *Memory::alloc(MemSpace space, size_t sizeBytes) {
-                (void)space;
-                return malloc(sizeBytes);
-        }
-
-        void Memory::free(void *ptr) {
-                ::free(ptr);
-                return;
-        }
-
-} // namespace bmds
 
 using bmds::ByteSpan;
 using bmds::Error;
@@ -61,6 +46,7 @@ struct bmds_http {
                 bool                 tls = false;
                 int32_t              status = 0;
                 int64_t              length = -1;
+                String               reason;
                 String               url; // the one answering
                 String               why;
                 Http::ResponseParser parser;
@@ -146,6 +132,12 @@ namespace {
         }
 
         int32_t startTls(bmds_http_t *h, const Http::Url &u, const bmds_tls_config_t *extra, bool insecure) {
+#ifdef BMDS_HTTP_NO_TLS
+                (void)u;
+                (void)extra;
+                (void)insecure;
+                return fail(h, ENOSYS, "TLS isn't available on this system");
+#else
                 char host[256];
                 memcpy(host, u.host.data(), u.host.size());
                 host[u.host.size()] = '\0';
@@ -180,6 +172,21 @@ namespace {
                                 why = "its certificate isn't from an authority this system trusts";
                 }
                 return fail(h, EKEYREJECTED, "%s", why);
+#endif
+        }
+
+        // @p headers without its Content-Type lines (a POST redirected to a GET has no body).
+        int32_t withoutType(bmds_http_t *h, StringView headers, String &out) {
+                out.clear();
+                while (!headers.isEmpty()) {
+                        size_t end = headers.indexOf("\r\n");
+                        end = end == StringView::NPos ? headers.size() : end + 2;
+                        const StringView line = headers.left(end);
+                        headers = headers.mid(end);
+                        if (line.size() >= 13 && line.left(13).equalsIgnoreCase("Content-Type:")) continue;
+                        if (out.append(line).isError()) return fail(h, ENOMEM, "out of memory");
+                }
+                return 0;
         }
 
         int32_t sendAll(bmds_http_t *h, const void *data, size_t n) {
@@ -265,6 +272,8 @@ namespace {
                         return fail(h, ENOMEM, "out of memory");
                 const void    *body = r.body;
                 uint32_t       bodySize = r.body != nullptr ? r.body_size : 0;
+                String         extra; // the caller's header lines, as they go
+                if (r.headers != nullptr && extra.append(r.headers).isError()) return fail(h, ENOMEM, "out of memory");
                 const bool     follow = (r.flags & BMDS_HTTP_NO_REDIRECTS) == 0;
                 const uint32_t most = r.max_redirects != 0 ? r.max_redirects : BMDS_HTTP_DEFAULT_REDIRECTS;
                 const int32_t  timeoutMs = r.timeout_ms == 0 ? BMDS_HTTP_DEFAULT_TIMEOUT_MS : r.timeout_ms;
@@ -283,7 +292,7 @@ namespace {
                         q.url = &u;
                         q.userAgent = r.user_agent != nullptr ? StringView(r.user_agent) : StringView("BMDS");
                         q.from = r.range_from;
-                        q.headers = r.headers != nullptr ? StringView(r.headers) : StringView();
+                        q.headers = extra.view();
                         // A body, or a method that carries one (an empty POST says so).
                         q.hasBody = body != nullptr || method.view() == StringView("POST") ||
                                     method.view() == StringView("PUT") || method.view() == StringView("PATCH");
@@ -315,6 +324,8 @@ namespace {
                         if (nerr.isError()) return fail(h, ENOMEM, "out of memory");
                         if (next.kind != Http::Next::Kind::Redirect) {
                                 h->status = hd.status;
+                                if (h->reason.append(hd.reason.view()).isError())
+                                        return fail(h, ENOMEM, "out of memory");
                                 h->length = hd.chunked || hd.length == Http::Unknown ? -1 : int64_t(hd.length);
                                 return keepHeaders(h);
                         }
@@ -325,6 +336,9 @@ namespace {
                                 (void)method.append("GET");
                                 body = nullptr;
                                 bodySize = 0;
+                                String kept;
+                                if (const int32_t e = withoutType(h, extra.view(), kept); e < 0) return e;
+                                extra = std::move(kept);
                         }
                 }
         }
@@ -353,6 +367,10 @@ int32_t bmds_http_open(const bmds_http_request_t *request, bmds_http_t **out) {
 
 int32_t bmds_http_status(const bmds_http_t *http) {
         return http != nullptr ? http->status : 0;
+}
+
+const char *bmds_http_reason(const bmds_http_t *http) {
+        return http != nullptr ? http->reason.cStr() : "";
 }
 
 const char *bmds_http_url(const bmds_http_t *http) {
@@ -391,7 +409,12 @@ int32_t bmds_http_read(bmds_http_t *http, void *buf, uint32_t size) {
 
 int32_t bmds_http_tls_info(const bmds_http_t *http, bmds_tls_info_t *info) {
         if (http == nullptr || !http->tls || http->fd < 0) return -BMDS_EINVAL;
+#ifdef BMDS_HTTP_NO_TLS
+        (void)info;
+        return -BMDS_EINVAL;
+#else
         return bmds_tls_ctl(http->fd, BMDS_TLS_INFO, info);
+#endif
 }
 
 const char *bmds_http_error(const bmds_http_t *http) {

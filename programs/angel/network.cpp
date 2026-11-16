@@ -6,10 +6,12 @@
  * See LICENSE file in the project root folder for license information.
  *
  * The network (devplan/scripting.md step 6): `Socket` (a TCP connection, read and written as
- * a File is), `ServerSocket` (waits for connections), `UdpSocket` (datagrams, broadcast
- * allowed), `Http::get`, `post` and `request` (plain HTTP/1.1 over the same connections),
- * `localAddress()` and `lookup()`. IPv4. What fails raises an exception that says why, which
- * a catch block can handle. Waiting is poll(), so a script waiting costs nothing.
+ * a File is; `startTls()` for STARTTLS), `TlsSocket` (one with TLS from the start: the kernel's
+ * TLS sockets, devplan/network.md §35), `ServerSocket` (waits for connections), `UdpSocket`
+ * (datagrams, broadcast allowed), `Http::get`, `post` and `request` (HTTP/1.1 and HTTPS through
+ * libbmdshttp, bmds/httplib.h: the kernel's own parser), `localAddress()` and `lookup()`. IPv4.
+ * What fails raises an exception that says why, which a catch block can handle. Waiting is
+ * poll(), so a script waiting costs nothing.
  */
 
 #include <arpa/inet.h>
@@ -27,9 +29,11 @@
 #include <time.h>
 #include <unistd.h>
 #include "../../thirdparty/angelscript/add_on/scriptarray/scriptarray.h"
+#include <bmds/httplib.h>
 #include "angel.h"
 
 #ifdef ANGEL_BMDS
+#include <bmds/errno.h>
 #include <bmds/sys.h>
 #else
 #include <ifaddrs.h>
@@ -154,6 +158,8 @@ namespace angel {
 
                                 const char *peer() const { return _peer; }
                                 int         peerPort() const { return _peerPort; }
+                                bool        isTls() const { return _tls; }
+                                void        setTls() { _tls = true; }
                                 bool        buffered() const { return _start < _end; }
                                 bool        ended() const { return _ended; }
 
@@ -265,7 +271,94 @@ namespace angel {
                                 bool   _ended = false;
                                 char   _peer[INET_ADDRSTRLEN] = "";
                                 int    _peerPort = 0;
+                                bool   _tls = false;
                 };
+
+                // TLS on @p s's connection (the kernel's: reads and writes stay as they were), the
+                // server's certificate checked for @p name unless @p check is false: true, or false
+                // with an exception saying why.
+                bool startTls(Socket *s, const char *name, bool check) {
+                        if (!s->usable()) return false;
+                        if (s->isTls()) {
+                                raise("The connection to %s has TLS already", name);
+                                return false;
+                        }
+                        if (s->buffered()) {
+                                raise("%s sent more before TLS started", name);
+                                return false;
+                        }
+#ifdef ANGEL_BMDS
+                        bmds_tls_config_t c;
+                        memset(&c, 0, sizeof(c));
+                        c.size = sizeof(c);
+                        c.server_name = name;
+                        c.flags = check ? 0u : BMDS_TLS_NO_VERIFY;
+                        int r = bmds_tls_ctl(s->fd(), BMDS_TLS_START, &c);
+                        if (r == 0) r = bmds_tls_ctl(s->fd(), BMDS_TLS_HANDSHAKE, nullptr);
+                        if (r == -BMDS_EINTR) (void)getppid(); // its handler runs as a libc call returns
+                        if (r == 0) {
+                                s->setTls();
+                                return true;
+                        }
+                        if (r == -BMDS_EKEYREJECTED) {
+                                bmds_tls_info_t info;
+                                memset(&info, 0, sizeof(info));
+                                info.size = sizeof(info);
+                                const char *why = "it was refused";
+                                if (bmds_tls_ctl(s->fd(), BMDS_TLS_INFO, &info) == 0) {
+                                        if (info.verify & BMDS_TLS_VERIFY_CLOCK)
+                                                why = "the clock isn't set, so its dates can't be checked";
+                                        else if (info.verify & BMDS_TLS_VERIFY_EXPIRED)
+                                                why = "it has expired";
+                                        else if (info.verify & BMDS_TLS_VERIFY_NOT_YET_VALID)
+                                                why = "it isn't valid yet";
+                                        else if (info.verify & BMDS_TLS_VERIFY_NAME)
+                                                why = "it is for another name";
+                                        else if (info.verify & BMDS_TLS_VERIFY_UNTRUSTED)
+                                                why = "it isn't from an authority this system trusts";
+                                }
+                                raise("%s's certificate was refused: %s", name, why);
+                        } else {
+                                raise("TLS with %s failed: %s", name, strerror(-r));
+                        }
+                        return false;
+#else
+                        (void)check;
+                        raise("TLS with %s: no TLS sockets on this system", name);
+                        return false;
+#endif
+                }
+
+                // What a TLS socket's session says of its server (empty fields if not TLS).
+                struct TlsFacts {
+                                char subject[128] = "";
+                                char issuer[128] = "";
+                                char fingerprint[7 + 64 + 1] = "";
+                                char cipher[64] = "";
+                };
+
+                TlsFacts tlsFacts(Socket *s) {
+                        TlsFacts f;
+#ifdef ANGEL_BMDS
+                        bmds_tls_info_t info;
+                        memset(&info, 0, sizeof(info));
+                        info.size = sizeof(info);
+                        if (!s->isTls() || bmds_tls_ctl(s->fd(), BMDS_TLS_INFO, &info) != 0) return f;
+                        snprintf(f.subject, sizeof(f.subject), "%s", info.subject);
+                        snprintf(f.issuer, sizeof(f.issuer), "%s", info.issuer);
+                        snprintf(f.cipher, sizeof(f.cipher), "%s", info.cipher_name);
+                        static const char hex[] = "0123456789abcdef";
+                        memcpy(f.fingerprint, "SHA256:", 7);
+                        for (int i = 0; i < 32; ++i) {
+                                f.fingerprint[7 + 2 * i] = hex[info.peer_sha256[i] >> 4];
+                                f.fingerprint[8 + 2 * i] = hex[info.peer_sha256[i] & 15];
+                        }
+                        f.fingerprint[7 + 64] = '\0';
+#else
+                        (void)s;
+#endif
+                        return f;
+                }
 
                 // A TCP connection to @p host, waiting at most @p timeoutMs: a Socket, or nullptr
                 // with an exception.
@@ -455,6 +548,35 @@ namespace angel {
                 void socketPort(asIScriptGeneric *gen) {
                         gen->SetReturnDWord(asDWORD(self<Socket>(gen)->peerPort()));
                 }
+                void socketStartTls(asIScriptGeneric *gen) {
+                        (void)startTls(self<Socket>(gen), argString(gen, 0).cStr(), gen->GetArgByte(1) != 0);
+                }
+                void tlsConnect(asIScriptGeneric *gen) {
+                        const char *host = argString(gen, 0).cStr();
+                        Socket     *s = connectTo(host, argInt(gen, 1), ConnectTimeoutMs);
+                        if (s == nullptr) return;
+                        if (!startTls(s, host, gen->GetArgByte(2) != 0)) {
+                                s->release();
+                                return;
+                        }
+                        gen->SetReturnAddress(s);
+                }
+                void tlsSubject(asIScriptGeneric *gen) {
+                        const TlsFacts f = tlsFacts(self<Socket>(gen));
+                        returnString(gen, f.subject, strlen(f.subject));
+                }
+                void tlsIssuer(asIScriptGeneric *gen) {
+                        const TlsFacts f = tlsFacts(self<Socket>(gen));
+                        returnString(gen, f.issuer, strlen(f.issuer));
+                }
+                void tlsFingerprint(asIScriptGeneric *gen) {
+                        const TlsFacts f = tlsFacts(self<Socket>(gen));
+                        returnString(gen, f.fingerprint, strlen(f.fingerprint));
+                }
+                void tlsCipher(asIScriptGeneric *gen) {
+                        const TlsFacts f = tlsFacts(self<Socket>(gen));
+                        returnString(gen, f.cipher, strlen(f.cipher));
+                }
 
                 // ---- ServerSocket
 
@@ -620,211 +742,61 @@ namespace angel {
                         return nullptr;
                 }
 
-                // An http:// address taken apart.
-                struct Url {
-                                char host[256] = "";
-                                int  port = 80;
-                                Text path; // with the query; "/" at least
-                };
-
-                bool parseUrl(const char *url, Url &u) {
-                        const char *p = url;
-                        if (strncasecmp(p, "https://", 8) == 0) {
-                                raise("HTTPS isn't supported yet: '%s' (only http:// addresses)", url);
-                                return false;
-                        }
-                        if (strncasecmp(p, "http://", 7) == 0) {
-                                p += 7;
-                        } else if (strstr(p, "://") != nullptr) {
-                                raise("'%s' isn't an http:// address", url);
-                                return false;
-                        }
-                        const char *hostEnd = p + strcspn(p, "/?#");
-                        const char *at = static_cast<const char *>(memchr(p, '@', size_t(hostEnd - p)));
-                        if (at != nullptr) p = at + 1; // user:password@ isn't sent
-                        const char *colon = static_cast<const char *>(memchr(p, ':', size_t(hostEnd - p)));
-                        const char *nameEnd = colon != nullptr ? colon : hostEnd;
-                        if (nameEnd == p || size_t(nameEnd - p) >= sizeof(u.host)) {
-                                raise("'%s' has no host name", url);
-                                return false;
-                        }
-                        memcpy(u.host, p, size_t(nameEnd - p));
-                        u.host[nameEnd - p] = 0;
-                        u.port = 80;
-                        if (colon != nullptr) {
-                                char      *end = nullptr;
-                                const long port = strtol(colon + 1, &end, 10);
-                                if (end != hostEnd || port <= 0 || port > 65535) {
-                                        raise("'%s' has a bad port", url);
-                                        return false;
-                                }
-                                u.port = int(port);
-                        }
-                        const char  *rest = hostEnd;
-                        const size_t restLength = strcspn(rest, "#");
-                        u.path.clear();
-                        if (restLength == 0 || rest[0] != '/') u.path.append("/");
-                        u.path.append(rest, restLength);
-                        return true;
-                }
-
-                // One request and its answer, over a connection of its own: false (and an
-                // exception) when the network failed, not for an HTTP error status.
-                bool exchange(const char *method, const Url &u, const String &body, CScriptArray *headers,
-                              HttpResponse *r) {
-                        Socket *s = connectTo(u.host, u.port, HttpTimeoutMs);
-                        if (s == nullptr) return false;
-                        s->setTimeoutMs(HttpTimeoutMs);
-                        Text request;
-                        request.appendf("%s %s HTTP/1.1\r\nHost: %s", method, u.path.data(), u.host);
-                        if (u.port != 80) request.appendf(":%d", u.port);
-                        request.append("\r\nUser-Agent: angel\r\nAccept-Encoding: identity\r\nConnection: close\r\n");
+                // A request through libbmdshttp (redirects followed): the answer, or nullptr with an
+                // exception saying why.
+                HttpResponse *request(const char *method, const char *url, const String &body, CScriptArray *headers) {
                         const bool sendsBody =
                                 body.length() != 0 || strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0;
+                        Text lines;
+                        lines.append("Accept-Encoding: identity\r\n");
                         bool hasType = false;
                         if (headers != nullptr)
                                 for (asUINT i = 0; i < headers->GetSize(); ++i) {
                                         const String *h = static_cast<const String *>(headers->At(i));
                                         if (h->length() == 0) continue;
-                                        if (strncasecmp(h->cStr(), "Content-Type:", 13) == 0) {
-                                                if (!sendsBody) continue; // a POST redirected to a GET
-                                                hasType = true;
-                                        }
-                                        request.append(h->data(), h->length());
-                                        request.append("\r\n");
+                                        if (strncasecmp(h->cStr(), "Content-Type:", 13) == 0) hasType = true;
+                                        lines.append(h->data(), h->length());
+                                        lines.append("\r\n");
                                 }
-                        if (sendsBody) {
-                                if (!hasType) request.append("Content-Type: application/x-www-form-urlencoded\r\n");
-                                request.appendf("Content-Length: %u\r\n", unsigned(body.length()));
+                        if (sendsBody && !hasType) lines.append("Content-Type: application/x-www-form-urlencoded\r\n");
+                        bmds_http_request_t q;
+                        memset(&q, 0, sizeof(q));
+                        q.size = sizeof(q);
+                        q.method = method;
+                        q.url = url;
+                        q.headers = lines.data();
+                        q.body = sendsBody ? body.data() : nullptr;
+                        q.body_size = body.length();
+                        q.user_agent = "angel";
+                        q.max_redirects = HttpRedirects;
+                        q.timeout_ms = HttpTimeoutMs;
+                        bmds_http_t *h = nullptr;
+                        if (bmds_http_open(&q, &h) != 0) {
+                                raise("%s", h != nullptr ? bmds_http_error(h) : "Out of memory");
+                                bmds_http_close(h);
+                                return nullptr;
                         }
-                        request.append("\r\n");
-                        bool ok = s->send(request.data(), request.length()) && s->send(body.data(), body.length());
-                        // The status line (1xx answers skipped) and the headers.
-                        Text line;
-                        while (ok) {
-                                line.clear();
-                                if (!s->readLine(line)) {
-                                        if (s->ended()) raise("%s closed the connection without answering", u.host);
-                                        ok = false;
-                                        break;
-                                }
-                                int  status = 0, used = 0;
-                                char version[4];
-                                if (sscanf(line.data(), "HTTP/%3[0-9.] %d%n", version, &status, &used) < 2 ||
-                                    status < 100) {
-                                        raise("%s didn't answer in HTTP", u.host);
-                                        ok = false;
-                                        break;
-                                }
-                                const char *reason = line.data() + used;
-                                while (*reason == ' ') ++reason;
-                                r->status = status;
-                                r->reason.assign(reason, strlen(reason));
-                                r->headers.clear();
-                                for (;;) {
-                                        line.clear();
-                                        if (!s->readLine(line)) {
-                                                if (s->ended()) raise("%s's answer ended in its headers", u.host);
-                                                ok = false;
-                                                break;
-                                        }
-                                        if (line.length() == 0) break;
-                                        r->headers.append(line.data(), line.length());
-                                        r->headers.append("\n");
-                                }
-                                if (status >= 200) break;
+                        HttpResponse *r = new HttpResponse();
+                        r->status = bmds_http_status(h);
+                        r->reason.assign(bmds_http_reason(h), strlen(bmds_http_reason(h)));
+                        r->url.assign(bmds_http_url(h), strlen(bmds_http_url(h)));
+                        const char *name, *value;
+                        for (uint32_t i = 0; bmds_http_header_at(h, i, &name, &value) == 0; ++i)
+                                r->headers.appendf("%s: %s\n", name, value);
+                        Text    content;
+                        char    buf[2048];
+                        int32_t n;
+                        while ((n = bmds_http_read(h, buf, sizeof(buf))) > 0) content.append(buf, size_t(n));
+                        if (n < 0) {
+                                raise("%s", bmds_http_error(h));
+                                bmds_http_close(h);
+                                r->release();
+                                return nullptr;
                         }
-                        // The body: chunked, so long, or to the end.
-                        Text        content;
-                        size_t      length = 0;
-                        const char *te = ok ? findHeader(r->headers, "Transfer-Encoding", length) : nullptr;
-                        const bool  noBody = strcmp(method, "HEAD") == 0 || r->status == 204 || r->status == 304;
-                        if (!ok || noBody) {
-                        } else if (te != nullptr && length >= 7 && strncasecmp(te + length - 7, "chunked", 7) == 0) {
-                                for (;;) {
-                                        line.clear();
-                                        if (!s->readLine(line)) {
-                                                if (s->ended()) raise("%s's answer ended early", u.host);
-                                                ok = false;
-                                                break;
-                                        }
-                                        char               *end = nullptr;
-                                        const unsigned long size = strtoul(line.data(), &end, 16);
-                                        if (end == line.data()) {
-                                                raise("%s sent a bad chunk", u.host);
-                                                ok = false;
-                                                break;
-                                        }
-                                        if (size == 0) { // the trailer, to its empty line
-                                                do line.clear();
-                                                while (s->readLine(line) && line.length() != 0);
-                                                break;
-                                        }
-                                        if (!s->readExactly(content, size)) {
-                                                ok = false;
-                                                break;
-                                        }
-                                        line.clear();
-                                        s->readLine(line);
-                                }
-                        } else if (const char *cl = findHeader(r->headers, "Content-Length", length); cl != nullptr) {
-                                ok = s->readExactly(content, strtoul(cl, nullptr, 10));
-                        } else {
-                                ok = s->readAll(content);
-                        }
-                        s->release();
+                        bmds_http_close(h);
                         const size_t contentLength = content.length();
                         char        *data = content.release();
                         if (data != nullptr) r->body.adopt(data, contentLength);
-                        return ok;
-                }
-
-                // A request, following redirects: the answer, or nullptr with an exception.
-                HttpResponse *request(const char *method, const char *url, const String &body, CScriptArray *headers) {
-                        Url           u;
-                        HttpResponse *r = new HttpResponse();
-                        Text          where;
-                        where.append(url);
-                        const char *m = method;
-                        bool        withBody = true;
-                        for (int hop = 0;; ++hop) {
-                                if (!parseUrl(where.data(), u) ||
-                                    !exchange(m, u, withBody ? body : String(), headers, r)) {
-                                        r->release();
-                                        return nullptr;
-                                }
-                                const int   s = r->status;
-                                size_t      length = 0;
-                                const char *location = findHeader(r->headers, "Location", length);
-                                if ((s != 301 && s != 302 && s != 303 && s != 307 && s != 308) || location == nullptr)
-                                        break;
-                                if (hop == HttpRedirects) {
-                                        raise("Too many redirects from '%s'", url);
-                                        r->release();
-                                        return nullptr;
-                                }
-                                Text       next;
-                                const bool absolute = length > 0 && location[0] == '/';
-                                if (absolute || memchr(location, ':', length) == nullptr) {
-                                        next.appendf("http://%s", u.host);
-                                        if (u.port != 80) next.appendf(":%d", u.port);
-                                }
-                                if (!absolute && memchr(location, ':', length) == nullptr) {
-                                        // Relative to the directory of the path.
-                                        const char *path = u.path.data();
-                                        next.append(path, size_t(strrchr(path, '/') - path) + 1);
-                                }
-                                next.append(location, length);
-                                where.clear();
-                                where.append(next.data(), next.length());
-                                // 303, and 301/302 after a POST as browsers do: a GET without the body.
-                                if (s == 303 || ((s == 301 || s == 302) && strcmp(m, "POST") == 0)) {
-                                        m = "GET";
-                                        withBody = false;
-                                }
-                                r->body = String();
-                        }
-                        r->url.assign(where.data(), where.length());
                         return r;
                 }
 
@@ -904,24 +876,45 @@ namespace angel {
         } // namespace
 
         void registerNetwork(asIScriptEngine *engine) {
+                // A Socket, and a TlsSocket (the same connection, TLS from the start: its reads and
+                // writes are the kernel's plaintext).
                 check(engine->RegisterObjectType("Socket", 0, asOBJ_REF), "Socket");
+                check(engine->RegisterObjectType("TlsSocket", 0, asOBJ_REF), "TlsSocket");
                 behaviour(engine, "Socket", asBEHAVE_FACTORY, "Socket@ f(const string &in host, int port)",
                           socketConnect, "Connects to a port of a host (a name or an address), TCP.");
-                registerEndpoint<Socket>(engine, "Socket");
-                method(engine, "Socket", "string read(int most = 4096)", socketRead,
-                       "What has arrived, up to most bytes (waiting for some); \"\" at the end.");
-                method(engine, "Socket", "string readLine()", socketReadLine, "The next line, without its newline.");
-                method(engine, "Socket", "string readAll()", socketReadAll,
-                       "Everything until the other end closes the connection.");
-                method(engine, "Socket", "bool eof()", socketEof,
-                       "The other end closed the connection and everything was read (waits to know).");
-                method(engine, "Socket", "bool ready(int ms = 0)", socketReady,
-                       "Something can be read now (or the end), waiting up to ms for it; 0 only looks.");
-                method(engine, "Socket", "void write(const ?&in)", socketWrite, "Sends a value, as print() shows it.");
-                method(engine, "Socket", "void writeLine(const ?&in)", socketWriteLine,
-                       "Sends a value, then a newline.");
-                method(engine, "Socket", "string address() const", socketAddress, "The other end's address.");
-                method(engine, "Socket", "int port() const", socketPort, "The other end's port.");
+                behaviour(engine, "TlsSocket", asBEHAVE_FACTORY,
+                          "TlsSocket@ f(const string &in host, int port, bool check = true)", tlsConnect,
+                          "Connects to a port of a host with TLS; its certificate checked for the host's name "
+                          "unless check is false.");
+                static const char *const SocketTypes[] = {"Socket", "TlsSocket"};
+                for (const char *type : SocketTypes) {
+                        registerEndpoint<Socket>(engine, type);
+                        method(engine, type, "string read(int most = 4096)", socketRead,
+                               "What has arrived, up to most bytes (waiting for some); \"\" at the end.");
+                        method(engine, type, "string readLine()", socketReadLine,
+                               "The next line, without its newline.");
+                        method(engine, type, "string readAll()", socketReadAll,
+                               "Everything until the other end closes the connection.");
+                        method(engine, type, "bool eof()", socketEof,
+                               "The other end closed the connection and everything was read (waits to know).");
+                        method(engine, type, "bool ready(int ms = 0)", socketReady,
+                               "Something can be read now (or the end), waiting up to ms for it; 0 only looks.");
+                        method(engine, type, "void write(const ?&in)", socketWrite,
+                               "Sends a value, as print() shows it.");
+                        method(engine, type, "void writeLine(const ?&in)", socketWriteLine,
+                               "Sends a value, then a newline.");
+                        method(engine, type, "string address() const", socketAddress, "The other end's address.");
+                        method(engine, type, "int port() const", socketPort, "The other end's port.");
+                }
+                method(engine, "Socket", "void startTls(const string &in name, bool check = true)", socketStartTls,
+                       "TLS from now on (after a protocol's STARTTLS), the certificate checked for name unless "
+                       "check is false.");
+                method(engine, "TlsSocket", "string subject() const", tlsSubject,
+                       "The server's certificate's subject (\"CN=irc.libera.chat\").");
+                method(engine, "TlsSocket", "string issuer() const", tlsIssuer, "Who issued the server's certificate.");
+                method(engine, "TlsSocket", "string fingerprint() const", tlsFingerprint,
+                       "The server's certificate's SHA-256 (\"SHA256:...\", IRC's CertFP).");
+                method(engine, "TlsSocket", "string cipher() const", tlsCipher, "The cipher suite agreed on.");
 
                 check(engine->RegisterObjectType("ServerSocket", 0, asOBJ_REF), "ServerSocket");
                 behaviour(engine, "ServerSocket", asBEHAVE_FACTORY, "ServerSocket@ f(int port)", serverListen,

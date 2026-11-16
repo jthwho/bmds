@@ -3160,3 +3160,36 @@ As §35b-c designed, with what building it decided:
     (`INSECURE`: only the name), and without (`EKEYREJECTED`, "another name"); github.com, a
     redirect from plain HTTP to it, badssl.com's expired certificate in words. Passed.
   - `pkg update`, `update fetch --check` (a `Range` from 0) and its refusals: as before.
+
+### 35l. As built: step 5, angel's HTTPS and TLS sockets (2026-11-16)
+
+- **`Http` on libbmdshttp:** angel's own HTTP/1.1 client (its URL parser, exchange and redirect
+  loop, about 250 lines) is gone; `Http::get`, `post`, `request` and `HttpResponse` are unchanged
+  in the API lock and in what the corpus prints (`tests/scripts/http.as`), but for the error
+  texts, now the library's (`BASE/loop: more than 5 redirects`, `ftp://...: not an http: or
+  https: URL`). It keeps its `User-Agent: angel`, `Accept-Encoding: identity` and the form type
+  for a body without one. On the host (the corpus, `--api`) the library is built with
+  `BMDS_HTTP_NO_TLS`: `https:` says there are no TLS sockets; its `https://example.com/` case,
+  which would have gone out to the internet, is now the test server's own address.
+- **libbmdshttp grew** what angel's client did that it didn't: `bmds_http_reason()` (the status
+  line's words; `Http::Head::reason` in bmds_core) and, on a redirect that asks again as `GET`,
+  the caller's `Content-Type` lines dropped. Its `Memory` is `sdk/http/memory.cpp`, apart, so the
+  host's angel (and Preso's host builds, which now link `hostmemory.cpp`) keep the host's.
+- **`TlsSocket(host, port, check = true)`** (the same connection as a `Socket`, TLS from the
+  start: every `Socket` method, and `subject()`, `issuer()`, `fingerprint()`, `cipher()`) and
+  **`Socket::startTls(name, check = true)`** (STARTTLS: refused if the server already sent more).
+  19 declarations appended to `tests/scripts/api.lock`. A refusal reads `NAME's certificate was
+  refused: it has expired`.
+- **Cross-signed roots** (`docs/platforms/esp32p4.md` §5): STARTTLS to smtp.gmail.com was
+  refused as untrusted: it sends GTS Root R4 cross-signed by a root IDF's bundle no longer has.
+  `TlsSession`'s verify callback now trusts a certificate that *is* one of the bundle's roots
+  (its subject and public key), whoever signed this copy. `untrusted-root`, `self-signed`,
+  `expired` and `wrong.host` at badssl.com are still refused; `progtest tls` passes.
+- **On the board:** `Http::get("https://github.com/")` (525 KB), a `HEAD` with its reason;
+  `TlsSocket` to irc.libera.chat (its subject, cipher, fingerprint, greeting); STARTTLS to
+  smtp.gmail.com:587 (`220`, then `250` to EHLO over TLS); `TlsSocket` to expired.badssl.com
+  refused in words, and with `check` false open; `fetch.as` (its default now
+  `https://example.com/`) in 844 ms; `progtest http` again (the library's changes): passed.
+- **Size:** angel +11 KB (2,768,204 to 2,779,272 bytes).
+- **Rebuilt when they change:** the ROM's `bmds-dist` build now also depends on `sdk/http/` and
+  the `bmds_core` files libbmdshttp is built from.

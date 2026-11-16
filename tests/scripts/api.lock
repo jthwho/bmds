@@ -4029,3 +4029,22 @@ void SceneText::follow(Updater@)
 void SceneText::unfollow()
 void SceneToggle::follow(Updater@)
 void SceneToggle::unfollow()
+TlsSocket@ TlsSocket(const string&in, int, bool = true)
+bool TlsSocket::eof()
+bool TlsSocket::isOpen() const
+bool TlsSocket::ready(int = 0)
+class TlsSocket
+int TlsSocket::port() const
+string TlsSocket::address() const
+string TlsSocket::cipher() const
+string TlsSocket::fingerprint() const
+string TlsSocket::issuer() const
+string TlsSocket::read(int = 4096)
+string TlsSocket::readAll()
+string TlsSocket::readLine()
+string TlsSocket::subject() const
+void Socket::startTls(const string&in, bool = true)
+void TlsSocket::close()
+void TlsSocket::setTimeout(int)
+void TlsSocket::write(const ?&in)
+void TlsSocket::writeLine(const ?&in)

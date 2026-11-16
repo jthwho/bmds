@@ -100,6 +100,7 @@ namespace Http {
         /** @brief What a response's head said, as far as a fetch cares. */
         struct Head {
                         int      status = 0;
+                        String   reason;               ///< The status line's words ("Not Found").
                         uint64_t length = Unknown;     ///< `Content-Length`.
                         bool     chunked = false;      ///< `Transfer-Encoding: chunked`.
                         String   location;             ///< `Location`.

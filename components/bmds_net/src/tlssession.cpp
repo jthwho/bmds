@@ -33,6 +33,11 @@
 // (esp_crt_bundle.c; not in its header). Ours wraps it to see the server's certificate.
 extern "C" int esp_crt_verify_callback(void *buf, mbedtls_x509_crt *crt, int depth, uint32_t *flags);
 
+// IDF's certificate bundle as built in (esp_crt_bundle.c's format: a u32 offset a root, then each
+// root's subject length and key length, u16, little-endian, and its DER subject and public key).
+extern const uint8_t bundleStart[] asm("_binary_x509_crt_bundle_start");
+extern const uint8_t bundleEnd[] asm("_binary_x509_crt_bundle_end");
+
 extern "C" void *esp_mbedtls_mem_calloc(size_t n, size_t size) {
         if (size != 0 && n > SIZE_MAX / size) return nullptr;
         void *p = bmds::Memory::alloc(bmds::MemSpace::Psram, n * size);
@@ -99,6 +104,36 @@ namespace {
                 return "its certificate was refused";
         }
 
+        uint16_t le16(const uint8_t *p) {
+                return uint16_t(p[0] | (p[1] << 8));
+        }
+
+        // True if @p crt is one of the bundle's roots: the same subject and public key, whoever
+        // signed this copy of it. A server may send a root cross-signed by an older one the
+        // bundle no longer has (smtp.gmail.com: GTS Root R4 by "GlobalSign Root CA"); the
+        // bundle's check looks only at the top certificate's issuer, and refuses it.
+        bool isBundleRoot(const mbedtls_x509_crt *crt) {
+                const size_t size = size_t(bundleEnd - bundleStart);
+                if (size < 4) return false;
+                uint32_t first;
+                std::memcpy(&first, bundleStart, 4);
+                if (first > size) return false;
+                for (uint32_t i = 0; i < first / 4; ++i) {
+                        uint32_t at;
+                        std::memcpy(&at, bundleStart + 4 * i, 4);
+                        if (at + 4 > size) return false;
+                        const uint8_t *entry = bundleStart + at;
+                        const size_t   nameLength = le16(entry);
+                        const size_t   keyLength = le16(entry + 2);
+                        if (at + 4 + nameLength + keyLength > size) return false;
+                        if (nameLength == crt->subject_raw.len && keyLength == crt->pk_raw.len &&
+                            std::memcmp(entry + 4, crt->subject_raw.p, nameLength) == 0 &&
+                            std::memcmp(entry + 4 + nameLength, crt->pk_raw.p, keyLength) == 0)
+                                return true;
+                }
+                return false;
+        }
+
         int64_t unixSeconds(const mbedtls_x509_time &t) {
                 return Calendar::daysFromCivil(t.year, unsigned(t.mon), unsigned(t.day)) * 86400 + t.hour * 3600 +
                        t.min * 60 + t.sec;
@@ -109,6 +144,8 @@ namespace {
         // and a refusal says why), and the server's certificate recorded.
         int verify(void *arg, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
                 (void)esp_crt_verify_callback(nullptr, crt, depth, flags);
+                if ((*flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) != 0 && isBundleRoot(crt))
+                        *flags &= ~uint32_t(MBEDTLS_X509_BADCERT_NOT_TRUSTED | MBEDTLS_X509_BADCERT_BAD_MD);
                 if (depth != 0) return 0;
                 TlsSession::Peer &p = *static_cast<TlsSession::Peer *>(arg);
                 (void)mbedtls_sha256(crt->raw.p, crt->raw.len, p.sha256, 0);

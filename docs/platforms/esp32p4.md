@@ -883,6 +883,15 @@ until silicon v3; then test again.
   `esp_crt_verify_callback()` is extern though not in the header: a callback of one's own calls it
   first (`tlssession.cpp`). Its refusal is a fatal return; ignored, the `NOT_TRUSTED` flag it
   leaves fails the handshake as `MBEDTLS_ERR_X509_CERT_VERIFY_FAILED` with the flags readable.
+- **IDF's bundle refuses a root a server sends cross-signed by an older one** (found
+  2026-11-16, `devplan/network.md` §35l): smtp.gmail.com sends GTS Root R4 signed by "GlobalSign
+  Root CA", which the bundle no longer has, though it has GTS Root R4. The bundle's check looks
+  only at the top certificate's issuer. IDF's `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY`
+  answers it with a CA callback, but then mbedTLS ignores roots given any other way (a program's,
+  `net/tls/ca`), and its made-up candidate leaks its `subject_raw` (`calloc`'d, never freed by
+  `mbedtls_x509_crt_free()`) at each lookup. `tlssession.cpp` instead trusts a certificate whose
+  subject and public key are one of the bundle's roots, read from the bundle's own format
+  (`_binary_x509_crt_bundle_start`; esp_crt_bundle.c's comment gives it).
 - **TLS 1.3 in mbedTLS costs 44.5 KB of flash** (ephemeral key exchange only, no PSK; measured
   2026-11-16, two fresh builds from `sdkconfig.defaults`) and selects
   `MBEDTLS_SSL_KEEP_PEER_CERTIFICATE`: every session keeps the server's chain while it lasts.

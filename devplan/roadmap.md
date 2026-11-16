@@ -543,7 +543,10 @@ Plan: [`input.md`](input.md).
     (§35j): `libtls.a` and `tls.h` (libtls's client API, 6 KB), `tlsclient` in `/rom/bin`, BusyBox's
     `wget https://` on the kernel's TLS (1.37.0-4), `progtest tlslib`. Step 4 done (§35k):
     `libbmdshttp.a` (bmds/httplib.h, 13 KB) on bmds_core's own parser, the redirect and range
-    decisions shared with the kernel's fetcher (`Http::next()`), `progtest http`.
+    decisions shared with the kernel's fetcher (`Http::next()`), `progtest http`. Step 5 done
+    (§35l): angel's `Http` on libbmdshttp (HTTPS; its own client gone), `TlsSocket` and
+    `Socket::startTls()`; roots cross-signed by one the bundle lacks trusted (smtp.gmail.com).
+    Next: the IRC client (step 6, its own design).
   - [ ] HTTP serving for applications (the user, 2026-10-28; to plan): a web server in the
     kernel or the SDK that applications serve their pages and JSON APIs from, behind the system's
     users and passwords; first users the synth module's configuration (`synthmodule.md` §3h).

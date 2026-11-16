@@ -326,7 +326,11 @@ table, so they can't disagree.
   - `Socket(host, port)` connects (TCP); it reads and writes as a `File` does (`read(most)`,
     `readLine`, `readAll`, `eof`, `write` and `writeLine` of any value), and `ready(ms)` says
     whether something can be read, so a loop can do other things meanwhile; `address()` and
-    `port()` are the other end's;
+    `port()` are the other end's; `startTls(name, check = true)` makes it TLS (after a
+    protocol's STARTTLS);
+  - `TlsSocket(host, port, check = true)`: a `Socket` with TLS from the start (the kernel's TLS
+    sockets, network.md §35), its server's certificate checked for the host unless `check` is
+    false; `subject()`, `issuer()`, `fingerprint()` (`SHA256:...`, IRC's CertFP), `cipher()`;
   - `ServerSocket(port)` listens: `accept()`, `ready(ms)`, `port()` (port 0: any free one);
   - `UdpSocket(port)`: `sendTo(host, port, data)` (broadcast allowed), `receive()`, then
     `sender()` and `senderPort()`;
@@ -336,8 +340,8 @@ table, so they can't disagree.
   - `Http::get(url)` and `Http::post(url, body, type)` return the body (an exception for a
     status that isn't 2xx); `Http::request(method, url, body, headers)` returns an
     `HttpResponse` (`status`, `reason`, `body`, `url`, `header(name)`, `headers()`) whatever the
-    status; `Http::encode(text)`. Plain HTTP/1.1 in the runtime, over the same connections;
-    redirects followed. HTTPS waits on a TLS client (§9).
+    status; `Http::encode(text)`. HTTP/1.1 and HTTPS through libbmdshttp (network.md §35d, §35l:
+    the kernel's own parser), redirects followed.
   - Names changed from the plan's (`send`, `receive`, `receiveLine`): a socket reads and writes
     with the names a `File` uses, so what a child learned for files works here.
 - **System:**
@@ -487,8 +491,8 @@ calls). New system calls, if a binding needs one, follow the usual rules.
   the `float` 0.1 widened (0.100000001490116...). One possible fix: the compiler warns when an
   unsuffixed literal meets a `double` and loses digits ("write 0.1d"), which would need the
   literal's text kept until it is converted. Decide with the patch, in step 2.
-- **HTTPS.** It needs a TLS client usable from programs (`bmds_crypto` has the primitives). It
-  can be added later without changing `Http`'s API.
+- **HTTPS.** Done (2026-11-16, network.md §35l): `Http` on libbmdshttp, `TlsSocket`, and
+  `Socket::startTls()`, `Http`'s API unchanged.
 - **The native RV32 calling convention** (`as_callfunc_riscv32`, a small piece of assembly).
   Worth it only if measurements show the generic wrappers matter. The API's bulk calls should
   make that unlikely.
@@ -612,8 +616,9 @@ calls). New system calls, if a binding needs one, follow the usual rules.
   exception, not SIGPIPE.
 - **HTTP/1.1** with `Connection: close`: one connection a request, the body by
   `Content-Length`, chunks, or to the end; 1xx answers skipped; up to 5 redirects (303, and
-  301/302 after a POST, become a GET without the body, as browsers do); an `https://` address is
-  an exception saying HTTPS isn't supported yet.
+  301/302 after a POST, become a GET without the body, as browsers do). Since network.md §35l
+  libbmdshttp's: `https://` works, and its failures read as the library says them
+  (`URL: more than 5 redirects`).
 - **On the board** (`fetch.as` and httpbin.org): example.com in 60 ms; redirects, a chunked
   answer, a form posted, 100 KB fetched, a 404 as an exception, a bad host ("Name does not
   resolve") and a dead address (timed out in 10 s). `chat.as` between the board (waiting) and

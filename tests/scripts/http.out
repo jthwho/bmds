@@ -13,8 +13,8 @@ PUT /echo/put text/plain [angel] data
 404 GET /missing None [None] 
 true
 HTTP 404 Not Found: BASE/missing
-Too many redirects from 'BASE/loop'
-HTTPS isn't supported yet: 'https://example.com/' (only http:// addresses)
-'ftp://example.com/' isn't an http:// address
-'http:///path' has no host name
-'http://host:99999/' has a bad port
+BASE/loop: more than 5 redirects
+HTTPS-BASE/hello: TLS isn't available on this system
+ftp://example.com/: not an http: or https: URL
+http:///path: not an http: or https: URL
+http://host:99999/: not an http: or https: URL
