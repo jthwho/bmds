@@ -2,6 +2,8 @@
 # pixels in this repository (tools/render-icons), installed as the flat-color theme.
 name = "icons"
 version = "1.0.2"
+# 2: system-software-install (Settings' Software page; 2026-11-15).
+revision = 2
 description = "Flat Color Icons (icons8) at 16x16 and 32x32: the desktop's icon theme"
 title = "Flat Color Icons"
 category = "Settings"

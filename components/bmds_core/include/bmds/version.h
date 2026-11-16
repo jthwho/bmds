@@ -13,7 +13,7 @@
 /** @brief BMDS major version. */
 #define BMDS_VERSION_MAJOR 0
 /** @brief BMDS minor version. */
-#define BMDS_VERSION_MINOR 2
+#define BMDS_VERSION_MINOR 3
 /** @brief BMDS patch version. */
 #define BMDS_VERSION_PATCH 0
 

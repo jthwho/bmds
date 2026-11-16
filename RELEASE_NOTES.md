@@ -5,6 +5,52 @@ Each release has a section headed `## X.Y.Z` (the version in
 the update package, where the Updater shows it, and on the GitHub release; it refuses to make a
 release without one.
 
+## 0.3.0
+
+**This release brings a new bootloader**, which memory protection needs. Updating takes two steps
+from 0.2.0, because 0.2.0's Updater doesn't know about bootloaders:
+1. Update with the Updater (or `update fetch`, then `update apply`) as usual. Everything but the
+   bootloader is installed, and 0.3.0 starts on the old bootloader, with programs still
+   unprotected.
+2. Open the Updater again. It offers the same package "with a new bootloader": Install, then
+   **Install with It**. Recovery writes the bootloader last, in well under a second. **Keep the
+   power on until the desktop is back.** A power cut during that moment leaves a board that only USB
+   flashing starts again (the web installer's Reinstall keeps your settings). From a shell:
+   `update apply --bootloader FILE`.
+
+Installing Without it is safe: 0.3.0 works on either bootloader, but runs programs unprotected
+until the new one is in. Boards flashed from the web installer get it with everything else. Then
+`pkg update` and `pkg upgrade` bring the new packages.
+
+- **Memory protection.** Programs now run in the CPU's user mode, each reaching only its own
+  memory. A program that crashes (a bad pointer, an illegal instruction, its stack overrun) ends
+  with SIGSEGV, SIGILL or SIGTRAP and one line in the log, and the system carries on; before, it
+  restarted the board. A bad pointer handed to the system is refused (EFAULT) rather than written
+  through. Every existing program tested runs unchanged; one that touches the hardware itself can
+  run as before with `sysconf set programs/protect false`. Thanks to Nik on Hackaday for the idea.
+- **Other people's packages.** `pkg source add URL` adds someone's repository: it shows the key
+  that signed it and asks before trusting it. Settings has a new **Software** page for sources and
+  keys. The bmds-apps repository (https://github.com/jthwho/bmds-apps) is now a default source,
+  with Minesweeper the first program in it.
+- **`pkg` shows what it's doing** on a terminal: reading, downloading with a percentage,
+  installing. A package folder on the card is indexed once, not on every update (17 s to 2 s for
+  the card's packages).
+- **For programs (the SDK):** the SDK is now a download on each release (`bmds-sdk-0.3.0.tar.gz`),
+  with `bmds_add_package()` and `bmds_add_repository()` in CMake to build signed packages and a
+  repository of your own. Programs carry a build-id; a crash's report gives a stack trace, which
+  `bmds-fault` names from the program's ELF. Programs are built with `-g`.
+- **What protection costs:** a system call takes about a microsecond more and a program starts
+  about a millisecond slower; programs' own code runs as fast as before (CoreMark is unchanged).
+- **Fixed:**
+  - `pkg update` from an SSH session hung at full CPU, and new SSH logins hung behind it.
+  - Listing a directory served by a program (sshfs, netfs) waited 30 s each time.
+  - Rare silent watchdog resets, which were a crash inside the crash handler, now report
+    properly.
+  - A program whose second thread crashed could hang instead of ending.
+  - A non-blocking TCP send under memory pressure failed with ENOMEM; it now gives EAGAIN.
+  - Setting a shown window's width or height didn't resize it.
+  - A message box could draw its last line under its buttons.
+
 ## 0.2.0
 
 Update from 0.1.x with the Updater (or `update fetch`), or flash it from the web installer at
