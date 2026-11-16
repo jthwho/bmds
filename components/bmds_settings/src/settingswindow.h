@@ -104,6 +104,15 @@ class SettingsWindow final : public GuiWindow {
                 void chooseColorFor(uint32_t rgb, StringView label, ColorTaken fn, void *arg);
 
                 /** @brief Told of a name typed (at OK). */
+                /** @brief The program Settings runs as (its launcher: what `pkg` is started with). */
+                const BuiltinProgram::Context &program() const { return _program; }
+
+                /** @brief A file chosen: its path. */
+                using FileTaken = void (*)(void *arg, StringView path);
+
+                /** @brief Opens the file dialog; @p fn hears the file chosen (not if cancelled). */
+                void chooseFileFor(FileTaken fn, void *arg);
+
                 using NameTaken = void (*)(void *arg, StringView name);
 
                 /** @brief Asks for a name in a dialog titled @p title, @p prompt before the field. */
@@ -191,6 +200,8 @@ class SettingsWindow final : public GuiWindow {
                 char                           _colorLabel[64] = {};
                 ColorTaken                     _colorFn = nullptr; // chooseColorFor()'s
                 void                          *_colorArg = nullptr;
+                FileTaken                      _fileFn = nullptr; // chooseFileFor()'s
+                void                          *_fileArg = nullptr;
                 NameTaken                      _nameFn = nullptr;
                 void                          *_nameArg = nullptr;
 };

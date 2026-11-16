@@ -48,3 +48,4 @@ preferences-system-time          clock
 preferences-system-network       share
 preferences-other                list
 preferences-desktop-panel        template
+system-software-install          package

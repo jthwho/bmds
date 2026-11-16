@@ -1,0 +1,3 @@
+# Keys BMDS trusts for packages and package indexes only, never for firmware updates (keys/README.md).
+# bmds-apps: https://github.com/jthwho/bmds-apps (its packages, a default source: devplan/thirdparty.md).
+ed25519 1ca1f8bbb9d5130890d49226b003e6f93c2a4d94362159970993da9f295fb151 bmds-apps

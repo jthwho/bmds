@@ -36,6 +36,7 @@ class ListEditor;
 class NumberField;
 class Slider;
 class SettingsWindow;
+class SoftwarePanel;
 class TextBlock;
 
 /**
@@ -194,6 +195,7 @@ class SettingsPage final : public BoxLayout {
                 TextBlock         *_status = nullptr;
                 Button            *_renew = nullptr;    // Network's Renew Lease
                 Button            *_bindings = nullptr; // Keyboard & Gamepads' Edit Bindings...
+                SoftwarePanel     *_software = nullptr; // Software's sources and keys
                 Label             *_litLabel = nullptr; // what a search lit
                 CheckBox          *_litBox = nullptr;
                 FormLayout        *_form = nullptr;

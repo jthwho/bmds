@@ -133,6 +133,7 @@ declaration unless the page gives better.
 | Terminal | `utilities-terminal` | Colours: `terminal/colors/*` as swatches with a sample of text; Clipboard: `terminal/clipboard/*`; Shell: `shell/path` |
 | Files | `folder` | `files/default-view`, `files/show-hidden`; Applications: `apps/path` |
 | System | `applications-system` | Logging: `log/*`; Memory: `tmp/size`, `clipboard/limit`, `image/decode-max`; Monitoring: `sysmon/*`; Updates: `update/dir` |
+| Software | `system-software-install` | Sources and Keys: lists over `pkg --json`, with Add Source... (the key shown, then trusted), Remove, Update Lists, Add Key from File..., Remove Key (`thirdparty.md` §5); Options: `pkg/dev`, `pkg/welcome`; Advanced: `pkg/sources` as text, `pkg/root`, `pkg/db`, `pkg/cache`, `pkg/keys` |
 | All Settings | `preferences-other` | Every key (§6.5) |
 
 - **Every built-in key has a place:** a test (host) lists the registry's keys and fails for one

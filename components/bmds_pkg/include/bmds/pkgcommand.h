@@ -33,12 +33,17 @@ namespace PkgCommand {
                 "NAME|FILE "
                 "[--files] | install [-y] [--dry-run] [--overwrite] NAME|FILE... | upgrade [-y] [--dry-run] | "
                 "remove [-y] [--dry-run] NAME... | autoremove [-y] [--dry-run] | mark auto|manual NAME... | "
-                "verify [NAME...] | icon NAME [--size N] -o FILE | index DIR | clean | key list|add FILE|remove ID";
+                "verify [NAME...] | icon NAME [--size N] -o FILE | index DIR | clean | key list|add FILE|remove ID | "
+                "source list | source add [-y] [--dry-run] [--key FILE|URL] [--trust ID] URL | source remove [-y] "
+                "[--keep-key] "
+                "URL|N | source show URL|N";
         inline constexpr const char *Help =
                 "Install packages (.bmpk) by name from the sources (pkg/sources; update reads their lists) or from "
                 "files, with what they need; upgrade them; remove them, and dependencies nothing needs any more; "
                 "list and search what is installed and available; show a package; check installed files against "
-                "their hashes; index a folder of packages; manage the keys packages may be signed with; --json: one "
+                "their hashes; index a folder of packages; manage the keys packages may be signed with; add, remove "
+                "and list sources (add fetches the key beside a source's index and asks before trusting it, then "
+                "pins the source to it and saves pkg/sources); --json: one "
                 "JSON object a line, for programs; --source: one source more than pkg/sources, for this command";
 
         /** @brief Runs `pkg` with @p ctx's arguments. @return The exit status. */

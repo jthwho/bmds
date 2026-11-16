@@ -24,8 +24,9 @@ if(COMMAND idf_component_register)
                                     src/previews.cpp
                                     src/settingspage.cpp
                                     src/settingswindow.cpp
+                                    src/softwarepanel.cpp
                                PRIV_REQUIRES bmds_audio bmds_core bmds_fs bmds_gui bmds_input bmds_kernel bmds_loader bmds_net bmds_sysconf
-                                             bmds_ui
+                                             bmds_pkg bmds_software bmds_ui
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 

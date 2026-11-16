@@ -89,6 +89,34 @@ TEST_CASE("PkgRecord: the records pkg --json writes") {
         CHECK(r.type == PkgRecord::Type::Note);
 }
 
+TEST_CASE("PkgRecord: pkg source's and pkg key's records") {
+        PkgRecord r;
+        REQUIRE(r.parse(R"({"type":"source","number":2,"source":"http://web/repo signed-by=37ddce8c8eb0890a",)"
+                        R"("location":"http://web/repo","signedBy":["37ddce8c8eb0890a"],)"
+                        R"x("keyName":"bmds-apps (37ddce8c8eb0890a, a built-in package key)","listed":true,)x"
+                        R"("packages":12,"made":1763251200})")
+                        .isOk());
+        CHECK(r.type == PkgRecord::Type::Source);
+        CHECK(r.number == 2);
+        CHECK(str(r.location) == "http://web/repo");
+        CHECK(str(r.keyName) == "bmds-apps (37ddce8c8eb0890a, a built-in package key)");
+        CHECK(r.listed);
+        CHECK(r.packages == 12);
+
+        REQUIRE(r.parse(R"({"type":"source","location":"http://web/repo","packages":1,"signed":true})").isOk());
+        CHECK(r.isSigned);
+        REQUIRE(r.parse(R"({"type":"key","id":"143a3d4ba5f172d9","kind":"new","comment":"Their apps",)"
+                        R"("key":"c9c1c8d35b87a0530255092288ba5f3d61ba9994737939be12a7fc157a53aa59",)"
+                        R"("from":"http://web/repo/key.pub"})")
+                        .isOk());
+        CHECK(r.type == PkgRecord::Type::Key);
+        CHECK(str(r.id) == "143a3d4ba5f172d9");
+        CHECK(str(r.kind) == "new");
+        CHECK(str(r.comment) == "Their apps");
+        CHECK(str(r.key) == "c9c1c8d35b87a0530255092288ba5f3d61ba9994737939be12a7fc157a53aa59");
+        CHECK(str(r.from) == "http://web/repo/key.pub");
+}
+
 TEST_CASE("PkgRecord: what it doesn't know is passed over, what isn't a record refused") {
         PkgRecord r;
         // A type and fields from a later pkg, nested values included.

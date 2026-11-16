@@ -63,6 +63,9 @@ namespace Packages {
                         const char *(*keyComment)(size_t index) = nullptr;  ///< `keys[index]`'s comment, or null.
                         const SignedContainer::Key *devKey = nullptr;       ///< The dev key, accepted or not.
                         StringView                  keysDir;                ///< Added keys (`pkg/keys`).
+                        /// Built-in keys for packages only (`keys/packages.pub`, devplan/thirdparty.md §3.2).
+                        Span<const SignedContainer::Key> packageKeys;
+                        const char *(*packageKeyComment)(size_t index) = nullptr; ///< `packageKeys[index]`'s comment.
                         DevPolicy                   dev = DevPolicy::Allow; ///< `pkg/dev`.
                         StringView                  arch;                   ///< This system's (`esp32p4`).
                         uint32_t                    abi = 0;                ///< `BMDS_ABI_VERSION`.
@@ -70,6 +73,8 @@ namespace Packages {
                         StringView                  sources;                ///< `;`-separated (`pkg/sources`).
                         int64_t (*now)() = nullptr;    ///< Seconds since 1970 (indexes' dates), or null.
                         FetchFunction fetch = nullptr; ///< Fetches a URL (network sources); null: none.
+                        /// Sets and keeps `pkg/sources` (`addSource()`, `removeSource()`); null: they can't.
+                        Error (*saveSources)(StringView sources, String &why) = nullptr;
         };
 
         /** @brief What signed a package. */
@@ -77,6 +82,7 @@ namespace Packages {
                 Trusted, ///< A trusted key built in (`keys/trusted.pub`).
                 Dev,     ///< The dev key: anyone could have.
                 Added,   ///< A key added on this board (`pkg key add`).
+                Package, ///< A key built in for packages only (`keys/packages.pub`).
         };
 
         /** @brief What a package is: from its file, or from the database. Views into `text`. */
@@ -313,7 +319,8 @@ namespace Packages {
         };
 
         /**
-         * @brief The keyring into @p out: the built-in keys, then those added (`keysDir`); an
+         * @brief The keyring into @p out: the built-in keys (the update keys, then the package keys),
+         *        then those added (`keysDir`); an
          *        added file that isn't a key, the dev key, or a key already listed is skipped.
          * @return `Ok`, or `NoMem`.
          */
@@ -341,6 +348,65 @@ namespace Packages {
          *        "an added key", "anyone could have", "no longer in the keyring").
          */
         void describeSigner(const Config &config, const Info &info, String &name, String &what);
+
+        /** @brief A configured source, as `pkg source list` shows it (devplan/thirdparty.md §4). */
+        struct SourceState {
+                        String   source;         ///< Its whole text, as in `pkg/sources`.
+                        String   location;       ///< Its URL or `file:/FOLDER`, without `signed-by`.
+                        String   signedBy;       ///< The ids it names, `,`-separated; empty: none.
+                        bool     listed = false; ///< `update()` has read it into the cache.
+                        uint32_t packages = 0;   ///< In its list.
+                        int64_t  madeAt = 0;     ///< When its list's index was made (seconds since 1970).
+        };
+
+        /**
+         * @brief Every configured source, in order, into @p out, with what its cached list says.
+         * @return `Ok`, `NoMem`, or `Invalid` (the setting doesn't read: @p why says why).
+         */
+        Error sources(const Config &config, List<SourceState> &out, String &why);
+
+        /** @brief What `lookSource()` found: a source not yet added, and the key its index is signed by. */
+        struct SourceLook {
+                        String   location;           ///< Normalized: a URL or `file:/FOLDER`.
+                        uint32_t packages = 0;       ///< Its index lists (or its folder holds).
+                        bool     isUnsigned = false; ///< A `file:` folder without a signed index that suits it.
+                        bool     known = false;      ///< Signed by a key in the keyring.
+                        KeyEntry key;                ///< The signer: from the keyring, or the key fetched (`Added`).
+                        String   keyFrom;            ///< Where an unknown key came from.
+                        String   list;               ///< The index read, kept in the cache for `addSource()`.
+        };
+
+        /**
+         * @brief Reads source @p location's index (a URL's `index.bmpi`, fetched; or a `file:`
+         *        folder's) and who signed it, so the user can be asked before it is added. A key
+         *        not in the keyring is read from @p keyFrom (a URL or a file; empty: `key.pub` beside
+         *        the index) and must be the one that signed the index. Nothing is added.
+         * @return `Ok`; `Invalid` (not a source: a URL or `file:/FOLDER`, alone); `Exists` (configured
+         *         already); `PermissionDenied` (a network index unsigned; a key that didn't sign it;
+         *         the dev key where it is refused); `CorruptData` (not an index, no key in the key
+         *         file); the fetch's or the filesystem's error; `Busy`. @p why says which.
+         */
+        Error lookSource(StringView location, StringView keyFrom, const Config &config, SourceLook &out, String &why);
+
+        /**
+         * @brief Adds what `lookSource()` found: its key to the keyring if it is new, the source to
+         *        `pkg/sources` (pinned with `signed-by` to its key unless unsigned) through
+         *        `Config::saveSources`, and its list to the cache, so no `update()` is needed.
+         * @return `Ok` with the source's text in @p added; `NotSupported` (no `saveSources`); the
+         *         setting's, the filesystem's error; `Busy`.
+         */
+        Error addSource(SourceLook &look, const Config &config, String &added, String &why);
+
+        /**
+         * @brief Removes source @p which (its URL or `file:/FOLDER`, or its number in `sources()`,
+         *        from 1) from `pkg/sources` and its list from the cache. Installed packages stay.
+         *        @p orphans gets the added keys it named that no other source names, for the caller
+         *        to offer to remove (`removeKey()`); built-in keys never.
+         * @return `Ok` with the source's text in @p removed; `NotFound`; `NotSupported`; the
+         *         setting's error; `Busy`.
+         */
+        Error removeSource(StringView which, const Config &config, String &removed, List<KeyEntry> &orphans,
+                           String &why);
 
         /** @brief The installed packages' names, sorted. */
         Result<List<String>> installed(const Config &config);

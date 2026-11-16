@@ -16,9 +16,14 @@
 #       signed with KEY (default keys/dev.key), to OUT (default NAME_VERSION.bmpk). With no
 #       files, a meta package: --depends alone. --icon: square PNGs, 16 and 32 pixels as the
 #       theme's (at most 64, 16 KB each).
+#   mkpkg keygen KEY [--pub PUB] --comment TEXT
+#       A new signing key: the private half to KEY (never overwritten; keep it out of any
+#       repository), the public half to PUB (default KEY with .pub for its extension), a line
+#       `ed25519 HEX COMMENT` as pkg key add and keys/packages.pub take. Prints the key's id, what
+#       a source's signed-by=ID names (keys/README.md).
 #   mkpkg info FILE [--pub PUB]... [--files]
 #       Shows a package or an index and checks everything: the hashes, the signature (against
-#       PUB, or keys/dev.pub and keys/trusted.pub), and a package's every file decoded against
+#       PUB, or keys/dev.pub, keys/trusted.pub and keys/packages.pub), and a package's every file decoded against
 #       its size and hash. Exits 1 if anything doesn't check.
 #   mkpkg index DIR [--key KEY] [--base-url URL] [--label TEXT] [-o OUT]
 #       An index of every package in DIR, each checked first, to OUT (default DIR/index.bmpi).
@@ -197,6 +202,28 @@ def decode_blocks(data, at, size):
     return bytes(out), at
 
 
+def signing_key(path):
+    """The private key at path, or keys/dev.key (said, so nobody publishes with it unawares)."""
+    if path is None:
+        print('signing with the dev key: fine for trying, not for publishing (--key; keys/README.md)')
+        path = os.path.join(bc.KEYS, 'dev.key')
+    return bc.load_key(path)
+
+
+def cmd_keygen(args):
+    pub = args.pub or os.path.splitext(args.key)[0] + '.pub'
+    if os.path.exists(pub):
+        fail('%s exists: not overwriting a key' % pub)
+    if not args.comment.strip() or '\n' in args.comment:
+        fail('the comment is a line naming the key (pkg shows it: "signed by COMMENT")')
+    bc.keygen(args.key, pub, args.comment.strip())
+    with open(pub) as f:
+        public = bytes.fromhex(f.read().split()[1])
+    print('private key: %s (keep it safe and backed up, out of every repository)' % args.key)
+    print('public key:  %s (publish it beside your index as key.pub)' % pub)
+    print('key id:      %s (a source names it: signed-by=%s)' % (bc.key_id(public).hex(), bc.key_id(public).hex()))
+
+
 def cmd_make(args):
     if not NAME.match(args.name):
         fail('name "%s": lowercase letters, digits and + - ., starting with a letter or digit' % args.name)
@@ -204,7 +231,7 @@ def cmd_make(args):
     if not ARCH.match(args.arch):
         fail('architecture "%s": lowercase letters and digits' % args.arch)
     check_depends(args.depends or '')
-    key = bc.load_key(args.key or os.path.join(bc.KEYS, 'dev.key'))
+    key = signing_key(args.key)
     abi = abi_version() if args.abi is None else args.abi
 
     fields = []
@@ -309,7 +336,7 @@ def walk_data(c):
 def cmd_info(args):
     with open(args.file, 'rb') as f:
         data = f.read()
-    pubs = bc.load_pubs(args.pub or bc.default_pubs())
+    pubs = bc.load_pubs(args.pub or bc.default_pubs(packages=True))
     good = True
     try:
         if data[:4] == INDEX_MAGIC:
@@ -368,8 +395,8 @@ def cmd_info(args):
 
 
 def cmd_index(args):
-    key = bc.load_key(args.key or os.path.join(bc.KEYS, 'dev.key'))
-    pubs = bc.load_pubs(bc.default_pubs()) + [(bc.public_bytes(key), 'the index\'s key')]
+    key = signing_key(args.key)
+    pubs = bc.load_pubs(bc.default_pubs(packages=True)) + [(bc.public_bytes(key), 'the index\'s key')]
     stanzas = []
     icons = b''
     for name in sorted(os.listdir(args.dir)):
@@ -438,6 +465,10 @@ def cmd_extract(args):
 def main():
     p = argparse.ArgumentParser(description='Makes and reads BMDS packages (.bmpk) and indexes (.bmpi).')
     sub = p.add_subparsers(dest='cmd', required=True)
+    k = sub.add_parser('keygen')
+    k.add_argument('key', help='where the private half goes (outside any repository)')
+    k.add_argument('--pub', help='where the public half goes (default: KEY with .pub)')
+    k.add_argument('--comment', required=True, help='what pkg calls the key ("signed by COMMENT")')
     m = sub.add_parser('make')
     m.add_argument('root', nargs='?', help='the files to package (none: a meta package)')
     m.add_argument('--name', required=True)
@@ -471,7 +502,7 @@ def main():
     e.add_argument('dir')
     args = p.parse_args()
     try:
-        {'make': cmd_make, 'info': cmd_info, 'index': cmd_index, 'extract': cmd_extract}[args.cmd](args)
+        {'keygen': cmd_keygen, 'make': cmd_make, 'info': cmd_info, 'index': cmd_index, 'extract': cmd_extract}[args.cmd](args)
     except bc.ContainerError as e:
         fail(str(e))
 

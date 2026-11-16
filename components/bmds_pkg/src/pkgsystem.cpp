@@ -53,6 +53,14 @@ namespace {
                      "Packages signed by the dev key (anyone could have): allow, ask before installing, or refuse", 0,
                      0, "allow|ask|refuse", nullptr)
 
+        // pkg source add and remove: the setting set and saved, as pkg key add writes /cfg.
+        Error saveSources(StringView sources, String &why) {
+                Error err = SysConf::set(StringView("pkg/sources"), sources);
+                if (err.isOk()) err = SysConf::save(StringView("pkg/sources"));
+                if (err.isError()) (void)why.appendf("pkg/sources: %s", err.desc());
+                return err;
+        }
+
         // Seconds since 1970 for an index's date; 0 while the clock isn't set (it reads 1955 then).
         int64_t now() {
                 const int64_t t = int64_t(std::time(nullptr));
@@ -78,6 +86,8 @@ namespace {
                 config.keyComment = UpdateKeys::comment;
                 config.devKey = &UpdateKeys::devKey();
                 config.keysDir = keys.view();
+                config.packageKeys = UpdateKeys::packageKeys();
+                config.packageKeyComment = UpdateKeys::packageComment;
                 config.dev = dev.view() == StringView("refuse") ? Packages::DevPolicy::Refuse
                              : dev.view() == StringView("ask")  ? Packages::DevPolicy::Ask
                                                                 : Packages::DevPolicy::Allow;
@@ -87,6 +97,7 @@ namespace {
                 config.sources = sources.view();
                 config.now = now;
                 config.fetch = &systemFetch != nullptr ? systemFetch : nullptr;
+                config.saveSources = saveSources;
                 return PkgCommand::run(ctx, config);
         }
 

@@ -23,6 +23,13 @@ namespace {
 
         constexpr UpdatePackage::Key DevKey = BMDS_UPDATE_DEV_KEY;
 
+#if BMDS_PACKAGE_KEY_COUNT > 0
+        constexpr UpdatePackage::Key PackageKeys[] = {BMDS_PACKAGE_KEYS};
+        constexpr const char        *PackageComments[] = {BMDS_PACKAGE_KEY_COMMENTS};
+        static_assert(sizeof(PackageKeys) / sizeof(PackageKeys[0]) == BMDS_PACKAGE_KEY_COUNT);
+        static_assert(sizeof(PackageComments) / sizeof(PackageComments[0]) == BMDS_PACKAGE_KEY_COUNT);
+#endif
+
 } // namespace
 
 Span<const UpdatePackage::Key> UpdateKeys::accepted() {
@@ -39,6 +46,23 @@ const char *UpdateKeys::comment(size_t index) {
 
 const UpdatePackage::Key &UpdateKeys::devKey() {
         return DevKey;
+}
+
+Span<const UpdatePackage::Key> UpdateKeys::packageKeys() {
+#if BMDS_PACKAGE_KEY_COUNT > 0
+        return PackageKeys;
+#else
+        return {};
+#endif
+}
+
+const char *UpdateKeys::packageComment(size_t index) {
+#if BMDS_PACKAGE_KEY_COUNT > 0
+        return index < BMDS_PACKAGE_KEY_COUNT ? PackageComments[index] : "";
+#else
+        (void)index;
+        return "";
+#endif
 }
 
 bool UpdateKeys::isDevMode() {

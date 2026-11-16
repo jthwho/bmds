@@ -384,6 +384,25 @@ namespace SettingsTable {
                         {.key = "update/dir", .label = "Packages in", .editor = E::Folder},
                 };
 
+                // Software (devplan/thirdparty.md §5): the sources and keys are the page's own
+                // lists, over pkg; these are the settings beside them.
+                constexpr Row SoftwareRows[] = {
+                        section("Options"),
+                        {.key = "pkg/dev",
+                         .label = "Dev-signed packages",
+                         .choices = "allow=Install them|ask=Ask first|refuse=Refuse them"},
+                        {.key = "pkg/welcome", .label = "Welcome window at startup"},
+                        section("Advanced"),
+                        {.key = "pkg/sources",
+                         .label = "Sources, as text",
+                         .help = "The sources above, one an item (Add Source... checks a source's key first)",
+                         .editor = E::List},
+                        {.key = "pkg/root", .label = "Packages install to", .editor = E::Folder},
+                        {.key = "pkg/db", .label = "Database in", .editor = E::Folder},
+                        {.key = "pkg/cache", .label = "Downloads kept in", .editor = E::Folder},
+                        {.key = "pkg/keys", .label = "Added keys in", .editor = E::Folder},
+                };
+
                 constexpr Page Pages[] = {
                         {"general", "General", "preferences-system", Span<const Row>(GeneralRows)},
                         {"appearance", "Appearance", "preferences-desktop-theme", Span<const Row>(AppearanceRows)},
@@ -399,6 +418,7 @@ namespace SettingsTable {
                         {"terminal", "Terminal", "utilities-terminal", Span<const Row>(TerminalRows)},
                         {"files", "Files", "folder", Span<const Row>(FilesRows)},
                         {"system", "System", "applications-system", Span<const Row>(SystemRows)},
+                        {"software", "Software", "system-software-install", Span<const Row>(SoftwareRows)},
                         {"all", "All Settings", "preferences-other", Span<const Row>()},
                 };
 

@@ -133,8 +133,10 @@ Result<MessageBox *> MessageBox::open(GuiApplication &app, Kind kind, StringView
         if (mem == nullptr) return makeError<MessageBox *>(Error::NoMem);
         auto *box = ::new (mem) MessageBox(app, config);
         std::memcpy(box->_text, kept, n + 1);
-        box->_lineCount =
-                TextWrap::wrap(StringView(box->_text, n), MaxColumns, Span<StringView>(box->_lines, MaxLines));
+        // Wrapped as it was measured (by pixels): a wrap by characters made more lines than the
+        // window had room for with a proportional font, the last under the buttons.
+        box->_lineCount = GuiStyle::wrap(StringView(box->_text, n), font, MaxColumns * 8u,
+                                         Span<StringView>(box->_lines, MaxLines));
         box->_kind = kind;
         box->_buttons = buttons;
         box->_done = fn;

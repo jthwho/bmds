@@ -25,7 +25,7 @@ namespace {
                 {"file", PkgRecord::Type::File},         {"plan", PkgRecord::Type::Plan},
                 {"progress", PkgRecord::Type::Progress}, {"done", PkgRecord::Type::Done},
                 {"note", PkgRecord::Type::Note},         {"source", PkgRecord::Type::Source},
-                {"error", PkgRecord::Type::Error},
+                {"error", PkgRecord::Type::Error},       {"key", PkgRecord::Type::Key},
         };
 
         PkgRecord::Type typeOf(StringView name) {
@@ -48,7 +48,7 @@ Error PkgRecord::parse(StringView line) {
         if (scratch == nullptr) return Error::NoMem;
         JsonReader json(line, scratch, MaxString + 1);
         Error      err = json.next() == JsonReader::Token::BeginObject ? Error() : Error(Error::CorruptData);
-        String     key;
+        String     member;
         while (err.isOk()) {
                 const JsonReader::Token t = json.next();
                 if (t == JsonReader::Token::EndObject) break;
@@ -56,9 +56,9 @@ Error PkgRecord::parse(StringView line) {
                         err = t == JsonReader::Token::Error ? json.error() : Error(Error::CorruptData);
                         break;
                 }
-                err = key.assign(json.text());
+                err = member.assign(json.text());
                 if (err.isError()) break;
-                const StringView        k = key.view();
+                const StringView        k = member.view();
                 const JsonReader::Token v = json.next();
                 if (v == JsonReader::Token::Error) {
                         err = json.error();
@@ -84,6 +84,12 @@ Error PkgRecord::parse(StringView line) {
                                         : k == StringView("source")                             ? &source
                                         : k == StringView("error")                              ? &error
                                         : k == StringView("text")                               ? &text
+                                        : k == StringView("id")                                 ? &id
+                                        : k == StringView("kind")                               ? &kind
+                                        : k == StringView("comment")                            ? &comment
+                                        : k == StringView("key")                                ? &key
+                                        : k == StringView("location")                           ? &location
+                                        : k == StringView("keyName")                            ? &keyName
                                                                                                 : nullptr;
                         if (k == StringView("type")) type = typeOf(json.text());
                         if (field != nullptr) err = field->assign(json.text());
@@ -94,12 +100,15 @@ Error PkgRecord::parse(StringView line) {
                                           : k == StringView("done")          ? &done
                                           : k == StringView("total")         ? &total
                                           : k == StringView("packages")      ? &packages
+                                          : k == StringView("number")        ? &number
                                                                              : nullptr;
                         if (field != nullptr && json.toUint64(*field).isError()) *field = 0;
                 } else if (v == JsonReader::Token::True || v == JsonReader::Token::False) {
                         bool *field = k == StringView("installed")    ? &installed
                                       : k == StringView("automatic")  ? &automatic
                                       : k == StringView("upgradable") ? &upgradable
+                                      : k == StringView("listed")     ? &listed
+                                      : k == StringView("signed")     ? &isSigned
                                                                       : nullptr;
                         if (field != nullptr) *field = v == JsonReader::Token::True;
                 } else if (v != JsonReader::Token::Null) {

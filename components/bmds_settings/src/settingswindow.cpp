@@ -317,6 +317,7 @@ void SettingsWindow::confirmDone(void *arg, Dialog &, int result) {
 // ---- The dialogs
 
 void SettingsWindow::choosePath(SysConf::Id id, bool folder, StringView label) {
+        _fileFn = nullptr;
         _pathId = id;
         _pathAdds = false;
         std::snprintf(_pathLabel, sizeof(_pathLabel), "%.*s", int(label.size()), label.data());
@@ -333,6 +334,7 @@ void SettingsWindow::choosePath(SysConf::Id id, bool folder, StringView label) {
 }
 
 void SettingsWindow::addFolder(SysConf::Id id, StringView label) {
+        _fileFn = nullptr;
         _pathId = id;
         _pathAdds = true;
         std::snprintf(_pathLabel, sizeof(_pathLabel), "%.*s", int(label.size()), label.data());
@@ -340,8 +342,24 @@ void SettingsWindow::addFolder(SysConf::Id id, StringView label) {
         return;
 }
 
+void SettingsWindow::chooseFileFor(FileTaken fn, void *arg) {
+        _pathId = SysConf::NoId;
+        _fileFn = fn;
+        _fileArg = arg;
+        if (_fileDialog.open().isError()) {
+                _fileFn = nullptr;
+                say("The dialog can't open");
+        }
+        return;
+}
+
 void SettingsWindow::pathChosen(void *arg, FileDialog &dialog, int result) {
-        auto             *self = static_cast<SettingsWindow *>(arg);
+        auto *self = static_cast<SettingsWindow *>(arg);
+        if (FileTaken fn = self->_fileFn; fn != nullptr) {
+                self->_fileFn = nullptr;
+                if (result == FileDialog::Accepted && dialog.count() > 0) fn(self->_fileArg, dialog.path(0));
+                return;
+        }
         const SysConf::Id id = self->_pathId;
         self->_pathId = SysConf::NoId;
         if (result != FileDialog::Accepted || id == SysConf::NoId || dialog.count() == 0) return;
@@ -402,6 +420,7 @@ void SettingsWindow::askName(StringView title, StringView prompt, StringView ini
 void SettingsWindow::forget(void *arg) {
         if (_colorArg == arg) _colorFn = nullptr;
         if (_nameArg == arg) _nameFn = nullptr;
+        if (_fileArg == arg) _fileFn = nullptr;
         return;
 }
 

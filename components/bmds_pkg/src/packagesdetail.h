@@ -174,6 +174,17 @@ namespace Packages::Detail {
         /** @brief Verifies against the keyring's keys @p ids names (any when empty). */
         Error verifyWith(const SignedContainer::Head &parsed, Span<const uint8_t> head, const Config &config,
                          Span<const StringView> ids);
+        /** @brief The most a key file may be. */
+        constexpr size_t MaxKeyFileBytes = 4096;
+        bool             sameKey(const SignedContainer::Key &a, const SignedContainer::Key &b);
+        /** @brief The first key line of @p text into @p key and @p comment (a view into @p text). */
+        Error firstKey(StringView text, SignedContainer::Key &key, StringView &comment);
+        /**
+         * @brief Checks @p e (its key, id and comment set) can be added, then writes it to
+         *        `keysDir/ID.pub`. @return `Ok`; `PermissionDenied` (the dev key); `Exists`; the
+         *        filesystem's error; @p why says which.
+         */
+        Error storeKey(const KeyEntry &e, const Config &config, String &why);
 
         // repositories.cpp
         Error installedForWalk(const Config &config, List<Info> &infos, List<PkgSolver::Package> &out);

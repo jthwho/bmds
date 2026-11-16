@@ -6,7 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  */
 
-#include "pkgjob.h"
+#include <bmds/pkgjob.h>
 
 #include <bmds/fdtable.h>
 #include <bmds/guiapplication.h>

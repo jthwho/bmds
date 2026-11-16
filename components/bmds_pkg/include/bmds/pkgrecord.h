@@ -41,6 +41,7 @@ struct PkgRecord {
                         Note,        ///< Something to tell, not an error.
                         Source,      ///< `update`: a source's list.
                         Error,       ///< A failure.
+                        Key,         ///< `key list`, `source add`: a key of the keyring, or one to trust.
                 };
 
                 Type     type = Type::Other;
@@ -52,21 +53,30 @@ struct PkgRecord {
                 String   category;          ///< `package`.
                 String   depends;           ///< `package`: ", "-separated.
                 String   available;         ///< `package`: the newest in the lists.
-                String   signer;            ///< `package`, `plan`: "trusted", "dev", "added".
+                String   signer;            ///< `package`, `plan`: "trusted", "dev", "added", "package".
                 String   action;            ///< `plan`, `done`: "install", "remove", "would install"...
                 String   step;              ///< `progress`: "checking", "fetching"...
                 String   source;            ///< `source`.
                 String   error;             ///< `error`, `source`: `Error`'s name.
                 String   text;              ///< `error`, `note`, `description`, `source`: the words.
+                String   id;                ///< `key`: its 16-digit id.
+                String   kind;              ///< `key`: "trusted", "dev", "added", "package", or "new" (not yet).
+                String   comment;           ///< `key`: what it is called.
+                String   key;               ///< `key` (`source add`): the whole public key, in hex.
+                String   location;          ///< `source` (`source list`, `source add`): its URL or file:/FOLDER.
+                String   keyName;           ///< `source`: the keys it names, in words.
                 uint64_t size = 0;          ///< `package`: the `.bmpk`'s bytes.
                 uint64_t installedSize = 0; ///< `package`, `plan`.
                 uint64_t fetch = 0;         ///< `plan`: bytes to download.
                 uint64_t done = 0;          ///< `progress`.
                 uint64_t total = 0;         ///< `progress`.
                 uint64_t packages = 0;      ///< `source`.
+                uint64_t number = 0;        ///< `source` (`source list`): from 1.
                 bool     installed = false;
                 bool     automatic = false;
                 bool     upgradable = false;
+                bool     listed = false;   ///< `source` (`source list`): its list is in the cache.
+                bool     isSigned = false; ///< `source` (`source add`): its index is signed (`signed`).
 
                 /** @brief Empties every field. */
                 void clear();

@@ -45,8 +45,10 @@ endfunction()
 # HEADER (in the target's binary directory, on its include path): the UpdatePackage::Key
 # initializers of keys/trusted.pub's keys (BMDS_UPDATE_TRUSTED_KEYS of them), then keys/dev.pub's
 # unless TRUSTED_ONLY; BMDS_UPDATE_KEY_COMMENTS, each key's comment in the same order; and
-# BMDS_UPDATE_DEV_KEY, keys/dev.pub's key in either mode (pkg refuses to add it). A trusted-only
-# build without a trusted key fails here. Configure reruns when keys/ changes.
+# BMDS_UPDATE_DEV_KEY, keys/dev.pub's key in either mode (pkg refuses to add it); and
+# keys/packages.pub's keys, for packages only (BMDS_PACKAGE_KEYS, BMDS_PACKAGE_KEY_COUNT and
+# BMDS_PACKAGE_KEY_COMMENTS), never among the update keys. A trusted-only build without a trusted
+# key fails here. Configure reruns when keys/ changes.
 function(bmds_update_keys target header trusted_only)
         set(dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../keys)
         set(files ${dir}/trusted.pub)
@@ -95,6 +97,39 @@ function(bmds_update_keys target header trusted_only)
         string(REGEX REPLACE "^ed25519 ([0-9a-fA-F]+).*" "\\1" dev "${dev}")
         string(REGEX REPLACE "(..)" "0x\\1," dev "${dev}")
         string(APPEND body "#define BMDS_UPDATE_DEV_KEY {{${dev}}}\n")
+        # keys/packages.pub: keys for packages and package indexes only, never updates
+        # (devplan/thirdparty.md §3.2): a table of their own, which Update never sees.
+        set(packages "")
+        set(package_comments "")
+        set(package_count 0)
+        set(file ${dir}/packages.pub)
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${file})
+        if(EXISTS ${file})
+                file(STRINGS ${file} lines REGEX "^ed25519 ")
+                foreach(line ${lines})
+                        if(NOT line MATCHES "^ed25519 ([0-9a-fA-F]+)( (.*))?$")
+                                message(FATAL_ERROR "${file}: not a key: ${line}")
+                        endif()
+                        set(comment "${CMAKE_MATCH_3}")
+                        string(REPLACE "\\;" ";" comment "${comment}")
+                        string(REPLACE "\\" "\\\\" comment "${comment}")
+                        string(REPLACE "\"" "\\\"" comment "${comment}")
+                        string(LENGTH "${CMAKE_MATCH_1}" length)
+                        if(NOT length EQUAL 64)
+                                message(FATAL_ERROR "${file}: a key is 64 hex digits: ${line}")
+                        endif()
+                        string(REGEX REPLACE "(..)" "0x\\1," bytes "${CMAKE_MATCH_1}")
+                        if(bytes STREQUAL dev)
+                                message(FATAL_ERROR "${file}: the dev key can't be a package key")
+                        endif()
+                        string(APPEND packages " {{${bytes}}},")
+                        string(APPEND package_comments " \"${comment}\",")
+                        math(EXPR package_count "${package_count} + 1")
+                endforeach()
+        endif()
+        string(APPEND body "#define BMDS_PACKAGE_KEY_COUNT ${package_count}\n")
+        string(APPEND body "#define BMDS_PACKAGE_KEYS${packages}\n")
+        string(APPEND body "#define BMDS_PACKAGE_KEY_COMMENTS${package_comments}\n")
         if(count EQUAL 0)
                 message(FATAL_ERROR "Trusted-only acceptance mode (CONFIG_BMDS_UPDATE_KEYS_TRUSTED) "
                                     "and no trusted key in keys/trusted.pub (keys/README.md)")

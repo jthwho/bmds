@@ -188,6 +188,7 @@ A repository is a static folder: `index.bmpi` and the packages. Any web server o
 | `pkg index DIR` | write `DIR/index.bmpi` (unsigned) for a folder of packages (added with step 6) |
 | `pkg icon NAME [--size N] -o FILE` | a package's icon, installed or from the lists (added with step 4) |
 | `pkg key add\|list\|remove` | §6 |
+| `pkg source list\|add URL\|remove URL\|N\|show URL\|N` | other people's repositories: add asks before trusting the key beside the index, pins and saves (added 2026-11-15, `thirdparty.md` §4) |
 | `pkg --source SOURCE ...` | one source more than `pkg/sources`, for this command (added with step 10) |
 
 Progress goes to the terminal as a line per package; errors through `Error` with the package
@@ -951,3 +952,8 @@ or a trial the user agrees to.
   tzdata and coremark in 3.7 s; `pkg verify`: every file matches. Then the settings reverted, the
   scratch folder removed, and the pre-release deleted with its tag (`gh release delete
   --cleanup-tag`). Still to try with the first release: the index from Pages.
+
+## 26. Other people's repositories
+
+`pkg source`, built-in package keys, the SDK as a release asset and the `bmds-apps` repository:
+`thirdparty.md` (planned 2026-11-15).

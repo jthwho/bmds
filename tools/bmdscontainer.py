@@ -66,9 +66,11 @@ def load_pubs(paths):
     return keys
 
 
-def default_pubs():
-    """keys/dev.pub and keys/trusted.pub, those that exist."""
-    return [p for p in (os.path.join(KEYS, 'dev.pub'), os.path.join(KEYS, 'trusted.pub')) if os.path.exists(p)]
+def default_pubs(packages=False):
+    """keys/dev.pub and keys/trusted.pub, those that exist; with packages, keys/packages.pub too (keys
+    for packages only, never updates: devplan/thirdparty.md §3.2)."""
+    names = ('dev.pub', 'trusted.pub') + (('packages.pub',) if packages else ())
+    return [p for p in (os.path.join(KEYS, n) for n in names) if os.path.exists(p)]
 
 
 def keygen(key_path, pub_path, comment):

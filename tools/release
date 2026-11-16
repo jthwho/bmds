@@ -272,7 +272,8 @@ def make_packages(out_dir, dist_dir, name_version, base_url):
     for n in names:
         shutil.copy(os.path.join(packages_dir, n), out_dir)
     index = os.path.join(out_dir, "index.bmpi")
-    run(mkpkg + ["index", packages_dir, "--base-url", base_url, "--label", "BMDS " + name_version, "-o", index])
+    dev_key = os.path.join(ROOT, "keys", "dev.key")  # BMDS's releases: the dev key (keys/README.md)
+    run(mkpkg + ["index", packages_dir, "--key", dev_key, "--base-url", base_url, "--label", "BMDS " + name_version, "-o", index])
     run(mkpkg + ["info", index], capture=True)  # checked, as a board will
     packages_zip = os.path.join(out_dir, "bmds-%s-packages.zip" % name_version)
     files, _ = zip_tree(packages_zip, packages_dir, "packages/")

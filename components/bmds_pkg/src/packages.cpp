@@ -205,6 +205,7 @@ namespace Packages::Detail {
                         case Packages::Signer::Trusted: return "trusted";
                         case Packages::Signer::Dev: return "dev";
                         case Packages::Signer::Added: return "added";
+                        case Packages::Signer::Package: return "package";
                 }
                 return "dev";
         }
@@ -272,9 +273,10 @@ namespace Packages::Detail {
                         else if (e.key == StringView("made") && isNumber)
                                 info.madeAt = int64_t(n);
                         else if (e.key == StringView("signer"))
-                                info.signer = e.value == StringView("trusted") ? Packages::Signer::Trusted
-                                              : e.value == StringView("added") ? Packages::Signer::Added
-                                                                               : Packages::Signer::Dev;
+                                info.signer = e.value == StringView("trusted")   ? Packages::Signer::Trusted
+                                              : e.value == StringView("added")   ? Packages::Signer::Added
+                                              : e.value == StringView("package") ? Packages::Signer::Package
+                                                                                 : Packages::Signer::Dev;
                         else if (e.key == StringView("key-id") && e.value.size() == 2 * SignedContainer::KeyIdBytes) {
                                 for (size_t i = 0; i < SignedContainer::KeyIdBytes; ++i) {
                                         const int hi = ::bmds::Detail::PkgText::hexValue(e.value[2 * i]);

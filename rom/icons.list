@@ -204,3 +204,5 @@ folder-remote                   glyphs      cloud
 
 # --- MIDI files (devplan/audio.md §26): FileFormat's name for audio/midi
 audio-midi                      glyphs      music
+# --- Settings: the Software page (devplan/thirdparty.md §5)
+system-software-install         flat-color  package

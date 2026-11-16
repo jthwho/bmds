@@ -27,7 +27,7 @@
 #include <bmds/vfs.h>
 #include <bmds/widget.h>
 
-#include "pkgjob.h"
+#include <bmds/pkgjob.h>
 
 BMDS_NAMESPACE_BEGIN
 

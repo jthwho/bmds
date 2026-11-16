@@ -38,6 +38,15 @@ namespace UpdateKeys {
         /** @brief keys/dev.pub's key, in either mode: what `pkg key add` refuses (devplan/packages.md §22). */
         const UpdatePackage::Key &devKey();
 
+        /**
+         * @brief keys/packages.pub's keys: built in for packages and package indexes only, never
+         *        among `accepted()` (devplan/thirdparty.md §3.2). Accepted in both modes.
+         */
+        Span<const UpdatePackage::Key> packageKeys();
+
+        /** @brief The comment of `packageKeys()[index]`, from keys/packages.pub. */
+        const char *packageComment(size_t index);
+
 } // namespace UpdateKeys
 
 BMDS_NAMESPACE_END

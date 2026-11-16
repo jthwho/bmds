@@ -651,6 +651,92 @@ namespace Packages::Detail {
                 return Error::Ok;
         }
 
+        // A source's URL or `file:/FOLDER`: its first word.
+        StringView locationOf(StringView source) {
+                return source.left(source.indexOf(' '));
+        }
+
+        // @p in as a source's location alone: trimmed, `/index.bmpi` and a trailing `/` dropped.
+        Error normalizeLocation(StringView in, String &out, String &why) {
+                StringView s = in.trimmed();
+                if (s.isEmpty() || s.contains(' ') || s.contains(';')) {
+                        return fail(why, Error::Invalid,
+                                    "%.*s: a source is its URL or file:/FOLDER alone (its signed-by is worked out)",
+                                    int(s.size()), s.data());
+                }
+                constexpr StringView IndexName("/index.bmpi");
+                if (s.endsWith(IndexName)) s = s.left(s.size() - IndexName.size());
+                while (s.size() > FileScheme.size() + 1 && s.endsWith('/')) s = s.left(s.size() - 1);
+                out.clear();
+                if (out.append(s).isError()) return fail(why, Error::NoMem, "out of memory");
+                return Packages::checkSources(out.view(), why);
+        }
+
+        // A fetch into memory, at most `limit` bytes.
+        struct MemoryFetch {
+                        List<uint8_t> *to = nullptr;
+                        size_t         limit = 0;
+        };
+
+        FetchSink memorySink(MemoryFetch &m) {
+                FetchSink sink;
+                sink.begin = [](void *arg, uint64_t start, uint64_t) -> Error {
+                        MemoryFetch &to = *static_cast<MemoryFetch *>(arg);
+                        if (start != 0) return Error::CorruptData;
+                        to.to->clear();
+                        return Error::Ok;
+                };
+                sink.body = [](void *arg, ByteSpan bytes) -> Error {
+                        MemoryFetch &to = *static_cast<MemoryFetch *>(arg);
+                        if (to.to->size() + bytes.size() > to.limit) return Error::OutOfRange;
+                        return to.to->append(bytes);
+                };
+                sink.arg = &m;
+                return sink;
+        }
+
+        // The first key in the key file at @p from (a URL, fetched; else a path).
+        Error readKeyFrom(StringView from, const Config &config, Packages::KeyEntry &out, String &why) {
+                String    text;
+                Http::Url url;
+                Error     err;
+                if (Http::parseUrl(from, url).isOk()) {
+                        if (config.fetch == nullptr)
+                                return fail(why, Error::NotSupported, "%.*s: no fetching in this system",
+                                            int(from.size()), from.data());
+                        List<uint8_t> bytes(MemSpace::Psram);
+                        MemoryFetch   m{&bytes, MaxKeyFileBytes};
+                        String        fwhy;
+                        err = config.fetch(from, 0, memorySink(m), nullptr, fwhy);
+                        if (err.isError()) {
+                                if (!fwhy.isEmpty()) return fail(why, err, "%s", fwhy.cStr());
+                                return fail(why, err, "%.*s: %s", int(from.size()), from.data(),
+                                            err == Error::OutOfRange ? "too big for a key file" : err.desc());
+                        }
+                        err = text.append(StringView(reinterpret_cast<const char *>(bytes.data()), bytes.size()));
+                } else {
+                        err = readWhole(from, MaxKeyFileBytes, text);
+                        if (err.isError()) return fail(why, err, "%.*s: %s", int(from.size()), from.data(), err.desc());
+                }
+                StringView comment;
+                if (err.isOk() && firstKey(text.view(), out.key, comment).isError()) {
+                        return fail(why, Error::CorruptData, "%.*s: no key in it (a line: ed25519 HEX COMMENT)",
+                                    int(from.size()), from.data());
+                }
+                SignedContainer::keyId(out.key, out.id);
+                out.kind = Packages::Signer::Added;
+                if (err.isOk()) err = out.comment.append(comment);
+                return err.isError() ? fail(why, err, "out of memory") : Error::Ok;
+        }
+
+        Error copyKey(const Packages::KeyEntry &from, Packages::KeyEntry &to) {
+                to.key = from.key;
+                std::memcpy(to.id, from.id, sizeof(to.id));
+                to.kind = from.kind;
+                to.comment.clear();
+                return to.comment.append(from.comment.view());
+        }
+
 } // namespace Packages::Detail
 
 using namespace Packages::Detail;
@@ -1061,6 +1147,294 @@ Error Packages::fetchPlanned(Planned &planned, const Config &config, const Liste
         planned.info = std::move(peeked);
         planned.path = std::move(path);
         planned.remote = false;
+        return Error::Ok;
+}
+
+Error Packages::sources(const Config &config, List<SourceState> &out, String &why) {
+        out.clear();
+        why.clear();
+        const Error err = checkSources(config.sources, why);
+        if (err.isError()) return err;
+        return eachSource(config.sources, [&](StringView one) -> Error {
+                SourceState s;
+                Source      spec;
+                String      ignored;
+                (void)parseSource(one, spec, ignored);
+                Error e = s.source.append(one);
+                if (e.isOk()) e = s.location.append(locationOf(one));
+                for (StringView id : spec.keys()) {
+                        if (e.isOk())
+                                e = s.signedBy.appendf("%s%.*s", s.signedBy.isEmpty() ? "" : ",", int(id.size()),
+                                                       id.data());
+                }
+                auto [path, perr] = listFile(config, one, ".bmpi");
+                List<uint8_t>  bytes(MemSpace::Psram);
+                PkgFile::Index index;
+                StringView     stanzas;
+                if (perr.isOk() && readBytes(path.view(), MaxListBytes, bytes).isOk() &&
+                    readList(bytes, index, stanzas).isOk()) {
+                        s.listed = true;
+                        s.packages = index.packageCount;
+                        s.madeAt = index.madeAt;
+                }
+                if (e.isOk()) e = out.append(std::move(s));
+                return e.isError() ? fail(why, e, "out of memory") : Error::Ok;
+        });
+}
+
+Error Packages::lookSource(StringView location, StringView keyFrom, const Config &config, SourceLook &out,
+                           String &why) {
+        why.clear();
+        out = SourceLook{};
+        Lock lock;
+        if (!lock.held()) return fail(why, Error::Busy, "another package operation is running");
+        Error err = normalizeLocation(location, out.location, why);
+        if (err.isError()) return err;
+        bool configured = false;
+        (void)eachSource(config.sources, [&](StringView one) -> Error {
+                configured = configured || locationOf(one) == out.location.view();
+                return Error::Ok;
+        });
+        if (configured)
+                return fail(why, Error::Exists, "%s is a source already (pkg source list)", out.location.cStr());
+        Source spec;
+        (void)parseSource(out.location.view(), spec, why);
+        auto [dir, derr] = listsDir(config);
+        if (derr.isOk()) derr = makeDirectories(dir.view());
+        auto [look, lerr] = listFile(config, out.location.view(), ".look");
+        if (derr.isError() || lerr.isError())
+                return fail(why, derr.isError() ? derr : lerr, "%s: %s", dir.cStr(),
+                            (derr.isError() ? derr : lerr).desc());
+        List<uint8_t> bytes(MemSpace::Psram);
+        String        where; // the index: its URL or its path
+        if (spec.network) {
+                if (config.fetch == nullptr)
+                        return fail(why, Error::NotSupported, "%s: no fetching in this system", out.location.cStr());
+                err = indexUrl(spec, where);
+                FileFetch f;
+                f.path = std::move(look);
+                f.limit = MaxListBytes;
+                if (err.isOk()) err = openFetch(f, false);
+                if (err.isError()) return fail(why, err, "%s: %s", f.path.cStr(), err.desc());
+                String fwhy;
+                err = closeFetch(f, config.fetch(where.view(), 0, sinkOf(f), nullptr, fwhy));
+                if (err.isOk()) err = readBytes(f.path.view(), MaxListBytes, bytes);
+                if (err.isError()) {
+                        (void)removeIfThere(f.path.view());
+                        if (!fwhy.isEmpty()) return fail(why, err, "%s", fwhy.cStr());
+                        return fail(why, err, "%s: %s", where.cStr(),
+                                    err == Error::OutOfRange ? "bigger than an index may be" : err.desc());
+                }
+                look = std::move(f.path);
+        } else {
+                List<FolderFile> files(MemSpace::Psram);
+                err = folderPackages(spec.folder, files);
+                if (err.isError()) {
+                        return fail(why, err, "%.*s: %s", int(spec.folder.size()), spec.folder.data(),
+                                    err == Error::NotExist ? "no such folder" : err.desc());
+                }
+                auto [own, jerr] = join(spec.folder, "index.bmpi");
+                if (jerr.isError()) return fail(why, jerr, "out of memory");
+                where = std::move(own);
+                PkgFile::Index index;
+                StringView     stanzas;
+                // Without a signed index that lists exactly its packages, a folder is indexed here,
+                // unsigned, as pkg update does: nothing to pin.
+                if (readBytes(where.view(), MaxListBytes, bytes).isError() || !indexMatches(bytes, files) ||
+                    readList(bytes, index, stanzas).isError() || SignedContainer::isUnsigned(index)) {
+                        out.isUnsigned = true;
+                        out.packages = uint32_t(files.size());
+                        return Error::Ok;
+                }
+                err = writeBytes(look.view(), bytes);
+                if (err.isError()) return fail(why, err, "%s: %s", look.cStr(), err.desc());
+        }
+        PkgFile::Index index;
+        StringView     stanzas;
+        if (readList(bytes, index, stanzas).isError()) {
+                (void)removeIfThere(look.view());
+                return fail(why, Error::CorruptData, "%s: not an index", where.cStr());
+        }
+        if (SignedContainer::isUnsigned(index)) {
+                (void)removeIfThere(look.view());
+                return fail(why, Error::PermissionDenied, "%s: unsigned (a network source's index must be signed)",
+                            where.cStr());
+        }
+        out.packages = index.packageCount;
+        char signer[2 * SignedContainer::KeyIdBytes + 1];
+        hex(index.keyId, sizeof(index.keyId), signer);
+        // A key in the keyring: nothing to ask.
+        List<KeyEntry> ring(MemSpace::Psram);
+        err = keyring(config, ring);
+        if (err.isError()) return fail(why, err, "out of memory");
+        size_t at = 0;
+        for (const KeyEntry &e : ring) {
+                if (std::memcmp(e.id, index.keyId, sizeof(e.id)) != 0) continue;
+                if (SignedContainer::verify(index, bytes.span(), Span<const SignedContainer::Key>(&e.key, 1), at) !=
+                    SignedContainer::Verdict::Ok) {
+                        (void)removeIfThere(look.view());
+                        return fail(why, Error::PermissionDenied, "%s: its signature doesn't check against key %s",
+                                    where.cStr(), signer);
+                }
+                out.known = true;
+                out.list = std::move(look);
+                err = copyKey(e, out.key);
+                return err.isError() ? fail(why, err, "out of memory") : Error::Ok;
+        }
+        // Not known: its key, from where it was said to be or beside the index, must have signed it.
+        if (!keyFrom.isEmpty()) {
+                err = out.keyFrom.append(keyFrom);
+        } else if (spec.network) {
+                auto [beside, rerr] = Http::resolve(where.view(), "key.pub");
+                out.keyFrom = std::move(beside);
+                err = rerr;
+        } else {
+                auto [beside, jerr] = join(spec.folder, "key.pub");
+                out.keyFrom = std::move(beside);
+                err = jerr;
+        }
+        if (err.isOk()) err = readKeyFrom(out.keyFrom.view(), config, out.key, why);
+        if (err.isOk() && std::memcmp(out.key.id, index.keyId, sizeof(index.keyId)) != 0) {
+                char id[2 * SignedContainer::KeyIdBytes + 1];
+                hex(out.key.id, sizeof(out.key.id), id);
+                err = fail(why, Error::PermissionDenied, "%s holds key %s, but %s is signed by key %s: not trusted",
+                           out.keyFrom.cStr(), id, where.cStr(), signer);
+        }
+        if (err.isOk() &&
+            SignedContainer::verify(index, bytes.span(), Span<const SignedContainer::Key>(&out.key.key, 1), at) !=
+                    SignedContainer::Verdict::Ok) {
+                err = fail(why, Error::PermissionDenied, "%s: its signature doesn't check against key %s", where.cStr(),
+                           signer);
+        }
+        if (err.isOk() && config.devKey != nullptr && sameKey(out.key.key, *config.devKey)) {
+                err = fail(why, Error::PermissionDenied, "%s is signed by the dev key, which this firmware refuses",
+                           where.cStr());
+        }
+        if (err.isError()) {
+                (void)removeIfThere(look.view());
+                return err;
+        }
+        out.list = std::move(look);
+        return Error::Ok;
+}
+
+Error Packages::addSource(SourceLook &look, const Config &config, String &added, String &why) {
+        why.clear();
+        added.clear();
+        if (config.saveSources == nullptr)
+                return fail(why, Error::NotSupported, "this system can't change pkg/sources");
+        Lock lock;
+        if (!lock.held()) return fail(why, Error::Busy, "another package operation is running");
+        char id[2 * SignedContainer::KeyIdBytes + 1];
+        hex(look.key.id, sizeof(look.key.id), id);
+        Error err = added.append(look.location);
+        if (err.isOk() && !look.isUnsigned) err = added.appendf(" signed-by=%s", id);
+        String     setting(MemSpace::Psram);
+        const auto kept = config.sources.trimmed();
+        if (err.isOk()) err = setting.append(kept);
+        if (err.isOk() && !kept.isEmpty() && !kept.endsWith(';')) err = setting.append(';');
+        if (err.isOk()) err = setting.append(added);
+        if (err.isError()) return fail(why, err, "out of memory");
+        err = checkSources(setting.view(), why);
+        if (err.isError()) return err;
+        if (!look.isUnsigned && !look.known) {
+                err = storeKey(look.key, config, why);
+                if (err.isError() && err != Error::Exists) return err;
+                why.clear();
+        }
+        err = config.saveSources(setting.view(), why);
+        if (err.isError()) return why.isEmpty() ? fail(why, err, "pkg/sources: %s", err.desc()) : err;
+        // Its list, as update() would have kept it.
+        auto [bmpi, berr] = listFile(config, added.view(), ".bmpi");
+        auto [named, nerr] = listFile(config, added.view(), ".source");
+        if (look.list.isEmpty() || berr.isError() || nerr.isError()) {
+                SourceResult r;
+                (void)updateSource(added.view(), config, Listener{}, r);
+                return Error::Ok;
+        }
+        String text;
+        err = text.appendf("source\t%s\n", added.cStr());
+        if (err.isOk()) err = Vfs::rename(look.list.view(), bmpi.view(), Vfs::RenameMode::Replace, vfs());
+        if (err.isOk()) err = writeWhole(named.view(), text.view());
+        if (err.isError()) (void)removeIfThere(look.list.view()); // pkg update reads it
+        return Error::Ok;
+}
+
+Error Packages::removeSource(StringView which, const Config &config, String &removed, List<KeyEntry> &orphans,
+                             String &why) {
+        why.clear();
+        removed.clear();
+        orphans.clear();
+        if (config.saveSources == nullptr)
+                return fail(why, Error::NotSupported, "this system can't change pkg/sources");
+        Lock lock;
+        if (!lock.held()) return fail(why, Error::Busy, "another package operation is running");
+        const StringView given = which.trimmed();
+        bool             number = !given.isEmpty() && given.size() <= 4;
+        size_t           n = 0;
+        for (char c : given) {
+                number = number && c >= '0' && c <= '9';
+                n = n * 10 + size_t(c - '0');
+        }
+        String wanted;
+        if (!number && normalizeLocation(given, wanted, why).isError()) {
+                wanted.clear();
+                if (wanted.append(given).isError()) return fail(why, Error::NoMem, "out of memory");
+        }
+        why.clear();
+        size_t     i = 0;
+        StringView found;
+        (void)eachSource(config.sources, [&](StringView one) -> Error {
+                ++i;
+                const bool match = number ? i == n : locationOf(one) == wanted.view() || one == given;
+                if (match && found.isEmpty()) found = one;
+                return Error::Ok;
+        });
+        if (found.isEmpty())
+                return fail(why, Error::NotFound, "%.*s: no such source (pkg source list)", int(given.size()),
+                            given.data());
+        String setting(MemSpace::Psram);
+        Error  err = removed.append(found);
+        (void)eachSource(config.sources, [&](StringView one) -> Error {
+                if (one.data() == found.data() || err.isError()) return Error::Ok;
+                if (!setting.isEmpty()) err = setting.append(';');
+                if (err.isOk()) err = setting.append(one);
+                return Error::Ok;
+        });
+        if (err.isError()) return fail(why, err, "out of memory");
+        err = config.saveSources(setting.view(), why);
+        if (err.isError()) return why.isEmpty() ? fail(why, err, "pkg/sources: %s", err.desc()) : err;
+        for (const char *suffix : {".bmpi", ".source", ".part", ".look"}) {
+                auto [path, perr] = listFile(config, removed.view(), suffix);
+                if (perr.isOk()) (void)removeIfThere(path.view());
+        }
+        // The added keys it named that no source left names.
+        Source spec;
+        if (parseSource(removed.view(), spec, why).isError() || spec.signedByCount == 0) {
+                why.clear();
+                return Error::Ok;
+        }
+        List<KeyEntry> ring(MemSpace::Psram);
+        if (keyring(config, ring).isError()) return Error::Ok;
+        for (StringView id : spec.keys()) {
+                bool named = false;
+                (void)eachSource(setting.view(), [&](StringView one) -> Error {
+                        Source other;
+                        String ignored;
+                        if (parseSource(one, other, ignored).isOk()) {
+                                for (StringView o : other.keys()) named = named || o == id;
+                        }
+                        return Error::Ok;
+                });
+                if (named) continue;
+                for (const KeyEntry &e : ring) {
+                        char text[2 * SignedContainer::KeyIdBytes + 1];
+                        hex(e.id, sizeof(e.id), text);
+                        if (e.kind != Signer::Added || StringView(text) != id) continue;
+                        KeyEntry copy;
+                        if (copyKey(e, copy).isOk()) (void)orphans.append(std::move(copy));
+                }
+        }
         return Error::Ok;
 }
 

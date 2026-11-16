@@ -348,6 +348,7 @@ def command_package(opts):
     out_dir = os.path.join(OUT, "packages")
     os.makedirs(out_dir, exist_ok=True)
     mkpkg = os.path.join(ROOT, "tools", "mkpkg")
+    dev_key = os.path.join(ROOT, "keys", "dev.key")  # BMDS's own packages: the dev key (keys/README.md)
     for name in wanted:
         if name not in known:
             die("no package %s (see bmds-dist list)" % name)
@@ -365,7 +366,7 @@ def command_package(opts):
                 os.remove(os.path.join(out_dir, old))
         cmd = [sys.executable, mkpkg, "make", stage, "--name", name, "--version", version,
                "--arch", "esp32p4" if uses_sdk(recipe) else "all",
-               "-o", os.path.join(out_dir, "%s_%s.bmpk" % (name, version))]
+               "--key", dev_key, "-o", os.path.join(out_dir, "%s_%s.bmpk" % (name, version))]
         for key in ("title", "summary", "category", "license", "homepage"):
             if meta[key]:
                 cmd += ["--" + key, meta[key]]
@@ -378,7 +379,7 @@ def command_package(opts):
         for icon in meta["icons"]:
             cmd += ["--icon", icon]
         run(cmd)
-    run([sys.executable, mkpkg, "index", out_dir, "--label", "BMDS (bmds-dist)"])
+    run([sys.executable, mkpkg, "index", out_dir, "--key", dev_key, "--label", "BMDS (bmds-dist)"])
     return 0
 
 

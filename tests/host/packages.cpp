@@ -58,6 +58,15 @@ namespace {
                 return index == 0 ? "the test key" : "the dev key's comment";
         }
 
+        // A key built in for packages only (keys/packages.pub, devplan/thirdparty.md §3.2).
+        constexpr uint8_t          PackageSeed[32] = {5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                                                      6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6};
+        bmds::SignedContainer::Key packageKeys[1];
+
+        const char *packageKeyComment(size_t) {
+                return "the apps key";
+        }
+
         // What a test changes of the configuration; the fixture puts it back.
         std::string         sources = "file:/t/repo";
         Packages::DevPolicy devPolicy = Packages::DevPolicy::Allow;
@@ -74,6 +83,15 @@ namespace {
         } web;
 
         std::string get(const std::string &path);
+
+        // pkg source add and remove keep pkg/sources here.
+        int saves = 0;
+
+        Error saveSources(StringView value, bmds::String &) {
+                sources.assign(value.data(), value.size());
+                ++saves;
+                return Error::Ok;
+        }
 
         Error fakeFetch(StringView url, uint64_t from, const bmds::FetchSink &sink, bmds::String *finalUrl,
                         bmds::String &why) {
@@ -113,6 +131,7 @@ namespace {
                 if (!ready) {
                         uint8_t unused[64];
                         bmds::Ed25519::sign(Seed, "", 0, unused, keys[0].bytes);
+                        bmds::Ed25519::sign(PackageSeed, "", 0, unused, packageKeys[0].bytes);
                         std::ifstream pub(BMDS_TEST_KEYS_DIR "/dev.pub");
                         std::string   kind, hex;
                         pub >> kind >> hex;
@@ -129,12 +148,15 @@ namespace {
                 c.keyComment = keyComment;
                 c.devKey = &keys[1];
                 c.keysDir = "/t/keys";
+                c.packageKeys = Span<const bmds::SignedContainer::Key>(packageKeys, 1);
+                c.packageKeyComment = packageKeyComment;
                 c.dev = devPolicy;
                 c.arch = "esp32p4";
                 c.abi = 1;
                 c.cache = "/t/root/var/cache/pkg";
                 c.sources = sv(sources);
                 c.fetch = web.on ? fakeFetch : nullptr;
+                c.saveSources = saveSources;
                 return c;
         }
 
@@ -864,6 +886,34 @@ TEST_CASE("Packages: the keyring, keys added and removed, who signed said") {
                                                              "\",\"kind\":\"trusted\",\"comment\":\"the test key\"}"));
 }
 
+TEST_CASE("Packages: a built-in package key") {
+        Fixture           f;
+        const std::string id = idOf(PackageSeed);
+        CHECK(contains(f.run("pkg key list"), id + "  package  the apps key\n"));
+        CHECK(contains(f.run("pkg --json key list"),
+                       "{\"type\":\"key\",\"id\":\"" + id + "\",\"kind\":\"package\",\"comment\":\"the apps key\"}"));
+
+        // What it signs installs, named as a package key, and stays so in the database.
+        Spec              apps = {"apps", "1", "", {"share"}, {{"share/apps", "apps"}}, {}};
+        const std::string path = "/t/apps_1.bmpk";
+        put(path, build(apps, PackageSeed));
+        CHECK(contains(f.run("pkg install --dry-run " + path), "signed by the apps key (a built-in package key)"));
+        f.run("pkg install -y " + path);
+        CHECK(contains(f.run("pkg info apps"), "Signed:   the apps key (a built-in package key; key " + id + ")"));
+        CHECK(contains(f.run("pkg --json info apps"), "\"signer\":\"package\""));
+
+        // Built in: not added again, not removed; pkg/dev refuse doesn't touch it.
+        put("/t/apps.pub", "ed25519 " + publicHex(PackageSeed) + " again\n");
+        CHECK(contains(f.run("pkg key add /t/apps.pub", Shell::ExitFailure),
+                       id + " is in the keyring already (built in)"));
+        CHECK(contains(f.run("pkg key remove " + id, Shell::ExitFailure), "built into the firmware"));
+        devPolicy = Packages::DevPolicy::Refuse;
+        f.run("pkg remove -y apps");
+        f.run("pkg install -y " + path);
+        CHECK(exists("/t/root/share/apps"));
+        devPolicy = Packages::DevPolicy::Allow;
+}
+
 TEST_CASE("Packages: pkg/dev, allow, ask and refuse") {
         Fixture           f;
         const std::string hello = "/t/hello_2.0~rc1-3.bmpk";
@@ -1086,4 +1136,139 @@ TEST_CASE("Packages: what a network source refuses") {
                       .isOk());
         CHECK(Packages::checkSources("https://bad host/x", why).code() == Error::Invalid);
         CHECK(Packages::checkSources("ftp://example.com/x", why).code() == Error::Invalid);
+}
+
+TEST_CASE("Packages: pkg source, a repository added with its key, listed, shown and removed") {
+        Fixture           f;
+        const std::string other = idOf(OtherSeed);
+        webRepo(OtherSeed);
+        put("/t/web/repo/key.pub", "ed25519 " + publicHex(OtherSeed) + " Their apps\n");
+
+        // An unknown key: shown whole, with where it came from, and asked about; no: nothing changes.
+        f.con.type("n\n");
+        std::string out = f.run("pkg source add http://web/repo/", Shell::ExitFailure);
+        CHECK(contains(out, "http://web/repo\n  2 packages, signed by a key this system doesn't know:\n"));
+        CHECK(contains(out, "    Their apps\n    key " + other + ": ed25519 " + publicHex(OtherSeed) + "\n"));
+        CHECK(contains(out, "    from http://web/repo/key.pub\n"));
+        CHECK(contains(out, "Trust this key and add the source? [y/N]"));
+        CHECK(sources == "file:/t/repo");
+        CHECK_FALSE(exists("/t/keys/" + other + ".pub"));
+
+        // Yes: the key added, the source pinned to it and saved, its list kept (no update needed).
+        f.con.type("y\n");
+        out = f.run("pkg source add http://web/repo/index.bmpi");
+        CHECK(contains(out, "Added: http://web/repo signed-by=" + other + "\n"));
+        CHECK(contains(out, "Key " + other + " added to the keyring"));
+        CHECK(sources == "file:/t/repo;http://web/repo signed-by=" + other);
+        CHECK(get("/t/keys/" + other + ".pub") == "ed25519 " + publicHex(OtherSeed) + " Their apps\n");
+        const int calls = web.calls;
+        CHECK(lineOf(f.run("pkg list"), "app") == "app 1 available ");
+        CHECK(web.calls == calls);
+        f.run("pkg install -y app");
+        CHECK(get("/t/root/bin/app") == "app");
+
+        // Listed and shown, by number and by URL; added twice: refused.
+        out = f.run("pkg source list");
+        CHECK(contains(out, "1  file:/t/repo\n   not read yet (pkg update); any index"));
+        CHECK(contains(out, "2  http://web/repo\n   2 packages; signed by Their apps (" + other + ", an added key)\n"));
+        CHECK(contains(f.run("pkg --json source list"),
+                       "{\"type\":\"source\",\"number\":2,\"source\":\"http://web/repo signed-by=" + other +
+                               "\",\"location\":\"http://web/repo\",\"signedBy\":[\"" + other +
+                               "\"],\"keyName\":\"Their apps (" + other +
+                               ", an added key)\",\"listed\":true,"
+                               "\"packages\":2,"));
+        CHECK(lineOf(f.run("pkg source show 2"), "lib") == "lib 2 auto ");
+        CHECK(contains(f.run("pkg source show http://web/repo/"), "app"));
+        CHECK(contains(f.run("pkg source show 7", Shell::ExitFailure), "no such source"));
+        CHECK(contains(f.run("pkg source add http://web/repo", Shell::ExitFailure), "is a source already"));
+
+        // Removed: the key only it named offered (no: kept); installed packages stay.
+        f.con.type("n\n");
+        out = f.run("pkg source remove 2");
+        CHECK(contains(out, "Removed: http://web/repo signed-by=" + other));
+        CHECK(contains(out, "No other source uses key " + other + " (Their apps). Remove it from the keyring?"));
+        CHECK(sources == "file:/t/repo");
+        CHECK(exists("/t/keys/" + other + ".pub"));
+        CHECK(get("/t/root/bin/app") == "app");
+        CHECK(lineOf(f.run("pkg list"), "lib") == "lib 2 auto ");
+
+        // Again, its key known now: nothing asked. Two sources share it: removing one keeps it.
+        out = f.run("pkg source add http://web/repo");
+        CHECK(contains(out, "http://web/repo: 2 packages, signed by Their apps (" + other + ", an added key)\n"));
+        (void)Vfs::mkdir("/t/web/mirror", Root);
+        put("/t/web/mirror/index.bmpi", get("/t/web/repo/index.bmpi"));
+        f.run("pkg source add http://web/mirror");
+        CHECK(sources == "file:/t/repo;http://web/repo signed-by=" + other + ";http://web/mirror signed-by=" + other);
+        CHECK_FALSE(contains(f.run("pkg source remove http://web/mirror"), "Remove it from the keyring"));
+        out = f.run("pkg source remove -y 2");
+        CHECK(contains(out, other + ": removed: Their apps"));
+        CHECK_FALSE(exists("/t/keys/" + other + ".pub"));
+        CHECK(sources == "file:/t/repo");
+}
+
+TEST_CASE("Packages: pkg source add, what it refuses and how else it finds a key") {
+        Fixture           f;
+        const std::string other = idOf(OtherSeed);
+
+        // Signed by a built-in key: no question, no key.pub needed.
+        webRepo(Seed);
+        CHECK(contains(f.run("pkg source add http://web/repo"),
+                       "http://web/repo: 2 packages, signed by the test key (" + idOf(Seed) +
+                               ", a built-in trusted key)\n"));
+        CHECK(sources == "file:/t/repo;http://web/repo signed-by=" + idOf(Seed));
+        f.run("pkg source remove http://web/repo");
+
+        // An unknown key and no key.pub; one that isn't the signer; one given with --key.
+        webRepo(OtherSeed);
+        CHECK(contains(f.run("pkg source add -y http://web/repo", Shell::ExitFailure),
+                       "http://web/repo/key.pub: the server answered 404"));
+        put("/t/web/repo/key.pub", "ed25519 " + publicHex(Seed) + " not theirs\n");
+        CHECK(contains(f.run("pkg source add -y http://web/repo", Shell::ExitFailure),
+                       "http://web/repo/key.pub holds key " + idOf(Seed) +
+                               ", but http://web/repo/index.bmpi is signed "
+                               "by key " +
+                               other + ": not trusted"));
+        put("/t/their.pub", "ed25519 " + publicHex(OtherSeed) + " Their apps\n");
+        CHECK(contains(f.run("pkg source add -y --key /t/their.pub http://web/repo"), "Added: http://web/repo"));
+        CHECK(sources == "file:/t/repo;http://web/repo signed-by=" + other);
+        f.run("pkg source remove -y http://web/repo");
+        CHECK(sources == "file:/t/repo");
+
+        // --json: never asks; a dry run says the key and adds nothing.
+        CHECK(contains(f.run("pkg --json source add http://web/repo", Shell::ExitFailure),
+                       "give -y, --trust ID or --dry-run"));
+        put("/t/web/repo/key.pub", "ed25519 " + publicHex(OtherSeed) + " Their apps\n");
+        CHECK(contains(f.run("pkg --json source add --dry-run http://web/repo"),
+                       "{\"type\":\"key\",\"id\":\"" + other +
+                               "\",\"kind\":\"new\",\"comment\":\"Their apps\","
+                               "\"key\":\"" +
+                               publicHex(OtherSeed) + "\",\"from\":\"http://web/repo/key.pub\"}"));
+        CHECK(sources == "file:/t/repo");
+        CHECK_FALSE(exists("/t/keys/" + other + ".pub"));
+        CHECK(contains(f.run("pkg --json source add --dry-run http://web/repo"),
+                       "{\"type\":\"source\",\"location\":\"http://web/repo\",\"packages\":2,\"signed\":true}"));
+
+        // --trust ID: yes for that key only (what a dry run showed), as a window asks.
+        CHECK(contains(f.run("pkg --json source add --trust " + idOf(Seed) + " http://web/repo", Shell::ExitFailure),
+                       "is now signed by key " + other + ", not " + idOf(Seed)));
+        CHECK(sources == "file:/t/repo");
+        f.run("pkg --json source add --trust " + other + " http://web/repo");
+        CHECK(sources == "file:/t/repo;http://web/repo signed-by=" + other);
+        f.run("pkg source remove -y http://web/repo");
+
+        // Unsigned over the network: refused. A folder without a signed index: added unpinned.
+        f.run("pkg index /t/web/repo");
+        CHECK(contains(f.run("pkg source add -y http://web/repo", Shell::ExitFailure),
+                       "unsigned (a network source's index must be signed)"));
+        CHECK(contains(f.run("pkg source add file:/t/web/repo"), "file:/t/web/repo: 2 packages, no signed index"));
+        CHECK(sources == "file:/t/repo;file:/t/web/repo");
+        CHECK(lineOf(f.run("pkg list"), "lib") == "lib 2 available ");
+
+        // Not sources; nothing to remove; a system that can't save.
+        CHECK(contains(f.run("pkg source add 'http://web/repo signed-by=" + other + "'", Shell::ExitFailure), "alone"));
+        CHECK(contains(f.run("pkg source add file:relative", Shell::ExitFailure), "absolute"));
+        CHECK(contains(f.run("pkg source add file:/t/nothing", Shell::ExitFailure), "no such folder"));
+        CHECK(contains(f.run("pkg source remove 9", Shell::ExitFailure), "no such source"));
+        CHECK(contains(f.run("pkg source remove http://nowhere", Shell::ExitFailure), "no such source"));
+        CHECK(f.run("pkg source", Shell::ExitUsage).size() > 0);
 }

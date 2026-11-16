@@ -18,9 +18,6 @@ BMDS_NAMESPACE_BEGIN
 
 namespace Packages::Detail {
 
-        // A key file is a line or a few: far less than this.
-        constexpr size_t MaxKeyFileBytes = 4096;
-
         bool sameKey(const SignedContainer::Key &a, const SignedContainer::Key &b) {
                 return std::memcmp(a.bytes, b.bytes, sizeof(a.bytes)) == 0;
         }
@@ -102,6 +99,15 @@ Error Packages::keyring(const Config &config, List<KeyEntry> &out) {
                 if (config.keyComment != nullptr) err = e.comment.append(config.keyComment(i));
                 if (err.isOk()) err = out.append(std::move(e));
         }
+        for (size_t i = 0; err.isOk() && i < config.packageKeys.size(); ++i) {
+                if (listed(config.packageKeys[i])) continue;
+                KeyEntry e;
+                e.key = config.packageKeys[i];
+                SignedContainer::keyId(e.key, e.id);
+                e.kind = Signer::Package;
+                if (config.packageKeyComment != nullptr) err = e.comment.append(config.packageKeyComment(i));
+                if (err.isOk()) err = out.append(std::move(e));
+        }
         if (err.isError() || config.keysDir.isEmpty()) return err;
         auto [dir, derr] = Vfs::openDirectory(config.keysDir, vfs());
         if (derr.isError()) return Error::Ok; // none added
@@ -131,6 +137,37 @@ Error Packages::keyring(const Config &config, List<KeyEntry> &out) {
         return err;
 }
 
+Error Packages::Detail::storeKey(const KeyEntry &e, const Config &config, String &why) {
+        char id[2 * SignedContainer::KeyIdBytes + 1];
+        idText(e.id, id);
+        if (config.devKey != nullptr && sameKey(e.key, *config.devKey)) {
+                return fail(why, Error::PermissionDenied,
+                            "%s is the dev key: built into a dev firmware, and refused by a trusted one", id);
+        }
+        List<KeyEntry> ring(MemSpace::Psram);
+        Error          err = keyring(config, ring);
+        if (err.isError()) return fail(why, err, "out of memory");
+        for (const KeyEntry &have : ring) {
+                if (sameKey(have.key, e.key))
+                        return fail(why, Error::Exists, "%s is in the keyring already (%s)", id,
+                                    have.kind == Signer::Added ? "added" : "built in");
+        }
+        String file;
+        err = file.appendf("%s.pub", id);
+        auto [to, jerr] = join(config.keysDir, file.view());
+        String line;
+        if (err.isOk()) err = jerr;
+        if (err.isOk()) err = line.append("ed25519 ");
+        for (size_t i = 0; err.isOk() && i < sizeof(e.key.bytes); ++i)
+                err = line.appendf("%02x", unsigned(e.key.bytes[i]));
+        if (err.isOk() && !e.comment.isEmpty()) err = line.appendf(" %s", e.comment.cStr());
+        if (err.isOk()) err = line.append('\n');
+        if (err.isOk()) err = makeDirectories(config.keysDir);
+        if (err.isOk()) err = writeWhole(to.view(), line.view());
+        if (err.isError()) return fail(why, err, "%s: %s", to.cStr(), err.desc());
+        return Error::Ok;
+}
+
 Error Packages::addKey(StringView path, const Config &config, KeyEntry &added, String &why) {
         why.clear();
         String text;
@@ -144,35 +181,8 @@ Error Packages::addKey(StringView path, const Config &config, KeyEntry &added, S
         }
         SignedContainer::keyId(added.key, added.id);
         added.kind = Signer::Added;
-        err = added.comment.append(comment);
-        char id[2 * SignedContainer::KeyIdBytes + 1];
-        idText(added.id, id);
-        if (config.devKey != nullptr && sameKey(added.key, *config.devKey)) {
-                return fail(why, Error::PermissionDenied,
-                            "%s is the dev key: built into a dev firmware, and refused by a trusted one", id);
-        }
-        List<KeyEntry> ring(MemSpace::Psram);
-        if (err.isOk()) err = keyring(config, ring);
-        if (err.isError()) return fail(why, err, "out of memory");
-        for (const KeyEntry &e : ring) {
-                if (sameKey(e.key, added.key))
-                        return fail(why, Error::Exists, "%s is in the keyring already (%s)", id,
-                                    e.kind == Signer::Added ? "added" : "built in");
-        }
-        String file;
-        err = file.appendf("%s.pub", id);
-        auto [to, jerr] = join(config.keysDir, file.view());
-        String line;
-        if (err.isOk()) err = jerr;
-        if (err.isOk()) err = line.append("ed25519 ");
-        for (size_t i = 0; err.isOk() && i < sizeof(added.key.bytes); ++i)
-                err = line.appendf("%02x", unsigned(added.key.bytes[i]));
-        if (err.isOk() && !comment.isEmpty()) err = line.appendf(" %.*s", int(comment.size()), comment.data());
-        if (err.isOk()) err = line.append('\n');
-        if (err.isOk()) err = makeDirectories(config.keysDir);
-        if (err.isOk()) err = writeWhole(to.view(), line.view());
-        if (err.isError()) return fail(why, err, "%s: %s", to.cStr(), err.desc());
-        return Error::Ok;
+        if (added.comment.append(comment).isError()) return fail(why, Error::NoMem, "out of memory");
+        return storeKey(added, config, why);
 }
 
 Error Packages::removeKey(StringView id, const Config &config, KeyEntry &removed, String &why) {
@@ -245,7 +255,9 @@ void Packages::describeSigner(const Config &config, const Info &info, String &na
                         (void)name.appendf("key %s", id);
                 else
                         (void)name.append(e.comment.view());
-                (void)what.append(e.kind == Signer::Added ? "an added key" : "a built-in trusted key");
+                (void)what.append(e.kind == Signer::Added     ? "an added key"
+                                  : e.kind == Signer::Package ? "a built-in package key"
+                                                              : "a built-in trusted key");
                 return;
         }
         (void)name.appendf("key %s", id);

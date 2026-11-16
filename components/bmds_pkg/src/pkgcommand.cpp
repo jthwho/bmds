@@ -40,6 +40,9 @@ namespace {
                         uint16_t    size = 32;
                         const char *output = nullptr;
                         const char *source = nullptr; ///< --source: one source more, this run only
+                        const char *key = nullptr;    ///< source add --key: where its key is
+                        const char *trust = nullptr;  ///< source add --trust ID: yes, for that key only
+                        bool        keepKey = false;  ///< source remove --keep-key
         };
 
         // Where output goes, and how.
@@ -88,6 +91,7 @@ namespace {
                         case Packages::Signer::Trusted: return "trusted";
                         case Packages::Signer::Dev: return "dev";
                         case Packages::Signer::Added: return "added";
+                        case Packages::Signer::Package: return "package";
                 }
                 return "dev";
         }
@@ -870,6 +874,295 @@ namespace {
                 return out.ctx.usage();
         }
 
+        // A key's id as text.
+        void idOf(const uint8_t (&id)[SignedContainer::KeyIdBytes], char (&out)[2 * SignedContainer::KeyIdBytes + 1]) {
+                constexpr char Digits[] = "0123456789abcdef";
+                for (size_t i = 0; i < SignedContainer::KeyIdBytes; ++i) {
+                        out[2 * i] = Digits[id[i] >> 4];
+                        out[2 * i + 1] = Digits[id[i] & 15];
+                }
+                out[sizeof(out) - 1] = '\0';
+                return;
+        }
+
+        const char *kindWords(Packages::Signer kind) {
+                switch (kind) {
+                        case Packages::Signer::Trusted: return "a built-in trusted key";
+                        case Packages::Signer::Dev: return "the dev key";
+                        case Packages::Signer::Added: return "an added key";
+                        case Packages::Signer::Package: return "a built-in package key";
+                }
+                return "";
+        }
+
+        // "bmds-apps (37ddce8c8eb0890a, a built-in package key)" for each id in @p ids.
+        void describeKeys(const Packages::Config &config, StringView ids, String &out) {
+                List<Packages::KeyEntry> ring(MemSpace::Psram);
+                (void)Packages::keyring(config, ring);
+                while (!ids.isEmpty()) {
+                        const size_t     comma = ids.indexOf(',');
+                        const StringView id = ids.left(comma);
+                        ids = comma == StringView::NPos ? StringView() : ids.mid(comma + 1);
+                        const Packages::KeyEntry *found = nullptr;
+                        for (const Packages::KeyEntry &e : ring) {
+                                char text[2 * SignedContainer::KeyIdBytes + 1];
+                                idOf(e.id, text);
+                                if (StringView(text) == id) found = &e;
+                        }
+                        (void)out.append(out.isEmpty() ? "" : "; ");
+                        if (found == nullptr)
+                                (void)out.appendf("key %.*s (not in the keyring)", int(id.size()), id.data());
+                        else
+                                (void)out.appendf("%s (%.*s, %s)", found->comment.cStr(), int(id.size()), id.data(),
+                                                  kindWords(found->kind));
+                }
+                return;
+        }
+
+        int sourceList(Out &out, const Packages::Config &config) {
+                List<Packages::SourceState> all(MemSpace::Psram);
+                String                      why;
+                const Error                 err = Packages::sources(config, all, why);
+                if (err.isError()) {
+                        errorOut(out, "", err, why.view());
+                        return Shell::ExitFailure;
+                }
+                for (size_t i = 0; i < all.size(); ++i) {
+                        const Packages::SourceState &s = all[i];
+                        String                       keys;
+                        describeKeys(config, s.signedBy.view(), keys);
+                        if (out.json) {
+                                out.record("source", [&](JsonWriter &w) {
+                                        w.member("number", uint32_t(i + 1));
+                                        w.member("source", s.source.view());
+                                        w.member("location", s.location.view());
+                                        w.key("signedBy");
+                                        w.beginArray();
+                                        StringView ids = s.signedBy.view();
+                                        while (!ids.isEmpty()) {
+                                                const size_t comma = ids.indexOf(',');
+                                                w.value(ids.left(comma));
+                                                ids = comma == StringView::NPos ? StringView() : ids.mid(comma + 1);
+                                        }
+                                        w.endArray();
+                                        w.member("keyName", keys.view());
+                                        w.member("listed", s.listed);
+                                        w.member("packages", s.packages);
+                                        w.member("made", s.madeAt);
+                                });
+                                continue;
+                        }
+                        out.ctx.printf("%u  %s\n", unsigned(i + 1), s.location.cStr());
+                        String state;
+                        if (!s.listed) {
+                                (void)state.append("not read yet (pkg update)");
+                        } else {
+                                (void)state.appendf("%u packages", unsigned(s.packages));
+                                if (s.madeAt > 0) {
+                                        const DateTime t = DateTime::fromSeconds(s.madeAt);
+                                        (void)state.appendf(", its index of %04ld-%02u-%02u", static_cast<long>(t.year),
+                                                            t.month, t.day);
+                                }
+                        }
+                        const bool network = !s.location.view().startsWith("file:");
+                        out.ctx.printf("   %s; %s%s\n", state.cStr(), s.signedBy.isEmpty() ? "" : "signed by ",
+                                       !s.signedBy.isEmpty() ? keys.cStr()
+                                       : network             ? "signed by any key in the keyring"
+                                                             : "any index (its packages are checked one by one)");
+                }
+                if (!out.json && all.isEmpty()) out.ctx.printf("no sources (pkg source add URL)\n");
+                return Shell::ExitSuccess;
+        }
+
+        int sourceAdd(Out &out, const Packages::Config &config, StringView location, const Options &o) {
+                if (out.json && !o.yes && !o.dryRun && o.trust == nullptr) {
+                        errorOut(out, location, Error::Invalid, "--json doesn't ask: give -y, --trust ID or --dry-run");
+                        return Shell::ExitFailure;
+                }
+                String keyFrom;
+                if (o.key != nullptr) {
+                        Http::Url url;
+                        if (Http::parseUrl(o.key, url).isOk()) {
+                                (void)keyFrom.append(o.key);
+                        } else {
+                                auto [path, nerr] = Vfs::normalize(o.key, out.ctx.cwd());
+                                keyFrom = std::move(path);
+                        }
+                }
+                Packages::SourceLook look;
+                String               why;
+                Error                err = Packages::lookSource(location, keyFrom.view(), config, look, why);
+                if (err.isError()) {
+                        errorOut(out, location, err, why.view());
+                        return Shell::ExitFailure;
+                }
+                char id[2 * SignedContainer::KeyIdBytes + 1];
+                idOf(look.key.id, id);
+                char hexKey[2 * sizeof(look.key.key.bytes) + 1];
+                for (size_t i = 0; i < sizeof(look.key.key.bytes); ++i)
+                        std::snprintf(hexKey + 2 * i, 3, "%02x", unsigned(look.key.key.bytes[i]));
+                const bool asking = !look.isUnsigned && !look.known;
+                // --trust ID: what was shown before (a dry run) is what is trusted now, or nothing.
+                if (o.trust != nullptr && !look.isUnsigned && StringView(o.trust) != StringView(id)) {
+                        String why2;
+                        (void)why2.appendf("%s is now signed by key %s, not %s: look at it again", look.location.cStr(),
+                                           id, o.trust);
+                        if (!look.list.isEmpty())
+                                (void)Vfs::remove(look.list.view(), Vfs::Context{out.ctx.cwd(), nullptr});
+                        errorOut(out, location, Error::PermissionDenied, why2.view());
+                        return Shell::ExitFailure;
+                }
+                if (out.json) {
+                        out.record("source", [&](JsonWriter &w) {
+                                w.member("location", look.location.view());
+                                w.member("packages", look.packages);
+                                w.member("signed", !look.isUnsigned);
+                        });
+                        if (!look.isUnsigned) {
+                                out.record("key", [&](JsonWriter &w) {
+                                        w.member("id", id);
+                                        w.member("kind", look.known ? signerKind(look.key.kind) : "new");
+                                        w.member("comment", look.key.comment.view());
+                                        w.member("key", hexKey);
+                                        w.member("from", look.keyFrom.view());
+                                });
+                        }
+                } else if (look.isUnsigned) {
+                        out.ctx.printf("%s: %u packages, no signed index (each package is checked as it installs)\n",
+                                       look.location.cStr(), unsigned(look.packages));
+                } else if (look.known) {
+                        out.ctx.printf("%s: %u packages, signed by %s (%s, %s)\n", look.location.cStr(),
+                                       unsigned(look.packages), look.key.comment.cStr(), id, kindWords(look.key.kind));
+                } else {
+                        out.ctx.printf("%s\n  %u packages, signed by a key this system doesn't know:\n"
+                                       "    %s\n    key %s: ed25519 %s\n    from %s\n"
+                                       "  Anyone who controls that address can publish packages you would then "
+                                       "install.\n",
+                                       look.location.cStr(), unsigned(look.packages),
+                                       look.key.comment.isEmpty() ? "(no comment)" : look.key.comment.cStr(), id,
+                                       hexKey, look.keyFrom.cStr());
+                }
+                if (o.dryRun) {
+                        if (!look.list.isEmpty())
+                                (void)Vfs::remove(look.list.view(), Vfs::Context{out.ctx.cwd(), nullptr});
+                        return Shell::ExitSuccess;
+                }
+                if (asking && !o.yes && o.trust == nullptr && !ask(out.ctx, "Trust this key and add the source?")) {
+                        if (!look.list.isEmpty())
+                                (void)Vfs::remove(look.list.view(), Vfs::Context{out.ctx.cwd(), nullptr});
+                        return Shell::ExitFailure;
+                }
+                String added;
+                err = Packages::addSource(look, config, added, why);
+                if (err.isError()) {
+                        errorOut(out, location, err, why.view());
+                        return Shell::ExitFailure;
+                }
+                if (out.json) {
+                        out.record("done", [&](JsonWriter &w) {
+                                w.member("action", "added");
+                                w.member("name", added.view());
+                                w.member("packages", look.packages);
+                        });
+                } else {
+                        out.ctx.printf("Added: %s\n", added.cStr());
+                        if (asking) out.ctx.printf("Key %s added to the keyring (pkg key list)\n", id);
+                        out.ctx.printf("Its packages: pkg source show %s\n", look.location.cStr());
+                }
+                return Shell::ExitSuccess;
+        }
+
+        int sourceRemove(Out &out, const Packages::Config &config, StringView which, const Options &o) {
+                String                   removed, why;
+                List<Packages::KeyEntry> orphans(MemSpace::Psram);
+                const Error              err = Packages::removeSource(which, config, removed, orphans, why);
+                if (err.isError()) {
+                        errorOut(out, which, err, why.view());
+                        return Shell::ExitFailure;
+                }
+                if (out.json) {
+                        out.record("done", [&](JsonWriter &w) {
+                                w.member("action", "removed");
+                                w.member("name", removed.view());
+                        });
+                } else {
+                        out.ctx.printf("Removed: %s\n", removed.cStr());
+                }
+                // The keys only it named: asked (-y yes; --json without -y keeps them).
+                for (const Packages::KeyEntry &e : orphans) {
+                        char id[2 * SignedContainer::KeyIdBytes + 1];
+                        idOf(e.id, id);
+                        if (o.keepKey) continue;
+                        bool drop = o.yes;
+                        if (!drop && !out.json) {
+                                String question;
+                                (void)question.appendf("No other source uses key %s (%s). Remove it from the keyring?",
+                                                       id, e.comment.cStr());
+                                drop = ask(out.ctx, question.cStr());
+                        }
+                        if (!drop) continue;
+                        Packages::KeyEntry gone;
+                        String             kwhy;
+                        if (Packages::removeKey(id, config, gone, kwhy).isError()) {
+                                errorOut(out, id, Error::Invalid, kwhy.view());
+                                continue;
+                        }
+                        keyRecord(out, gone, "removed");
+                }
+                return Shell::ExitSuccess;
+        }
+
+        // The packages one source offers, as list shows them.
+        int sourceShow(Out &out, const Packages::Config &config, StringView which, const Options &o) {
+                List<Packages::SourceState> all(MemSpace::Psram);
+                String                      why;
+                Error                       err = Packages::sources(config, all, why);
+                if (err.isError()) {
+                        errorOut(out, which, err, why.view());
+                        return Shell::ExitFailure;
+                }
+                const StringView             given = which.trimmed();
+                const Packages::SourceState *found = nullptr;
+                for (size_t i = 0; i < all.size(); ++i) {
+                        char number[12];
+                        std::snprintf(number, sizeof(number), "%u", unsigned(i + 1));
+                        StringView loc = all[i].location.view();
+                        StringView bare = given;
+                        while (bare.size() > 6 && bare.endsWith('/')) bare = bare.left(bare.size() - 1);
+                        if (given == StringView(number) || loc == bare || all[i].source.view() == given)
+                                found = &all[i];
+                }
+                if (found == nullptr) {
+                        errorOut(out, which, Error::NotFound, "");
+                        if (!out.json) out.ctx.eprintf("pkg: no such source (pkg source list)\n");
+                        return Shell::ExitFailure;
+                }
+                if (!found->listed && !out.json)
+                        out.ctx.printf("%s: not read yet (pkg update)\n", found->location.cStr());
+                Packages::Config one = config;
+                one.sources = found->source.view();
+                List<Packages::Available> listed(MemSpace::Psram);
+                List<Row>                 rows(MemSpace::Psram);
+                err = collectRows(one, listed, rows, why);
+                if (err.isError()) {
+                        errorOut(out, which, err, why.view());
+                        return Shell::ExitFailure;
+                }
+                (void)o;
+                printRows(out, one, rows, listed,
+                          [&](const Row &row) { return row.newest != List<Packages::Available>::NPos; });
+                return Shell::ExitSuccess;
+        }
+
+        int source(Out &out, const Packages::Config &config, Span<char *const> args, const Options &o) {
+                const StringView what = args.size() > 0 ? StringView(args[0]) : StringView();
+                if (what == StringView("list") && args.size() == 1) return sourceList(out, config);
+                if (what == StringView("add") && args.size() == 2) return sourceAdd(out, config, args[1], o);
+                if (what == StringView("remove") && args.size() == 2) return sourceRemove(out, config, args[1], o);
+                if (what == StringView("show") && args.size() == 2) return sourceShow(out, config, args[1], o);
+                return out.ctx.usage();
+        }
+
         struct VerifyState {
                         Out       *out;
                         StringView package;
@@ -985,6 +1278,12 @@ int PkgCommand::run(CommandContext &ctx, const Packages::Config &baseConfig) {
                         o.output = args[++i];
                 else if (a == StringView("--source") && i + 1 < args.size())
                         o.source = args[++i];
+                else if (a == StringView("--key") && i + 1 < args.size())
+                        o.key = args[++i];
+                else if (a == StringView("--trust") && i + 1 < args.size())
+                        o.trust = args[++i];
+                else if (a == StringView("--keep-key"))
+                        o.keepKey = true;
                 else if (a.startsWith('-') && a.size() > 1)
                         return ctx.usage();
                 else
@@ -1015,6 +1314,7 @@ int PkgCommand::run(CommandContext &ctx, const Packages::Config &baseConfig) {
         if (cmd == StringView("index") && rest.size() == 1) return index(out, config, rest[0]);
         if (cmd == StringView("clean") && rest.size() == 0) return clean(out, config);
         if (cmd == StringView("key")) return key(out, config, rest);
+        if (cmd == StringView("source")) return source(out, config, rest, o);
         if (cmd == StringView("info") && rest.size() == 1) return info(out, config, rest[0], o);
         if (cmd == StringView("install") && rest.size() > 0)
                 return install(out, config, rest, Packages::PlanMode::Install, o);

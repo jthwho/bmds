@@ -31,6 +31,7 @@
 #include "previews.h"
 #include "settingspage.h"
 #include "settingswindow.h"
+#include "softwarepanel.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -656,6 +657,12 @@ Error SettingsPage::build() {
                 _themeBox->setChanged(themeChosen, this);
                 showTheme();
         }
+        // Software: the sources and keys, over pkg (devplan/thirdparty.md §5).
+        if (id == StringView("software")) {
+                _software = Widget::create<SoftwarePanel>(_form, _window);
+                if (_software == nullptr) return Error::NoMem;
+                if (Error err = _software->build(); err.isError()) return err;
+        }
         const bool network = StringView(page.id) == StringView("network");
         const bool input = StringView(page.id) == StringView("input");
         if (network || input) {
@@ -818,6 +825,9 @@ bool SettingsPage::changed(SysConf::Id id) {
                 showTheme();
         }
         applyConditions(); // a row's condition may have changed with it
+        // pkg changed a setting of its own (a source added or removed), or one was edited here.
+        if (_software != nullptr && (id == SysConf::NoId || SysConf::keyOf(id).startsWith(StringView("pkg/"))))
+                _software->refresh();
         // The desktop's: the pattern's editors and the preview read them all (a pattern chosen sets
         // its colors too; the desktop color shows through).
         const StringView key = id == SysConf::NoId ? StringView() : SysConf::keyOf(id);
