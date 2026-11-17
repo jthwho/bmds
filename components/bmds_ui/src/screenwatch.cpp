@@ -40,10 +40,11 @@ namespace {
                         uint32_t            client = 0;       // its GUI client (the tray's mark)
                         const Surface      *source = nullptr; // the surface its tiles are of
                         ChangeTiles         tiles;
+                        ChangeTiles         pointerTiles; // drawn as the pointer's (vnc.md §22)
                         char                owner[OwnerBytes] = {};
         };
 
-        // In PSRAM: about 550 bytes of tiles each, made with the first watcher, kept.
+        // In PSRAM: about 1.1 KB of tiles each, made with the first watcher, kept.
         constinit Watcher              *watchers = nullptr;
         constinit std::atomic<Mutex *>  lockPtr{nullptr};
         constinit std::atomic<size_t>   active{0};
@@ -155,6 +156,8 @@ namespace {
                 if (w.source == &s && w.tiles.width() == s.width() && w.tiles.height() == lines) return;
                 w.source = &s;
                 if (!w.tiles.resize(s.width(), lines)) w.tiles = ChangeTiles(); // too big: nothing kept
+                if (!w.pointerTiles.resize(s.width(), lines)) w.pointerTiles = ChangeTiles();
+                w.pointerTiles.clear(); // the tiles' all marked are enough
                 return;
         }
 
@@ -183,7 +186,8 @@ namespace {
         }
 
         // Every surface's present: the scanned one's changes to each watcher.
-        void presented(void *, const Surface &surface, const uint32_t *tiles, uint16_t rowWords, uint16_t rows) {
+        void presented(void *, const Surface &surface, const uint32_t *tiles, const uint32_t *pointerTiles,
+                       uint16_t rowWords, uint16_t rows) {
                 if (active.load(std::memory_order_acquire) == 0 || display == nullptr) return;
                 const bool desktop = &surface == &display->surface();
                 const bool isScanned = &surface == scanned();
@@ -205,11 +209,15 @@ namespace {
                                         w.tiles.markAll();
                                 } else if (lines == surface.height()) {
                                         w.tiles.orIn(tiles, rowWords, rows);
+                                        w.pointerTiles.orIn(pointerTiles, rowWords, rows);
                                 } else {
                                         markMapped(w.tiles, tiles, rowWords, rows, surface.height(), lines);
+                                        if (pointerTiles != nullptr)
+                                                markMapped(w.pointerTiles, pointerTiles, rowWords, rows,
+                                                           surface.height(), lines);
                                 }
                         }
-                        if (!w.notified && !w.tiles.isEmpty()) {
+                        if (!w.notified && !(w.tiles.isEmpty() && w.pointerTiles.isEmpty())) {
                                 w.notified = true;
                                 w.notify(w.arg);
                         }
@@ -314,6 +322,9 @@ namespace {
         // screen rows. Lock held.
         void take(Watcher &w, ScreenWatch::Capture &c, const Surface &shown, size_t bpp) {
                 follow(w, shown);
+                // The pointer's own drawing: no change in a picture without it (where it went is said).
+                if (!c.noPointer) w.tiles.orIn(w.pointerTiles);
+                w.pointerTiles.clear();
                 if (c.all) w.tiles.markAll();
                 c.count = w.tiles.takeRects(c.rects, uint32_t(c.capacity / bpp));
                 c.more = !w.tiles.isEmpty();

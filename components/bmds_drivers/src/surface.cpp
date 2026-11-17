@@ -74,14 +74,15 @@ Error Surface::start(uint16_t width, uint16_t height, Buffering buffering, Memor
                 _tileWords = static_cast<uint16_t>((columns + 31) / 32);
                 _tileRows = static_cast<uint16_t>((height + TileHeight - 1) / TileHeight);
                 const size_t words = size_t(_tileWords) * _tileRows;
-                _damage = static_cast<uint32_t *>(Memory::alloc(MemSpace::Internal, words * 3 * sizeof(uint32_t)));
+                _damage = static_cast<uint32_t *>(Memory::alloc(MemSpace::Internal, words * 4 * sizeof(uint32_t)));
                 if (_damage == nullptr) {
                         stop();
                         return Error::NoMem;
                 }
                 _forward = _damage + words;
                 _select = _forward + words;
-                std::memset(_damage, 0, words * 3 * sizeof(uint32_t));
+                _pointerDamage = _select + words;
+                std::memset(_damage, 0, words * 4 * sizeof(uint32_t));
         }
         const size_t lineBytes = (stride() + LineAlign - 1) / LineAlign * LineAlign;
         _line = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, lineBytes, LineAlign));
@@ -108,7 +109,10 @@ Error Surface::start(uint16_t width, uint16_t height, Buffering buffering, Memor
                 err = fill(bounds(), 0x000000, WaitForever);
                 _front.store(0, std::memory_order_release);
         }
-        if (_damage != nullptr) std::memset(_damage, 0, size_t(_tileWords) * _tileRows * sizeof(uint32_t));
+        if (_damage != nullptr) {
+                std::memset(_damage, 0, size_t(_tileWords) * _tileRows * sizeof(uint32_t));
+                std::memset(_pointerDamage, 0, size_t(_tileWords) * _tileRows * sizeof(uint32_t));
+        }
         if (err.isError()) stop();
         return err;
 }
@@ -132,6 +136,7 @@ void Surface::stop() {
         _batching = false;
         Memory::free(_damage);
         _damage = nullptr;
+        _pointerDamage = nullptr;
         _forward = nullptr;
         _select = nullptr;
         _width = 0;
@@ -255,7 +260,7 @@ void Surface::markDamage(const Rect &rect) {
         const uint32_t c0 = rect.x / TileWidth, c1 = (rect.right() - 1) / TileWidth;
         const uint32_t r0 = rect.y / TileHeight, r1 = (rect.bottom() - 1) / TileHeight;
         for (uint32_t r = r0; r <= r1; ++r) {
-                uint32_t *row = _damage + size_t(r) * _tileWords;
+                uint32_t *row = (_pointerDrawing ? _pointerDamage : _damage) + size_t(r) * _tileWords;
                 for (uint32_t c = c0; c <= c1; ++c) row[c / 32] |= 1u << (c % 32);
         }
         return;
@@ -1031,7 +1036,8 @@ Result<uint32_t> Surface::present(unsigned int timeoutMs) {
                         if (err.isError()) return makeError<uint32_t>(err);
                 }
                 const PresentHook hook = presentHook.load(std::memory_order_acquire);
-                if (hook != nullptr) hook(presentHookArg.load(std::memory_order_acquire), *this, nullptr, 0, 0);
+                if (hook != nullptr)
+                        hook(presentHookArg.load(std::memory_order_acquire), *this, nullptr, nullptr, 0, 0);
                 _shown.store(++_presents, std::memory_order_release);
                 return makeResult(_presents);
         }
@@ -1042,9 +1048,12 @@ Result<uint32_t> Surface::present(unsigned int timeoutMs) {
         const size_t      words = size_t(_tileWords) * _tileRows;
         const PresentHook hook = presentHook.load(std::memory_order_acquire);
         if (hook != nullptr)
-                hook(presentHookArg.load(std::memory_order_acquire), *this, _damage, _tileWords, _tileRows);
-        std::memcpy(_forward, _damage, words * sizeof(uint32_t));
+                hook(presentHookArg.load(std::memory_order_acquire), *this, _damage, _pointerDamage, _tileWords,
+                     _tileRows);
+        // The other buffer gets the pointer's tiles too.
+        for (size_t i = 0; i < words; ++i) _forward[i] = _damage[i] | _pointerDamage[i];
         std::memset(_damage, 0, words * sizeof(uint32_t));
+        std::memset(_pointerDamage, 0, words * sizeof(uint32_t));
         _forwardPending = true;
         ++_presents;
         ++_stats.presents;

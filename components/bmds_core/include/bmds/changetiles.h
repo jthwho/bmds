@@ -73,6 +73,12 @@ class ChangeTiles {
                  */
                 void orIn(const uint32_t *tiles, uint16_t rowWords, uint16_t rows);
 
+                /** @brief ORs in @p other's tiles (of the same picture; any past this one's ignored). */
+                void orIn(const ChangeTiles &other) {
+                        orIn(&other._bits[0][0], RowWords, other._rows);
+                        return;
+                }
+
                 /** @brief Clears every tile. */
                 void clear();
 

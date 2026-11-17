@@ -133,6 +133,8 @@ namespace ScreenWatch {
          * @brief Copies watcher @p id's changed tiles (all with `Capture::all`) out of the shown
          *        picture into @p c's buffer, as rectangles in @p c's `rects`. What doesn't fit
          *        stays marked (`more`); with nothing left, the next change notifies again.
+         *        Without the pointer (`noPointer`), tiles only the pointer changed aren't copied:
+         *        none may be (`count` 0), the pointer's place the news.
          * @return `Ok`, `NotExist` (no such watcher), `NotReady` (no display), `Timeout`.
          * @blocking For the copy (a program's full screen: also while the window manager finishes
          *           a round and its frame shows).

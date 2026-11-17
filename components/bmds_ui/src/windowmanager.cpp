@@ -1641,6 +1641,7 @@ void WindowManager::restorePixels(void *arg, uint8_t *pixels, size_t stride) {
 // to redraw, and nothing drawn copies the pointer's picture (a scroll).
 void WindowManager::restoreUnder() {
         if (_underRect.isEmpty()) return;
+        _surface->setPointerDrawing(true); // its tiles apart: no change without the pointer (vnc.md §22)
         // In strips a patch takes (a scanline's bytes: a drag's image is taller).
         uint8_t       *under = _underIn != nullptr ? _underIn : _under;
         const size_t   rowBytes = size_t(_underRect.width) * Surface::BytesPerPixel;
@@ -1653,6 +1654,7 @@ void WindowManager::restoreUnder() {
                                           restorePixels, &job, DrawTimeoutMs),
                           "the pointer's under");
         }
+        _surface->setPointerDrawing(false);
         _underRect = Rect();
         return;
 }
@@ -1688,7 +1690,9 @@ void WindowManager::drawCursor() {
                 job.imageHeight = _dnd.height;
         }
         _underIn = job.under;
-        // In strips a patch takes; the strips drawn are what restoreUnder() puts back.
+        // In strips a patch takes; the strips drawn are what restoreUnder() puts back. Its tiles
+        // apart (vnc.md §22).
+        _surface->setPointerDrawing(true);
         const size_t    rowBytes = size_t(area.width) * Surface::BytesPerPixel;
         const uint16_t  strip = cursorStripRows(area.width);
         const CursorJob whole = job;
@@ -1708,6 +1712,7 @@ void WindowManager::drawCursor() {
                 }
                 done = uint16_t(y + rows);
         }
+        _surface->setPointerDrawing(false);
         _underRect = done > 0 ? Rect{area.x, area.y, area.width, done} : Rect();
         return;
 }

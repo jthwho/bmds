@@ -181,3 +181,21 @@ TEST_CASE("ChangeTiles: a surface's bitmap ORs in, wider sources clipped") {
         CHECK(rects[1].x == 64);
         CHECK(rects[1].width == 32);
 }
+
+TEST_CASE("ChangeTiles: another's tiles OR in") {
+        ChangeTiles t, other;
+        REQUIRE(t.resize(96, 32)); // 3 × 2 tiles
+        REQUIRE(other.resize(96, 32));
+        t.clear();
+        other.clear();
+        t.mark(Rect{0, 0, 1, 1});
+        other.mark(Rect{64, 16, 1, 1});
+        t.orIn(other);
+        CHECK_FALSE(other.isEmpty()); // left as it was
+        const std::vector<Rect> rects = takeAll(t);
+        REQUIRE(rects.size() == 2);
+        CHECK(rects[0].x == 0);
+        CHECK(rects[0].y == 0);
+        CHECK(rects[1].x == 64);
+        CHECK(rects[1].y == 16);
+}

@@ -325,7 +325,11 @@ void NotifyArea::tick() {
 
 void NotifyArea::iconChanged(int position) {
         if (position < 0) return;
-        update();
+        // Its cell alone (the CPU meter's, several a second): what a VNC viewer is sent.
+        const Rect t = trayRect();
+        GuiWindow *w = window();
+        if (w != nullptr && !t.isEmpty())
+                w->invalidate(Rect{uint16_t(t.x + position * TrayRow::CellWidth), t.y, TrayRow::CellWidth, t.height});
         if (position == _hovered) _app.toolTipChanged(this); // its new text, if showing
         return;
 }

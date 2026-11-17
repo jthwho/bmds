@@ -99,11 +99,12 @@ class Surface {
                  * @brief Told of every surface's presents (`setPresentHook()`, `devplan/vnc.md` §5b):
                  *        @p tiles the tiles drawn since its last present (`TileWidth` × `TileHeight`,
                  *        @p rows rows of @p rowWords words, bit c of a row's word c / 32), or null
-                 *        for all of it (a single-buffered surface keeps none). On the presenting task,
-                 *        before the swap; must not block.
+                 *        for all of it (a single-buffered surface keeps none); @p pointerTiles, the
+                 *        same, those drawn as the pointer's (`setPointerDrawing()`), or null. On the
+                 *        presenting task, before the swap; must not block.
                  */
                 using PresentHook = void (*)(void *arg, const Surface &surface, const uint32_t *tiles,
-                                             uint16_t rowWords, uint16_t rows);
+                                             const uint32_t *pointerTiles, uint16_t rowWords, uint16_t rows);
 
                 /**
                  * @brief Sets the one present hook for all surfaces (null: none). A hook already
@@ -296,6 +297,19 @@ class Surface {
                  */
                 Error endBatch(unsigned int timeoutMs);
 
+                /**
+                 * @brief What is drawn from now on (@p on) is the pointer's (the window manager's own,
+                 *        and what it covers put back; `devplan/vnc.md` §22): its tiles are given to the
+                 *        present hook apart (`pointerTiles`), for watchers that leave the pointer out.
+                 *        Double-buffered only (else nothing changes).
+                 * @par Thread Safety
+                 * The drawing task's.
+                 */
+                void setPointerDrawing(bool on) {
+                        _pointerDrawing = on;
+                        return;
+                }
+
                 /** @brief Returns the 2D-DMA jobs run since `start()` (both chains). */
                 uint32_t jobs() const { return _chain.jobs() + _widen.jobs(); }
 
@@ -451,9 +465,11 @@ class Surface {
                 uint32_t             *_damage = nullptr;  // tiles drawn since the last present, a bit each
                 uint32_t             *_forward = nullptr; // the last present's, still to copy into the other buffer
                 uint32_t             *_select = nullptr;  // prepareFor()'s tiles to copy now
+                uint32_t             *_pointerDamage = nullptr; // the pointer's tiles drawn since then
                 uint16_t              _tileWords = 0;     // words a row of tiles
                 uint16_t              _tileRows = 0;
                 bool                  _forwardPending = false;
+                bool                  _pointerDrawing = false; // marks go to _pointerDamage
                 WaitListOf<4>         _waiters; // woken by each swap and each frame
                 BlitChain             _chain;
                 BlitChain             _widen; // RGB565 sources (started on first use)

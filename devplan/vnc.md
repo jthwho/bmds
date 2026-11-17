@@ -525,3 +525,67 @@ the frame (`drawCursor()`), what it covers saved first (`_under`, put back by th
   frame, so a capture follows and says where it went: no event of its own needed.
 - **Tried on bmds0:** a second viewer (vncserver, bmds-apps' vnc.md §25) followed the first one's
   sweep of the pointer, 95 positions in 4 s, in the order sent.
+
+## 22. A pointer's drawing isn't a change without it (2026-11-17)
+
+- **The waste:** a viewer drawing the pointer itself (RFB's Cursor, captures with
+  `BMDS_CAPTURE_NO_POINTER`) was sent the pointer's tiles, the same pixels again (the pointer
+  taken out): on every move, and on every round of the window manager's, since each puts back
+  what the pointer covers and draws it again (on bmds0, the tray's CPU meter: 4 a second).
+- **Now:** `Surface::setPointerDrawing(on)` sends a double-buffered surface's marks to a bitmap of
+  their own (`_pointerDamage`, beside `_damage`; the copy forward takes both). The window
+  manager sets it around `restoreUnder()` and `drawCursor()`. The present hook gets both
+  bitmaps; each watcher keeps `pointerTiles` apart from its `tiles`. A capture without the
+  pointer clears them and copies none (a tile drawn by both is in `tiles` too); one with it ORs
+  them in. The watcher is still told (`screenChanged`): a capture gives the pointer's place
+  (§21), maybe with no rectangles. No ABI change: a capture without the pointer copies what
+  differs in the picture without it, as before; it now leaves out what doesn't.
+- **Cost:** a fourth tile bitmap a double-buffered surface (internal RAM: 360 bytes at 1280 × 720,
+  544 at 1920 × 1080); 550 bytes more a watcher (PSRAM).
+
+## 23. A tray icon's change repaints its cell (2026-11-17)
+
+- `NotifyArea::iconChanged()` invalidated the whole notify area: each tick of the CPU meter (4 a
+  second on bmds0) repainted the tray, and a VNC viewer was sent 192 × 32 pixels each time. Now
+  only the icon's cell (`TrayRow::CellWidth` × the tray's height): 32 × 32 on bmds0, the tray
+  drawn as before.
+
+## 24. Copies for viewers: window moves (proposed 2026-11-17, for RFB's CopyRect)
+
+**Status: proposed, for the user's review.** Nothing built.
+
+- **What there is:** nothing on the desktop copies pixels within the screen today but the `win`
+  test command's scroll (`Painter::scroll()` → `Surface::copy()`). A window moved (at its drop: the
+  move is an outline until then) is drawn again by its owner at the new place, and what it
+  uncovered by the windows under it. So a viewer is sent the whole window again.
+- **C1, the window manager moves by copying:** at a drop that only moves (same size), the
+  window's pixels where it was and showed are copied (`Surface::copy()`, 2D-DMA) to where it goes;
+  only what didn't show before (it was covered, or off screen) and what it uncovers are drawn
+  again. A gain on the board itself (no redraw by its owner: a GUI program's whole window, a
+  terminal's text), as well as for viewers. The title bar's colours change with focus: drawn
+  again too if the drop focuses it.
+- **C2, the surface tells of its copies:** a double-buffered `Surface` keeps a frame's copies in
+  order (8 at most; past it, plain damage), each `{from, to}`. A copy whose source was drawn
+  earlier in the same frame is plain damage (its pixels aren't the last present's). The copy's
+  fully covered destination tiles aren't marked damaged; its edge tiles are. The present hook
+  gets the list.
+- **C3, a watcher's pending copies:** each watcher keeps up to 16 in order. At a present, a copy
+  is kept for it only if its source's tiles are clean in the watcher's tiles (what it has there
+  is what was copied) and, for a watcher capturing with the pointer, the pointer wasn't over
+  the source. The copy's covered destination tiles are cleared from its tiles (the copy will
+  overwrite them), and the frame's damage is ORed in after (drawing after the copy is sent after
+  it). Otherwise, or with no room, the destination is marked as damage. Line mode, or a program's
+  full screen: no copies.
+- **C4, the ABI:** `bmds_screen_capture_t` gains `bmds_screen_copy_t *copies; uint32_t
+  max_copies; uint32_t copy_count;` (out: the copies, in order, before the rectangles), and
+  `bmds_screen_copy_t {uint16_t from_x, from_y, width, height, to_x, to_y}`. A caller without them
+  (an older struct, or `max_copies` 0) gets their destinations as rectangles, as today. Lock
+  lines: the struct's new size and offsets (rule 4), and the new struct's.
+- **C5, vncserver:** a viewer listing CopyRect (encoding 1) is given `max_copies`, and its update
+  starts with CopyRect rectangles in order (12 + 4 bytes each), then the rest. RFB applies an
+  update's rectangles in order, so a copy reads what the viewer had.
+- **Later, free with C2-C5:** the terminal and the GUI's scrolling views scrolling by copying
+  (`Painter::scroll()`), faster on the board, and sent to viewers as copies.
+- **Cost (estimate):** C2 about 100 bytes a surface (internal); C3 about 200 bytes a watcher
+  (PSRAM); C1 saves a window's redraw on each move.
+- **To decide:** C1 on its own first (the board's gain), then C2-C5; or all together.
