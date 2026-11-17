@@ -550,7 +550,10 @@ Plan: [`input.md`](input.md).
     `devplan/irc.md`: a GUI client of our own, a portable C++ core tested on the PC), released
     after the next BMDS release; what it needs here, a `ChatView` GUI class (`chatview.md`,
     approved 2026-11-16; step 1, the model, built: §7; step 2, the widget and the class, built:
-    §8; step 3, guigallery's Chat tab and guitest, built: §9).
+    §8; step 3, guigallery's Chat tab and guitest, built: §9), and tabs for many pages
+    (`tabs.md`, approved 2026-11-16: no 16-tab limit, a row that scrolls, badges, attention,
+    close buttons, moving a page, the row hidden; the client's tabs by default; step 1, the
+    row's scrolling and parts in `TabRow`, built: §7).
   - [ ] HTTP serving for applications (the user, 2026-10-28; to plan): a web server in the
     kernel or the SDK that applications serve their pages and JSON APIs from, behind the system's
     users and passwords; first users the synth module's configuration (`synthmodule.md` §3h).

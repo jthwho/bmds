@@ -1574,6 +1574,171 @@ TEST_CASE("TabRow: tabs side by side on columns, found by x, stepped around the 
         CHECK(bmds::TabRow::step(5, 0, 1) == 0);
 }
 
+TEST_CASE("TabRow: a tab's badge and close button, on columns") {
+        namespace R = bmds::TabRow;
+        // Neither: place()'s width.
+        R::Parts p = R::parts(37, 0, false);
+        CHECK(p.width == 56);
+        CHECK(p.badge == 0);
+        CHECK(p.close == 0);
+        // A badge: the title at 8, 40 wide; the pill 4 past it, its text 7 and 4 a side; then Pad.
+        p = R::parts(40, 7, false);
+        CHECK(p.badge == 52);
+        CHECK(p.badgeWidth == 15);
+        CHECK(p.width == 76); // 52 + 15 + 8 = 75, up to a column
+        CHECK(p.close == 0);
+        // A close button: 4 past the title, 12 square, 4 from the right edge.
+        p = R::parts(40, 0, true);
+        CHECK(p.width == 68);
+        CHECK(p.close == 52);
+        // Both: the button at the right edge, past the pill.
+        p = R::parts(40, 7, true);
+        CHECK(p.width == 88);
+        CHECK(p.badge == 52);
+        CHECK(p.close == 72);
+        CHECK(p.badge + p.badgeWidth <= p.close);
+}
+
+TEST_CASE("TabRow: a row too narrow scrolls a tab at a time, and shows the one asked for") {
+        namespace R = bmds::TabRow;
+        const uint16_t widths[] = {80, 56, 16, 96};
+        uint32_t       lefts[4];
+        const uint32_t content = R::placeAll(widths, lefts);
+        CHECK(content == 248);
+        CHECK(lefts[0] == 0);
+        CHECK(lefts[1] == 80);
+        CHECK(lefts[2] == 136);
+        CHECK(lefts[3] == 152);
+
+        // Room for them all: no buttons, no scrolling.
+        R::Bar wide = R::bar(content, 300);
+        CHECK_FALSE(wide.buttons);
+        CHECK(wide.view == 300);
+        CHECK(R::maxScroll(content, wide) == 0);
+        CHECK(R::scrollToShow(0, 152, 96, content, wide) == 0);
+        CHECK(R::scrollBy(0, lefts, content, wide, 1) == 0);
+        R::Bar exact = R::bar(content, 248);
+        CHECK_FALSE(exact.buttons);
+
+        // 150 wide: three 16-pixel buttons, the view 102 down to a column.
+        R::Bar bar = R::bar(content, 150);
+        CHECK(bar.buttons);
+        CHECK(bar.view == 100);
+        CHECK(R::maxScroll(content, bar) == 148);
+
+        CHECK(R::scrollToShow(0, 152, 96, content, bar) == 148); // its right edge at the view's
+        CHECK(R::scrollToShow(0, 80, 56, content, bar) == 36);
+        CHECK(R::scrollToShow(148, 0, 80, content, bar) == 0); // its left edge at the view's
+        CHECK(R::scrollToShow(0, 0, 80, content, bar) == 0);   // already shown: unchanged
+        CHECK(R::scrollToShow(36, 80, 56, content, bar) == 36);
+        CHECK(R::scrollToShow(1000, 152, 96, content, bar) == 148); // past the end (a resize): back in
+
+        // Wider than the view: its left edge.
+        R::Bar narrow = R::bar(content, 100);
+        CHECK(narrow.view == 52);
+        CHECK(R::scrollToShow(0, 0, 80, content, narrow) == 0);
+        CHECK(R::scrollToShow(0, 152, 96, content, narrow) == 152);
+
+        // A tab at a time, the end where the last fits.
+        CHECK(R::scrollBy(0, lefts, content, bar, 1) == 80);
+        CHECK(R::scrollBy(80, lefts, content, bar, 1) == 136);
+        CHECK(R::scrollBy(136, lefts, content, bar, 1) == 148);
+        CHECK(R::scrollBy(148, lefts, content, bar, 1) == 148);
+        CHECK(R::scrollBy(148, lefts, content, bar, -1) == 136);
+        CHECK(R::scrollBy(136, lefts, content, bar, -1) == 80);
+        CHECK(R::scrollBy(80, lefts, content, bar, -1) == 0);
+        CHECK(R::scrollBy(0, lefts, content, bar, -1) == 0);
+        CHECK(R::scrollBy(0, lefts, content, bar, 5) == 148);
+        CHECK(R::scrollBy(148, lefts, content, bar, -2) == 80);
+        CHECK(R::scrollBy(36, lefts, content, bar, -1) == 0); // between tabs: the one before
+        CHECK(R::scrollBy(500, lefts, content, bar, 0) == 148);
+}
+
+TEST_CASE("TabRow: a point on a tab, its close button, or the buttons") {
+        namespace R = bmds::TabRow;
+        using K = R::Hit::Kind;
+        const uint16_t widths[] = {80, 56, 16, 96};
+        const uint16_t closes[] = {0, 0, 0, 80}; // the last one closable
+        uint32_t       lefts[4];
+        const uint32_t content = R::placeAll(widths, lefts);
+        const R::Bar   bar = R::bar(content, 150);
+
+        auto is = [&](uint32_t scroll, int x, K kind, int tab = -1) {
+                const R::Hit h = R::hit(lefts, widths, closes, scroll, bar, x);
+                return h.kind == kind && h.tab == tab;
+        };
+        CHECK(is(0, -1, K::None));
+        CHECK(is(0, 0, K::Tab, 0));
+        CHECK(is(0, 79, K::Tab, 0));
+        CHECK(is(0, 80, K::Tab, 1));
+        CHECK(is(0, 99, K::Tab, 1));
+        CHECK(is(0, 100, K::Back));
+        CHECK(is(0, 115, K::Back));
+        CHECK(is(0, 116, K::Forward));
+        CHECK(is(0, 132, K::List));
+        CHECK(is(0, 147, K::List));
+        CHECK(is(0, 148, K::None)); // the row's last two pixels
+        // Scrolled: the view's x plus the scroll.
+        CHECK(is(136, 0, K::Tab, 2));
+        CHECK(is(136, 16, K::Tab, 3));
+        CHECK(is(136, 95, K::Tab, 3));   // 231: a pixel before the close button
+        CHECK(is(136, 96, K::Close, 3)); // 232: on it
+        CHECK(is(148, 95, K::Close, 3)); // 243: its last pixel
+        CHECK(is(148, 96, K::Tab, 3));   // 244: past it, still the tab
+
+        // Room for them all: nothing past the tabs, no buttons.
+        const R::Bar wide = R::bar(content, 300);
+        CHECK(R::hit(lefts, widths, closes, 0, wide, 247).tab == 3);
+        CHECK(R::hit(lefts, widths, closes, 0, wide, 248).kind == K::None);
+        CHECK(R::hit(lefts, widths, closes, 0, wide, 299).kind == K::None);
+        CHECK(R::hit(lefts, widths, closes, 0, wide, 300).kind == K::None);
+        // No tabs.
+        CHECK(R::hit({}, {}, {}, 0, R::bar(0, 100), 10).kind == K::None);
+}
+
+TEST_CASE("TabRow: any row's scroll stays on columns and in range, and shows what it is asked to") {
+        namespace R = bmds::TabRow;
+        uint32_t seed = 12345;
+        auto     next = [&](uint32_t most) {
+                seed = seed * 1664525u + 1013904223u;
+                return (seed >> 8) % most;
+        };
+        for (int round = 0; round < 500; ++round) {
+                const size_t count = 1 + next(256);
+                uint16_t     widths[256], closes[256];
+                uint32_t     lefts[256];
+                for (size_t i = 0; i < count; ++i) {
+                        const R::Parts p = R::parts(uint16_t(next(200)), uint16_t(next(3) ? 0 : 1 + next(24)), next(2));
+                        REQUIRE(p.width % 4 == 0);
+                        widths[i] = p.width;
+                        closes[i] = p.close;
+                }
+                const uint32_t content = R::placeAll({widths, count}, {lefts, count});
+                const R::Bar   bar = R::bar(content, 1 + next(1400));
+                const uint32_t most = R::maxScroll(content, bar);
+                CHECK(most % 4 == 0);
+                uint32_t scroll = 0;
+                for (int k = 0; k < 20; ++k) {
+                        const size_t t = next(uint32_t(count));
+                        scroll = R::scrollToShow(scroll, lefts[t], widths[t], content, bar);
+                        REQUIRE(scroll % 4 == 0);
+                        REQUIRE(scroll <= most);
+                        if (widths[t] <= bar.view) {
+                                // Wholly in view, and a point in its middle on it.
+                                REQUIRE(lefts[t] >= scroll);
+                                REQUIRE(lefts[t] + widths[t] <= scroll + bar.view);
+                                const int    x = int(lefts[t] + widths[t] / 2 - scroll);
+                                const R::Hit h =
+                                        R::hit({lefts, count}, {widths, count}, {closes, count}, scroll, bar, x);
+                                REQUIRE(h.tab == int(t));
+                        }
+                        scroll = R::scrollBy(scroll, {lefts, count}, content, bar, int(next(5)) - 2);
+                        REQUIRE(scroll % 4 == 0);
+                        REQUIRE(scroll <= most);
+                }
+        }
+}
+
 TEST_CASE("FileNameList: one name as it is, several in quotes, written back") {
         bmds::List<bmds::StringView> names(bmds::MemSpace::Psram);
         REQUIRE(bmds::FileNameList::split("  my song.mp3 ", names).isOk());
