@@ -379,3 +379,6 @@ method ScreenShare.watch(Bool) -> None
 method ScreenShare.injectKey(Int, Int, Int) -> None
 method ScreenShare.injectPointer(Int, Int, Int, Int) -> None
 event ScreenShare.changed() on
+
+# 2026-11-17 (bmds-apps devplan/vnc.md §19): a selection changed, told to every Clipboard object.
+event Clipboard.changed(Atom) on

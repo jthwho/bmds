@@ -453,3 +453,7 @@ GUI_METHOD(ScreenShare, watch, None, Bool)
 GUI_METHOD(ScreenShare, injectKey, None, Int, Int, Int)
 GUI_METHOD(ScreenShare, injectPointer, None, Int, Int, Int, Int)
 GUI_EVENT(ScreenShare, changed, On)
+
+/* ---- 2026-11-17 (bmds-apps' devplan/vnc.md §19): a selection's contents changed, anyone's copy
+ * or emptied (a VNC server sends the desktop's copies to its viewers) */
+GUI_EVENT(Clipboard, changed, On, Atom)

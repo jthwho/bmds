@@ -67,6 +67,9 @@ namespace TlsService {
          */
         Error systemRoots(String &out, String &why);
 
+        /** @brief The folder of the board's own certificate and key (`net/tls/server-keys`). */
+        Error serverKeysFolder(String &out);
+
         /**
          * @brief Counts a session for @p socket and steps its handshake from now on.
          * @return `Ok`, `Full` (`maxSessions` reached), `NoMem` (no thread).

@@ -1426,6 +1426,7 @@ static inline int bmds_screen_share_inject_pointer(bmds_gui_t *gui, uint32_t id,
         return bmds_gui_call_named(gui, id, "injectPointer", args, 4, NULL);
 }
 #define BMDS_GUI_SCREEN_SHARE_CHANGED "changed" /**< ScreenShare's event (no values). */
+#define BMDS_GUI_CLIPBOARD_CHANGED "changed" /**< Clipboard's event (Atom). */
 
 #ifdef __cplusplus
 }

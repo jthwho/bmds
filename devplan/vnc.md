@@ -381,8 +381,8 @@ first start over SSH couldn't even be asked. R9 as it stands now: **the protecti
 mark**, drawn by the system (§13), which no program can leave off; no setting gates watching or
 injecting.
 
-- **`ScreenShare`**, a class of its own (`classes.def`), any local connection's (one a
-  connection; a remote one over TCP is refused, `GuiConnection::isLocal()`): `watch(Bool)`,
+- **`ScreenShare`**, a class of its own (`classes.def`), any local connection's (several since
+  §19, four watching at most; a remote one over TCP is refused, `GuiConnection::isLocal()`): `watch(Bool)`,
   `injectKey`, `injectPointer`, the event `changed`. `gui_screen_capture` takes a connection that
   watches through it. (Named `ScreenShare`: angel has a `Screen` type already.)
 - **Out of `Shell`:** `watchScreen`, `screenChanged`, `injectKey` and `injectPointer`, unreleased,
@@ -444,3 +444,34 @@ shown (up to a frame), and the window manager waited for it in turn.
   early now leaves where it stopped and the next starts there, round to it (`ChangeTiles`, with a
   host test). On bmds0, `surfdemo -F` in line mode through a viewer: the whole screen, as the HDMI
   output (bands of different frames where one frame needs several updates).
+
+## 17. Clipboard.changed (2026-11-17, for the VNC server's clipboard)
+
+A program could copy and paste, but learn of another's copy only if it had owned the selection
+(`lost`); a VNC server sends the desktop's copies to its viewers as they happen, so it needs every
+change. Appended: `Clipboard::watch()`/`unwatch()` (8 watchers, called on the changing task with
+no lock held, one at a time under the owner-call lock, so `unwatch()` returning means none is under
+way) after a copy, an offer, a clear that emptied something and a withdraw; `GuiClipboard::
+setChanged()` (the selections' bits gathered and told on the loop, as `lost`); the GUI event
+`Clipboard.changed(Atom)` to each Clipboard object of a connection (4 kept a connection), its own
+copies included (`owns` tells them apart). Host-tested (`Clipboard tells its watchers of each
+change`); on bmds0 `clip copy` reached a viewer within a second.
+
+## 18. Decided (2026-11-17, the user's)
+
+- **TLS servers in the kernel** ("proper TLS server support"): network.md §37, built.
+- **Several viewers:** the first in has the keys and the pointer, the rest watch; when it leaves,
+  the next in the order they came has them; the tray's menu gives them to any viewer, or to none.
+  Each viewer its own watch (below), and no copy of the screen kept by the server (the user: "a lot
+  of RAM for the app"): its one capture buffer serves every viewer in turn.
+
+## 19. Several ScreenShares a connection (2026-11-17)
+
+- **Each `ScreenShare` its own watch** (its own changed tiles: a viewer each). A connection keeps
+  four watching (`GuiConnection::MaxScreenShares`, ScreenWatch's own limit): `watch(true)` past that
+  is `BadAccess`; any number may exist (a program injects through one that doesn't watch).
+- **`bmds_screen_capture_t::share`** appended (52 bytes; 48 before, its lock noted): the object
+  whose watch is captured; 0, or a program built before it, the connection's first watching one.
+- **Tried on bmds0** with vncserver's viewers (bmds-apps' vnc.md §21): four at once, each its own
+  updates; a viewer's keys typed only while it had the input.
+

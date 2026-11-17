@@ -668,6 +668,7 @@ Made by `Create`.
 | `lost` | Atom | on |
 | `pasted` | Atom, String, Bytes | on |
 | `pasteFailed` | Atom, String, Atom | on |
+| `changed` | Atom | on |
 
 ## Notification
 

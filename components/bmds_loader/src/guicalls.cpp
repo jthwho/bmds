@@ -125,6 +125,7 @@ int32_t bmds_k_gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture) 
         bmds::GuiOpener::ScreenCapture k;
         k.rgb565 = c.format == BMDS_PIXEL_RGB565;
         k.all = (c.flags & BMDS_CAPTURE_ALL) != 0;
+        k.share = c.share; // 0 from programs built before it (a 48-byte struct)
         k.buffer = static_cast<uint8_t *>(c.buffer);
         k.capacity = c.capacity;
         k.rects = bmds::Span<bmds::Rect>(rects, maxRects);

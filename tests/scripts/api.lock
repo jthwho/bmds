@@ -4096,3 +4096,6 @@ void ScreenShare::injectKey(int, int, int)
 void ScreenShare::injectPointer(int, int, int, int)
 void ScreenShare::onChanged(Callback@)
 void ScreenShare::watch(bool)
+
+# 2026-11-17 (bmds-apps devplan/vnc.md §19): Clipboard.changed.
+void Clipboard::onChanged(StringCallback@)

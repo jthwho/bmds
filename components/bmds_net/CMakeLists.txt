@@ -87,6 +87,8 @@ if(COMMAND idf_component_register)
                                     src/timesync.cpp
                                     src/tlsbench.cpp
                                     src/tlsgcm.cpp
+                                    src/tlscommand.cpp
+                                    src/tlsserverkeys.cpp
                                     src/tlssession.cpp
                                     src/tlssettings.cpp
                                INCLUDE_DIRS include

@@ -154,15 +154,14 @@ Plans: [`display.md`](display.md), [`windows.md`](windows.md), [`gui.md`](gui.md
   colour is no longer drawn twice (66 to 35 ms).
 - [ ] `Display` as a service (hot-plug).
 - [ ] Display modes (720p and up, the EDID's preferred where the DSI link allows) and depths for programs (8-bit palette, 16, 24); line-based graphics.
-- [ ] Remote desktop (`vnc.md`, planned 2026-11-16, the user's request): the display's output off
-  with the desktop running (`display output`, `display/output` on/off/remote, the scan on black, local
-  input waking it), the screen's changes and pixels for `SHELL` programs (`watchScreen`,
-  `gui_screen_capture`), injected keys and an absolute pointer, `image_encode` into memory, a
-  tray icon while the screen is watched. The VNC server itself is bmds-apps' (`devplan/vnc.md`
-  there). Built 2026-11-16, not yet tried on the board (`vnc.md` §11): steps 1-4 and
-  `sdk/examples/screencap`; the server's steps 1-3 in bmds-apps. Tried on the board (§12): the
-  output off (PSRAM DMA copies 72 to 125 MB/s), capture, injection, JPEG, a viewer through SSH;
-  fixed on the way: keys' characters, the tray's icon limit, two TCP gaps (`network.md` §36).
+- [x] Remote desktop (`vnc.md`, 2026-11-16, the user's request): the display's output off with
+  the desktop running (`display output`, `display/output` on/off/remote, the scan on black, local
+  input waking it), the screen watched and captured by any local program (`ScreenShare`,
+  `gui_screen_capture` by 2D-DMA, rows as the monitor shows them, without the window manager's
+  wait), injected keys and an absolute pointer, `image_encode` into memory, the tray's red dot on
+  a watcher's icon, and `Clipboard.changed` (§17). The VNC server itself is bmds-apps'
+  (`devplan/vnc.md` there), on bmds0 with TigerVNC and Doom full screen. Open: TLS servers for
+  programs (the server's VeNCrypt), several viewers (vnc.md §18, for the user's review).
 
 ## Phase 5 — Input
 
@@ -562,7 +561,11 @@ Plan: [`input.md`](input.md).
     §8; step 3, guigallery's Chat tab and guitest, built: §9), and tabs for many pages
     (`tabs.md`, approved 2026-11-16: no 16-tab limit, a row that scrolls, badges, attention,
     close buttons, moving a page, the row hidden; the client's tabs by default; step 1, the
-    row's scrolling and parts in `TabRow`, built: §7).
+    row's scrolling and parts in `TabRow`, built: §7). Servers too (§37, 2026-11-17, the user's:
+    "proper TLS server support in the kernel", for the VNC server's VeNCrypt): `BMDS_TLS_SERVER`
+    and `BMDS_TLS_CLIENT_CERT` on `tls_ctl`, the board's own ECDSA certificate made on first use
+    (`net/tls/server-keys`, `tls cert`), libtls's `tls_server`/`tls_accept_socket`, `progtest
+    tlsserver`; +27 KB of flash.
   - [ ] HTTP serving for applications (the user, 2026-10-28; to plan): a web server in the
     kernel or the SDK that applications serve their pages and JSON APIs from, behind the system's
     users and passwords; first users the synth module's configuration (`synthmodule.md` §3h).

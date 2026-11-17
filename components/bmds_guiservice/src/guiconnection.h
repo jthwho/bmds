@@ -276,12 +276,17 @@ class GuiConnection {
                 /** @brief True for a program on the board (a system call reaches it), not one over TCP. */
                 bool isLocal() const { return _clientEnd != nullptr; }
 
-                /** @brief Its screen watch (`ScreenWatch`), or -1: `ScreenShare.watch`'s. */
-                int16_t screenWatch() const { return _screenWatch.load(std::memory_order_acquire); }
-                void    setScreenWatch(int16_t id) {
-                        _screenWatch.store(id, std::memory_order_release);
-                        return;
-                }
+                /** @brief The most ScreenShare objects a connection has (each its own watch: a viewer each). */
+                static constexpr size_t MaxScreenShares = 4;
+
+                /**
+                 * @brief ScreenShare object @p object's screen watch (`ScreenWatch`), or -1; @p object
+                 *        0: the first that watches (programs from before `share`). Any thread.
+                 */
+                int16_t screenWatch(uint32_t object) const;
+
+                /** @brief Records ScreenShare @p object's watch @p id (-1: none). The loop's. @return False: no room. */
+                bool setScreenWatch(uint32_t object, int16_t id);
 
                 /** @brief The program's name, as people see it. */
                 StringView displayName() const;
@@ -319,6 +324,8 @@ class GuiConnection {
                 Notifier *notifier();
 
                 uint32_t clipboardOwners[3] = {}; ///< The `Clipboard` object that copied onto each selection (0: none).
+                /** @brief The connection's `Clipboard` objects, told `changed` (0: a free slot). */
+                uint32_t clipboards[4] = {};
 
                 /** @brief A drop on one of its widgets whose data is being read (`dropTypes`). */
                 struct PendingDrop {
@@ -410,7 +417,9 @@ class GuiConnection {
                 Semaphore            _started{1, 0};            // start() is done with _loop: the loop may run
                 std::atomic<bool>    _posted{false};
                 std::atomic<bool>    _stopping{false};
-                std::atomic<int16_t> _screenWatch{-1}; // ScreenShare.watch's ScreenWatch id
+                // ScreenShare objects' watches, a pair each (0 / -1: free): under the registry's lock.
+                uint32_t             _shareObjects[MaxScreenShares] = {};
+                int16_t              _shareWatches[MaxScreenShares] = {-1, -1, -1, -1};
                 bool                 _helloDone = false;
                 bool                 _shellAllowed = false;     // the program named by gui/shell-clients
                 int32_t              _session = 0;              // its program's session (launch feedback)

@@ -1322,13 +1322,29 @@ typedef struct bmds_fastpath_t {
 #define BMDS_TLS_NO_VERIFY 1u
 
 /**
+ * @brief `bmds_tls_config_t::flags` (devplan/network.md §37, appended 2026-11-17): the server's side,
+ *        on an accepted socket. `cert` and `key` are the server's; both null, the board's own
+ *        certificate (`tls cert` shows it; its key never leaves the kernel). `server_name` is
+ *        ignored, `ca` checks client certificates, `alpn` lists the protocols taken. `BMDS_TLS_INFO`'s
+ *        peer is the client's certificate, if it gave one.
+ */
+#define BMDS_TLS_SERVER 2u
+
+/**
+ * @brief `bmds_tls_config_t::flags`, with `BMDS_TLS_SERVER` only: a client certificate is asked for
+ *        and required, checked against `ca` (needed); with `BMDS_TLS_NO_VERIFY` any is taken and the
+ *        program checks `peer_sha256`. A client without one fails with `-BMDS_EKEYREJECTED`.
+ */
+#define BMDS_TLS_CLIENT_CERT 4u
+
+/**
  * @brief How to start TLS (`BMDS_TLS_START`). Everything is copied: the buffers are the
  *        program's again when the call returns. Sizes: `ca` at most 256 KB, `cert` and `key` 16 KB
  *        each, `server_name` 253 bytes, `alpn` 127.
  */
 typedef struct bmds_tls_config_t {
                 uint32_t       size;        /**< `sizeof(bmds_tls_config_t)`. */
-                uint32_t       flags;       /**< `BMDS_TLS_NO_VERIFY`; others `-BMDS_EINVAL`. */
+                uint32_t       flags; /**< `BMDS_TLS_NO_VERIFY`, `_SERVER`, `_CLIENT_CERT`; others `-BMDS_EINVAL`. */
                 const char    *server_name; /**< SNI and the name checked; null only with `BMDS_TLS_NO_VERIFY`. */
                 const uint8_t *ca;          /**< More trusted roots (PEM, one or more, or a DER); null: none. */
                 uint32_t       ca_size;     /**< Its bytes. */
@@ -1701,6 +1717,11 @@ typedef struct bmds_screen_capture_t {
                 uint32_t     width;      /**< Out: the picture's (a program's full screen may change it). */
                 uint32_t     height;     /**< Out. */
                 uint32_t     more;       /**< Out: 1 if changes are left that didn't fit: capture again. */
+                /**
+                 * The ScreenShare object whose watch is captured (appended 2026-11-17: a connection
+                 * may have several, a VNC viewer each); 0, or a struct without it: the first watching.
+                 */
+                uint32_t share;
 } bmds_screen_capture_t;
 
 /** @brief A buffer to show (`surface_present`). */

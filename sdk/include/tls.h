@@ -5,12 +5,15 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * libtls's API (OpenBSD's, as LibreSSL and libretls ship it), the client calls, over BMDS's TLS
- * sockets (`tls_ctl`, devplan/network.md §35): the kernel does the handshake and the records,
+ * libtls's API (OpenBSD's, as LibreSSL and libretls ship it), clients and servers, over BMDS's TLS
+ * sockets (`tls_ctl`, devplan/network.md §35, §37): the kernel does the handshake and the records,
  * so this library (libtls.a, sdk/tls/) is a few KB. Programs written for libtls build as they are.
  *
  * What differs from OpenBSD's:
- * - Clients only: `tls_server()` returns NULL (errno `ENOTSUP`), `tls_accept_*()` fail.
+ * - A server with no keypair set presents the board's own certificate (`tls cert` shows it); its
+ *   key stays in the kernel. `tls_accept_fds()` needs one socket for both directions;
+ *   `tls_accept_cbs()` and optional client certificates aren't offered (`verify_client` is
+ *   required ones).
  * - TLS 1.2 only: `tls_config_set_protocols()` without TLSv1.2 fails. The cipher suites are the
  *   kernel's (`tls_config_set_ciphers()` takes the usual names and changes nothing).
  * - `tls_connect_fds()` needs one socket for both directions; `tls_connect_cbs()` isn't offered.
@@ -85,19 +88,22 @@ void tls_config_insecure_noverifycert(struct tls_config *config);
 void tls_config_insecure_noverifyname(struct tls_config *config);
 void tls_config_insecure_noverifytime(struct tls_config *config);
 void tls_config_verify(struct tls_config *config);
+/** @brief A server's: a client certificate required, checked against the CA (or any, with noverifycert). */
+void tls_config_verify_client(struct tls_config *config);
 
 /** @brief Reads all of @p file (for the `_mem` calls); free with `tls_unload_file()`. */
 uint8_t *tls_load_file(const char *file, size_t *len, char *password);
 void     tls_unload_file(uint8_t *buf, size_t len);
 
 struct tls *tls_client(void);
-struct tls *tls_server(void); /* NULL, errno ENOTSUP: clients only */
+struct tls *tls_server(void);
 int         tls_configure(struct tls *ctx, struct tls_config *config);
 void        tls_reset(struct tls *ctx);
 void        tls_free(struct tls *ctx);
 
-int tls_accept_socket(struct tls *ctx, struct tls **cctx, int s);                  /* fails: clients only */
-int tls_accept_fds(struct tls *ctx, struct tls **cctx, int fd_read, int fd_write); /* fails */
+/** @brief Starts TLS's server side on accepted socket @p s: a new context in @p cctx (tls_free it). */
+int tls_accept_socket(struct tls *ctx, struct tls **cctx, int s);
+int tls_accept_fds(struct tls *ctx, struct tls **cctx, int fd_read, int fd_write);
 
 /** @brief Connects to @p host (@p port, or "host:port" with @p port NULL) and starts TLS. */
 int tls_connect(struct tls *ctx, const char *host, const char *port);

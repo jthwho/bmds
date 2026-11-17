@@ -103,10 +103,14 @@ CONFIG_BMDS_UPDATE_KEYS_DEV=y
 CONFIG_CACHE_L2_CACHE_LINE_128B=y
 
 # mbedTLS (devplan/packages.md §23, network.md §35): TLS client sessions (bmds_net's tlssession.cpp),
-# for HTTPS fetching and programs. Its allocations go through Memory in PSRAM (esp_mbedtls_mem_calloc
-# in tlssession.cpp); a client only.
+# for HTTPS fetching and programs, and servers (network.md §37). Its allocations go through Memory in
+# PSRAM (esp_mbedtls_mem_calloc in tlssession.cpp).
 CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
-CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y
+CONFIG_MBEDTLS_TLS_SERVER_AND_CLIENT=y
+# The board's own certificate, made on the board (tlsserverkeys.cpp): certificates written, not CSRs.
+CONFIG_MBEDTLS_X509_CREATE_C=y
+CONFIG_MBEDTLS_X509_CRT_WRITE_C=y
+# CONFIG_MBEDTLS_X509_CSR_WRITE_C is not set
 # Certificates' dates checked (IDF's default ignores them: an expired certificate passed). Against
 # libc's time, which the kernel's Clock sets; sessions are refused while the clock isn't set.
 CONFIG_MBEDTLS_HAVE_TIME_DATE=y

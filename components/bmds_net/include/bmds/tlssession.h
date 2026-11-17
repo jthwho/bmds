@@ -42,6 +42,8 @@ class TlsSession {
                 /** @brief `Config::flags`. */
                 enum Flag : uint32_t {
                         NoVerify = 1u << 0, ///< The chain, dates and name aren't checked (`verifyFlags()` still says).
+                        Server = 1u << 1,   ///< The server's side (an accepted socket): network.md §37.
+                        ClientCert = 1u << 2, ///< A server's: a client certificate asked for and required.
                 };
 
                 /** @brief Why a certificate was refused (`verifyFlags()`), or what `NoVerify` let pass. */
@@ -76,10 +78,11 @@ class TlsSession {
 
                 /** @brief How to make a session. Its buffers are copied by `create()`. */
                 struct Config {
-                                StringView serverName;     ///< SNI and the name checked; empty only with `NoVerify`.
+                                StringView
+                                        serverName; ///< SNI and the name checked; empty only with `NoVerify` or `Server`.
                                 uint32_t   flags = 0;      ///< `Flag` bits.
                                 Span<const ByteSpan> ca;   ///< More trusted roots: each a PEM (one or more) or a DER.
-                                ByteSpan             cert; ///< A client certificate (PEM or DER); empty: none.
+                                ByteSpan             cert; ///< Ours (PEM or DER); empty: none (`Server`: the board's).
                                 ByteSpan             key;  ///< Its private key (PEM or DER, unencrypted).
                                 StringView           alpn; ///< Protocols offered, comma separated; empty: none.
                 };

@@ -3123,6 +3123,16 @@ namespace {
                 o->connection->emit(*o, "lost", Args(&v, 1));
                 return;
         }
+        // A selection changed (anyone's copy, or emptied): every Clipboard object of the connection.
+        void clipboardChanged(void *arg, GuiClipboard::Selection s) {
+                auto       *c = static_cast<GuiConnection *>(arg);
+                const Value v = selectionValue(s);
+                for (const uint32_t id : c->clipboards) {
+                        GuiObject *o = id != 0 ? c->find(id) : nullptr;
+                        if (o != nullptr) c->emit(*o, "changed", Args(&v, 1));
+                }
+                return;
+        }
         void clipboardAsked(void *arg, uint32_t request, GuiClipboard::Selection s, StringView type) {
                 auto       &o = *static_cast<GuiObject *>(arg);
                 const Value v[] = {Value::integer(int32_t(request)), selectionValue(s), Value::string(type)};
@@ -3237,6 +3247,13 @@ namespace {
                 }
                 for (uint32_t &id : o.connection->clipboardOwners)
                         if (id == o.id) id = 0; // a text copy stays on the clipboard
+                bool others = false;
+                for (uint32_t &id : o.connection->clipboards) {
+                        if (id == o.id) id = 0;
+                        others = others || id != 0;
+                }
+                if (!others)
+                        if (GuiClipboard *c = clipboardOf(o); c != nullptr) (void)c->setChanged(nullptr, nullptr);
                 freeData<ClipboardData>(o);
                 return;
         }
@@ -3247,6 +3264,18 @@ namespace {
                 if (d == nullptr) return NoMem;
                 d->pastes[0] = ClipboardData::Paste{&o, GuiClipboard::Selection::Clipboard};
                 d->pastes[1] = ClipboardData::Paste{&o, GuiClipboard::Selection::Primary};
+                uint32_t *slot = nullptr;
+                for (uint32_t &id : o.connection->clipboards)
+                        if (id == 0 && slot == nullptr) slot = &id;
+                if (slot == nullptr) {
+                        freeData<ClipboardData>(o);
+                        return NoMem; // more Clipboard objects than a connection keeps
+                }
+                if (c->setChanged(clipboardChanged, o.connection).isError()) {
+                        freeData<ClipboardData>(o);
+                        return NoMem;
+                }
+                *slot = o.id;
                 c->setLost(clipboardLost, o.connection);
                 o.dispose = disposeClipboard;
                 return Ok;
@@ -4013,6 +4042,7 @@ namespace {
                         uint8_t  buttons = 0;      // injected and down
                         uint16_t pointerX = 0;     // the last injected position
                         uint16_t pointerY = 0;
+                        int16_t  watch = -1; // its ScreenWatch id (watch(true))
         };
         ScreenData &screenData(GuiObject &o) {
                 return *dataOf<ScreenData>(o);
@@ -4029,9 +4059,11 @@ namespace {
                 return;
         }
         void stopWatchingScreen(GuiObject &o) {
-                const int16_t id = o.connection->screenWatch();
+                ScreenData   &d = screenData(o);
+                const int16_t id = d.watch;
                 if (id < 0) return;
-                o.connection->setScreenWatch(-1);
+                d.watch = -1;
+                o.connection->setScreenWatch(o.id, -1);
                 ScreenWatch::remove(uint8_t(id)); // waits for a notification under way
                 return;
         }
@@ -4040,12 +4072,17 @@ namespace {
                         stopWatchingScreen(o); // a changed already posted may still come
                         return Ok;
                 }
-                if (o.connection->screenWatch() >= 0) return Ok;
+                ScreenData &d = screenData(o);
+                if (d.watch >= 0) return Ok;
                 auto [id, err] = ScreenWatch::add(screenNotify, &o, o.connection->displayName(),
                                                   o.connection->application().client());
                 if (err == Error::Full) return BadAccess; // as many watchers as the system takes
                 if (err.isError()) return BadMatch;       // no display running
-                o.connection->setScreenWatch(int16_t(id));
+                if (!o.connection->setScreenWatch(o.id, int16_t(id))) {
+                        ScreenWatch::remove(id); // more watching objects than a connection keeps
+                        return BadAccess;
+                }
+                d.watch = int16_t(id);
                 return Ok;
         }
         // ---- Injected input (devplan/vnc.md §5d): a virtual keyboard's and tablet's, into the window
@@ -4126,8 +4163,7 @@ namespace {
                 // Local programs only: the pixels come by a system call, and a remote one's keys would
                 // be typed by whoever reaches the GUI's port.
                 if (!o.connection->isLocal()) return BadAccess;
-                for (GuiObject *other : o.connection->objects())
-                        if (other != &o && isClassNamed(other, "ScreenShare")) return BadAccess; // one a connection
+                // Several (a VNC viewer each, devplan/vnc.md §18): watching ones are limited by watch().
                 if (makeData<ScreenData>(o) == nullptr) return NoMem;
                 o.dispose = disposeScreen;
                 return Ok;

@@ -69,6 +69,9 @@ class GuiClipboard {
                 /** @brief Another program copied onto @p selection, which was this one's. */
                 using Lost = void (*)(void *arg, Selection selection);
 
+                /** @brief @p selection's contents changed (anyone's copy, this one's too, or emptied). */
+                using Changed = void (*)(void *arg, Selection selection);
+
                 /**
                  * @brief Asked for @p type of the copy on @p selection made with `offer()` (on the
                  *        loop's thread): answer request @p request with `answer()`, then `finish()`.
@@ -170,7 +173,16 @@ class GuiClipboard {
                         return;
                 }
 
+                /**
+                 * @brief Has @p fn told on the loop's thread whenever a selection changes (null:
+                 *        stops). Several changes before the loop runs are told once each selection.
+                 * @return `Ok`, `NotExist` (no clipboard), `Full` (the clipboard's watchers).
+                 */
+                Error setChanged(Changed fn, void *arg);
+
         private:
+                static void changedFrom(void *arg, Selection selection); // the clipboard's watcher
+
                 // A copy of this application's on a selection.
                 struct Own {
                                 uint32_t serial = 0; // 0: none
@@ -230,6 +242,9 @@ class GuiClipboard {
                 Own               _own[Clipboard::Selections];
                 Lost              _lost = nullptr;
                 void             *_lostArg = nullptr;
+                Changed           _changed = nullptr;
+                void             *_changedArg = nullptr;
+                bool              _watching = false;
                 Mutex             _jobsLock; // _pastes, _requests, _lostSerials
                 Paste             _pastes[MaxPastes];
                 Request           _requests[MaxRequests];
@@ -239,6 +254,8 @@ class GuiClipboard {
                 std::atomic<bool> _started{false};
                 std::atomic<bool> _quit{false};
                 std::atomic<bool> _posted{false}; // a drain() queued
+
+                std::atomic<uint32_t> _changedBits{0}; // selections changed, a bit each, to tell
                 uint32_t          _nextRequest = 0;
                 char              _name[Clipboard::MaxOwnerName + 1] = "application";
 };

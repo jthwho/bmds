@@ -109,6 +109,16 @@ class Clipboard {
                                 TypeInfo types[MaxTypes];
                 };
 
+                /**
+                 * @brief @p selection's offer changed: copied, offered, cleared or withdrawn. Called on
+                 *        the changing task, no lock held, one call at a time: it must not block or
+                 *        call the clipboard (queue the work).
+                 */
+                using Changed = void (*)(void *arg, Selection selection);
+
+                /** @brief The most watchers at once (`watch()`). */
+                static constexpr size_t MaxWatchers = 8;
+
                 /** @brief Told of a configuration line it doesn't take (its number and text). */
                 using Report = ClipboardConversions::Report;
 
@@ -213,6 +223,16 @@ class Clipboard {
                  */
                 Result<FileHandle::Ptr> request(Selection selection, StringView type, char *taken);
 
+                /**
+                 * @brief Has @p fn told of every change of a selection's offer, until `unwatch()`.
+                 * @return `Ok`, `Full` (`MaxWatchers`), `Invalid` (null).
+                 * @nonblocking
+                 */
+                Error watch(Changed fn, void *arg);
+
+                /** @brief Stops @p fn with @p arg; once it returns, no call to it is under way. */
+                void unwatch(Changed fn, void *arg);
+
                 /** @brief Describes @p selection's offer into @p out (`serial` 0: empty). */
                 void describe(Selection selection, Description &out) const;
 
@@ -227,6 +247,7 @@ class Clipboard {
 
                 void   release(Offer *offer);                                  // frees it and its blocks; not locked
                 void   tellLost(Offer *offer);                                 // its owner, under the call lock
+                void   tellChanged(Selection selection);                       // the watchers, under the call lock
                 Offer *take(Selection selection, uint32_t serial, Error &err); // removes it; locked
 
                 mutable Mutex         _lock;     // the offers and the counts
@@ -237,6 +258,11 @@ class Clipboard {
                 size_t                _limit = DefaultLimitBytes;
                 String                _config;                // the configuration's text, kept for its views
                 ClipboardConversions *_conversions = nullptr; // PSRAM
+                struct Watcher {
+                                Changed fn = nullptr;
+                                void   *arg = nullptr;
+                };
+                Watcher _watchers[MaxWatchers]; // under _lock
 };
 
 BMDS_NAMESPACE_END

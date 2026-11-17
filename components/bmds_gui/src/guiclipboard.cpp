@@ -54,6 +54,7 @@ namespace {
 GuiClipboard::~GuiClipboard() {
         // No owner calls into a clipboard that is gone (keep() has run, unless exec() didn't).
         Clipboard *c = clipboard();
+        if (_watching && c != nullptr) c->unwatch(changedFrom, this);
         for (size_t s = 0; s < Clipboard::Selections && c != nullptr; ++s)
                 if (_own[s].fn != nullptr || _own[s].asked != nullptr)
                         (void)c->withdraw(static_cast<Selection>(s), _own[s].serial);
@@ -292,6 +293,25 @@ void GuiClipboard::requested(void *arg, uint32_t serial, StringView type, FileHa
         return;
 }
 
+Error GuiClipboard::setChanged(Changed fn, void *arg) {
+        _changed = fn;
+        _changedArg = arg;
+        if (fn == nullptr || _watching) return Error::Ok;
+        Clipboard *c = clipboard();
+        if (c == nullptr) return Error::NotExist;
+        const Error err = c->watch(changedFrom, this);
+        _watching = err.isOk();
+        return err;
+}
+
+// On the changing task: marked, the loop told (drain()).
+void GuiClipboard::changedFrom(void *arg, Selection selection) {
+        auto *self = static_cast<GuiClipboard *>(arg);
+        self->_changedBits.fetch_or(1u << static_cast<uint32_t>(selection), std::memory_order_acq_rel);
+        if (!self->_posted.exchange(true, std::memory_order_acq_rel)) (void)self->_app.post(drain, self);
+        return;
+}
+
 void GuiClipboard::lost(void *arg, uint32_t serial) {
         auto *self = static_cast<GuiClipboard *>(arg);
         {
@@ -324,6 +344,9 @@ void GuiClipboard::drain(void *arg) {
                         if (self->_lost != nullptr) self->_lost(self->_lostArg, static_cast<Selection>(s));
                 }
         }
+        const uint32_t changed = self->_changedBits.exchange(0, std::memory_order_acq_rel);
+        for (uint32_t s = 0; s < Clipboard::Selections && self->_changed != nullptr; ++s)
+                if ((changed >> s) & 1u) self->_changed(self->_changedArg, static_cast<Selection>(s));
         bool          written = false;
         const int64_t now = Clock::monotonicNs();
         {

@@ -53,6 +53,7 @@ struct tls_config {
                 int      noverifycert;
                 int      noverifyname;
                 int      noverifytime;
+                int      verify_client;
                 char     error[256];
                 int      has_error;
 };
@@ -61,6 +62,7 @@ struct tls {
                 struct tls_config *config;
                 int                fd;
                 int                own_fd; /* tls_connect() opened it: tls_close() closes it */
+                int                server; /* tls_server()'s: it accepts */
                 int                state;
                 char               servername[256];
                 bmds_tls_info_t    info;
@@ -312,6 +314,11 @@ void tls_config_verify(struct tls_config *config) {
         return;
 }
 
+void tls_config_verify_client(struct tls_config *config) {
+        config->verify_client = 1;
+        return;
+}
+
 /* --- Contexts --------------------------------------------------------------------------------- */
 
 static struct tls *new_context(void) {
@@ -325,8 +332,9 @@ struct tls *tls_client(void) {
 }
 
 struct tls *tls_server(void) {
-        errno = ENOTSUP;
-        return NULL;
+        struct tls *ctx = new_context();
+        if (ctx != NULL) ctx->server = 1;
+        return ctx;
 }
 
 int tls_configure(struct tls *ctx, struct tls_config *config) {
@@ -356,16 +364,65 @@ void tls_free(struct tls *ctx) {
 }
 
 int tls_accept_socket(struct tls *ctx, struct tls **cctx, int s) {
-        (void)cctx;
-        (void)s;
-        CTX_ERROR(ctx, "TLS servers aren't offered (clients only)");
-        return -1;
+        *cctx = NULL;
+        if (!ctx->server) {
+                CTX_ERROR(ctx, "not a server context (tls_server())");
+                return -1;
+        }
+        struct tls_config  empty = {.refs = 1};
+        struct tls_config *c = ctx->config != NULL ? ctx->config : &empty;
+        if ((c->cert == NULL) != (c->key == NULL)) {
+                CTX_ERROR(ctx, "a certificate needs its key (or neither: the board's own)");
+                return -1;
+        }
+        struct tls *conn = new_context();
+        if (conn == NULL) {
+                CTX_ERROR(ctx, "out of memory");
+                return -1;
+        }
+        bmds_tls_config_t k = {
+                .size = sizeof(k),
+                .flags = BMDS_TLS_SERVER | (c->verify_client ? BMDS_TLS_CLIENT_CERT : 0u) |
+                         (c->noverifycert ? BMDS_TLS_NO_VERIFY : 0u),
+                .ca = c->ca,
+                .ca_size = (uint32_t)c->ca_len,
+                .cert = c->cert,
+                .cert_size = (uint32_t)c->cert_len,
+                .key = c->key,
+                .key_size = (uint32_t)c->key_len,
+                .alpn = c->alpn[0] != '\0' ? c->alpn : NULL,
+        };
+        const int r = bmds_tls_ctl(s, BMDS_TLS_START, &k);
+        if (r < 0) {
+                switch (-r) {
+                        case BMDS_ENOBUFS: CTX_ERROR(ctx, "too many TLS sockets (the setting net/tls/sessions)"); break;
+                        case BMDS_EINVAL:
+                                CTX_ERROR(ctx, c->verify_client && !c->noverifycert && c->ca == NULL
+                                                       ? "client certificates need a CA to check them against"
+                                                       : "a certificate or key doesn't parse (PEM or DER)");
+                                break;
+                        case BMDS_ENOSYS: CTX_ERROR(ctx, "this system has no TLS sockets"); break;
+                        default: CTX_ERROR(ctx, "%s", strerror(-r)); break;
+                }
+                free(conn);
+                errno = -r;
+                return -1;
+        }
+        if (ctx->config != NULL) ++ctx->config->refs;
+        conn->config = ctx->config;
+        conn->fd = s;
+        conn->state = STATE_STARTED;
+        *cctx = conn;
+        return 0;
 }
 
 int tls_accept_fds(struct tls *ctx, struct tls **cctx, int fd_read, int fd_write) {
-        (void)fd_read;
-        (void)fd_write;
-        return tls_accept_socket(ctx, cctx, -1);
+        if (fd_read != fd_write) {
+                *cctx = NULL;
+                CTX_ERROR(ctx, "one socket for both directions is needed");
+                return -1;
+        }
+        return tls_accept_socket(ctx, cctx, fd_read);
 }
 
 /* --- Connecting ------------------------------------------------------------------------------- */

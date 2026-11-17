@@ -178,7 +178,10 @@ Error GuiConnection::screenCapture(Stream &clientEnd, GuiOpener::ScreenCapture &
                 for (GuiConnection *c : registry)
                         if (c != nullptr && c->_clientEnd == &clientEnd) self = c;
                 if (self == nullptr) return Error::NotSupported;
-                watch = self->screenWatch();
+                for (size_t i = 0; i < MaxScreenShares && watch < 0; ++i)
+                        if (self->_shareObjects[i] != 0 &&
+                            (capture.share == 0 || self->_shareObjects[i] == capture.share))
+                                watch = self->_shareWatches[i];
         }
         if (watch < 0) return Error::PermissionDenied;
         // On the caller's thread: a watch removed meanwhile answers NotExist.
@@ -196,6 +199,28 @@ Error GuiConnection::screenCapture(Stream &clientEnd, GuiOpener::ScreenCapture &
         capture.height = c.height;
         capture.more = c.more;
         return err;
+}
+
+int16_t GuiConnection::screenWatch(uint32_t object) const {
+        if (registryLock == nullptr) return -1;
+        Mutex::Locker locker(*registryLock, WaitForever);
+        for (size_t i = 0; i < MaxScreenShares; ++i)
+                if (_shareObjects[i] != 0 && (object == 0 || _shareObjects[i] == object)) return _shareWatches[i];
+        return -1;
+}
+
+bool GuiConnection::setScreenWatch(uint32_t object, int16_t id) {
+        if (registryLock == nullptr || object == 0) return false;
+        Mutex::Locker locker(*registryLock, WaitForever);
+        size_t        slot = MaxScreenShares;
+        for (size_t i = 0; i < MaxScreenShares; ++i) {
+                if (_shareObjects[i] == object) slot = i;
+                if (slot == MaxScreenShares && _shareObjects[i] == 0 && id >= 0) slot = i;
+        }
+        if (slot == MaxScreenShares) return id < 0;
+        _shareObjects[slot] = id >= 0 ? object : 0;
+        _shareWatches[slot] = id;
+        return true;
 }
 
 // The loop's: the surfaces asked for, made in order.

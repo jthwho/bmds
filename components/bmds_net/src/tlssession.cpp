@@ -27,6 +27,7 @@
 #include <bmds/datetime.h>
 #include <bmds/memory.h>
 #include <bmds/socket.h>
+#include <bmds/tlsserverkeys.h>
 #include <bmds/tlssession.h>
 
 // The bundle's own check of a chain's first untrusted link against its roots
@@ -157,6 +158,20 @@ namespace {
                 return 0;
         }
 
+        // A server's check of the client's certificate: mbedTLS checks it against the roots given;
+        // ours only records it (depth 0).
+        int verifyClient(void *arg, mbedtls_x509_crt *crt, int depth, uint32_t *) {
+                if (depth != 0) return 0;
+                TlsSession::Peer &p = *static_cast<TlsSession::Peer *>(arg);
+                (void)mbedtls_sha256(crt->raw.p, crt->raw.len, p.sha256, 0);
+                if (mbedtls_x509_dn_gets(p.subject, sizeof(p.subject), &crt->subject) < 0) p.subject[0] = '\0';
+                if (mbedtls_x509_dn_gets(p.issuer, sizeof(p.issuer), &crt->issuer) < 0) p.issuer[0] = '\0';
+                p.notBefore = unixSeconds(crt->valid_from);
+                p.notAfter = unixSeconds(crt->valid_to);
+                p.isKnown = true;
+                return 0;
+        }
+
         // What is offered, best first (devplan/network.md §33): AES-GCM, its counter mode on the
         // engine and its GHASH bmds's (tlsgcm.h), 6.2 MB/s a 16 KB record; ChaCha20-Poly1305 in
         // software 3.7. Ephemeral keys only.
@@ -241,8 +256,11 @@ int TlsSession::Impl::bioReceive(void *arg, unsigned char *into, size_t bytes) {
 Result<TlsSession *> TlsSession::create(Socket &socket, const Config &config, String &why) {
         why.clear();
         const bool noVerify = (config.flags & NoVerify) != 0;
-        if ((config.flags & ~uint32_t(NoVerify)) != 0 || (config.serverName.isEmpty() && !noVerify) ||
-            config.cert.isEmpty() != config.key.isEmpty())
+        const bool server = (config.flags & Server) != 0;
+        const bool clientCert = (config.flags & ClientCert) != 0;
+        if ((config.flags & ~uint32_t(NoVerify | Server | ClientCert)) != 0 ||
+            (!server && config.serverName.isEmpty() && !noVerify) || (clientCert && !server) ||
+            (clientCert && !noVerify && config.ca.isEmpty()) || config.cert.isEmpty() != config.key.isEmpty())
                 return Result<TlsSession *>(nullptr, Error::Invalid);
         void *block = Memory::alloc(MemSpace::Psram, sizeof(Impl));
         if (block == nullptr) return Result<TlsSession *>(nullptr, Error::NoMem);
@@ -284,16 +302,44 @@ Result<TlsSession *> TlsSession::create(Socket &socket, const Config &config, St
         }
         if (!config.cert.isEmpty()) {
                 if (parseCertificates(m->cert, config.cert) != 0)
-                        return refuse(Error::Invalid, "the client certificate doesn't parse (PEM or DER)");
+                        return refuse(Error::Invalid, "the certificate doesn't parse (PEM or DER)");
                 if (parseKey(m->key, config.key) != 0)
-                        return refuse(Error::Invalid, "the client key doesn't parse (PEM or DER, not encrypted)");
+                        return refuse(Error::Invalid, "the key doesn't parse (PEM or DER, not encrypted)");
+        } else if (server) {
+                // The board's own (§37a S3), parsed for this session alone (mbedTLS's contexts are
+                // never shared between sessions).
+                String      certPem(MemSpace::Psram), keyPem(MemSpace::Psram);
+                const Error err = TlsServerKeys::pem(certPem, keyPem, why);
+                int         ret = err.isOk() ? 0 : -1;
+                if (ret == 0)
+                        ret = mbedtls_x509_crt_parse(&m->cert, reinterpret_cast<const unsigned char *>(certPem.cStr()),
+                                                     certPem.size() + 1);
+                if (ret == 0)
+                        ret = mbedtls_pk_parse_key(&m->key, reinterpret_cast<const unsigned char *>(keyPem.cStr()),
+                                                   keyPem.size() + 1, nullptr, 0, random, nullptr);
+                if (!keyPem.isEmpty()) std::memset(const_cast<char *>(keyPem.cStr()), 0, keyPem.size());
+                if (ret != 0) {
+                        if (err.isOk()) (void)why.append("the board's TLS certificate doesn't parse");
+                        return refuse(err.isOk() ? Error::IoError : err, nullptr);
+                }
         }
 
         // The bundle's log says what `why` says, on the console in the middle of a command's output.
         esp_log_level_set("esp-x509-crt-bundle", ESP_LOG_NONE);
-        int ret = mbedtls_ssl_config_defaults(&m->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
-                                              MBEDTLS_SSL_PRESET_DEFAULT);
-        if (ret == 0) {
+        int ret = mbedtls_ssl_config_defaults(&m->conf, server ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT,
+                                              MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
+        if (ret == 0 && server) {
+                // A client certificate asked for only with ClientCert; with NoVerify any is taken
+                // (required all the same: handshake() checks one came).
+                mbedtls_ssl_conf_authmode(&m->conf, !clientCert ? MBEDTLS_SSL_VERIFY_NONE
+                                                    : noVerify  ? MBEDTLS_SSL_VERIFY_OPTIONAL
+                                                                : MBEDTLS_SSL_VERIFY_REQUIRED);
+                mbedtls_ssl_conf_rng(&m->conf, random, nullptr);
+                if (clientCert && !config.ca.isEmpty()) mbedtls_ssl_conf_ca_chain(&m->conf, &m->roots, nullptr);
+                mbedtls_ssl_conf_verify(&m->conf, verifyClient, &m->session._peer);
+                mbedtls_ssl_conf_ciphersuites(&m->conf, Suites);
+                ret = mbedtls_ssl_conf_own_cert(&m->conf, &m->cert, &m->key);
+        } else if (ret == 0) {
                 // `NoVerify`: the chain is still checked, so `verifyFlags()` says what passed.
                 mbedtls_ssl_conf_authmode(&m->conf,
                                           noVerify ? MBEDTLS_SSL_VERIFY_OPTIONAL : MBEDTLS_SSL_VERIFY_REQUIRED);
@@ -311,7 +357,8 @@ Result<TlsSession *> TlsSession::create(Socket &socket, const Config &config, St
         }
         if (ret == 0 && count > 0) ret = mbedtls_ssl_conf_alpn_protocols(&m->conf, m->alpn);
         if (ret == 0) ret = mbedtls_ssl_setup(&m->ssl, &m->conf);
-        if (ret == 0 && !m->session._name.isEmpty()) ret = mbedtls_ssl_set_hostname(&m->ssl, m->session._name.cStr());
+        if (ret == 0 && !server && !m->session._name.isEmpty())
+                ret = mbedtls_ssl_set_hostname(&m->ssl, m->session._name.cStr());
         if (ret != 0) return refuse(Error::NoMem, nullptr);
         mbedtls_ssl_set_bio(&m->ssl, m, Impl::bioSend, Impl::bioReceive, nullptr);
         return Result<TlsSession *>(&m->session, Error::Ok);
@@ -348,7 +395,11 @@ Error TlsSession::ioError(int ret) const {
 void TlsSession::abandon(Error err, const char *reason) {
         if (_state != State::Handshaking) return;
         _why.clear();
-        (void)_why.appendf("%s: %s", _name.isEmpty() ? "the server" : _name.cStr(), reason);
+        (void)_why.appendf("%s: %s",
+                           !_name.isEmpty()         ? _name.cStr()
+                           : (_flags & Server) != 0 ? "the client"
+                                                    : "the server",
+                           reason);
         (void)fail(err);
         return;
 }
@@ -356,8 +407,10 @@ void TlsSession::abandon(Error err, const char *reason) {
 Error TlsSession::handshake(uint32_t flags) {
         if (_state == State::Open) return Error::Ok;
         if (_state == State::Failed) return _failure;
-        Impl &m = *_impl;
-        if ((_flags & NoVerify) == 0 && !Clock::isSet()) {
+        Impl      &m = *_impl;
+        const bool server = (_flags & Server) != 0;
+        const bool checks = (_flags & NoVerify) == 0 && (!server || (_flags & ClientCert) != 0);
+        if (checks && !Clock::isSet()) {
                 // A certificate's dates can't be checked: refused before a byte is sent.
                 _verify = VerifyClock;
                 _why.clear();
@@ -377,9 +430,14 @@ Error TlsSession::handshake(uint32_t flags) {
                 break;
         } while (true);
 
-        const char    *name = _name.isEmpty() ? "the server" : _name.cStr();
+        const char    *name = !_name.isEmpty() ? _name.cStr() : server ? "the client" : "the server";
         const uint32_t flagsSeen = mbedtls_ssl_get_verify_result(&m.ssl);
-        _verify = flagsSeen == uint32_t(-1) ? 0 : verifyBits(flagsSeen);
+        _verify = flagsSeen == uint32_t(-1) || (server && (_flags & ClientCert) == 0) ? 0 : verifyBits(flagsSeen);
+        if (ret == 0 && server && (_flags & ClientCert) != 0 && !_peer.isKnown) {
+                _why.clear();
+                (void)_why.appendf("%s: gave no certificate", name);
+                return fail(Error::KeyRejected);
+        }
         // Only `NoVerify` gets this far without the clock: its dates were checked against 1970.
         if (_peer.isKnown && !Clock::isSet()) _verify |= VerifyClock;
         _why.clear();

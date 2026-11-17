@@ -26,13 +26,14 @@ namespace TlsService {
                         Sessions,
                         HandshakeTimeout,
                         Ca,
+                        ServerKeys,
                         SettingCount
                 };
 
                 // A roots file's largest: the whole of Mozilla's set as PEM is about 230 KB.
                 constexpr size_t MaxRootsBytes = 256 * 1024;
 
-                constinit SysConf::Id ids[SettingCount] = {SysConf::NoId, SysConf::NoId, SysConf::NoId};
+                constinit SysConf::Id ids[SettingCount] = {SysConf::NoId, SysConf::NoId, SysConf::NoId, SysConf::NoId};
 
                 Error readWhole(StringView path, String &out) {
                         static const Vfs::Context context{"/", nullptr};
@@ -65,6 +66,9 @@ namespace TlsService {
                          "Seconds a TLS handshake may take before it fails", 1, 600},
                         {"net/tls/ca", Config::Type::Paths, "",
                          "PEM files of more trusted roots for every TLS socket (';'-separated): a home CA", 0, 0},
+                        {"net/tls/server-keys", Config::Type::Path, "/cfg/tls",
+                         "Where the board's own TLS certificate and key are (made the first time a server wants them)",
+                         0, 255},
                 };
                 for (size_t i = 0; i < SettingCount; ++i) {
                         Config::Param p;
@@ -112,6 +116,14 @@ namespace TlsService {
                         if (Error aerr = out.append("\n"); aerr.isError()) return aerr;
                 }
                 return Error::Ok;
+        }
+
+        Error serverKeysFolder(String &out) {
+                out.clear();
+                if (ids[ServerKeys] == SysConf::NoId) return out.append("/cfg/tls");
+                const Error err = SysConf::get(ids[ServerKeys], out);
+                if (err.isOk() && out.isEmpty()) return out.append("/cfg/tls");
+                return err;
         }
 
 } // namespace TlsService

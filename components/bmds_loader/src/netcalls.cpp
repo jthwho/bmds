@@ -387,11 +387,18 @@ namespace {
         int32_t tlsStart(Socket &s, const bmds_tls_config_t *in) {
                 bmds_tls_config_t c;
                 if (const int32_t r = bmds::detail::copyIn(in, c); r < 0) return r;
-                if ((c.flags & ~BMDS_TLS_NO_VERIFY) != 0) return -BMDS_EINVAL;
+                if ((c.flags & ~(BMDS_TLS_NO_VERIFY | BMDS_TLS_SERVER | BMDS_TLS_CLIENT_CERT)) != 0)
+                        return -BMDS_EINVAL;
                 if (s.type() != Socket::Type::Stream) return -BMDS_ENOTSUP;
+                const bool         server = (c.flags & BMDS_TLS_SERVER) != 0;
                 TlsSession::Config config;
-                config.flags = (c.flags & BMDS_TLS_NO_VERIFY) != 0 ? uint32_t(TlsSession::NoVerify) : 0u;
-                if (const int32_t r = programString(c.server_name, MaxServerName, config.serverName); r < 0) return r;
+                config.flags = ((c.flags & BMDS_TLS_NO_VERIFY) != 0 ? uint32_t(TlsSession::NoVerify) : 0u) |
+                               (server ? uint32_t(TlsSession::Server) : 0u) |
+                               ((c.flags & BMDS_TLS_CLIENT_CERT) != 0 ? uint32_t(TlsSession::ClientCert) : 0u);
+                // A server's name is its certificate's; what the program said is ignored.
+                if (!server)
+                        if (const int32_t r = programString(c.server_name, MaxServerName, config.serverName); r < 0)
+                                return r;
                 if (const int32_t r = programString(c.alpn, MaxAlpnText, config.alpn); r < 0) return r;
                 const uint32_t caSize = c.ca != nullptr ? c.ca_size : 0;
                 const uint32_t certSize = c.cert != nullptr ? c.cert_size : 0;
@@ -408,8 +415,10 @@ namespace {
                 // said and left out (fewer roots refuse more, never less).
                 String roots;
                 String why;
-                if (Error err = bmds::TlsService::systemRoots(roots, why); err.isError())
-                        bmdsWarn("tls: %s", why.cStr());
+                // A server checks client certificates against the program's roots alone.
+                if (!server)
+                        if (Error err = bmds::TlsService::systemRoots(roots, why); err.isError())
+                                bmdsWarn("tls: %s", why.cStr());
                 ByteSpan cas[2];
                 size_t   count = 0;
                 if (caSize > 0) cas[count++] = ByteSpan(c.ca, caSize);

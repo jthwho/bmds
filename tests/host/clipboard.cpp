@@ -489,6 +489,39 @@ TEST_CASE("Clipboard keeps to its limit") {
         CHECK(request(c, Selection::Primary, "text") == "ij");
 }
 
+TEST_CASE("Clipboard tells its watchers of each change") {
+        Clipboard c;
+        struct Seen {
+                        std::vector<int> selections;
+        } seen, other;
+        auto told = [](void *arg, Selection s) {
+                static_cast<Seen *>(arg)->selections.push_back(int(s));
+                return;
+        };
+        REQUIRE(c.watch(told, &seen).isOk());
+        REQUIRE(c.watch(told, &other).isOk());
+        const StringView text[] = {"text"};
+        REQUIRE(c.copy(Selection::Clipboard, Span<const StringView>(text), bytes("a"), "", 0).isOk());
+        REQUIRE(c.copy(Selection::Primary, Span<const StringView>(text), bytes("b"), "", 0).isOk());
+        CHECK(seen.selections == std::vector<int>{int(Selection::Clipboard), int(Selection::Primary)});
+        c.unwatch(told, &other);
+        // An offer, a clear, and a clear of nothing (no change: not told).
+        TestOwner owner;
+        auto [serial, err] = c.offer(Selection::Clipboard, Span<const StringView>(text), owner.owner());
+        REQUIRE(err.isOk());
+        CHECK(c.clear(Selection::Clipboard, 0).isOk());
+        CHECK(c.clear(Selection::Clipboard, 0).isOk());
+        CHECK(seen.selections.size() == 4);
+        CHECK(other.selections.size() == 2);
+        // As many as it holds, then Full.
+        Seen   more[Clipboard::MaxWatchers];
+        size_t added = 0;
+        for (Seen &m : more)
+                if (c.watch(told, &m).isOk()) ++added;
+        CHECK(added == Clipboard::MaxWatchers - 1);
+        CHECK(c.watch(nullptr, nullptr) == Error::Invalid);
+}
+
 TEST_CASE("Clipboard asks owners for types on request") {
         Clipboard        c;
         TestOwner        owner;

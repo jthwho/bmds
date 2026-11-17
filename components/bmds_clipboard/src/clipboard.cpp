@@ -221,6 +221,41 @@ void Clipboard::tellLost(Offer *offer) {
         return;
 }
 
+void Clipboard::tellChanged(Selection selection) {
+        Mutex::Locker lock(_callLock, WaitForever);
+        Watcher       watchers[MaxWatchers];
+        {
+                Mutex::Locker data(_lock, WaitForever);
+                std::memcpy(static_cast<void *>(watchers), _watchers, sizeof(watchers));
+        }
+        for (const Watcher &w : watchers)
+                if (w.fn != nullptr) w.fn(w.arg, selection);
+        return;
+}
+
+Error Clipboard::watch(Changed fn, void *arg) {
+        if (fn == nullptr) return Error::Invalid;
+        Mutex::Locker lock(_lock, WaitForever);
+        for (Watcher &w : _watchers) {
+                if (w.fn != nullptr) continue;
+                w.fn = fn;
+                w.arg = arg;
+                return Error::Ok;
+        }
+        return Error::Full;
+}
+
+void Clipboard::unwatch(Changed fn, void *arg) {
+        {
+                Mutex::Locker lock(_lock, WaitForever);
+                for (Watcher &w : _watchers)
+                        if (w.fn == fn && w.arg == arg) w = Watcher();
+        }
+        // A call that began before is over once the call lock is free.
+        { Mutex::Locker wait(_callLock, WaitForever); }
+        return;
+}
+
 Clipboard::Offer *Clipboard::take(Selection selection, uint32_t serial, Error &err) {
         Offer *&slot = _offers[static_cast<size_t>(selection)];
         if (slot == nullptr || (serial != 0 && slot->serial != serial)) {
@@ -263,6 +298,7 @@ Result<uint32_t> Clipboard::offer(Selection selection, Span<const StringView> ty
         const uint32_t serial = made->serial;
         tellLost(old);
         release(old);
+        tellChanged(selection);
         return makeResult(serial);
 }
 
@@ -352,6 +388,7 @@ Result<uint32_t> Clipboard::copy(Selection selection, Span<const StringView> typ
         const uint32_t serial = made->serial;
         tellLost(old);
         release(old);
+        tellChanged(selection);
         return makeResult(serial);
 }
 
@@ -364,7 +401,9 @@ Error Clipboard::clear(Selection selection, uint32_t serial) {
                 old = take(selection, serial, err);
         }
         if (serial == 0) tellLost(old); // someone else cleared it
+        const bool emptied = old != nullptr;
         release(old);
+        if (emptied) tellChanged(selection);
         return err;
 }
 
@@ -397,6 +436,7 @@ Error Clipboard::withdraw(Selection selection, uint32_t serial) {
         release(gone);
         // A call that began before is over once the call lock is free.
         { Mutex::Locker wait(_callLock, WaitForever); }
+        tellChanged(selection); // its types on request gone, or it emptied
         return Error::Ok;
 }
 

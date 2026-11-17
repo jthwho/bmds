@@ -3213,3 +3213,90 @@ arrived, and then every SSH login hung (the banner never came; ping answered).
   (`outOfHeap()`); with no slot free it is kept as before.
 - **Measured** after both: the server's 1 MB updates go through the tunnel in about 1 s each
   (Python's decoding is most of that), ten viewer sessions in a row, SSH logins unaffected.
+
+## 37. TLS servers for programs (2026-11-17, the user's: "proper TLS server support in the kernel")
+
+Asked for the VNC server's VeNCrypt (bmds-apps' devplan/vnc.md step 4): `vnc/listen` = `lan` is
+plain RFB with a password today. §35 built the client side only; `tls_server()` and
+`tls_accept_*()` are stubs answering `ENOTSUP`. The server side is the same session, the same
+task and the same slot, the other role.
+
+### 37a. Choices
+
+| | Choice | Rejected |
+|---|---|---|
+| S1 | **A flag on `BMDS_TLS_START`: `BMDS_TLS_SERVER` (2)** on an accepted (connected) socket. `cert`/`key` are the server's own; both null, the board's (S3). `server_name` null; `ca` the roots a client certificate is checked against; `alpn` the protocols taken, in preference order. `INFO`'s peer is then the client's certificate, if it gave one | a new op (`BMDS_TLS_ACCEPT`): the same config, the same handshake and records; unknown flags were refused for this |
+| S2 | **`BMDS_TLS_CLIENT_CERT` (4)**, servers only: a client certificate asked for and required, checked against `ca`; with `NO_VERIFY` asked for, any taken, the program checks `peer_sha256` (as IRC servers' CertFP) | client certificates left out (the client side has them; a server can't use them without this) |
+| S3 | **The board's own certificate**: an ECDSA P-256 key and a self-signed certificate (CN the host name, SANs `NAME` and `NAME.local`, 10 years from now, or from 2026-01-01 while the clock isn't set) made by the kernel at the first server session that wants it, or by `tls cert --new`; kept as PEM in the folder `net/tls/server-keys` (`/cfg/tls`, as SSH's host keys in `net/ssh/host-keys`). Programs never read the key: they ask for the board's certificate by passing none | each program making its own (a key generator and a certificate writer in each, keys scattered); RSA (keygen of seconds, slower handshakes on this chip, bigger records) |
+| S4 | **mbedTLS both roles** (`CONFIG_MBEDTLS_TLS_SERVER_AND_CLIENT`), with `X509_CREATE_C` and `X509_CRT_WRITE_C` for S3; flash measured | a second TLS library for servers |
+| S5 | **libtls's server calls** in the SDK: `tls_server`, `tls_configure` (no keypair set: the board's), `tls_accept_socket`, `tls_config_verify_client`/`_optional`; `tls_accept_fds`/`_cbs` still `ENOTSUP` (not sockets) | a BMDS-only API beside libtls's |
+| S6 | **`tls cert`** in the shell: the board's certificate (subject, dates, SHA-256 fingerprint, where it is), `--pem` to print it, `--new` to replace it (clients pinning the old one will complain) | nothing to show it: a viewer asked to trust a fingerprint needs to compare it with something |
+
+### 37b. The ABI (appended)
+
+`sys.h`: `BMDS_TLS_SERVER` (2), `BMDS_TLS_CLIENT_CERT` (4) for `bmds_tls_config_t::flags`;
+nothing else changes (the config's fields already carry a certificate, a key, roots and ALPN; the
+info's peer is "the other side"). `abilock.c` checks the two values. Errors as §35b, and
+`EINVAL` for `CLIENT_CERT` without `SERVER`, or `SERVER` with only one of `cert` and `key`;
+`EKEYREJECTED` for a client certificate refused (`verify` says why).
+
+### 37c. The kernel side
+
+- **`TlsSession`** takes a role (`Config::server`): `MBEDTLS_SSL_IS_SERVER`, the own certificate
+  and key (`mbedtls_ssl_conf_own_cert`), `authmode` from S2, the client's certificate captured at
+  verification as the server's is now. The same `WouldBlock`/`want()` stepping, so the `tls` task
+  runs servers' handshakes beside clients'. The sessions limit (`net/tls/sessions`) counts both.
+- **`TlsServerKeys`** (`bmds_net`): the board's key and certificate, loaded once (parsed, kept in
+  PSRAM: about 1.5 KB) and handed to each server session (mbedTLS only reads them); made if the
+  files are missing (S3: `mbedtls_pk_setup` + `ecp_gen_key`, `x509write_crt`, written key first
+  then certificate, each to a temporary name and renamed). The serial a random 16 bytes.
+- **The handshake's stack:** the server signs (ECDSA) and does ECDHE: measured with
+  `CONFIG_BMDS_STACK_PROBE` against the `tls` task's stack.
+
+### 37d. Testing
+
+- **Host:** the flags' checks (the stand-in session); the lock.
+- **Board:** `progtest tls server` (new): a listening socket and a client in one program over the
+  loopback, the board's certificate, a given one, a client certificate required and refused;
+  `openssl s_client` from the laptop against `tlsserver` (a new SDK example: an echo server);
+  `tls cert` before and after `--new`; flash and the handshake's stack and time measured.
+- **The VNC server's VeNCrypt** (bmds-apps): `tools/vncview.py` over Python's `ssl`, TigerVNC.
+
+### 37e. Steps
+
+1. **The kernel:** `TlsSession`'s server role, `TlsServerKeys`, mbedTLS's options, `tls cert`.
+2. **The ABI and SDK:** the flags, `sys.h`, the lock, libtls's server calls, `tlsserver`,
+   `progtest tls server`.
+3. **bmds-apps:** the VNC server's VeNCrypt (X509Vnc), the board's certificate's fingerprint in
+   its start's message; `lan` without a password still refused.
+
+### 37f. As built (2026-11-17): steps 1-2
+
+- **`TlsSession`'s server role** (`Server`, `ClientCert` flags): `MBEDTLS_SSL_IS_SERVER`, our own
+  certificate and key (the program's, or the board's parsed for that session alone: no mbedTLS
+  context shared between sessions), the client's certificate recorded as the server's is. The
+  clock is needed only to check a client certificate.
+- **`TlsServerKeys`** (`tlsserverkeys.cpp`): P-256 key and certificate (CN `bmds0`, O BMDS, SANs
+  `bmds0` and `bmds0.local`, ten years, a random serial) written by mbedTLS, each file under a
+  temporary name then renamed, the key first; read for each server session (two small files).
+  The setting `net/tls/server-keys` (`/cfg/tls`). `tls cert [--pem | --new]` in the shell.
+- **ABI:** `BMDS_TLS_SERVER` (2), `BMDS_TLS_CLIENT_CERT` (4); a server's `server_name` ignored and
+  `ca` only its own (not `net/tls/ca`: client certificates are checked against the program's
+  roots). libtls: `tls_server`, `tls_accept_socket`, `tls_accept_fds` (one socket),
+  `tls_config_verify_client`; with no keypair, the board's.
+- **Measured on bmds0:** firmware +27.2 KB (mbedTLS's server side and certificate writer 22.4 of
+  it); the certificate made in the first session (~0.3 s with the handshake); a handshake with both
+  ends on the board ~310 ms, from the laptop's Python `ssl` 0.16 s (TLS 1.2,
+  ECDHE-ECDSA-AES128-GCM-SHA256). `progtest tlsserver` passed (the board's certificate, the flags'
+  refusals, a client certificate missing refused with `EKEYREJECTED`, libtls's server); `progtest
+  tls` (clients) passed again (its "unknown flag" now 8: 2 is `SERVER`).
+- **A server's own certificate** (the user asked, 2026-11-17): `progtest tlsserver` now gives the
+  server a test chain (P-256: a root, an intermediate, a leaf for `progtest.local`, made with
+  openssl and embedded) as leaf then intermediate in one PEM. A client trusting only the root
+  verified it, name and all, seeing the leaf's fingerprint: mbedTLS sends every certificate
+  parsed from `cert`, so a chain is given that way. The leaf alone was refused as untrusted; the
+  same chain through libtls's `tls_config_set_keypair_mem` passed; a key that doesn't parse was
+  refused at `BMDS_TLS_START` (`EINVAL`). Passed on bmds0.
+- **Not done:** a stack probe of the first session making the key (on the caller's stack, mbedTLS's
+  writers a few KB); optional client certificates (libtls's `verify_client_optional`).
+

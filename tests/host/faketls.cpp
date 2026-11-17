@@ -51,6 +51,11 @@ namespace TlsService {
                 return Error::Ok;
         }
 
+        Error serverKeysFolder(String &out) {
+                out.clear();
+                return out.append("/cfg/tls");
+        }
+
 } // namespace TlsService
 
 struct TlsSession::Impl {
