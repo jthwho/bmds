@@ -12,6 +12,7 @@
 #include <bmds/i2cbus.h>
 #include <bmds/log.h>
 #include <bmds/staticobject.h>
+#include <bmds/sysconf.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -19,10 +20,50 @@ namespace {
 
         constinit StaticObject<Display> displays[Display::MaxDisplays];
 
+        // The output's policy (devplan/vnc.md §5a, R3), followed live.
+        BMDS_SYSCONF(displayOutput, "display/output", Config::Type::Enum, "on",
+                     "The HDMI output: on, off with the desktop still running (the monitor sleeps, the "
+                     "scan reads no PSRAM), or remote (off while a program watches the screen: a VNC viewer)",
+                     0, 0, "on|off|remote", nullptr)
+        BMDS_SYSCONF(displayOutputWake, "display/output-wake", Config::Type::Bool, "true",
+                     "A key, button or pointer move on a local keyboard or mouse turns the output back on", 0, 0,
+                     nullptr, nullptr)
+
+        constinit StaticObject<SysConf::Watcher> outputWatcher;
+
+        enum class OutputPolicy : uint8_t {
+                On,
+                Off,
+                Remote
+        };
+
+        // display/output (on if it can't be read).
+        OutputPolicy outputPolicy() {
+                String value;
+                if (SysConf::get(bmdsConf_displayOutput.key, value).isError()) return OutputPolicy::On;
+                if (value.view() == "off") return OutputPolicy::Off;
+                if (value.view() == "remote") return OutputPolicy::Remote;
+                return OutputPolicy::On;
+        }
+
+        // Whether the output is on by display/output, with @p viewers watching the screen or not.
+        bool outputByPolicy(bool viewers) {
+                const OutputPolicy p = outputPolicy();
+                return p == OutputPolicy::On || (p == OutputPolicy::Remote && !viewers);
+        }
+
+        // display/output changed: the display follows (without waiting: a watcher mustn't block).
+        void outputChanged(void *arg) {
+                auto *d = static_cast<Display *>(arg);
+                (void)d->requestOutput(outputByPolicy(d->hasViewers()));
+                return;
+        }
+
         // The monitor's EDID on the DDC bus (the bridge's I2C).
         constexpr uint8_t      EdidAddress = 0x50;
         constexpr uint32_t     DdcHz = 100'000; // DDC's standard clock
         constexpr unsigned int DdcTimeoutMs = 100;
+        constexpr unsigned int StartTimeoutMs = 1000; // start()'s change to dark: a few frames
 
         // The pixel clocks the DPI clock divides from (its PLLs), kHz.
         constexpr uint32_t Plls[] = {240'000, 160'000};
@@ -171,6 +212,11 @@ Result<Display *> Display::display(size_t number) {
                 I2cBus *bus = I2cBus::bus(static_cast<size_t>(d.i2c));
                 if (bus == nullptr) return makeError<Display *>(Error::NotExist);
                 slot.create(*bus, d.i2cAddr, static_cast<uint8_t>(number));
+                if (number == 0) {
+                        outputWatcher.create();
+                        const Error werr = outputWatcher->start(bmdsConf_displayOutput.key, outputChanged, &*slot);
+                        if (werr.isError()) bmdsWarn("display/output isn't followed: %s", werr.desc());
+                }
                 slot->_stats.setName("display", int(number));
                 const Error err = Stats::add(slot->_stats);
                 if (err.isError()) bmdsWarn("display%u's counters aren't shown: %s", unsigned(number), err.desc());
@@ -259,14 +305,52 @@ Error Display::start(const VideoTiming &mode, Surface::Buffering buffering, uint
         c.phyLdoMv = d.phyLdoMv;
         c.onRestart = onLinkRestart;
         c.onRestartArg = this;
+        c.onDark = onDark;
         c.laneMbps = laneMbps;
         _timing = timing;
+        if (_number == 0) _outputOn = outputByPolicy(_viewers.load(std::memory_order_acquire));
         Error err = _surface.start(timing.hActive, timing.vActive, buffering, Memory::Lifetime::System);
         if (err.isOk()) err = _bridge.configure(timing, d.dsiLanes, true);
         if (err.isOk()) err = _scanout.start(c, _surface);
         if (err.isOk()) err = _bridge.resetReceiver();
+        if (err.isOk() && !_outputOn) err = setOutput(false, StartTimeoutMs); // as it was before
         if (err.isError()) stop();
         return err;
+}
+
+Error Display::setOutput(bool on, unsigned int timeoutMs) {
+        _outputOn = on;
+        if (!_scanout.isRunning()) return Error::Ok; // applied by start()
+        return _scanout.setDark(!on, timeoutMs);
+}
+
+Error Display::requestOutput(bool on) {
+        _outputOn = on;
+        if (!_scanout.isRunning()) return Error::Ok;
+        return _scanout.requestDark(!on);
+}
+
+void Display::setViewers(bool any) {
+        if (_viewers.exchange(any, std::memory_order_acq_rel) == any) return;
+        // Only display/output = remote follows them; the first viewer turns it off even after a
+        // wake, the last one leaving turns it on.
+        if (outputPolicy() == OutputPolicy::Remote) (void)requestOutput(!any);
+        return;
+}
+
+void Display::wake() {
+        if (_outputOn || !_scanout.isRunning()) return;
+        const Result<bool> allowed = SysConf::getBool(StringView(bmdsConf_displayOutputWake.key));
+        if (allowed.isOk() && !allowed.value()) return;
+        (void)requestOutput(true);
+        return;
+}
+
+// The scan dark or lit (the scanout's task): the HDMI transmitter follows, off while dark so the
+// monitor sleeps.
+void Display::onDark(void *arg, bool dark) {
+        (void)static_cast<Display *>(arg)->_bridge.setOutput(!dark);
+        return;
 }
 
 Error Display::show(Surface &surface, const VideoTiming &mode, uint8_t lanes, uint32_t minKhz, unsigned int timeoutMs) {
@@ -315,8 +399,10 @@ Error Display::claim(const char *owner) {
 // program's full-screen mode, or surface 0's).
 void Display::onLinkRestart(void *arg) {
         auto &self = *static_cast<Display *>(arg);
-        if (self._bridge.configure(self._scanout.timing(), self._scanout.lanes(), true).isOk())
+        if (self._bridge.configure(self._scanout.timing(), self._scanout.lanes(), true).isOk()) {
                 (void)self._bridge.resetReceiver();
+                if (self._scanout.isDark()) (void)self._bridge.setOutput(false); // configure() turned it on
+        }
         return;
 }
 

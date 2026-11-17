@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <bmds/errno.h>
 #include <bmds/images.h>
 #include <bmds/jpegcodec.h>
@@ -111,6 +112,21 @@ namespace {
                 return toFd(c->handle, data);
         }
 
+        // image_encode into the caller's memory (fd -1): what doesn't fit fails the encode.
+        struct Filled {
+                        uint8_t *out;
+                        size_t   capacity;
+                        size_t   bytes = 0;
+        };
+
+        Error toMemory(void *arg, bmds::ByteSpan data) {
+                auto *f = static_cast<Filled *>(arg);
+                if (data.size() > f->capacity - f->bytes) return Error::BufferTooSmall;
+                std::memcpy(f->out + f->bytes, data.data(), data.size());
+                f->bytes += data.size();
+                return Error::Ok;
+        }
+
 } // namespace
 
 extern "C" {
@@ -200,8 +216,16 @@ int32_t bmds_k_image_encode(int32_t fd, const bmds_image_encode_t *request) {
         in.stride = e.stride != 0 ? e.stride : size_t(e.width) * bmds::bytesPerPixel(in.format);
         if (!in.isValid()) return -BMDS_EINVAL;
         if (!bmds::detail::canRead(in.pixels, in.bytes())) return -BMDS_EFAULT;
-        const bmds::FileHandle::Ptr h = call->handle(fd);
-        if (!h || !h->canWrite()) return -BMDS_EBADF;
+        // Into memory (fd -1, `out` given: a struct from 2026-11-16 on), or to the descriptor.
+        const bool            toOut = fd == -1 && e.out != nullptr;
+        bmds::FileHandle::Ptr h;
+        if (toOut) {
+                if (e.out_capacity == 0) return -BMDS_EINVAL;
+                if (!bmds::detail::canWrite(e.out, e.out_capacity)) return -BMDS_EFAULT;
+        } else {
+                h = call->handle(fd);
+                if (!h || !h->canWrite()) return -BMDS_EBADF;
+        }
         Images::Encode how;
         how.codec = ImageCodec(e.codec);
         how.quality = uint8_t(e.quality == 0 ? 90 : e.quality);
@@ -210,6 +234,13 @@ int32_t bmds_k_image_encode(int32_t fd, const bmds_image_encode_t *request) {
                 bmds::JpegHeader::Sampling::Yuv444, bmds::JpegHeader::Sampling::Gray};
         how.sampling = Samplings[e.sampling];
         how.level = e.level == 0 ? 2 : e.level == BMDS_PNG_STORED ? 0 : int(e.level);
+        if (toOut) {
+                Filled      f{static_cast<uint8_t *>(e.out), e.out_capacity};
+                const Error err = Images::encode(in, how, toMemory, &f);
+                if (err == Error::BufferTooSmall) return -BMDS_EOVERFLOW;
+                if (err.isError()) return errnoOf(err);
+                return f.bytes > INT32_MAX ? INT32_MAX : int32_t(f.bytes);
+        }
         Counted     c{h.get()};
         const Error err = Images::encode(in, how, countedToFd, &c);
         if (err.isError()) return errnoOf(err);

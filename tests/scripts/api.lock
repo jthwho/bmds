@@ -4086,3 +4086,9 @@ void ChatView::set_palette(const string[]&in)
 void ChatView::set_stretch(int)
 void ChatView::set_visible(bool)
 void ChatView::set_wrap(bool)
+
+# 2026-11-16 (devplan/vnc.md §5b, §5d): the screen watched by a SHELL program; input injected.
+void Shell::injectKey(int, int, int)
+void Shell::injectPointer(int, int, int, int)
+void Shell::onScreenChanged(Callback@)
+void Shell::watchScreen(bool)

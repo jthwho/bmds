@@ -1306,6 +1306,8 @@ class WindowManager {
                 uint8_t           _pointerCount = 0;
                 uint16_t          _pointerX = 0; // the pointer's tip
                 uint16_t          _pointerY = 0;
+                int32_t           _absoluteX = -1; // the last injected position (-1: none)
+                int32_t           _absoluteY = -1;
                 uint8_t           _buttons = 0;         // down, as last applied
                 bool              _cursorShown = false; // a mouse has moved it
                 bool              _cursorMoved = false; // to draw this round

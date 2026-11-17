@@ -41,6 +41,7 @@ namespace {
         using Args = Span<char *const>;
 
         constexpr unsigned int TimeoutMs = 100;
+        constexpr unsigned int OutputTimeoutMs = 1000; // a change waits for a frame's end and a restart
 
         // Modes by name.
         struct TestMode {
@@ -343,6 +344,29 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // display output [on|off]: the output now (display/output says what it is at start and
+        // follows its changes).
+        int runOutput(CommandContext &ctx, Args args) {
+                if (args.size() > 3) return ctx.usage();
+                Display *d = running(ctx);
+                if (d == nullptr) return Shell::ExitFailure;
+                if (args.size() == 3) {
+                        const bool on = std::strcmp(args[2], "on") == 0;
+                        if (!on && std::strcmp(args[2], "off") != 0) return ctx.usage();
+                        const Error err = d->setOutput(on, OutputTimeoutMs);
+                        if (err.isError()) {
+                                ctx.eprintf("display: output: %s\n", err.desc());
+                                return Shell::ExitFailure;
+                        }
+                        return Shell::ExitSuccess;
+                }
+                const Scanout::Stats s = d->scanout().stats();
+                ctx.printf("Output:   %s%s; %u changes\n", d->isOutputOn() ? "on" : "off",
+                           s.dark ? " (the scan sends black, the HDMI transmitter is off)" : "",
+                           static_cast<unsigned>(s.darkSwitches));
+                return Shell::ExitSuccess;
+        }
+
         int runStats(CommandContext &ctx) {
                 Display *d = running(ctx);
                 if (d == nullptr) return Shell::ExitFailure;
@@ -353,6 +377,8 @@ namespace {
                            static_cast<unsigned>(s.frames), static_cast<unsigned>(s.blocks),
                            static_cast<unsigned>(s.blocksPerFrame), static_cast<unsigned>(s.swaps),
                            static_cast<unsigned>(s.switches), static_cast<unsigned>(s.restarts));
+                ctx.printf("Output:   %s, %u changes\n", s.dark ? "off (the scan sends black)" : "on",
+                           static_cast<unsigned>(s.darkSwitches));
                 ctx.printf("Problems: %u underruns, %u stalls, %u resyncs, %u rebuilds (%u failed)\n",
                            static_cast<unsigned>(s.underruns), static_cast<unsigned>(s.stalls),
                            static_cast<unsigned>(s.resyncs), static_cast<unsigned>(s.rebuilds),
@@ -594,6 +620,7 @@ namespace {
                 if (std::strcmp(what, "start") == 0) return runStart(ctx, args);
                 if (args.size() == 2 && std::strcmp(what, "off") == 0) return runOff(ctx);
                 if (args.size() == 2 && std::strcmp(what, "stats") == 0) return runStats(ctx);
+                if (std::strcmp(what, "output") == 0) return runOutput(ctx, args);
                 if (args.size() == 2 && std::strcmp(what, "test") == 0) return runTestPicture(ctx);
                 if (std::strcmp(what, "link") == 0) return runLink(ctx, args);
                 if (std::strcmp(what, "dsi") == 0) return detail::runDisplayDsi(ctx, args);
@@ -644,7 +671,8 @@ namespace detail {
 
 BMDS_SHELL_COMMAND(
         display, runDisplay,
-        "[edid [raw]|scan|start|off|stats|link [clock=auto|hs] [ack=on|off] [mbps=N]|dsi [host|bridge] [PATTERN]|dsi "
+        "[edid [raw]|scan|start|off|output [on|off]|stats|link [clock=auto|hs] [ack=on|off] [mbps=N]|dsi [host|bridge] "
+        "[PATTERN]|dsi "
         "set "
         "host|bridge REG[.FIELD] VALUE|chip [main|dsi|avi]|chip set PAGE REG VALUE|chip reset|chip configure|"
         "test|try "
@@ -654,6 +682,7 @@ BMDS_SHELL_COMMAND(
         "[stripes] [irq K]|underrun [US]]",
         "Show the HDMI bridge and the monitor; 'edid' decodes the monitor's EDID ('raw': its bytes), "
         "'scan' lists the bus, 'start' shows surface 0 (sysconf's display/mode and display/buffering), "
+        "'output' turns the HDMI output off or on with the desktop running (display/output at start), "
         "'test' and 'fill' draw on it, 'try' shows a test picture in another mode for a while, "
         "'ppa' checks the PPA (its speed: 'bench run display'); 'link' sets the DSI link's options, 'dsi' shows the "
         "DSI host's and "

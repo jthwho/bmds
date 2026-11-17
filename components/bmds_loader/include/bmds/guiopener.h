@@ -12,7 +12,9 @@
 #include <bmds/config.h>
 #include <bmds/filehandle.h>
 #include <bmds/programmemory.h>
+#include <bmds/rect.h>
 #include <bmds/result.h>
+#include <bmds/span.h>
 #include <bmds/stringview.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -61,14 +63,41 @@ namespace GuiOpener {
         using CanvasSurface = Result<FileHandle::Ptr> (*)(Stream &connection, uint32_t canvas,
                                                           const SurfaceConfig &config);
 
-        /** @brief Sets the service's opener and its canvas surfaces' maker. */
-        void set(Open open, CanvasSurface canvasSurface);
+        /** @brief A screen capture's request and result (`gui_screen_capture`'s, checked). */
+        struct ScreenCapture {
+                        bool       rgb565 = false; ///< Else B, G, R bytes.
+                        bool       all = false;    ///< Every part, not only what changed.
+                        uint8_t   *buffer = nullptr;
+                        size_t     capacity = 0;
+                        Span<Rect> rects; ///< The kernel's: filled with what was copied.
+                        // Out:
+                        size_t   count = 0;
+                        size_t   bytes = 0;
+                        uint16_t width = 0;
+                        uint16_t height = 0;
+                        bool     more = false;
+        };
+
+        /**
+         * @brief Copies the screen's changes for the connection whose client's end is
+         *        @p connection, which must be watching the screen (`Shell.watchScreen`). On the
+         *        caller's task.
+         * @return `Ok`, `NotSupported` (not a local GUI connection), `PermissionDenied` (not watching),
+         *         `NotReady` (no display), `Timeout`.
+         */
+        using ScreenCaptureFn = Error (*)(Stream &connection, ScreenCapture &capture);
+
+        /** @brief Sets the service's opener, its canvas surfaces' maker and its screen capture. */
+        void set(Open open, CanvasSurface canvasSurface, ScreenCaptureFn screenCapture);
 
         /** @brief Opens through the service's opener (`NotSupported` without one). */
         Result<FileHandle::Ptr> open(uint32_t display, const Client &client);
 
         /** @brief Makes a canvas's surface through the service (`NotSupported` without one). */
         Result<FileHandle::Ptr> canvasSurface(Stream &connection, uint32_t canvas, const SurfaceConfig &config);
+
+        /** @brief Captures the screen through the service (`NotSupported` without one). */
+        Error screenCapture(Stream &connection, ScreenCapture &capture);
 
 } // namespace GuiOpener
 

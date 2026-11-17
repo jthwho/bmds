@@ -56,6 +56,11 @@ namespace {
         // How often a blocking TCP send looks again while lwIP's memory is out and nothing of its
         // own is in flight to wake it (sendTcp()).
         constexpr unsigned StarvedRetryMs = 10;
+        // A TCP send's piece for one tcp_write: its segments are allocated at once from lwIP's
+        // heap, which every connection shares; a whole send buffer's worth at once (23 KB) could
+        // fail where pieces go, and a non-blocking send then made no progress at all (found
+        // 2026-11-16 with a VNC server's 1 MB update: EAGAIN for ever, poll saying writable).
+        constexpr size_t TcpWritePiece = 4 * TCP_MSS;
 
         Error errorOf(err_t err) {
                 switch (err) {
@@ -209,6 +214,37 @@ namespace {
                 return copy;
         }
 
+        // Received TCP data in lwIP's heap (the loopback's: the sender's own pbufs) moved into the
+        // receive copies' PSRAM slots, as Ethernet's past the ring's share are: a reader that falls
+        // behind holds its window (up to 251 KB) of a 64 KB heap otherwise, and every connection
+        // starves, its own writer's too. Found 2026-11-16: a VNC server sending its first update
+        // through an SSH tunnel (dropbear, over the loopback) wedged every SSH login. With no slot
+        // free, kept as it is. The core lock held: one chunk buffer serves.
+        struct pbuf *outOfHeap(struct pbuf *p) {
+                if ((p->flags & PBUF_FLAG_IS_CUSTOM) != 0) return p; // the ring's, or a copy already
+                static uint8_t chunk[RxCopies::SlotBytes];
+                struct pbuf   *head = nullptr;
+                for (u16_t offset = 0; offset < p->tot_len;) {
+                        const size_t left = size_t(p->tot_len) - offset;
+                        const u16_t  n = static_cast<u16_t>(left < RxCopies::SlotBytes ? left : RxCopies::SlotBytes);
+                        (void)pbuf_copy_partial(p, chunk, n, offset);
+                        struct pbuf *q = RxCopies::copy(chunk, n);
+                        if (q == nullptr) {
+                                if (head != nullptr) pbuf_free(head);
+                                return p;
+                        }
+                        if (head == nullptr) {
+                                head = q;
+                        } else {
+                                pbuf_cat(head, q);
+                        }
+                        offset = static_cast<u16_t>(offset + n);
+                }
+                if (head == nullptr) return p;
+                pbuf_free(p);
+                return head;
+        }
+
         // --- Send stamps of datagrams through lwIP (devplan/network.md §30f) -----------------
         //
         // A datagram to be stamped carries a cookie in its pbuf: the registry slot of its socket
@@ -306,6 +342,7 @@ struct SocketCallbacks {
                                 pbuf_free(p);
                                 return ERR_OK;
                         }
+                        p = outOfHeap(p);
                         // Linked, not pbuf_cat()'s: the queue passes 64 KB (copyQueued()).
                         if (s._received == nullptr)
                                 s._received = p;
@@ -1557,6 +1594,7 @@ Result<size_t> Socket::sendTcp(Span<const ByteSpan> pieces, uint32_t flags, cons
                                 const ByteSpan p = pieces[piece];
                                 size_t         n = p.size() - offset;
                                 if (n > room) n = room;
+                                if (n > TcpWritePiece) n = TcpWritePiece;
                                 const bool last = piece + 1 == pieces.size() && offset + n == p.size();
                                 const u8_t api =
                                         TCP_WRITE_FLAG_COPY | ((!last || (flags & More)) ? TCP_WRITE_FLAG_MORE : 0);

@@ -662,7 +662,8 @@ _Static_assert(offsetof(bmds_image_encode_t, codec) == 4 && offsetof(bmds_image_
                        offsetof(bmds_image_encode_t, width) == 12 && offsetof(bmds_image_encode_t, height) == 16 &&
                        offsetof(bmds_image_encode_t, stride) == 20 && offsetof(bmds_image_encode_t, pixels) == 24 &&
                        offsetof(bmds_image_encode_t, quality) == 28 && offsetof(bmds_image_encode_t, sampling) == 32 &&
-                       offsetof(bmds_image_encode_t, level) == 36 && sizeof(bmds_image_encode_t) == 40,
+                       offsetof(bmds_image_encode_t, level) == 36 && offsetof(bmds_image_encode_t, out) == 40 &&
+                       offsetof(bmds_image_encode_t, out_capacity) == 44 && sizeof(bmds_image_encode_t) == 48,
                "ABI: bmds_image_encode_t");
 #endif
 _Static_assert(sizeof(bmds_system_info_t) == 160, "ABI: bmds_system_info_t size");
@@ -918,6 +919,22 @@ _Static_assert(BMDS_SYS_TLS_CTL == 135, "ABI: slot TLS_CTL");
 _Static_assert(BMDS_TLS_START == 1 && BMDS_TLS_HANDSHAKE == 2 && BMDS_TLS_INFO == 3 && BMDS_TLS_DONTWAIT == 1 &&
                        BMDS_TLS_NO_VERIFY == 1,
                "ABI: BMDS_TLS_* ops and flags");
+
+/* The screen's changes for a watching program (devplan/vnc.md §5c). */
+_Static_assert(BMDS_SYS_GUI_SCREEN_CAPTURE == 136, "ABI: slot GUI_SCREEN_CAPTURE");
+_Static_assert(BMDS_CAPTURE_ALL == 1, "ABI: BMDS_CAPTURE_*");
+#if UINTPTR_MAX == 0xffffffffu // (pointers inside)
+_Static_assert(offsetof(bmds_screen_capture_t, format) == 4 && offsetof(bmds_screen_capture_t, flags) == 8 &&
+                       offsetof(bmds_screen_capture_t, buffer) == 12 &&
+                       offsetof(bmds_screen_capture_t, capacity) == 16 &&
+                       offsetof(bmds_screen_capture_t, rects) == 20 &&
+                       offsetof(bmds_screen_capture_t, max_rects) == 24 &&
+                       offsetof(bmds_screen_capture_t, rect_count) == 28 &&
+                       offsetof(bmds_screen_capture_t, bytes) == 32 && offsetof(bmds_screen_capture_t, width) == 36 &&
+                       offsetof(bmds_screen_capture_t, height) == 40 && offsetof(bmds_screen_capture_t, more) == 44 &&
+                       sizeof(bmds_screen_capture_t) == 48,
+               "ABI: bmds_screen_capture_t");
+#endif
 _Static_assert(BMDS_TLS_HANDSHAKING == 0 && BMDS_TLS_OPEN == 1 && BMDS_TLS_FAILED == 2 && BMDS_TLS_CLOSED == 3 &&
                        BMDS_TLS_CLEAN_CLOSE == 1,
                "ABI: BMDS_TLS_* states");

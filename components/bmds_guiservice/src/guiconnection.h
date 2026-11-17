@@ -266,6 +266,23 @@ class GuiConnection {
                 static Result<FileHandle::Ptr> canvasSurface(Stream &clientEnd, uint32_t canvas,
                                                              const GuiOpener::SurfaceConfig &config);
 
+                /**
+                 * @brief `gui_screen_capture` (`GuiOpener::ScreenCaptureFn`): the screen's changes for
+                 *        the connection whose client's end is @p clientEnd, if it watches the screen
+                 *        (`Shell.watchScreen`). On the caller's thread, blocking.
+                 */
+                static Error screenCapture(Stream &clientEnd, GuiOpener::ScreenCapture &capture);
+
+                /** @brief Its screen watch (`ScreenWatch`), or -1: `Shell.watchScreen`'s. */
+                int16_t screenWatch() const { return _screenWatch.load(std::memory_order_acquire); }
+                void    setScreenWatch(int16_t id) {
+                        _screenWatch.store(id, std::memory_order_release);
+                        return;
+                }
+
+                /** @brief The program's name, as people see it. */
+                StringView displayName() const;
+
                 /** @brief Sends @p event of @p object with @p values, if the client listens to it. */
                 void emit(GuiObject &object, const char *event, Span<const GuiProtocol::Value> values);
 
@@ -390,6 +407,7 @@ class GuiConnection {
                 Semaphore            _started{1, 0};            // start() is done with _loop: the loop may run
                 std::atomic<bool>    _posted{false};
                 std::atomic<bool>    _stopping{false};
+                std::atomic<int16_t> _screenWatch{-1}; // Shell.watchScreen's ScreenWatch id
                 bool                 _helloDone = false;
                 bool                 _shellAllowed = false;     // the program named by gui/shell-clients
                 int32_t              _session = 0;              // its program's session (launch feedback)

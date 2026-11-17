@@ -23,16 +23,27 @@ using bmds::KernelCall;
 namespace {
 
         std::atomic<bmds::GuiOpener::Open>          opener{nullptr};
-        std::atomic<bmds::GuiOpener::CanvasSurface> surfaceMaker{nullptr};
+        std::atomic<bmds::GuiOpener::CanvasSurface>   surfaceMaker{nullptr};
+        std::atomic<bmds::GuiOpener::ScreenCaptureFn> screenCapturer{nullptr};
+
+        // Rectangles taken in one call (a caller with room for more calls again: `more`).
+        constexpr uint32_t MaxCaptureRects = 64;
 
 } // namespace
 
 BMDS_NAMESPACE_BEGIN
 
-void GuiOpener::set(Open open, CanvasSurface canvasSurface) {
+void GuiOpener::set(Open open, CanvasSurface canvasSurface, ScreenCaptureFn screenCapture) {
         opener.store(open, std::memory_order_release);
         surfaceMaker.store(canvasSurface, std::memory_order_release);
+        screenCapturer.store(screenCapture, std::memory_order_release);
         return;
+}
+
+Error GuiOpener::screenCapture(Stream &connection, ScreenCapture &capture) {
+        const ScreenCaptureFn fn = screenCapturer.load(std::memory_order_acquire);
+        if (fn == nullptr) return Error::NotSupported;
+        return fn(connection, capture);
 }
 
 Result<FileHandle::Ptr> GuiOpener::open(uint32_t display, const Client &client) {
@@ -94,6 +105,44 @@ int32_t bmds_k_gui_canvas_surface(int32_t conn, uint32_t canvas, const bmds_surf
         if (err == Error::NotReady) return -BMDS_EAGAIN;
         if (err.isError()) return bmds::Process::errnoFor(err);
         return call->addHandle(std::move(handle), BMDS_O_CLOEXEC);
+}
+
+int32_t bmds_k_gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture) {
+        KernelCall                  call;
+        const bmds::FileHandle::Ptr connection = call->handle(conn);
+        if (!connection) return -BMDS_EBADF;
+        bmds_screen_capture_t c;
+        int32_t               r = bmds::detail::copyIn(capture, c);
+        if (r < 0) return r;
+        if ((c.format != BMDS_PIXEL_BGR24 && c.format != BMDS_PIXEL_RGB565) || (c.flags & ~BMDS_CAPTURE_ALL) != 0 ||
+            c.buffer == nullptr || c.capacity == 0 || c.rects == nullptr || c.max_rects == 0)
+                return -BMDS_EINVAL;
+        const uint32_t maxRects = c.max_rects < MaxCaptureRects ? c.max_rects : MaxCaptureRects;
+        if (!bmds::detail::canWrite(c.buffer, c.capacity) ||
+            !bmds::detail::canWrite(c.rects, maxRects * sizeof(bmds_rect_t)))
+                return -BMDS_EFAULT;
+        bmds::Rect                     rects[MaxCaptureRects];
+        bmds::GuiOpener::ScreenCapture k;
+        k.rgb565 = c.format == BMDS_PIXEL_RGB565;
+        k.all = (c.flags & BMDS_CAPTURE_ALL) != 0;
+        k.buffer = static_cast<uint8_t *>(c.buffer);
+        k.capacity = c.capacity;
+        k.rects = bmds::Span<bmds::Rect>(rects, maxRects);
+        const Error err = bmds::GuiOpener::screenCapture(connection->stream(), k);
+        if (err == Error::NotSupported) return -BMDS_ENOTTY;
+        if (err == Error::PermissionDenied) return -BMDS_EACCES;
+        if (err == Error::NotReady) return -BMDS_EAGAIN;
+        if (err == Error::Timeout) return -BMDS_ETIMEDOUT;
+        if (err.isError()) return bmds::Process::errnoFor(err);
+        for (size_t i = 0; i < k.count; ++i)
+                c.rects[i] = bmds_rect_t{rects[i].x, rects[i].y, rects[i].width, rects[i].height};
+        c.rect_count = uint32_t(k.count);
+        c.bytes = uint32_t(k.bytes);
+        c.width = k.width;
+        c.height = k.height;
+        c.more = k.more ? 1u : 0u;
+        r = bmds::detail::copyOut(c, capture);
+        return r < 0 ? r : 0;
 }
 
 } // extern "C"

@@ -34,6 +34,7 @@ if(COMMAND idf_component_register)
                                     src/png.cpp
                                     src/screenshot.cpp
                                     src/screenshotcommand.cpp
+                                    src/screenwatch.cpp
                                     src/wincommand.cpp
                                     src/windowmanager.cpp
                                     src/wmconfig.cpp

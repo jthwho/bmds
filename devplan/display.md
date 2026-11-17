@@ -329,6 +329,7 @@ Superseded for text by `windows.md` (2026-10-05): a desktop with windows, the te
 - **3, the text renderer:** `TerminalScreen` (host-tested, `terminal.md` §3) holding the cells; changed rows drawn as glyphs with each cell's colors into a strip in internal RAM and blitted into the back buffer, then presented (§5b); an 8×16 bitmap font with a licence that fits (permissive or public domain), in internal RAM.
 - **4, the HDMI console:** a `Console` whose output is the screen; a shell instance on it (output only until Phase 5); the boot log on it. `Display` as a service: hot-plug, output off without a monitor.
 - **Beyond Phase 4's text console:** modes (720p and up, the EDID's preferred where the link allows), depths for programs (8-bit palette, 16, 24), line-based graphics.
+- **The output off with the desktop running** (planned 2026-11-16, `vnc.md` §5a): the scan kept running on 8 bytes of black in internal RAM (no PSRAM reads) and the HDMI transmitter off, while surface 0 carries on; for a VNC server and headless boards.
 
 ## 7. Open questions
 

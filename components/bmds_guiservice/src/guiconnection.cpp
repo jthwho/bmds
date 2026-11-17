@@ -15,6 +15,7 @@
 #include <new>
 #include <bmds/guiservice.h>
 #include <bmds/memory.h>
+#include <bmds/screenwatch.h>
 #include <bmds/system.h>
 #include "guiatoms.h"
 #include "guiservicepriv.h"
@@ -39,6 +40,7 @@ namespace {
         constexpr uint32_t     MaxImageSide = 512;        // an Image's width and height at most (1 MB)
         constexpr uint32_t     MaxProperties = 256;       // in one Create or Set
         constexpr size_t       MaxObjects = 4096;
+        constexpr unsigned int CaptureTimeoutMs = 1000; // a screen capture waits for the desktop's round
 
         // The connections by slot, for local clients' system calls (canvasSurface()); its lock also
         // each connection's surface jobs. Made at boot, never freed.
@@ -159,6 +161,41 @@ Result<FileHandle::Ptr> GuiConnection::canvasSurface(Stream &clientEnd, uint32_t
         (void)job.done.acquire(WaitForever);
         if (job.err.isError()) return makeError<FileHandle::Ptr>(job.err);
         return makeResult(std::move(job.handle));
+}
+
+// ---- Screen captures (devplan/vnc.md §5c)
+
+StringView GuiConnection::displayName() const {
+        return ::bmds::programName(_program.view());
+}
+
+Error GuiConnection::screenCapture(Stream &clientEnd, GuiOpener::ScreenCapture &capture) {
+        if (registryLock == nullptr) return Error::NotSupported;
+        int16_t watch = -1;
+        {
+                Mutex::Locker  locker(*registryLock, WaitForever);
+                GuiConnection *self = nullptr;
+                for (GuiConnection *c : registry)
+                        if (c != nullptr && c->_clientEnd == &clientEnd) self = c;
+                if (self == nullptr) return Error::NotSupported;
+                watch = self->screenWatch();
+        }
+        if (watch < 0) return Error::PermissionDenied;
+        // On the caller's thread: a watch removed meanwhile answers NotExist.
+        ScreenWatch::Capture c;
+        c.format = capture.rgb565 ? ScreenWatch::Format::Rgb565 : ScreenWatch::Format::Bgr24;
+        c.all = capture.all;
+        c.buffer = capture.buffer;
+        c.capacity = capture.capacity;
+        c.rects = capture.rects;
+        const Error err = ScreenWatch::capture(uint8_t(watch), c, CaptureTimeoutMs);
+        if (err == Error::NotExist) return Error::PermissionDenied;
+        capture.count = c.count;
+        capture.bytes = c.bytes;
+        capture.width = c.width;
+        capture.height = c.height;
+        capture.more = c.more;
+        return err;
 }
 
 // The loop's: the surfaces asked for, made in order.

@@ -95,6 +95,24 @@ class Surface {
                 /** @brief The multiple of pixels x and widths are drawn on. */
                 static constexpr uint16_t Align = 4;
 
+                /**
+                 * @brief Told of every surface's presents (`setPresentHook()`, `devplan/vnc.md` §5b):
+                 *        @p tiles the tiles drawn since its last present (`TileWidth` × `TileHeight`,
+                 *        @p rows rows of @p rowWords words, bit c of a row's word c / 32), or null
+                 *        for all of it (a single-buffered surface keeps none). On the presenting task,
+                 *        before the swap; must not block.
+                 */
+                using PresentHook = void (*)(void *arg, const Surface &surface, const uint32_t *tiles,
+                                             uint16_t rowWords, uint16_t rows);
+
+                /**
+                 * @brief Sets the one present hook for all surfaces (null: none). A hook already
+                 *        running when it is changed finishes first only if the caller waits for it.
+                 * @par Thread Safety
+                 * Any task.
+                 */
+                static void setPresentHook(PresentHook hook, void *arg);
+
                 /** @brief A damage tile's size (double buffering). */
                 static constexpr uint16_t TileWidth = 32;
                 static constexpr uint16_t TileHeight = 16;

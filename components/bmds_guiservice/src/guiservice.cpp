@@ -103,7 +103,7 @@ Error GuiService::init(ProgramLauncher &launcher) {
         const Error err = GuiAtoms::init();
         if (err.isError()) return err;
         GuiConnection::initRegistry();
-        GuiOpener::set(open, GuiConnection::canvasSurface);
+        GuiOpener::set(open, GuiConnection::canvasSurface, GuiConnection::screenCapture);
         return Error::Ok;
 }
 

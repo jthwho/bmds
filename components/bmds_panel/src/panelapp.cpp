@@ -61,6 +61,7 @@
 #include "notifyarea.h"
 #include "cpumeter.h"
 #include "networkstatus.h"
+#include "screensharing.h"
 #include "notificationserver.h"
 #include "panelitems.h"
 #include "propertiesdialog.h"
@@ -506,6 +507,7 @@ namespace {
                         VolumeControl                 *_volume = nullptr; // its icon in the tray (PSRAM)
                         NetworkStatus *_network = nullptr;   // panel/tray/network: its icon in the tray (PSRAM)
                         CpuMeter *_cpuMeter = nullptr;  // panel/tray/cpu: its icon in the tray (PSRAM)
+                        ScreenSharing *_sharing = nullptr;   // "screen shared": always, while anyone watches (PSRAM)
                         Menu     *_panelMenu = nullptr; // the panel's own (devplan/gui.md §4t)
                         NotificationServer            *_notify = nullptr;    // balloons and the centre (PSRAM)
                         ScreenshotTaker                _screenshots{_app};   // Print Screen
@@ -673,6 +675,11 @@ namespace {
                 setCpuMeter(false);
                 setVolumeControl(false);
                 setNetworkStatus(false);
+                if (_sharing != nullptr) {
+                        _sharing->~ScreenSharing();
+                        Memory::free(_sharing);
+                        _sharing = nullptr;
+                }
                 if (_notify != nullptr) {
                         _notify->~NotificationServer();
                         Memory::free(_notify);
@@ -1696,6 +1703,13 @@ namespace {
         // The tray's own icons as panel/tray/... says: made, kept or destroyed (devplan/gui.md §4t).
         // Shown in whichever tray there is, so they don't follow the row being made again.
         void PanelApp::applyTray() {
+                if (_sharing == nullptr) { // no setting hides it (devplan/vnc.md R9)
+                        void *mem = Memory::alloc(MemSpace::Psram, sizeof(ScreenSharing));
+                        if (mem != nullptr) {
+                                _sharing = ::new (mem) ScreenSharing(_app);
+                                _sharing->start();
+                        }
+                }
                 setCpuMeter(boolSetting(bmdsConf_panelTrayCpu));
                 setVolumeControl(boolSetting(bmdsConf_panelTrayVolume));
                 setNetworkStatus(boolSetting(bmdsConf_panelTrayNetwork));

@@ -91,6 +91,22 @@ namespace {
                 return err == ESP_OK ? Error(Error::Ok) : Error::fromEspErr(err);
         }
 
+        // What a dark scan reads (setDark()): 8 bytes of black in internal RAM, each descriptor's
+        // source address fixed on it. Made on first use, kept (the DMA may read it at any time
+        // while dark).
+        constexpr size_t   BlackBytes = 64; // a cache line: nothing else shares it
+        constinit uint8_t *blackWord = nullptr;
+
+        Error makeBlack() {
+                if (blackWord != nullptr) return Error::Ok;
+                auto *b = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, BlackBytes, BlackBytes));
+                if (b == nullptr) return Error::NoMem;
+                std::memset(b, 0, BlackBytes);
+                (void)esp_cache_msync(b, BlackBytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                blackWord = b;
+                return Error::Ok;
+        }
+
 } // namespace
 
 // The DMA's circular list of descriptors, in blocks of `ChunkItems` (internal DMA RAM, 64 bytes
@@ -209,6 +225,12 @@ struct ScanoutIsr {
                 // division a descriptor (row = k × rows / items, carried as a remainder).
                 BMDS_ISR_ATTR static void pointAt(Scanout &s, const uint8_t *buffer, uint32_t from, uint32_t to) {
                         if (from >= to) return;
+                        if (s._dark) {
+                                // Black whatever the buffer (its source address fixed: setSourceMode()).
+                                for (uint32_t k = from; k < to; ++k)
+                                        dw_gdma_ll_lli_set_src_addr(item(s, k), reinterpret_cast<uint32_t>(blackWord));
+                                return;
+                        }
                         if (!s._lineMode) {
                                 for (uint32_t k = from; k < to; ++k)
                                         dw_gdma_ll_lli_set_src_addr(
@@ -398,6 +420,10 @@ Error Scanout::start(const Config &config, Surface &surface) {
         _fallback = nullptr;
         _fallbacks = 0;
         _request.store(nullptr);
+        _dark = false;
+        _darkSwitches = 0;
+        _darkRequest.store(0);
+        while (_darkDone.tryAcquire().isOk()) {}
         while (_wake.tryAcquire().isOk()) {}
         void *hw = Memory::alloc(MemSpace::Internal, sizeof(Hardware));
         if (hw == nullptr) return Error::NoMem;
@@ -515,7 +541,7 @@ Error Scanout::buildList() {
         hw.list.release();
         hw.list = fresh;
         dw_gdma_block_transfer_config_t block = {};
-        block.src.burst_mode = DW_GDMA_BURST_MODE_INCREMENT;
+        block.src.burst_mode = _dark ? DW_GDMA_BURST_MODE_FIXED : DW_GDMA_BURST_MODE_INCREMENT;
         block.src.burst_items = DW_GDMA_BURST_ITEMS_512;
         block.src.burst_len = 16;
         block.src.width = DW_GDMA_TRANS_WIDTH_64;
@@ -527,7 +553,8 @@ Error Scanout::buildList() {
         block.size = _blockBytes / 8;
         const uint8_t *shown = _surface->shown();
         for (uint32_t i = 0; i < _items; ++i) {
-                block.src.addr = reinterpret_cast<uint32_t>(shown + ScanoutIsr::offset(*this, i));
+                block.src.addr = _dark ? reinterpret_cast<uint32_t>(blackWord)
+                                       : reinterpret_cast<uint32_t>(shown + ScanoutIsr::offset(*this, i));
                 dw_gdma_lli_handle_t lli = hw.list.item(i);
                 (void)dw_gdma_lli_config_transfer(lli, &block);
                 dw_gdma_block_markers_t markers = {};
@@ -868,6 +895,15 @@ void Scanout::supervise() {
         while (!_stopping.load()) {
                 (void)_wake.acquire(CheckMs);
                 if (_stopping.load()) break;
+                if (_darkRequest.load(std::memory_order_acquire) != 0) {
+                        // The restart's own drain is no news (stopStream() clears it); an underrun
+                        // after it is one, resynced as any other.
+                        changeDark();
+                        resyncUs = esp_timer_get_time() - ResyncGapUs;
+                        last = 0;
+                        progressUs = esp_timer_get_time();
+                        continue;
+                }
                 if (_request.load(std::memory_order_acquire) != nullptr) {
                         const uint32_t restarts = _restarts;
                         switchSurface();
@@ -969,6 +1005,7 @@ void Scanout::startStream() {
         _primed = false;
         _swapPhase = 0;
         _notifyPending = false;
+        setSourceMode();
         ScanoutIsr::pointAt(*this, _surface->shown(), 0, _items);
         for (uint32_t k = 0; k < _items; ++k) ScanoutIsr::validate(*this, k);
         const VideoTiming &t = _config.timing;
@@ -1180,6 +1217,58 @@ volatile uint32_t *Scanout::bridgeRegisters() const {
         return reinterpret_cast<volatile uint32_t *>(_hw->hal.bridge);
 }
 
+Error Scanout::requestDark(bool dark) {
+        if (!_running) return Error::InvalidState;
+        if (dark) {
+                const Error err = makeBlack();
+                if (err.isError()) return err;
+        }
+        _darkRequest.store(dark ? 1 : 2, std::memory_order_release);
+        _wake.release();
+        return Error::Ok;
+}
+
+Error Scanout::setDark(bool dark, unsigned int timeoutMs) {
+        while (_darkDone.tryAcquire().isOk()) {}
+        Error err = requestDark(dark);
+        if (err.isError()) return err;
+        err = _darkDone.acquire(timeoutMs);
+        return err.isOk() ? _darkResult : err;
+}
+
+// setDark()'s request: the stream stopped at a frame's end, its descriptors' sources changed, and
+// started again at the top with the link up (as a switch of surface); the link rebuilt if the DMA
+// won't stop. A swap half made waits for the next frame (startStream()).
+void Scanout::changeDark() {
+        Mutex::Locker locker(_switchLock, WaitForever);
+        const uint8_t request = _darkRequest.exchange(0, std::memory_order_acq_rel);
+        if (request == 0) return;
+        const bool dark = request == 1;
+        Error      err;
+        if (dark != _dark) {
+                if (haltAtFrameEnd() && stopStream()) {
+                        _dark = dark; // no interrupt runs now
+                        startStream();
+                } else {
+                        _dark = dark; // the list is built anew for it
+                        err = rebuild(false);
+                }
+                ++_darkSwitches;
+        }
+        if (_config.onDark != nullptr) _config.onDark(_config.onRestartArg, _dark);
+        _darkResult = err;
+        _darkDone.release();
+        return;
+}
+
+// Every descriptor's source: one word read again and again (dark) or a block's bytes in turn. Only
+// while the stream is stopped.
+void Scanout::setSourceMode() {
+        const dw_gdma_burst_mode_t mode = _dark ? DW_GDMA_BURST_MODE_FIXED : DW_GDMA_BURST_MODE_INCREMENT;
+        for (uint32_t k = 0; k < _items; ++k) dw_gdma_ll_lli_set_src_burst_mode(ScanoutIsr::item(*this, k), mode);
+        return;
+}
+
 Scanout::FrameTime Scanout::frameTime() const {
         FrameTime t;
         for (;;) {
@@ -1211,6 +1300,8 @@ Scanout::Stats Scanout::stats() const {
         s.dmaItem = _lastItem;
         s.fallbacks = _fallbacks;
         s.restarts = _restarts;
+        s.darkSwitches = _darkSwitches;
+        s.dark = _dark;
         s.linkErrorFrames = _linkErrorFrames;
         s.linkErrors0 = _linkErrors0;
         s.linkErrors1 = _linkErrors1;

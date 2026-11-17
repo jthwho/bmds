@@ -3193,3 +3193,23 @@ As §35b-c designed, with what building it decided:
 - **Size:** angel +11 KB (2,768,204 to 2,779,272 bytes).
 - **Rebuilt when they change:** the ROM's `bmds-dist` build now also depends on `sdk/http/` and
   the `bmds_core` files libbmdshttp is built from.
+
+## 36. Loopback data out of lwIP's heap, and TCP writes in pieces (found 2026-11-16)
+
+Found testing the VNC server (`vnc.md` §12) through an SSH tunnel: its first update (1 MB) never
+arrived, and then every SSH login hung (the banner never came; ping answered).
+
+- **A non-blocking `send()` made no progress at all.** `sendTcp()` gave `tcp_write()` the send
+  buffer's whole room (23 KB) at once; lwIP allocates that many segments from its heap in one go,
+  `ERR_MEM` came back, and with nothing written a non-blocking send was `EAGAIN` for ever while
+  `poll()` said writable (the room was there: the heap wasn't). Each `tcp_write()` now takes at
+  most 4 segments' worth (`TcpWritePiece`), so a send writes what fits and returns it, as Linux's
+  does.
+- **The loopback's received data stayed in lwIP's heap.** On the loopback a receiver gets the
+  sender's own heap pbufs, and §32's PSRAM copies apply only to Ethernet's ring buffers: a reader
+  that falls behind could hold its window (251 KB) of a 64 KB heap. dropbear, relaying the VNC
+  stream, then had no heap to send it on with, so it never read more: every connection starved.
+  `tcpReceived()` now moves data in lwIP's heap into `RxCopies`' slots as it arrives
+  (`outOfHeap()`); with no slot free it is kept as before.
+- **Measured** after both: the server's 1 MB updates go through the tunnel in about 1 s each
+  (Python's decoding is most of that), ten viewer sessions in a row, SSH logins unaffected.

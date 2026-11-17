@@ -372,3 +372,9 @@ property ChatView.maxLines Int RW
 property ChatView.palette List RW
 property ChatView.selectedText String RO
 property ChatView.wrap Bool RW
+
+# 2026-11-16 (devplan/vnc.md §5b, §5d): the screen watched by a SHELL program; input injected.
+method Shell.watchScreen(Bool) -> None
+event Shell.screenChanged() on
+method Shell.injectKey(Int, Int, Int) -> None
+method Shell.injectPointer(Int, Int, Int, Int) -> None

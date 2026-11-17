@@ -463,6 +463,15 @@ until silicon v3; then test again.
   made not valid while the last block is sent), drain the FIFO, turn the DPI output off in the
   vertical blank, and turn it on again only once the FIFO is mostly full (§5f): the DSI link
   stays up and the monitor keeps its picture.
+- **The scan can run on black with no PSRAM reads** (`devplan/vnc.md` §5a, measured 2026-11-16):
+  each DW-GDMA descriptor's source increment off (`ctrl_lo.sinc` = fixed,
+  `dw_gdma_ll_lli_set_src_burst_mode()`), every block reading one 8-byte word of zeros in internal
+  RAM. The DMA takes fixed-address bursts from memory: 60 frames a second, 0 stalls or underruns,
+  the bridge's output aligned after 62 changes back and forth (the §5f restart). With the scan
+  dark, PSRAM-to-PSRAM DMA copies went from 72 to 125 MB/s, the CPU's PSRAM writes and reads from
+  39 and 41 to 49 and 47 MB/s, and a 1280x692 fill from PSRAM from 23.9 to 14.8 ms: what 720p's
+  166 MB/s of scan reads cost everything else. (Two underruns in 20 changes made while a VNC
+  server was busy encoding: resynced; a longer FIFO fill before relighting is to try.)
 
 ## 4b. The crypto engines (`devplan/network.md` §26-27)
 

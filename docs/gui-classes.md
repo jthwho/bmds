@@ -747,6 +747,9 @@ Made by `Create`.
 | `copyIcon` | Int, Id | Bool |
 | `grabKey` | Int, Int | none |
 | `programStarting` | Int | none |
+| `watchScreen` | Bool | none |
+| `injectKey` | Int, Int, Int | none |
+| `injectPointer` | Int, Int, Int, Int | none |
 
 | Event | Values | Sent |
 |---|---|---|
@@ -754,6 +757,7 @@ Made by `Create`.
 | `windowClosed` | Int | on |
 | `workAreaChanged` | Rect | on |
 | `keyGrabbed` | Int, Int | on |
+| `screenChanged` | none | on |
 
 ## FontDialog
 

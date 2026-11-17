@@ -206,7 +206,7 @@ class GuiApplication {
                 StringView applicationName() const { return StringView(_applicationName); }
 
                 /** @brief Tray icons (`TrayIcon`) at once. */
-                static constexpr size_t MaxTrayIcons = 4;
+                static constexpr size_t MaxTrayIcons = 8; // the panel has 5 of its own (devplan/vnc.md R9)
 
                 /** @brief Service watches at once. */
                 static constexpr size_t MaxServiceWatches = 4;

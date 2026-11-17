@@ -444,7 +444,9 @@ void WindowManager::run() {
 }
 
 void WindowManager::keyEntry(void *arg, const KeyEvent &event) {
-        static_cast<WindowManager *>(arg)->key(event);
+        auto *self = static_cast<WindowManager *>(arg);
+        if (self->_display != nullptr) self->_display->wake(); // a local keyboard: the output back on
+        self->key(event);
         return;
 }
 
@@ -542,7 +544,9 @@ void WindowManager::deliverPads() {
 }
 
 void WindowManager::pointerEntry(void *arg, const PointerEvent &event) {
-        static_cast<WindowManager *>(arg)->pointer(event);
+        auto *self = static_cast<WindowManager *>(arg);
+        if (self->_display != nullptr) self->_display->wake(); // a local mouse: the output back on
+        self->pointer(event);
         return;
 }
 
@@ -551,10 +555,13 @@ void WindowManager::pointer(const PointerEvent &event) {
                 SpinLock::Locker keys(_inputLock);
                 PointerEvent    *last =
                         _pointerCount > 0 ? &_pointers[(_pointerHead + _pointerCount - 1) % PointerQueue] : nullptr;
-                if (last != nullptr && last->buttons == event.buttons) {
-                        // Motion alone: merged, so a fast mouse costs one event a round.
+                if (last != nullptr && last->buttons == event.buttons && last->absolute == event.absolute) {
+                        // Motion alone: merged, so a fast mouse costs one event a round (a position
+                        // replaces the one before it).
                         last->dx = static_cast<int16_t>(last->dx + event.dx);
                         last->dy = static_cast<int16_t>(last->dy + event.dy);
+                        last->x = event.x;
+                        last->y = event.y;
                         last->wheel = static_cast<int8_t>(last->wheel + event.wheel);
                 } else if (_pointerCount < PointerQueue) {
                         _pointers[(_pointerHead + _pointerCount) % PointerQueue] = event;
@@ -580,6 +587,17 @@ void WindowManager::applyPointer() {
                         --_pointerCount;
                 }
                 const uint8_t captured = _fullScreenId != 0 ? _fullScreenId : lockedId();
+                if (event.absolute) {
+                        // A position (an injected tablet's): the motion to it from the pointer, or,
+                        // captured (pointer lock, a full screen: the pointer doesn't move), from the
+                        // last position, so they see it as a mouse's motion.
+                        const bool fromLast = captured != 0 && _absoluteX >= 0;
+                        event.dx = static_cast<int16_t>(int(event.x) - (fromLast ? _absoluteX : int(_pointerX)));
+                        event.dy = static_cast<int16_t>(int(event.y) - (fromLast ? _absoluteY : int(_pointerY)));
+                        _absoluteX = event.x;
+                        _absoluteY = event.y;
+                        event.absolute = false;
+                }
                 if (captured != 0) {
                         capturedPointer(captured, event);
                         continue;

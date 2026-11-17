@@ -40,6 +40,11 @@ BMDS_NAMESPACE_BEGIN
  * Its interrupts stay about `MaxBlocks` a frame. `show()` changes the
  * surface scanned, at a restart of the stream (a frame's top).
  *
+ * Dark (`setDark()`, `devplan/vnc.md` §5a), the stream goes on with every
+ * descriptor reading one 8-byte word of black in internal RAM, its source
+ * address fixed: no PSRAM reads, and the frames, swaps and interrupts as when
+ * lit, so nothing that paces itself by them can tell.
+ *
  * A supervisor task restarts the stream if the DMA ever meets an invalid
  * descriptor or stops moving.
  *
@@ -63,7 +68,9 @@ class Scanout {
                                 int         core = 1;     ///< The supervisor task's core.
                                 void (*onRestart)(void *arg) =
                                         nullptr;              ///< After a rebuild of the link: re-lock the bridge chip.
-                                void *onRestartArg = nullptr; ///< Its argument.
+                                void *onRestartArg = nullptr; ///< Its argument (`onDark`'s too).
+                                /** After a change to dark or lit (`setDark()`), on the supervisor's task. */
+                                void (*onDark)(void *arg, bool dark) = nullptr;
                                 uint32_t laneMbps =
                                         0; ///< The lanes' rate, at least the pixels' (0: `VideoModes::laneMbps()`).
                                 bool continuousClock = false; ///< The clock lane always in high speed.
@@ -93,6 +100,8 @@ class Scanout {
                                 uint32_t linkErrors1 = 0;     ///< Its INT_ST1 flags seen since `start()`.
                                 uint32_t laneMbps = 0;        ///< The lanes' rate as set.
                                 uint32_t restarts = 0;        ///< Switches (`show()`) made with the link kept up.
+                                uint32_t darkSwitches = 0;    ///< Changes to dark or lit (`setDark()`).
+                                bool     dark = false;        ///< Sending black (`setDark()`).
                 };
 
                 /** @brief A scanout on DSI bus @p bus (0 on the ESP32-P4). */
@@ -149,6 +158,29 @@ class Scanout {
                  * @blocking
                  */
                 Error show(Surface &surface, const VideoTiming &timing, uint8_t lanes, unsigned int timeoutMs);
+
+                /**
+                 * @brief Sends black instead of the surface (@p dark), or the surface again: at a
+                 *        restart of the stream at a frame's top with the link kept up (the link
+                 *        rebuilt only if the DMA won't stop). Everything else goes on as before:
+                 *        frames, swaps, `show()`. Kept across switches and rebuilds; cleared by
+                 *        `start()`.
+                 * @return `Ok`, `InvalidState` (not running), `NoMem` (the black word), `Timeout`,
+                 *         or the link's error.
+                 * @blocking
+                 */
+                Error setDark(bool dark, unsigned int timeoutMs);
+
+                /**
+                 * @brief As `setDark()`, without waiting: the supervisor's task makes the change
+                 *        (`Config::onDark` says when).
+                 * @return `Ok`, `InvalidState` (not running), or `NoMem` (the black word).
+                 * @nonblocking
+                 */
+                Error requestDark(bool dark);
+
+                /** @brief Returns true while sending black (`setDark()`). @nonblocking */
+                bool isDark() const { return _dark; }
 
                 /** @brief Returns the timing being sent (the supervisor's task, or while stopped). */
                 const VideoTiming &timing() const { return _config.timing; }
@@ -262,6 +294,8 @@ class Scanout {
                 Error       buildList();                    // the DMA's list for the plan, on the shown buffer
                 void        useList();                      // the channel pointed at it
                 void        switchSurface();                // show()'s request, on the supervisor's task
+                void        changeDark();                   // setDark()'s request, on the supervisor's task
+                void        setSourceMode();                // every descriptor's source fixed (dark) or not
                 bool        haltAtFrameEnd(); // the DMA stopped by itself at the frame's end (false: it didn't)
                 bool        stopStream();     // the DPI output and the DMA stopped (false: the DMA won't)
                 void        startStream();    // and started again at the frame's top
@@ -288,6 +322,11 @@ class Scanout {
                 uint8_t                _swapPhase = 0;         // 1: all but the last descriptor on the new buffer
                 bool                   _notifyPending = false; // the surface's waiters to wake (the cache was off)
                 bool                   _running = false;
+                bool                   _dark = false; // black sent (changed only with no interrupt running)
+                uint32_t               _darkSwitches = 0;
+                std::atomic<uint8_t>   _darkRequest{0}; // setDark()'s: 0 none, 1 dark, 2 lit
+                Semaphore              _darkDone{1, 0};
+                Error                  _darkResult;
                 std::atomic<bool>      _stopping{false};
                 std::atomic<uint32_t>  _sent{0};   // blocks sent since the last restart
                 std::atomic<uint32_t>  _frames{0}; // frames begun

@@ -38,6 +38,7 @@ set(BMDS_CORE_SRCS
         src/sha1.cpp
         src/shacrypt.cpp
         src/stat.cpp
+        src/changetiles.cpp
         src/region.cpp
         src/error.cpp
         src/filenames.cpp

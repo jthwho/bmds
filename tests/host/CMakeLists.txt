@@ -48,6 +48,7 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/bench/bench.c
         blockdevice.cpp
         bytering.cpp
+        changetiles.cpp
         intervaltimers.cpp
         clipboard.cpp
         decoder.cpp

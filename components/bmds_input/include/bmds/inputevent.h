@@ -113,7 +113,9 @@ struct KeyEvent {
 };
 
 /**
- * @brief A mouse's motion and buttons since its last report.
+ * @brief A mouse's motion and buttons since its last report; or, `absolute`, a position on the
+ *        screen to move to (an injected tablet's, `devplan/vnc.md` §5d), its motion worked out
+ *        where the pointer's position is known.
  *
  * @par Thread Safety
  * A plain value.
@@ -126,10 +128,13 @@ struct PointerEvent {
                         Middle = 0x04,
                 };
 
-                int16_t dx = 0;      ///< Right is positive.
-                int16_t dy = 0;      ///< Down is positive.
-                int8_t  wheel = 0;   ///< Away from the user is positive.
-                uint8_t buttons = 0; ///< `Button` bits down now.
+                int16_t  dx = 0;           ///< Right is positive.
+                int16_t  dy = 0;           ///< Down is positive.
+                int8_t   wheel = 0;        ///< Away from the user is positive.
+                uint8_t  buttons = 0;      ///< `Button` bits down now.
+                bool     absolute = false; ///< `x`, `y` say where, not `dx`, `dy`.
+                uint16_t x = 0;            ///< The screen's pixel to move to (`absolute`).
+                uint16_t y = 0;
 };
 
 /**

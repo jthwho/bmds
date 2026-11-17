@@ -221,6 +221,8 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_SYNTAX_FIND 133u  /**< `int32_t syntax_find(const char *name, uint32_t length)`: a language. */
 #define BMDS_SYS_SYNTAX_SCAN 134u  /**< `int32_t syntax_scan(bmds_syntax_scan_t *scan)`. */
 #define BMDS_SYS_TLS_CTL 135u      /**< `int32_t tls_ctl(int32_t fd, uint32_t op, void *arg)`: TLS on a TCP socket. */
+#define BMDS_SYS_GUI_SCREEN_CAPTURE                                                                                    \
+        136u /**< `int32_t gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1068,6 +1070,9 @@ typedef struct bmds_image_encode_t {
                 uint32_t    quality;  /**< JPEG: 1-100; 0: 90. */
                 uint32_t    sampling; /**< JPEG: `BMDS_JPEG_*`. */
                 uint32_t    level;    /**< PNG: 0 the default, 1-9, `BMDS_PNG_STORED`. */
+                /* Appended 2026-11-16 (devplan/vnc.md §5e): with fd -1, the stream goes here. */
+                void    *out;          /**< Where the stream is written (fd -1). */
+                uint32_t out_capacity; /**< Its bytes: a stream that doesn't fit is `-BMDS_EOVERFLOW`. */
 } bmds_image_encode_t;
 
 /** @brief `bmds_notification_t::urgency` (devplan/notifications.md §3.1). */
@@ -1667,6 +1672,29 @@ typedef struct bmds_rect_t {
                 uint32_t width;
                 uint32_t height;
 } bmds_rect_t;
+
+/** @brief `bmds_screen_capture_t::flags`. */
+#define BMDS_CAPTURE_ALL 0x1u /**< Every part of the picture, not only what changed. */
+
+/**
+ * @brief The screen's changes to copy (`gui_screen_capture`, devplan/vnc.md §5c): the
+ *        rectangles that changed since the last capture, their pixels packed one after the other
+ *        in @ref buffer (each rectangle's rows `width` × bytes a pixel apart).
+ */
+typedef struct bmds_screen_capture_t {
+                uint32_t     size;       /**< Set by the caller: `sizeof(bmds_screen_capture_t)`. */
+                uint32_t     format;     /**< `BMDS_PIXEL_BGR24` or `BMDS_PIXEL_RGB565`. */
+                uint32_t     flags;      /**< `BMDS_CAPTURE_*`. */
+                void        *buffer;     /**< The pixels. */
+                uint32_t     capacity;   /**< Its bytes. */
+                bmds_rect_t *rects;      /**< Out: the rectangles copied, in the buffer's order. */
+                uint32_t     max_rects;  /**< Its room (at most 64 are taken a call). */
+                uint32_t     rect_count; /**< Out. */
+                uint32_t     bytes;      /**< Out: of the buffer used. */
+                uint32_t     width;      /**< Out: the picture's (a program's full screen may change it). */
+                uint32_t     height;     /**< Out. */
+                uint32_t     more;       /**< Out: 1 if changes are left that didn't fit: capture again. */
+} bmds_screen_capture_t;
 
 /** @brief A buffer to show (`surface_present`). */
 typedef struct bmds_surface_present_t {
@@ -2318,6 +2346,7 @@ typedef int32_t (*bmds_sys_font_close_fn)(int32_t font);
 typedef int32_t (*bmds_sys_syntax_find_fn)(const char *name, uint32_t length);
 typedef int32_t (*bmds_sys_syntax_scan_fn)(bmds_syntax_scan_t *scan);
 typedef int32_t (*bmds_sys_tls_ctl_fn)(int32_t fd, uint32_t op, void *arg);
+typedef int32_t (*bmds_sys_gui_screen_capture_fn)(int32_t conn, bmds_screen_capture_t *capture);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -3267,9 +3296,11 @@ static inline int32_t bmds_image_decode(int32_t fd, const bmds_image_decode_t *d
 }
 
 /**
- * @brief Writes @p e's picture to @p fd as a PNG or (by the codec) a baseline JPEG.
+ * @brief Writes @p e's picture to @p fd as a PNG or (by the codec) a baseline JPEG; or, with @p fd
+ *        -1, into @p e's `out` (a system from 2026-11-16 on: an older one answers `-BMDS_EBADF`).
  * @return The bytes written, or `-BMDS_EINVAL`, `-BMDS_ENOTSUP` (no JPEG codec), `-BMDS_EBADF`,
- *         `-BMDS_EFAULT`, `-BMDS_ENOMEM`, `-BMDS_EIO`, or the write's error.
+ *         `-BMDS_EFAULT`, `-BMDS_ENOMEM`, `-BMDS_EIO`, `-BMDS_EOVERFLOW` (`out` too small), or the
+ *         write's error.
  */
 static inline int32_t bmds_image_encode(int32_t fd, const bmds_image_encode_t *e) {
         return ((bmds_sys_image_encode_fn)bmds_sys->slot[BMDS_SYS_IMAGE_ENCODE])(fd, e);
@@ -3743,6 +3774,29 @@ static inline int32_t bmds_syntax_scan(bmds_syntax_scan_t *scan) {
 static inline int32_t bmds_tls_ctl(int32_t fd, uint32_t op, void *arg) {
         if (!bmds_sys_has(BMDS_SYS_TLS_CTL)) return -BMDS_ENOSYS;
         return ((bmds_sys_tls_ctl_fn)bmds_sys->slot[BMDS_SYS_TLS_CTL])(fd, op, arg);
+}
+
+/**
+ * @brief Copies what changed on the screen since the last capture (devplan/vnc.md §5c): the
+ *        rectangles of display 0's picture that changed (all of it with `BMDS_CAPTURE_ALL`, and
+ *        all of it the first time) into @p capture's buffer, from the picture shown (the desktop,
+ *        or a program's full screen in its place), whole frames only. What doesn't fit stays for
+ *        the next call (`more`).
+ *
+ * @p conn is a local GUI connection whose `Shell` object has called `watchScreen(true)` (a
+ * program `gui/shell-clients` names): its `screenChanged` event says when to call again. The
+ * request is taken in the service's own time: wait for the first `screenChanged` (sent as the
+ * watch begins) before the first capture, or it may answer `-BMDS_EACCES`. While
+ * any program watches, the system shows it in the panel's tray. (Slot 136, appended 2026-11-16:
+ * check `bmds_sys_has()`.)
+ * @return 0, or `-BMDS_EBADF` (@p conn), `-BMDS_ENOTTY` (not a local GUI connection),
+ *         `-BMDS_EACCES` (not watching the screen), `-BMDS_EINVAL` (a field), `-BMDS_EAGAIN`
+ *         (no display running), `-BMDS_ETIMEDOUT`, `-BMDS_EFAULT`, `-BMDS_ENOSYS`.
+ * @blocking While the desktop finishes drawing a frame, and for the copy.
+ */
+static inline int32_t bmds_gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture) {
+        if (!bmds_sys_has(BMDS_SYS_GUI_SCREEN_CAPTURE)) return -BMDS_ENOSYS;
+        return ((bmds_sys_gui_screen_capture_fn)bmds_sys->slot[BMDS_SYS_GUI_SCREEN_CAPTURE])(conn, capture);
 }
 
 /**

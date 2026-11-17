@@ -154,6 +154,15 @@ Plans: [`display.md`](display.md), [`windows.md`](windows.md), [`gui.md`](gui.md
   colour is no longer drawn twice (66 to 35 ms).
 - [ ] `Display` as a service (hot-plug).
 - [ ] Display modes (720p and up, the EDID's preferred where the DSI link allows) and depths for programs (8-bit palette, 16, 24); line-based graphics.
+- [ ] Remote desktop (`vnc.md`, planned 2026-11-16, the user's request): the display's output off
+  with the desktop running (`display output`, `display/output` on/off/remote, the scan on black, local
+  input waking it), the screen's changes and pixels for `SHELL` programs (`watchScreen`,
+  `gui_screen_capture`), injected keys and an absolute pointer, `image_encode` into memory, a
+  tray icon while the screen is watched. The VNC server itself is bmds-apps' (`devplan/vnc.md`
+  there). Built 2026-11-16, not yet tried on the board (`vnc.md` §11): steps 1-4 and
+  `sdk/examples/screencap`; the server's steps 1-3 in bmds-apps. Tried on the board (§12): the
+  output off (PSRAM DMA copies 72 to 125 MB/s), capture, injection, JPEG, a viewer through SSH;
+  fixed on the way: keys' characters, the tray's icon limit, two TCP gaps (`network.md` §36).
 
 ## Phase 5 — Input
 

@@ -39,7 +39,16 @@ namespace {
                 return static_cast<unsigned int>(us / 1000 + 1);
         }
 
+        constinit std::atomic<Surface::PresentHook> presentHook{nullptr};
+        constinit std::atomic<void *>               presentHookArg{nullptr};
+
 } // namespace
+
+void Surface::setPresentHook(PresentHook hook, void *arg) {
+        presentHookArg.store(arg, std::memory_order_release);
+        presentHook.store(hook, std::memory_order_release);
+        return;
+}
 
 Error Surface::start(uint16_t width, uint16_t height, Buffering buffering, Memory::Lifetime lifetime) {
         if (isStarted()) return Error::InvalidState;
@@ -1020,6 +1029,8 @@ Result<uint32_t> Surface::present(unsigned int timeoutMs) {
                         const Error err = flushBatch(Deadline(timeoutMs));
                         if (err.isError()) return makeError<uint32_t>(err);
                 }
+                const PresentHook hook = presentHook.load(std::memory_order_acquire);
+                if (hook != nullptr) hook(presentHookArg.load(std::memory_order_acquire), *this, nullptr, 0, 0);
                 _shown.store(++_presents, std::memory_order_release);
                 return makeResult(_presents);
         }
@@ -1027,7 +1038,10 @@ Result<uint32_t> Surface::present(unsigned int timeoutMs) {
         Error          err = prepare(deadline);
         if (err.isOk()) err = flushBatch(deadline); // a started copy or a batch, finished before the swap
         if (err.isError()) return makeError<uint32_t>(err);
-        const size_t words = size_t(_tileWords) * _tileRows;
+        const size_t      words = size_t(_tileWords) * _tileRows;
+        const PresentHook hook = presentHook.load(std::memory_order_acquire);
+        if (hook != nullptr)
+                hook(presentHookArg.load(std::memory_order_acquire), *this, _damage, _tileWords, _tileRows);
         std::memcpy(_forward, _damage, words * sizeof(uint32_t));
         std::memset(_damage, 0, words * sizeof(uint32_t));
         _forwardPending = true;

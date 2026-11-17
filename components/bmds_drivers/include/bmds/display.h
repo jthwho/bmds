@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <bmds/config.h>
@@ -103,6 +104,46 @@ class Display {
                 /** @brief Stops the picture and frees surface 0. Idempotent. */
                 void stop();
 
+                /**
+                 * @brief Turns the output off (@p on false) or on again with the display running
+                 *        (`devplan/vnc.md` §5a): off, the scan goes on sending black from internal
+                 *        RAM (`Scanout::setDark()`: no PSRAM reads) and the HDMI transmitter goes
+                 *        off (the monitor sleeps); surface 0, its frames and swaps go on as when on.
+                 *        Kept across `start()`, `show()` and rebuilds of the link.
+                 * @return `Ok`, or the scanout's or bridge's error (the state is set either way and
+                 *         applied at the next `start()`).
+                 * @blocking
+                 */
+                Error setOutput(bool on, unsigned int timeoutMs);
+
+                /**
+                 * @brief As `setOutput()`, without waiting for the change (a settings watcher's).
+                 * @return `Ok`, or the scanout's error.
+                 * @nonblocking
+                 */
+                Error requestOutput(bool on);
+
+                /**
+                 * @brief Local input (a keyboard's or mouse's, not injected): turns the output back on
+                 *        if it is off and `display/output-wake` allows (as DPMS wakes a monitor).
+                 * @nonblocking Cheap while the output is on (one load).
+                 */
+                void wake();
+
+                /**
+                 * @brief Says whether any program watches the screen (`ScreenWatch`): with
+                 *        `display/output` = `remote`, the output goes off with the first and on again
+                 *        with the last leaving.
+                 * @nonblocking
+                 */
+                void setViewers(bool any);
+
+                /** @brief Returns true while a program watches the screen (`setViewers()`). */
+                bool hasViewers() const { return _viewers.load(std::memory_order_acquire); }
+
+                /** @brief Returns false while the output is off (`setOutput()`). @nonblocking */
+                bool isOutputOn() const { return _outputOn; }
+
                 /** @brief Returns true while showing. */
                 bool isRunning() const { return _scanout.isRunning(); }
 
@@ -135,6 +176,7 @@ class Display {
 
         private:
                 static void onLinkRestart(void *arg);
+                static void onDark(void *arg, bool dark);
                 static void readStats(void *arg, Span<int64_t> values);
                 static void adjustStats(void *arg, size_t index, Stat::Limits &limits);
 
@@ -145,6 +187,8 @@ class Display {
                 const char *_owner = nullptr;
                 uint8_t     _number;
                 bool        _attached = false;
+                std::atomic<bool> _outputOn{true}; // setOutput(): read by wake() on input tasks
+                std::atomic<bool> _viewers{false}; // setViewers()
 
                 // Its counters, displayN (devplan/sysmon.md §6); the interrupt's cycles, widened.
                 Stats::Group _stats;
