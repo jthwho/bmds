@@ -199,6 +199,8 @@ Error GuiConnection::screenCapture(Stream &clientEnd, GuiOpener::ScreenCapture &
         capture.width = c.width;
         capture.height = c.height;
         capture.more = c.more;
+        capture.pointerX = c.pointerX;
+        capture.pointerY = c.pointerY;
         return err;
 }
 

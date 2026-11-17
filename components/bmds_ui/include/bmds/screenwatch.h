@@ -70,6 +70,8 @@ namespace ScreenWatch {
                         uint16_t width = 0;    ///< The shown picture's.
                         uint16_t height = 0;   ///< (a program's full screen may change it)
                         bool     more = false; ///< Changes left that didn't fit: capture again.
+                        int32_t  pointerX = -1; ///< The pointer's tip in the copied picture; -1: none drawn.
+                        int32_t  pointerY = -1;
         };
 
         /**
@@ -106,11 +108,11 @@ namespace ScreenWatch {
 
         /**
          * @brief The window manager's, before each present of @p surface (the desktop's): the
-         *        pointer drawn over @p area (empty: none) of the buffer being drawn, @p under
-         *        what it covers (@p area's pixels, B, G, R, rows packed). Kept with that buffer
-         *        for captures without the pointer.
+         *        pointer drawn over @p area (empty: none) of the buffer being drawn, its tip at
+         *        @p x, @p y, @p under what it covers (@p area's pixels, B, G, R, rows packed).
+         *        Kept with that buffer for captures without the pointer, and where it is.
          */
-        void pointerDrawn(const Surface &surface, const Rect &area, const uint8_t *under);
+        void pointerDrawn(const Surface &surface, const Rect &area, const uint8_t *under, uint16_t x, uint16_t y);
 
         /** @brief Removes watcher @p id (waits for a notification under way). Idempotent. */
         void remove(uint8_t id);

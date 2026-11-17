@@ -144,6 +144,8 @@ int32_t bmds_k_gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture) 
         c.width = k.width;
         c.height = k.height;
         c.more = k.more ? 1u : 0u;
+        c.pointer_x = k.pointerX;
+        c.pointer_y = k.pointerY;
         r = bmds::detail::copyOut(c, capture);
         return r < 0 ? r : 0;
 }

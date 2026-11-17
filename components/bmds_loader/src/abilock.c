@@ -934,8 +934,10 @@ _Static_assert(offsetof(bmds_screen_capture_t, format) == 4 && offsetof(bmds_scr
                        offsetof(bmds_screen_capture_t, rect_count) == 28 &&
                        offsetof(bmds_screen_capture_t, bytes) == 32 && offsetof(bmds_screen_capture_t, width) == 36 &&
                        offsetof(bmds_screen_capture_t, height) == 40 && offsetof(bmds_screen_capture_t, more) == 44 &&
-                       offsetof(bmds_screen_capture_t, share) == 48 && sizeof(bmds_screen_capture_t) == 52,
-               "ABI: bmds_screen_capture_t"); /* 48 before 2026-11-17 (share appended) */
+                       offsetof(bmds_screen_capture_t, share) == 48 &&
+                       offsetof(bmds_screen_capture_t, pointer_x) == 52 &&
+                       offsetof(bmds_screen_capture_t, pointer_y) == 56 && sizeof(bmds_screen_capture_t) == 60,
+               "ABI: bmds_screen_capture_t"); /* 48 before 2026-11-17 (share appended), then 52 (pointer_x, _y) */
 #endif
 _Static_assert(BMDS_TLS_HANDSHAKING == 0 && BMDS_TLS_OPEN == 1 && BMDS_TLS_FAILED == 2 && BMDS_TLS_CLOSED == 3 &&
                        BMDS_TLS_CLEAN_CLOSE == 1,

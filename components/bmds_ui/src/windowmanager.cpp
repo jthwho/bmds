@@ -1304,7 +1304,7 @@ void WindowManager::tellPointer() {
                 _pointerLook = look;
                 ScreenWatch::pointerChanged();
         }
-        ScreenWatch::pointerDrawn(*_surface, _underRect, _underIn);
+        ScreenWatch::pointerDrawn(*_surface, _underRect, _underIn, _pointerX, _pointerY);
         return;
 }
 

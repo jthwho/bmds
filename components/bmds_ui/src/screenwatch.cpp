@@ -63,6 +63,8 @@ namespace {
                         Rect           area;             // empty: no pointer drawn there
                         uint8_t       *under = nullptr;  // PSRAM: area's B, G, R, rows packed
                         size_t         capacity = 0;
+                        uint16_t       x = 0; // the tip, when area isn't empty
+                        uint16_t       y = 0;
         };
         constinit PointerSlot pointerSlots[2];
 
@@ -80,8 +82,11 @@ namespace {
         void unpoint(ScreenWatch::Capture &c, const uint8_t *from) {
                 const PointerSlot *slot = nullptr;
                 for (const PointerSlot &s : pointerSlots)
-                        if (s.buffer == from && s.under != nullptr && !s.area.isEmpty()) slot = &s;
+                        if (s.buffer == from && !s.area.isEmpty()) slot = &s;
                 if (slot == nullptr) return;
+                c.pointerX = slot->x; // where it is in this picture
+                c.pointerY = slot->y;
+                if (!c.noPointer || slot->under == nullptr) return;
                 const Rect  &p = slot->area;
                 const bool   rgb565 = c.format == ScreenWatch::Format::Rgb565;
                 const size_t bpp = rgb565 ? 2 : 3;
@@ -373,7 +378,7 @@ namespace {
                         take(*job.watcher, c, *shown, bpp);
                 }
                 copy(c, *shown, shown->shown(), lines);
-                if (c.noPointer && shown == &desktop) {
+                if (shown == &desktop) {
                         Mutex::Locker locker(lock(), WaitForever);
                         unpoint(c, shown->shown());
                 }
@@ -399,7 +404,7 @@ namespace {
                         }
                 }
                 if (from != nullptr) copy(c, desktop, from, desktop.height());
-                if (from != nullptr && c.noPointer) {
+                if (from != nullptr) {
                         Mutex::Locker locker(lock(), WaitForever);
                         unpoint(c, from);
                 }
@@ -481,7 +486,7 @@ void ScreenWatch::pointerChanged() {
         return;
 }
 
-void ScreenWatch::pointerDrawn(const Surface &surface, const Rect &area, const uint8_t *under) {
+void ScreenWatch::pointerDrawn(const Surface &surface, const Rect &area, const uint8_t *under, uint16_t x, uint16_t y) {
         if (active.load(std::memory_order_acquire) == 0 || display == nullptr || &surface != &display->surface())
                 return;
         const uint8_t *buffer = surface.drawn();
@@ -496,14 +501,23 @@ void ScreenWatch::pointerDrawn(const Surface &surface, const Rect &area, const u
         if (slot == nullptr) slot = &pointerSlots[0];
         slot->buffer = buffer;
         slot->area = Rect();
-        if (bytes == 0) return;
+        slot->x = x;
+        slot->y = y;
+        if (area.isEmpty()) return;
+        if (bytes == 0) { // nothing saved: where it is, still
+                slot->area = area;
+                return;
+        }
         if (bytes > slot->capacity) {
                 // Grown for a drag's image (the arrow's is a few KB): rare, and kept until the last
                 // watcher goes.
                 Memory::free(slot->under);
                 slot->under = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, bytes));
                 slot->capacity = slot->under != nullptr ? bytes : 0;
-                if (slot->under == nullptr) return; // that buffer's captures keep the pointer
+                if (slot->under == nullptr) {
+                        slot->area = area; // that buffer's captures keep the pointer; where it is, still
+                        return;
+                }
         }
         std::memcpy(slot->under, under, bytes);
         slot->area = area;
@@ -559,6 +573,7 @@ Error ScreenWatch::capture(uint8_t id, Capture &c, unsigned int timeoutMs) {
         c.count = 0;
         c.bytes = 0;
         c.more = false;
+        c.pointerX = c.pointerY = -1;
         if (id >= MaxWatchers || watchers == nullptr) return Error::NotExist;
         {
                 Mutex::Locker locker(lock(), WaitForever);

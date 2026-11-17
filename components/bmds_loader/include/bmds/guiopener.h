@@ -78,6 +78,8 @@ namespace GuiOpener {
                         uint16_t width = 0;
                         uint16_t height = 0;
                         bool     more = false;
+                        int32_t  pointerX = -1; ///< The pointer's tip in the copied picture; -1: none.
+                        int32_t  pointerY = -1;
         };
 
         /**

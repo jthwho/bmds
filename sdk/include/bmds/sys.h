@@ -1727,6 +1727,13 @@ typedef struct bmds_screen_capture_t {
                  * may have several, a VNC viewer each); 0, or a struct without it: the first watching.
                  */
                 uint32_t share;
+                /**
+                 * Out: where the pointer's tip is in the copied picture (appended 2026-11-17,
+                 * devplan/vnc.md §21: a viewer's pointer follows the board's); -1 when none is drawn
+                 * there (hidden, a program's full screen). A kernel before it leaves what was set.
+                 */
+                int32_t pointer_x;
+                int32_t pointer_y; /**< Out. */
 } bmds_screen_capture_t;
 
 /** @brief A buffer to show (`surface_present`). */

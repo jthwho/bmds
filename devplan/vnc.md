@@ -515,3 +515,13 @@ the frame (`drawCursor()`), what it covers saved first (`_under`, put back by th
   wallpaper under it, and one with it differed in the arrow's 118 pixels only; sweeping the pointer
   over guigallery's window brought the side and corner arrows as it crossed the edges. **Not
   tried:** a drag's image, the starting pointer, a hidden one.
+
+## 21. Where the pointer is, in each capture (2026-11-17, for RFB's pointer position)
+
+- **`bmds_screen_capture_t::pointer_x`, `pointer_y`** appended (60 bytes; 52 before, its lock
+  noted): where the pointer's tip is in the copied picture, from the same slot as §20's pixels (so
+  it is the captured frame's); -1 when none is drawn there. A kernel before them leaves what the
+  caller set (vncserver sets -2 to tell). A pointer moved by the board's own mouse changes the
+  frame, so a capture follows and says where it went: no event of its own needed.
+- **Tried on bmds0:** a second viewer (vncserver, bmds-apps' vnc.md §25) followed the first one's
+  sweep of the pointer, 95 positions in 4 s, in the order sent.
