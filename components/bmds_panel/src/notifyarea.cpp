@@ -9,6 +9,7 @@
  * panel's notification area, showing them and the clock in one sunken field.
  */
 
+#include <cstdio>
 #include <cstring>
 #include <new>
 #include <bmds/bevel.h>
@@ -18,6 +19,7 @@
 #include <bmds/guiwindow.h>
 #include <bmds/inputevent.h>
 #include <bmds/memory.h>
+#include <bmds/screenwatch.h>
 #include <bmds/vfs.h>
 
 #include "notifyarea.h"
@@ -28,6 +30,7 @@ namespace {
 
         using Role = WindowPalette::Role;
 
+        constexpr uint32_t WatchedColor = 0xd02020; // the screen-shared dot: the notifications' red
         constexpr uint64_t DoubleClickNs = uint64_t(WindowManager::DoubleClickMs) * 1000000u;
 
         // Text and icons are drawn from a column (GuiStyle::Column pixels): @p x down to one.
@@ -67,9 +70,15 @@ void TrayService::setArea(NotifyArea *area) {
 }
 
 void TrayService::changed() {
+        if (_changedFn != nullptr) _changedFn(_changedArg);
         if (_area == nullptr) return;
         _area->refresh(); // its size: the row laid out again, then told where (moved())
         moved();
+        return;
+}
+
+void TrayService::repaint() {
+        if (_area != nullptr) _area->update();
         return;
 }
 
@@ -371,6 +380,18 @@ void NotifyArea::paint(Painter &painter) {
                 const Icon *icon = own.isValid() ? &own : icons.find(TrayProtocol::view(e->icon), GuiStyle::IconSize);
                 if (icon == nullptr) icon = icons.find(IconId::ApplicationXExecutable, GuiStyle::IconSize);
                 if (icon != nullptr) (void)painter.image(x, y, *icon, face);
+                // A program watching the screen: a red dot on its own icons, drawn here, so it can't
+                // be left off (devplan/vnc.md R9; ScreenSharing shows an icon for one that has none).
+                unsigned client = 0;
+                if (std::sscanf(e->reply, "tray.%u", &client) == 1 && ScreenWatch::isWatching(client)) {
+                        const int  dx = x + GuiStyle::IconSize - 7, dy = y + GuiStyle::IconSize - 7;
+                        const Rect ring[] = {{uint16_t(dx + 1), uint16_t(dy), 5, 7},
+                                             {uint16_t(dx), uint16_t(dy + 1), 7, 5}};
+                        const Rect dot[] = {{uint16_t(dx + 2), uint16_t(dy + 1), 3, 5},
+                                            {uint16_t(dx + 1), uint16_t(dy + 2), 5, 3}};
+                        (void)painter.fill(Span<const Rect>(ring, 2), 0xffffff);
+                        (void)painter.fill(Span<const Rect>(dot, 2), WatchedColor);
+                }
         }
         // Moved on the screen (the row laid out again): the programs told, after the paint.
         const Rect at = cellOnScreen(0);

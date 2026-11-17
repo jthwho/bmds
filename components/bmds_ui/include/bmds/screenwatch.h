@@ -26,8 +26,9 @@ BMDS_NAMESPACE_BEGIN
  * Each watcher keeps its own `ChangeTiles`, fed by every present of the surface the scan shows
  * (the desktop's surface 0, or a program's full screen in its place; a switch between them marks
  * everything). The first change after a capture emptied them calls its `Notify`; a capture takes
- * them as rectangles and copies their pixels from the shown buffer, under the window manager's
- * capture (between its rounds) so no frame is half drawn.
+ * them as rectangles and copies their pixels from a whole frame: the desktop's latest present
+ * (shown, or waiting for its swap), its swaps held meanwhile; a program's full screen under the
+ * window manager's capture.
  *
  * While any watcher exists, display 0 is told (`Display::setViewers()`: `display/output` =
  * `remote` turns the output off) and `setActivity()`'s listener is told, so the system can show
@@ -72,9 +73,21 @@ namespace ScreenWatch {
          * @brief Adds a watcher; its tiles start all marked (the whole picture is new to it), and
          *        @p notify is told at once.
          * @param owner Its program's name, as the system shows it (copied).
+         * @param client Its GUI client's number (`GuiApplication::client()`): the tray marks that
+         *        program's own icons while it watches (`isWatching()`).
          * @return Its id, `Full` (`MaxWatchers` already), or `NotReady` (no display running).
          */
-        Result<uint8_t> add(Notify notify, void *arg, StringView owner);
+        Result<uint8_t> add(Notify notify, void *arg, StringView owner, uint32_t client);
+
+        /** @brief Returns true if GUI client @p client watches the screen. @nonblocking (a short lock) */
+        bool isWatching(uint32_t client);
+
+        /**
+         * @brief Writes the watching GUI clients' numbers into @p out (a client watching twice is
+         *        there twice).
+         * @return How many watch (all of them, though only @p max are written).
+         */
+        size_t clients(uint32_t *out, size_t max);
 
         /** @brief Removes watcher @p id (waits for a notification under way). Idempotent. */
         void remove(uint8_t id);
@@ -96,7 +109,8 @@ namespace ScreenWatch {
          *        picture into @p c's buffer, as rectangles in @p c's `rects`. What doesn't fit
          *        stays marked (`more`); with nothing left, the next change notifies again.
          * @return `Ok`, `NotExist` (no such watcher), `NotReady` (no display), `Timeout`.
-         * @blocking While the window manager finishes a round, and for the copy.
+         * @blocking For the copy (a program's full screen: also while the window manager finishes
+         *           a round and its frame shows).
          */
         Error capture(uint8_t id, Capture &c, unsigned int timeoutMs);
 

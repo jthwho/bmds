@@ -80,7 +80,7 @@ namespace GuiOpener {
 
         /**
          * @brief Copies the screen's changes for the connection whose client's end is
-         *        @p connection, which must be watching the screen (`Shell.watchScreen`). On the
+         *        @p connection, which must be watching the screen (`ScreenShare.watch`). On the
          *        caller's task.
          * @return `Ok`, `NotSupported` (not a local GUI connection), `PermissionDenied` (not watching),
          *         `NotReady` (no display), `Timeout`.

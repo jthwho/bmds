@@ -363,17 +363,28 @@ class Surface {
                 const uint8_t *shown() const { return _buffers[_front.load(std::memory_order_acquire)]; }
 
                 /**
+                 * @brief Returns the buffer drawn into: double buffered, the one the next present asks
+                 *        for (in a present's hook, the picture it presents); single, the shown one.
+                 */
+                const uint8_t *drawn() const {
+                        const uint32_t front = _front.load(std::memory_order_acquire);
+                        return _buffers[_buffering == Buffering::Double ? front ^ 1 : front];
+                }
+
+                /**
                  * @brief Holds the swaps while @p held (counted: each hold released once): a present
                  *        stays pending, so `shown()` stays the same buffer for a reader that takes
                  *        longer than a frame (a screenshot). A swap already begun ends at the next
-                 *        frame's start: wait for one (`waitFrame()`) after holding.
+                 *        frame's start: wait for one (`waitFrame()`) after holding. Not scanned, a
+                 *        present held is swapped when the last hold is released.
                  * @nonblocking Its drawer blocks in its next present meanwhile.
                  */
                 void holdSwaps(bool held) {
                         if (held) {
-                                _swapHolds.fetch_add(1, std::memory_order_acq_rel);
-                        } else {
-                                _swapHolds.fetch_sub(1, std::memory_order_acq_rel);
+                                _swapHolds.fetch_add(1, std::memory_order_seq_cst);
+                        } else if (_swapHolds.fetch_sub(1, std::memory_order_seq_cst) == 1 &&
+                                   !_scanning.load(std::memory_order_acquire)) {
+                                swapNow();
                         }
                         return;
                 }

@@ -5,9 +5,9 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * Watching the screen as a VNC server would (devplan/vnc.md §8): the SHELL extension's
- * watchScreen and screenChanged, gui_screen_capture's rectangles, image_encode into memory, and
- * injected keys and pointer. The program must be named by the setting gui/shell-clients.
+ * Watching the screen as a VNC server would (devplan/vnc.md §8, §14): a ScreenShare object's watch and
+ * changed, gui_screen_capture's rectangles, image_encode into memory, and injected keys and
+ * pointer. While it watches, the panel's tray shows the system's screen-shared icon.
  *
  *     screencap [-o FILE] [-w SECONDS] [-q QUALITY] [-5] [-i]
  *
@@ -33,7 +33,7 @@
 
 typedef struct Screen {
                 bmds_gui_t *gui;
-                uint32_t    shell;
+                uint32_t    screen;
                 int         rgb565;
                 uint32_t    width, height, bpp;
                 uint8_t    *picture; // the screen as followed
@@ -137,15 +137,15 @@ static void inject(Screen *s, const char *text) {
                 if (*p == '0') usage = 0x27;
                 if (*p == ' ') usage = 0x2c;
                 if (usage == 0) continue;
-                bmds_shell_inject_key(s->gui, s->shell, usage, 0, 1);
-                bmds_shell_inject_key(s->gui, s->shell, usage, 0, 0);
+                bmds_screen_share_inject_key(s->gui, s->screen, usage, 0, 1);
+                bmds_screen_share_inject_key(s->gui, s->screen, usage, 0, 0);
         }
-        bmds_shell_inject_key(s->gui, s->shell, 0x28, 0, 1); // Enter
-        bmds_shell_inject_key(s->gui, s->shell, 0x28, 0, 0);
+        bmds_screen_share_inject_key(s->gui, s->screen, 0x28, 0, 1); // Enter
+        bmds_screen_share_inject_key(s->gui, s->screen, 0x28, 0, 0);
         const int32_t x = (int32_t)s->width / 2, y = (int32_t)s->height / 2;
-        bmds_shell_inject_pointer(s->gui, s->shell, x, y, 0, 0);
-        bmds_shell_inject_pointer(s->gui, s->shell, x, y, 1, 0); // the left button down
-        bmds_shell_inject_pointer(s->gui, s->shell, x, y, 0, 0); // and up
+        bmds_screen_share_inject_pointer(s->gui, s->screen, x, y, 0, 0);
+        bmds_screen_share_inject_pointer(s->gui, s->screen, x, y, 1, 0); // the left button down
+        bmds_screen_share_inject_pointer(s->gui, s->screen, x, y, 0, 0); // and up
         return;
 }
 
@@ -175,8 +175,8 @@ int main(int argc, char **argv) {
                 perror("screencap: no GUI");
                 return 1;
         }
-        if (!bmds_gui_has_extension(s.gui, "SHELL")) {
-                fprintf(stderr, "screencap: name %s in gui/shell-clients first\n", argv[0]);
+        if (!bmds_sys_has(BMDS_SYS_GUI_SCREEN_CAPTURE)) {
+                fprintf(stderr, "screencap: this system has no screen capture\n");
                 return 1;
         }
         bmds_gui_value_t screen;
@@ -193,14 +193,14 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "screencap: out of memory\n");
                 return 1;
         }
-        s.shell = bmds_shell_new(s.gui, 0);
-        bmds_shell_watch_screen(s.gui, s.shell, 1);
-        // The service takes the request in its own time; its first screenChanged (sent at once)
+        s.screen = bmds_screen_share_new(s.gui, 0);
+        bmds_screen_share_watch(s.gui, s.screen, 1);
+        // The service takes the request in its own time; its first changed (sent at once)
         // says the watch is there, and captures may begin.
         bmds_gui_event_t first;
         int              got;
         while ((got = bmds_gui_next_event(s.gui, &first, 2000)) == 1)
-                if (first.source == s.shell && bmds_gui_event_is(s.gui, &first, BMDS_GUI_SHELL_SCREEN_CHANGED)) break;
+                if (first.source == s.screen && bmds_gui_event_is(s.gui, &first, BMDS_GUI_SCREEN_SHARE_CHANGED)) break;
         if (got != 1) {
                 fprintf(stderr, "screencap: the screen can't be watched (no display?)\n");
                 return 1;
@@ -225,7 +225,7 @@ int main(int argc, char **argv) {
                         const int n = bmds_gui_next_event(s.gui, &e, (int)(end - now));
                         if (n < 0) break;
                         if (n == 0) continue;
-                        if (e.source != s.shell || !bmds_gui_event_is(s.gui, &e, BMDS_GUI_SHELL_SCREEN_CHANGED))
+                        if (e.source != s.screen || !bmds_gui_event_is(s.gui, &e, BMDS_GUI_SCREEN_SHARE_CHANGED))
                                 continue;
                         ++events;
                         if (capture(&s, 0, s.picture) < 0) break;
@@ -262,7 +262,7 @@ int main(int argc, char **argv) {
         }
         int status = 0;
         if (out != NULL) status = save(&s, out, quality);
-        bmds_shell_watch_screen(s.gui, s.shell, 0);
+        bmds_screen_share_watch(s.gui, s.screen, 0);
         bmds_gui_close(s.gui);
         free(check);
         free(s.buffer);

@@ -14,19 +14,23 @@
 #include <bmds/menu.h>
 #include <bmds/trayicon.h>
 
+#include "notifyarea.h"
+
 BMDS_NAMESPACE_BEGIN
 
 /**
- * @brief The tray's "screen shared" icon (`devplan/vnc.md` R9): shown while any program watches
- *        the screen (`ScreenWatch`), its tooltip and menu naming them. The system's, not the
- *        watching program's, so a program can't hide that it watches; no setting removes it.
+ * @brief The tray's mark of a watched screen (`devplan/vnc.md` R9): while a program watches the
+ *        screen (`ScreenWatch`), a red dot on its own tray icons (`NotifyArea` draws it), and this
+ *        "screen shared" icon of the system's only for one with no icon of its own, its tooltip
+ *        and menu naming the watchers. The system's, not the watching program's, so a program can't
+ *        hide that it watches; no setting removes it.
  *
  * @par Thread Safety
  * The application's lock; `ScreenWatch`'s activity notification from any task.
  */
 class ScreenSharing {
         public:
-                explicit ScreenSharing(GuiApplication &app);
+                ScreenSharing(GuiApplication &app, TrayService &tray);
                 ~ScreenSharing();
                 ScreenSharing(const ScreenSharing &) = delete;
                 ScreenSharing &operator=(const ScreenSharing &) = delete;
@@ -36,11 +40,14 @@ class ScreenSharing {
 
         private:
                 static void changed(void *arg);
+                static void trayChanged(void *arg); // the tray's icons came, went or changed
+                bool        needsOwnIcon();         // a watcher with no visible icon of its own
                 static void changeDue(void *arg);
                 static void activated(void *arg, TrayIcon &icon, TrayIcon::Reason reason);
                 void        refresh();
 
                 GuiApplication   &_app;
+                TrayService      &_tray;
                 TrayIcon          _icon;
                 Menu              _menu;
                 std::atomic<bool> _posted{false};

@@ -922,7 +922,7 @@ _Static_assert(BMDS_TLS_START == 1 && BMDS_TLS_HANDSHAKE == 2 && BMDS_TLS_INFO =
 
 /* The screen's changes for a watching program (devplan/vnc.md §5c). */
 _Static_assert(BMDS_SYS_GUI_SCREEN_CAPTURE == 136, "ABI: slot GUI_SCREEN_CAPTURE");
-_Static_assert(BMDS_CAPTURE_ALL == 1, "ABI: BMDS_CAPTURE_*");
+_Static_assert(BMDS_CAPTURE_ALL == 1 && BMDS_CAPTURE_ALIGN == 128, "ABI: BMDS_CAPTURE_*");
 #if UINTPTR_MAX == 0xffffffffu // (pointers inside)
 _Static_assert(offsetof(bmds_screen_capture_t, format) == 4 && offsetof(bmds_screen_capture_t, flags) == 8 &&
                        offsetof(bmds_screen_capture_t, buffer) == 12 &&

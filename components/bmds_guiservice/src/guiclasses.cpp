@@ -3809,11 +3809,6 @@ namespace {
         struct ShellData {
                         List<ShellWindow> windows{MemSpace::Psram}; // as last told
                         bmds::Rect        workArea;
-                        uint32_t          keysDown[8] = {}; // injected and not released (a bit a usage)
-                        uint8_t           modifiers = 0;    // the last injected key's
-                        uint8_t           buttons = 0;      // injected and down
-                        uint16_t          pointerX = 0;     // the last injected position
-                        uint16_t          pointerY = 0;
                         uint32_t          icon[IconSide * IconSide]; // a window's icon, copied to be summed
         };
         ShellData &shellData(GuiObject &o) {
@@ -3983,105 +3978,7 @@ namespace {
                 shellRefresh(*static_cast<GuiObject *>(arg)); // every window told at first
                 return;
         }
-        // The screen changed since the last capture (devplan/vnc.md §5b): told on the loop.
-        void screenDue(void *arg) {
-                auto &o = *static_cast<GuiObject *>(arg);
-                o.connection->emit(o, "screenChanged", Args());
-                return;
-        }
-        // ScreenWatch's notification, on the presenting task: the loop takes it.
-        void screenNotify(void *arg) {
-                (void)static_cast<GuiObject *>(arg)->connection->application().post(screenDue, arg);
-                return;
-        }
-        void stopWatchingScreen(GuiObject &o) {
-                const int16_t id = o.connection->screenWatch();
-                if (id < 0) return;
-                o.connection->setScreenWatch(-1);
-                ScreenWatch::remove(uint8_t(id)); // waits for a notification under way
-                return;
-        }
-        GuiStatus call_Shell_watchScreen(GuiObject &o, Args args, Value &) {
-                if (args[0].number == 0) {
-                        stopWatchingScreen(o); // a screenChanged already posted may still come
-                        return Ok;
-                }
-                if (o.connection->screenWatch() >= 0) return Ok;
-                auto [id, err] = ScreenWatch::add(screenNotify, &o, o.connection->displayName());
-                if (err == Error::Full) return BadAccess; // as many watchers as the system takes
-                if (err.isError()) return BadMatch;       // no display running
-                o.connection->setScreenWatch(int16_t(id));
-                return Ok;
-        }
-        // ---- Injected input (devplan/vnc.md §5d): a virtual keyboard's and tablet's, into the window
-        // manager as the local ones' (hotkeys, grabs and pointer lock apply), never waking the output.
-
-        GuiStatus call_Shell_injectKey(GuiObject &o, Args args, Value &) {
-                if (args[0].number <= 0 || args[0].number > 255 || args[1].number < 0 || args[1].number > 255 ||
-                    args[2].number < 0 || args[2].number > 2)
-                        return BadValue;
-                ShellData     &d = shellData(o);
-                const uint8_t  usage = uint8_t(args[0].number);
-                const uint32_t bit = 1u << (usage % 32);
-                KeyEvent       e;
-                e.usage = usage;
-                e.modifiers = uint8_t(args[1].number);
-                // 0: released, 1: pressed, 2: repeated (as the keyboard's own).
-                e.action = args[2].number == 0   ? KeyEvent::Action::Release
-                           : args[2].number == 1 ? KeyEvent::Action::Press
-                                                 : KeyEvent::Action::Repeat;
-                if (e.action == KeyEvent::Action::Release)
-                        d.keysDown[usage / 32] &= ~bit;
-                else
-                        d.keysDown[usage / 32] |= bit;
-                // The character, as a keyboard's driver gives it (the system's keymap).
-                if (e.action != KeyEvent::Action::Release) e.codepoint = Keymap::us(e.usage, e.modifiers, 0);
-                d.modifiers = e.modifiers;
-                wmOf(o).key(e);
-                return Ok;
-        }
-        GuiStatus call_Shell_injectPointer(GuiObject &o, Args args, Value &) {
-                if (args[0].number < 0 || args[0].number > 4095 || args[1].number < 0 || args[1].number > 4095 ||
-                    args[2].number < 0 || args[2].number > 7 || args[3].number < -127 || args[3].number > 127)
-                        return BadValue;
-                ShellData   &d = shellData(o);
-                PointerEvent e;
-                e.absolute = true;
-                e.x = uint16_t(args[0].number);
-                e.y = uint16_t(args[1].number);
-                e.buttons = uint8_t(args[2].number);
-                e.wheel = int8_t(args[3].number);
-                d.pointerX = e.x;
-                d.pointerY = e.y;
-                d.buttons = e.buttons;
-                wmOf(o).pointer(e);
-                return Ok;
-        }
-        // What the object injected and didn't release, released (a viewer gone with Ctrl down).
-        void releaseInjected(GuiObject &o) {
-                ShellData &d = shellData(o);
-                for (uint16_t usage = 1; usage < 256; ++usage) {
-                        if ((d.keysDown[usage / 32] & (1u << (usage % 32))) == 0) continue;
-                        KeyEvent e; // released with no modifiers: Ctrl and Shift (0xe0-0xe7) among them
-                        e.usage = uint8_t(usage);
-                        e.action = KeyEvent::Action::Release;
-                        wmOf(o).key(e);
-                }
-                if (d.buttons != 0) {
-                        PointerEvent e;
-                        e.absolute = true;
-                        e.x = d.pointerX;
-                        e.y = d.pointerY;
-                        wmOf(o).pointer(e);
-                }
-                std::memset(d.keysDown, 0, sizeof(d.keysDown));
-                d.modifiers = 0;
-                d.buttons = 0;
-                return;
-        }
         void disposeShell(GuiObject &o) {
-                releaseInjected(o);
-                stopWatchingScreen(o);
                 GuiApplication &app = o.connection->application();
                 (void)app.setWindowsChanged(nullptr, nullptr);
                 app.cancelPosts(&o);
@@ -4103,6 +4000,136 @@ namespace {
                         return NoMem;
                 }
                 o.dispose = disposeShell;
+                return Ok;
+        }
+
+        // ---- 2026-11-16 (devplan/vnc.md §14): the ScreenShare class, any local program's: the screen
+        // watched (its changes told, its pixels by gui_screen_capture) and input injected. No
+        // setting gates it (any program could change one); the tray's mark says who watches (R9).
+
+        struct ScreenData {
+                        uint32_t keysDown[8] = {}; // injected and not released (a bit a usage)
+                        uint8_t  modifiers = 0;    // the last injected key's
+                        uint8_t  buttons = 0;      // injected and down
+                        uint16_t pointerX = 0;     // the last injected position
+                        uint16_t pointerY = 0;
+        };
+        ScreenData &screenData(GuiObject &o) {
+                return *dataOf<ScreenData>(o);
+        }
+        // The screen changed since the last capture (devplan/vnc.md §5b): told on the loop.
+        void screenDue(void *arg) {
+                auto &o = *static_cast<GuiObject *>(arg);
+                o.connection->emit(o, "changed", Args());
+                return;
+        }
+        // ScreenWatch's notification, on the presenting task: the loop takes it.
+        void screenNotify(void *arg) {
+                (void)static_cast<GuiObject *>(arg)->connection->application().post(screenDue, arg);
+                return;
+        }
+        void stopWatchingScreen(GuiObject &o) {
+                const int16_t id = o.connection->screenWatch();
+                if (id < 0) return;
+                o.connection->setScreenWatch(-1);
+                ScreenWatch::remove(uint8_t(id)); // waits for a notification under way
+                return;
+        }
+        GuiStatus call_ScreenShare_watch(GuiObject &o, Args args, Value &) {
+                if (args[0].number == 0) {
+                        stopWatchingScreen(o); // a changed already posted may still come
+                        return Ok;
+                }
+                if (o.connection->screenWatch() >= 0) return Ok;
+                auto [id, err] = ScreenWatch::add(screenNotify, &o, o.connection->displayName(),
+                                                  o.connection->application().client());
+                if (err == Error::Full) return BadAccess; // as many watchers as the system takes
+                if (err.isError()) return BadMatch;       // no display running
+                o.connection->setScreenWatch(int16_t(id));
+                return Ok;
+        }
+        // ---- Injected input (devplan/vnc.md §5d): a virtual keyboard's and tablet's, into the window
+        // manager as the local ones' (hotkeys, grabs and pointer lock apply), never waking the output.
+
+        GuiStatus call_ScreenShare_injectKey(GuiObject &o, Args args, Value &) {
+                if (args[0].number <= 0 || args[0].number > 255 || args[1].number < 0 || args[1].number > 255 ||
+                    args[2].number < 0 || args[2].number > 2)
+                        return BadValue;
+                ScreenData    &d = screenData(o);
+                const uint8_t  usage = uint8_t(args[0].number);
+                const uint32_t bit = 1u << (usage % 32);
+                KeyEvent       e;
+                e.usage = usage;
+                e.modifiers = uint8_t(args[1].number);
+                // 0: released, 1: pressed, 2: repeated (as the keyboard's own).
+                e.action = args[2].number == 0   ? KeyEvent::Action::Release
+                           : args[2].number == 1 ? KeyEvent::Action::Press
+                                                 : KeyEvent::Action::Repeat;
+                if (e.action == KeyEvent::Action::Release)
+                        d.keysDown[usage / 32] &= ~bit;
+                else
+                        d.keysDown[usage / 32] |= bit;
+                // The character, as a keyboard's driver gives it (the system's keymap).
+                if (e.action != KeyEvent::Action::Release) e.codepoint = Keymap::us(e.usage, e.modifiers, 0);
+                d.modifiers = e.modifiers;
+                wmOf(o).key(e);
+                return Ok;
+        }
+        GuiStatus call_ScreenShare_injectPointer(GuiObject &o, Args args, Value &) {
+                if (args[0].number < 0 || args[0].number > 4095 || args[1].number < 0 || args[1].number > 4095 ||
+                    args[2].number < 0 || args[2].number > 7 || args[3].number < -127 || args[3].number > 127)
+                        return BadValue;
+                ScreenData  &d = screenData(o);
+                PointerEvent e;
+                e.absolute = true;
+                e.x = uint16_t(args[0].number);
+                e.y = uint16_t(args[1].number);
+                e.buttons = uint8_t(args[2].number);
+                e.wheel = int8_t(args[3].number);
+                d.pointerX = e.x;
+                d.pointerY = e.y;
+                d.buttons = e.buttons;
+                wmOf(o).pointer(e);
+                return Ok;
+        }
+        // What the object injected and didn't release, released (a viewer gone with Ctrl down).
+        void releaseInjected(GuiObject &o) {
+                ScreenData &d = screenData(o);
+                for (uint16_t usage = 1; usage < 256; ++usage) {
+                        if ((d.keysDown[usage / 32] & (1u << (usage % 32))) == 0) continue;
+                        KeyEvent e; // released with no modifiers: Ctrl and Shift (0xe0-0xe7) among them
+                        e.usage = uint8_t(usage);
+                        e.action = KeyEvent::Action::Release;
+                        wmOf(o).key(e);
+                }
+                if (d.buttons != 0) {
+                        PointerEvent e;
+                        e.absolute = true;
+                        e.x = d.pointerX;
+                        e.y = d.pointerY;
+                        wmOf(o).pointer(e);
+                }
+                std::memset(d.keysDown, 0, sizeof(d.keysDown));
+                d.modifiers = 0;
+                d.buttons = 0;
+                return;
+        }
+        void disposeScreen(GuiObject &o) {
+                releaseInjected(o);
+                stopWatchingScreen(o);
+                o.connection->application().cancelPosts(&o);
+                freeData<ScreenData>(o);
+                return;
+        }
+        GuiStatus create_ScreenShare(GuiObject &o, GuiObject *parent) {
+                (void)parent;
+                // Local programs only: the pixels come by a system call, and a remote one's keys would
+                // be typed by whoever reaches the GUI's port.
+                if (!o.connection->isLocal()) return BadAccess;
+                for (GuiObject *other : o.connection->objects())
+                        if (other != &o && isClassNamed(other, "ScreenShare")) return BadAccess; // one a connection
+                if (makeData<ScreenData>(o) == nullptr) return NoMem;
+                o.dispose = disposeScreen;
                 return Ok;
         }
 

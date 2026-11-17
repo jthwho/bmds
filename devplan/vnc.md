@@ -98,7 +98,7 @@ is off (§9), audio.
 | R6 | **Capture by a system call, local only:** `gui_screen_capture(conn, request)` takes the watcher's changed tiles (cleared atomically), merges them into rectangles, and copies them by 2D-DMA from the **shown** picture into the program's buffer, packed, in `Bgr24` or `Rgb565`; it answers the rectangles. The swap waits while the copy runs (a whole frame, never half of two). The protocol's `Capture(rect)` stays for remote clients, pixels in the stream | pixels through the protocol locally (two more copies of each frame); surface 0 mapped into the program read-only (zero copy, but the CPU then reads PSRAM against the scan, and sees half-drawn frames) |
 | R7 | **Input as devices:** `SHELL`'s `injectKey(usage, modifiers, action)` and `injectPointer(x, y, buttons, wheel)` reach the input layer as a virtual keyboard (`kbdN`) and a virtual tablet (`tabletN`, absolute: the input layer's first absolute pointer), one each per connection, so hotkeys, controls and pointer lock apply as for USB. Keys held and buttons down are released when the connection ends | `WindowManager::key()` (under the hotkeys and controls; no pointer); a key at a time through `win hid` |
 | R8 | **`image_encode` into memory:** appended fields `out`, `out_capacity`, `out_bytes`; with `fd == -1` the stream goes to `out`. A stream that reaches within 1 KB of `out_capacity` is `-BMDS_EOVERFLOW` (the encoder's silent cut, `esp32p4.md` §4) | a pipe or a memory file as the descriptor (a copy per encode, and the cut still silent) |
-| R9 | **Who may, and who knows:** watching, capturing and injecting are `SHELL`'s, so only programs in `gui/shell-clients`, local unless `gui/shell-remote`. The user adds a VNC server there (Settings ▸ Desktop shows who holds it). While any program watches the screen, the panel's tray shows a "screen shared" icon naming it, drawn by the system: a program can't hide it | a setting of its own for capture (one more list to keep); the indicator left to each program |
+| R9 | **Who knows (changed, §13-§14):** any local program may watch and inject (`ScreenShare`); a setting couldn't stop one (any program can change it). While a program watches, the system marks it in the tray, a red dot on its own icon or an icon of the system's, which no program can hide | `gui/shell-clients` (first built so: no protection, and a setup step a start over SSH can't do); the indicator left to each program |
 
 ## 5. Design
 
@@ -357,3 +357,90 @@ the board's output goes to, on the user's other machine.
 - **Step 4:** a 1280x720 JPEG into memory in 36 ms, 145 KB at quality 85, right.
 - **The network, found on the way** (`network.md` §36): non-blocking TCP sends that made no
   progress, and the loopback's received data holding lwIP's heap: both fixed.
+
+## 13. One tray icon for a watcher with its own (2026-11-16, the user's ask)
+
+The user: one tray icon for VNC is enough, with a red dot (as the notifications' unread one) while
+someone is connected. R9 stays (a program can't hide that it watches), drawn differently:
+
+- **The dot is the system's:** `ScreenWatch` keeps each watcher's GUI client (`add()`'s `client`,
+  the connection's `GuiApplication::client()`), and the panel's tray draws a white-ringed red dot
+  on every icon whose reply service is that client's (`tray.N`) while it watches
+  (`ScreenWatch::isWatching()`, `NotifyArea::paint()`). The program sends nothing for it and can't
+  leave it off.
+- **The system's own icon** (`ScreenSharing`) shows only while some watcher has no visible icon of
+  its own (`screencap`); `TrayService::setChanged()` tells it when icons come and go, and
+  `repaint()` draws the dots again when watchers change.
+- **Tried on bmds0:** a viewer connected, one VNC icon with the dot and no other; `screencap`
+  watching alone, the display icon shown and the VNC icon without a dot.
+
+## 14. ScreenShare: no permission setting, the tray's mark the protection (2026-11-16, the user's)
+
+The user: any program can change any setting, so requiring `gui/shell-clients` buys nothing, and a
+first start over SSH couldn't even be asked. R9 as it stands now: **the protection is the tray's
+mark**, drawn by the system (§13), which no program can leave off; no setting gates watching or
+injecting.
+
+- **`ScreenShare`**, a class of its own (`classes.def`), any local connection's (one a
+  connection; a remote one over TCP is refused, `GuiConnection::isLocal()`): `watch(Bool)`,
+  `injectKey`, `injectPointer`, the event `changed`. `gui_screen_capture` takes a connection that
+  watches through it. (Named `ScreenShare`: angel has a `Screen` type already.)
+- **Out of `Shell`:** `watchScreen`, `screenChanged`, `injectKey` and `injectPointer`, unreleased,
+  taken out of `classes.def`, `gui.lock` and angel's `api.lock` rather than left as dead ABI.
+  `Shell` and `gui/shell-clients` are as they were for what they still cover (other programs'
+  windows, global keys, panel and desktop levels).
+- **Tried on bmds0** with `gui/shell-clients` at its default (empty): `screencap` followed changes
+  and matched, `vncserver` started, a viewer over the LAN typed into a terminal, the VNC icon had
+  its dot.
+
+## 15. The capture by 2D-DMA, and the picture as the monitor shows it (2026-11-16, the user's)
+
+R6 had the capture by 2D-DMA; §11 built it with the CPU. The user also found a game full screen
+(Doom at 4:3) squashed in a viewer: a program's surface shorter than the mode is scanned in line
+mode, its rows repeated, and the capture took the surface at its own size.
+
+- **Rows as the scan shows them:** `shownRows()` is the mode's height for a scanned surface in
+  line mode (screen row k is the surface's row k * rows / lines, the scan's and `screenshot`'s
+  rule). Watchers' tiles are in screen rows: a present's tiles are mapped onto them
+  (`markMapped()`), and a capture repeats rows to match, by either path. `width` and `height` in
+  `bmds_screen_capture_t` are the screen's.
+- **By the 2D-DMA** (`copyByDma()`): a `BlitChain` of 64 pieces, started with the first watcher and
+  stopped with the last, copies each rectangle from the shown buffer into the program's buffer,
+  packed (in line mode a piece a run of rows on consecutive source rows). The buffer is written
+  back and dropped from the cache before, dropped after. Only when `buffer` and `capacity` are on
+  `BMDS_CAPTURE_ALIGN` (128, appended to `sys.h`) and the format is B, G, R; else the CPU copies,
+  as before.
+- **Measured on bmds0:** a megabyte captured in 7-10 ms (21 by the CPU), and a capture of the
+  desktop identical to `screenshot` (the notifications' corner aside). **Not seen yet:** a game
+  in line mode through a viewer: `surfdemo -F` and Doom wouldn't stay full screen when started
+  over SSH (the scan said line mode once, briefly); the user's Alt+Enter at the board is the test.
+
+## 16. The capture without the window manager's wait (2026-11-16, the user's go-ahead)
+
+Under load a capture cost 21-33 ms on average and up to 97: it ran under the window manager's
+`capture()`, so it waited for the lock (a whole drawing round), then for the last present to be
+shown (up to a frame), and the window manager waited for it in turn.
+
+- **The desktop's latest present, copied as it is** (`copyLatest()`): the present hook records the
+  buffer holding each desktop present (`Surface::drawn()` then, appended). With the swaps held, that
+  buffer stays as it is, shown or waiting for its swap (the drawer waits for a swap before drawing
+  again; the CPU never writes the buffers, and a present's drawing is finished before its hook).
+  Tiles taken under the watchers' lock are that present's and earlier ones'; a later present marks
+  tiles for the next capture. No window manager's lock, no wait; it draws its next round meanwhile.
+  Before a desktop present is seen with watchers (and for a program's full screen, whose surface
+  may go away) the old way.
+- **Holds honoured off the scan:** an unscanned surface (the desktop under a full screen) swapped
+  at once, holds or not; `swapNow()` now leaves a held present pending (a spinlock makes one of a
+  present and a release swap it) and the last hold's release swaps it.
+- **Measured on bmds0** (a terminal scrolling flat out, both ways on one firmware, alternated
+  twice): a capture 10.8 ms on average, 15 at most (21-33 and 76-97 before): the copy alone. A
+  viewer served 4.5 Mpixel/s at compression 0 (3.2) and 2.5 at 6 (2.25); the desktop's swaps the
+  same (15-18 a second). A still desktop through a viewer identical to `screenshot` but for the
+  notifications. **Not tried:** a full-screen switch during captures (the held swap off the scan).
+- **Found by the user: a game full screen refreshed only its top part.** Not the line mode: a
+  capture takes at most its buffer's pixels (vncserver's 768 KB: 262K), and `takeRects()` always
+  began at the top row. A picture changing all over every frame (921K pixels at 1280 x 720) had its
+  top marked again before each capture, so the rows below were never reached. A take that stops
+  early now leaves where it stopped and the next starts there, round to it (`ChangeTiles`, with a
+  host test). On bmds0, `surfdemo -F` in line mode through a viewer: the whole screen, as the HDMI
+  output (bands of different frames where one frame needs several updates).

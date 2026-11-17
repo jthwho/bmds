@@ -18,7 +18,7 @@
 
 BMDS_NAMESPACE_BEGIN
 
-ScreenSharing::ScreenSharing(GuiApplication &app) : _app(app), _icon(app), _menu(app) {
+ScreenSharing::ScreenSharing(GuiApplication &app, TrayService &tray) : _app(app), _tray(tray), _icon(app), _menu(app) {
         _icon.setCategory(TrayIcon::Category::System);
         _icon.setIcon("preferences-desktop-display");
         _icon.setActivated(activated, this);
@@ -26,11 +26,13 @@ ScreenSharing::ScreenSharing(GuiApplication &app) : _app(app), _icon(app), _menu
 
 ScreenSharing::~ScreenSharing() {
         ScreenWatch::setActivity(nullptr, nullptr); // a notification running has ended (its lock)
+        _tray.setChanged(nullptr, nullptr);
         _app.cancelPosts(this);
 }
 
 void ScreenSharing::start() {
         ScreenWatch::setActivity(changed, this);
+        _tray.setChanged(trayChanged, this);
         refresh();
         return;
 }
@@ -50,9 +52,35 @@ void ScreenSharing::changeDue(void *arg) {
         return;
 }
 
+// The tray's row changed (the loop's thread): a watcher's own icon came or went.
+void ScreenSharing::trayChanged(void *arg) {
+        auto *self = static_cast<ScreenSharing *>(arg);
+        if (ScreenWatch::count() == 0) return;
+        changed(self); // after the row's change is done
+        return;
+}
+
+bool ScreenSharing::needsOwnIcon() {
+        uint32_t     clients[ScreenWatch::MaxWatchers];
+        const size_t n = ScreenWatch::clients(clients, ScreenWatch::MaxWatchers);
+        for (size_t i = 0; i < n && i < ScreenWatch::MaxWatchers; ++i) {
+                char reply[TrayProtocol::MaxReplyName + 1];
+                std::snprintf(reply, sizeof(reply), "tray.%u", unsigned(clients[i]));
+                bool shown = false;
+                for (size_t p = 0; !shown; ++p) {
+                        const TrayRow::Entry *e = _tray.row().shown(p);
+                        if (e == nullptr) break;
+                        shown = std::strcmp(e->reply, reply) == 0;
+                }
+                if (!shown) return true;
+        }
+        return false;
+}
+
 void ScreenSharing::refresh() {
+        _tray.repaint(); // the dots on watchers' own icons
         const size_t n = ScreenWatch::count();
-        if (n == 0) {
+        if (n == 0 || !needsOwnIcon()) {
                 if (_shown) _icon.hide();
                 _shown = false;
                 return;

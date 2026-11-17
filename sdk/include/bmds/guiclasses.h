@@ -1407,19 +1407,25 @@ static inline int bmds_chat_view_copy(bmds_gui_t *gui, uint32_t id) {
 }
 #define BMDS_GUI_CHAT_VIEW_LINK_ACTIVATED "linkActivated" /**< ChatView's event (String). */
 #define BMDS_GUI_CHAT_VIEW_SCROLLED_BACK "scrolledBack" /**< ChatView's event (Bool). */
-static inline int bmds_shell_watch_screen(bmds_gui_t *gui, uint32_t id, int a0) {
-        const bmds_gui_value_t args[] = {bmds_gui_bool(a0)};
-        return bmds_gui_call_named(gui, id, "watchScreen", args, 1, NULL);
+
+/* ---- ScreenShare */
+/** @brief A new ScreenShare under @p parent (0: none): its id, or 0. */
+static inline uint32_t bmds_screen_share_new(bmds_gui_t *gui, uint32_t parent) {
+        return bmds_gui_new(gui, "ScreenShare", parent);
 }
-#define BMDS_GUI_SHELL_SCREEN_CHANGED "screenChanged" /**< Shell's event (no values). */
-static inline int bmds_shell_inject_key(bmds_gui_t *gui, uint32_t id, int32_t a0, int32_t a1, int32_t a2) {
+static inline int bmds_screen_share_watch(bmds_gui_t *gui, uint32_t id, int a0) {
+        const bmds_gui_value_t args[] = {bmds_gui_bool(a0)};
+        return bmds_gui_call_named(gui, id, "watch", args, 1, NULL);
+}
+static inline int bmds_screen_share_inject_key(bmds_gui_t *gui, uint32_t id, int32_t a0, int32_t a1, int32_t a2) {
         const bmds_gui_value_t args[] = {bmds_gui_int(a0), bmds_gui_int(a1), bmds_gui_int(a2)};
         return bmds_gui_call_named(gui, id, "injectKey", args, 3, NULL);
 }
-static inline int bmds_shell_inject_pointer(bmds_gui_t *gui, uint32_t id, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+static inline int bmds_screen_share_inject_pointer(bmds_gui_t *gui, uint32_t id, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
         const bmds_gui_value_t args[] = {bmds_gui_int(a0), bmds_gui_int(a1), bmds_gui_int(a2), bmds_gui_int(a3)};
         return bmds_gui_call_named(gui, id, "injectPointer", args, 4, NULL);
 }
+#define BMDS_GUI_SCREEN_SHARE_CHANGED "changed" /**< ScreenShare's event (no values). */
 
 #ifdef __cplusplus
 }

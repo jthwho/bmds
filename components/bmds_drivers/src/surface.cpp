@@ -12,6 +12,7 @@
 #include <esp_cache.h>
 #include <cstring>
 #include <esp_timer.h>
+#include <freertos/FreeRTOS.h>
 #include <bmds/deadline.h>
 #include <bmds/memory.h>
 #include <bmds/placement.h>
@@ -1047,7 +1048,7 @@ Result<uint32_t> Surface::present(unsigned int timeoutMs) {
         _forwardPending = true;
         ++_presents;
         ++_stats.presents;
-        _asked.store(true, std::memory_order_release);
+        _asked.store(true, std::memory_order_seq_cst);
         if (!_scanning.load(std::memory_order_acquire)) swapNow();
         return makeResult(_presents);
 }
@@ -1086,11 +1087,19 @@ BMDS_ISR_ATTR void Surface::swappedFromIsr(bool notify) {
 }
 
 void Surface::swapNow() {
-        if (!_asked.load(std::memory_order_acquire)) return;
-        _front.store(_front.load(std::memory_order_relaxed) ^ 1, std::memory_order_release);
-        _shown.store(_presents, std::memory_order_release);
-        _asked.store(false, std::memory_order_release);
-        _waiters.notify();
+        // A present (its drawer's thread) and a hold's release (a reader's) may both find it due:
+        // one swaps. Seq-cst against holdSwaps(): one of them sees the other's store.
+        static portMUX_TYPE swapLock = portMUX_INITIALIZER_UNLOCKED;
+        bool                swapped = false;
+        portENTER_CRITICAL(&swapLock);
+        if (_asked.load(std::memory_order_seq_cst) && _swapHolds.load(std::memory_order_seq_cst) == 0) {
+                _front.store(_front.load(std::memory_order_relaxed) ^ 1, std::memory_order_release);
+                _shown.store(_presents, std::memory_order_release);
+                _asked.store(false, std::memory_order_release);
+                swapped = true;
+        }
+        portEXIT_CRITICAL(&swapLock);
+        if (swapped) _waiters.notify();
         return;
 }
 

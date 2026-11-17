@@ -64,6 +64,17 @@ class TrayService {
                 /** @brief The icons moved on the screen: each program told where its are. */
                 void moved();
 
+                /** @brief Told after the icons change (one listener: the screen-shared item). */
+                using Changed = void (*)(void *arg);
+                void setChanged(Changed fn, void *arg) {
+                        _changedFn = fn;
+                        _changedArg = arg;
+                        return;
+                }
+
+                /** @brief Draws the icons again (the screen-shared dots changed: devplan/vnc.md R9). */
+                void repaint();
+
         private:
                 static void message(void *arg, ByteSpan message);
                 static void servicesChanged(void *arg);
@@ -77,6 +88,8 @@ class TrayService {
                 TrayRow         _row;
                 NotifyArea     *_area = nullptr;
                 bool            _running = false;
+                Changed         _changedFn = nullptr;
+                void           *_changedArg = nullptr;
 };
 
 /**

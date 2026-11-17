@@ -444,10 +444,12 @@ GUI_METHOD(ChatView, copy, None)
 GUI_EVENT(ChatView, linkActivated, On, String)
 GUI_EVENT(ChatView, scrolledBack, On, Bool)
 
-/* ---- 2026-11-16 (devplan/vnc.md §5b-§5d): the screen for a SHELL program: watched (screenChanged
- * when it changes after a capture; the pixels by gui_screen_capture, a local connection's), keys
- * and an absolute pointer injected as a virtual keyboard's and tablet's */
-GUI_METHOD(Shell, watchScreen, None, Bool)
-GUI_EVENT(Shell, screenChanged, On)
-GUI_METHOD(Shell, injectKey, None, Int, Int, Int)
-GUI_METHOD(Shell, injectPointer, None, Int, Int, Int, Int)
+/* ---- 2026-11-16 (devplan/vnc.md §14): the screen, for any local program: watched (changed when
+ * it changes after a capture; the pixels by gui_screen_capture), keys (usage, modifiers, 0 release
+ * 1 press 2 repeat) and an absolute pointer (x, y, buttons, wheel) injected. The tray marks who
+ * watches */
+GUI_CLASS(ScreenShare, None, Concrete)
+GUI_METHOD(ScreenShare, watch, None, Bool)
+GUI_METHOD(ScreenShare, injectKey, None, Int, Int, Int)
+GUI_METHOD(ScreenShare, injectPointer, None, Int, Int, Int, Int)
+GUI_EVENT(ScreenShare, changed, On)

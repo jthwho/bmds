@@ -373,8 +373,9 @@ property ChatView.palette List RW
 property ChatView.selectedText String RO
 property ChatView.wrap Bool RW
 
-# 2026-11-16 (devplan/vnc.md §5b, §5d): the screen watched by a SHELL program; input injected.
-method Shell.watchScreen(Bool) -> None
-event Shell.screenChanged() on
-method Shell.injectKey(Int, Int, Int) -> None
-method Shell.injectPointer(Int, Int, Int, Int) -> None
+# 2026-11-16 (devplan/vnc.md §14): the screen watched and input injected, by any local program.
+class ScreenShare : None Concrete
+method ScreenShare.watch(Bool) -> None
+method ScreenShare.injectKey(Int, Int, Int) -> None
+method ScreenShare.injectPointer(Int, Int, Int, Int) -> None
+event ScreenShare.changed() on

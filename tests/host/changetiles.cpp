@@ -151,6 +151,22 @@ TEST_CASE("ChangeTiles: a rectangle bigger than the budget is taken a band of ti
         CHECK(t.takeRects(Span<Rect>(out, 4), 1280 * 15) == 0); // less than a tile row: nothing
 }
 
+TEST_CASE("ChangeTiles: a picture changing all over each frame is taken in turn, top to bottom") {
+        // A game full screen: everything marked again before each take, the budget a third of it.
+        ChangeTiles t;
+        REQUIRE(t.resize(1280, 720));
+        Rect     out[4];
+        uint32_t taken[720] = {};
+        for (int frame = 0; frame < 6; ++frame) {
+                t.markAll();
+                const size_t n = t.takeRects(Span<Rect>(out, 4), 1280 * 240);
+                REQUIRE(n == 1);
+                for (uint16_t y = out[0].y; y < out[0].bottom(); ++y) ++taken[y];
+        }
+        for (uint32_t y = 0; y < 720; ++y) CHECK(taken[y] >= 1); // the bottom too, not the top six times
+        CHECK(taken[0] <= 3);
+}
+
 TEST_CASE("ChangeTiles: a surface's bitmap ORs in, wider sources clipped") {
         ChangeTiles t;
         REQUIRE(t.resize(96, 32)); // 3 × 2 tiles

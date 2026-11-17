@@ -1706,7 +1706,7 @@ namespace {
                 if (_sharing == nullptr) { // no setting hides it (devplan/vnc.md R9)
                         void *mem = Memory::alloc(MemSpace::Psram, sizeof(ScreenSharing));
                         if (mem != nullptr) {
-                                _sharing = ::new (mem) ScreenSharing(_app);
+                                _sharing = ::new (mem) ScreenSharing(_app, _tray);
                                 _sharing->start();
                         }
                 }

@@ -19,6 +19,7 @@ bool ChangeTiles::resize(uint16_t width, uint16_t height) {
         _height = height;
         _columns = uint16_t(columns);
         _rows = uint16_t(rows);
+        _nextRow = 0;
         markAll();
         return true;
 }
@@ -83,7 +84,11 @@ Rect ChangeTiles::pixels(uint16_t c0, uint16_t c1, uint16_t r0, uint16_t r1) con
 size_t ChangeTiles::takeRects(Span<Rect> out, uint32_t maxPixels) {
         size_t   count = 0;
         uint32_t used = 0;
-        for (uint16_t r = 0; r < _rows; ++r) {
+        // From where the last take stopped, round to it. A rectangle grows down to the bottom at
+        // most (rows above the start were taken already this time, or are left for the next).
+        const uint16_t start = _nextRow < _rows ? _nextRow : 0;
+        for (uint16_t step = 0; step < _rows; ++step) {
+                const uint16_t r = uint16_t((start + step) % _rows);
                 for (uint16_t c = 0; c < _columns;) {
                         if (!isSet(c, r)) {
                                 ++c;
@@ -99,18 +104,25 @@ size_t ChangeTiles::takeRects(Span<Rect> out, uint32_t maxPixels) {
                                 if (!whole) break;
                         }
                         Rect rect = pixels(c0, c, r, r1);
-                        if (count == out.size()) return count;
+                        if (count == out.size()) {
+                                _nextRow = r;
+                                return count;
+                        }
                         if (used + rect.area() > maxPixels) {
                                 // Too big for what is left: its top rows of tiles that fit, if any (a
                                 // rectangle bigger than the whole budget is taken a band at a time).
                                 const uint32_t rowPixels = uint32_t(pixels(c0, c, r, uint16_t(r + 1)).width) * TileHeight;
                                 const uint32_t rows = (maxPixels - used) / rowPixels;
-                                if (rows == 0) return count;
+                                if (rows == 0) {
+                                        _nextRow = r;
+                                        return count;
+                                }
                                 r1 = uint16_t(r + rows);
                                 rect = pixels(c0, c, r, r1);
                                 out[count++] = rect;
                                 for (uint16_t row = r; row < r1; ++row)
                                         for (uint16_t k = c0; k < c; ++k) clearTile(k, row);
+                                _nextRow = r1 < _rows ? r1 : 0;
                                 return count;
                         }
                         out[count++] = rect;

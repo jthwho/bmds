@@ -1677,6 +1677,13 @@ typedef struct bmds_rect_t {
 #define BMDS_CAPTURE_ALL 0x1u /**< Every part of the picture, not only what changed. */
 
 /**
+ * @brief A capture's `buffer` and `capacity` both multiples of this (a cache line) let the 2D-DMA
+ *        copy it (B, G, R only): several times faster than the CPU, which copies any other.
+ *        (Appended 2026-11-16.)
+ */
+#define BMDS_CAPTURE_ALIGN 128u
+
+/**
  * @brief The screen's changes to copy (`gui_screen_capture`, devplan/vnc.md §5c): the
  *        rectangles that changed since the last capture, their pixels packed one after the other
  *        in @ref buffer (each rectangle's rows `width` × bytes a pixel apart).
@@ -3780,15 +3787,16 @@ static inline int32_t bmds_tls_ctl(int32_t fd, uint32_t op, void *arg) {
  * @brief Copies what changed on the screen since the last capture (devplan/vnc.md §5c): the
  *        rectangles of display 0's picture that changed (all of it with `BMDS_CAPTURE_ALL`, and
  *        all of it the first time) into @p capture's buffer, from the picture shown (the desktop,
- *        or a program's full screen in its place), whole frames only. What doesn't fit stays for
- *        the next call (`more`).
+ *        or a program's full screen in its place, its rows repeated as the monitor shows them),
+ *        whole frames only. What doesn't fit stays for the next call (`more`). A buffer and
+ *        capacity on `BMDS_CAPTURE_ALIGN` are copied by the 2D-DMA.
  *
- * @p conn is a local GUI connection whose `Shell` object has called `watchScreen(true)` (a
- * program `gui/shell-clients` names): its `screenChanged` event says when to call again. The
- * request is taken in the service's own time: wait for the first `screenChanged` (sent as the
- * watch begins) before the first capture, or it may answer `-BMDS_EACCES`. While
- * any program watches, the system shows it in the panel's tray. (Slot 136, appended 2026-11-16:
- * check `bmds_sys_has()`.)
+ * @p conn is a local GUI connection whose `ScreenShare` object has called `watch(true)`: its `changed`
+ * event says when to call again. The request is taken in the service's own time: wait for the
+ * first `changed` (sent as the watch begins) before the first capture, or it may answer
+ * `-BMDS_EACCES`. While a program watches, the system marks it in the panel's tray (a red dot on
+ * its own icon, or an icon of the system's). (Slot 136, appended 2026-11-16: check
+ * `bmds_sys_has()`.)
  * @return 0, or `-BMDS_EBADF` (@p conn), `-BMDS_ENOTTY` (not a local GUI connection),
  *         `-BMDS_EACCES` (not watching the screen), `-BMDS_EINVAL` (a field), `-BMDS_EAGAIN`
  *         (no display running), `-BMDS_ETIMEDOUT`, `-BMDS_EFAULT`, `-BMDS_ENOSYS`.

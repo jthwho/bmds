@@ -82,7 +82,9 @@ class ChangeTiles {
                  *        The tiles taken are cleared; it stops when @p out is full or the pixels reach
                  *        @p maxPixels: a rectangle too big for what is left gives its top rows of
                  *        tiles that fit (the rest stays marked), so a budget of a tile row of the
-                 *        picture's width always makes progress.
+                 *        picture's width always makes progress. A take that stops early is followed
+                 *        by one that starts where it stopped (wrapping round), so a picture that
+                 *        changes all over every frame is taken in turn, not its top again and again.
                  * @return The rectangles written.
                  */
                 size_t takeRects(Span<Rect> out, uint32_t maxPixels);
@@ -102,6 +104,7 @@ class ChangeTiles {
                 uint16_t _height = 0;
                 uint16_t _columns = 0;
                 uint16_t _rows = 0;
+                uint16_t _nextRow = 0; // where the next take starts: where the last stopped early
 };
 
 BMDS_NAMESPACE_END

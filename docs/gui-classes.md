@@ -66,6 +66,7 @@ only. What the protocol carries and what the classes mean are in
 | [FontDialog](#fontdialog) | - | yes |
 | [FontButton](#fontbutton) | Widget | yes |
 | [ChatView](#chatview) | Widget | yes |
+| [ScreenShare](#screenshare) | - | yes |
 
 ## Widget
 
@@ -747,9 +748,6 @@ Made by `Create`.
 | `copyIcon` | Int, Id | Bool |
 | `grabKey` | Int, Int | none |
 | `programStarting` | Int | none |
-| `watchScreen` | Bool | none |
-| `injectKey` | Int, Int, Int | none |
-| `injectPointer` | Int, Int, Int, Int | none |
 
 | Event | Values | Sent |
 |---|---|---|
@@ -757,7 +755,6 @@ Made by `Create`.
 | `windowClosed` | Int | on |
 | `workAreaChanged` | Rect | on |
 | `keyGrabbed` | Int, Int | on |
-| `screenChanged` | none | on |
 
 ## FontDialog
 
@@ -818,3 +815,17 @@ Made by `Create`; also has the entries of [Widget](#widget).
 |---|---|---|
 | `linkActivated` | String | on |
 | `scrolledBack` | Bool | on |
+
+## ScreenShare
+
+Made by `Create`.
+
+| Method | Arguments | Result |
+|---|---|---|
+| `watch` | Bool | none |
+| `injectKey` | Int, Int, Int | none |
+| `injectPointer` | Int, Int, Int, Int | none |
+
+| Event | Values | Sent |
+|---|---|---|
+| `changed` | none | on |
