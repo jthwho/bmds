@@ -562,7 +562,7 @@ Plan: [`input.md`](input.md).
     (`tabs.md`, approved 2026-11-16: no 16-tab limit, a row that scrolls, badges, attention,
     close buttons, moving a page, the row hidden; the client's tabs by default; step 1, the
     row's scrolling and parts in `TabRow`, built: §7; step 2, the widget and the classes, built:
-    §8). Servers too (§37, 2026-11-17, the user's:
+    §8; step 3, guigallery's Tabs tab and guitest, built: §9). Servers too (§37, 2026-11-17, the user's:
     "proper TLS server support in the kernel", for the VNC server's VeNCrypt): `BMDS_TLS_SERVER`
     and `BMDS_TLS_CLIENT_CERT` on `tls_ctl`, the board's own ECDSA certificate made on first use
     (`net/tls/server-keys`, `tls cert`), libtls's `tls_server`/`tls_accept_socket`, `progtest

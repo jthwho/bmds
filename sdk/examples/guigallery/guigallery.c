@@ -14,7 +14,10 @@
  * a folder opens) and the chosen one's entries in a details view. Text: a code editor, its cursor and state shown.
  * Chat: a chat view fed lines on a timer (IRC's styles and colours, gutters, links), a marker
  * under what was read, the end, and a line typed in; its link clicks and scrolling back show in
- * the status bar. Terminal: a shell
+ * the status bar. Tabs: tabs for many conversations (devplan/tabs.md): more than fit, scrolled
+ * and listed; news on a timer marks tabs not in view (a count in a badge, activity, every fourth
+ * an alert); their close buttons and middle clicks close them, a right click opens a menu (to the
+ * front, mark read, close), a new tab goes after the first, and the row can be hidden. Terminal: a shell
  * on the program's own pseudo-terminal, its output written to the widget, the typing sent back.
  * Menus: File (Open and Save As through the file dialog, Quit), View (the status bar, a checked
  * item; the pointer, a submenu), Help (About), their shortcuts as keys. Dialogs: a message box, the colour dialog, a popup
@@ -58,6 +61,10 @@ typedef struct Gallery {
                 uint32_t    timer, timerButton, ticks;
                 uint32_t    chat, chatTimer, chatStart, chatMark, chatEnd, chatEntry;
                 int         chatLines;
+                uint32_t    inner, innerNew, innerRow, innerNews, innerTimer, innerMenu, innerItems[3];
+                uint32_t    innerPages[64];  // the Tabs tab's pages (0: closed)
+                int         innerUnread[64]; // each one's count, its badge
+                int         innerMade, innerTicks, innerMenuPage;
                 uint32_t    canvas, clearButton;
                 uint32_t    clipboard, clipEdit, clipCopy, clipOffer, clipPaste, clipState, dropTarget;
                 uint32_t    notifyButton, note, trayCheck, tray, trayShow, trayNotify, deskState;
@@ -452,6 +459,133 @@ static int chatEvent(Gallery *g, const bmds_gui_event_t *e) {
         return 0;
 }
 
+// ---- Tabs: conversations as a chat client keeps them (devplan/tabs.md)
+
+static int innerIndex(Gallery *g, uint32_t page) {
+        for (int i = 0; i < 64; ++i)
+                if (page != 0 && g->innerPages[i] == page) return i;
+        return -1;
+}
+
+static void showEvent(Gallery *g, const bmds_gui_event_t *e);
+
+// A new conversation's tab, at the end. @return Its slot, or -1 (64 open).
+static int innerAdd(Gallery *g) {
+        int at = 0;
+        while (at < 64 && g->innerPages[at] != 0) ++at;
+        if (at == 64) return -1;
+        bmds_gui_t    *gui = g->gui;
+        const uint32_t page = bmds_tab_page_new(gui, g->inner);
+        char           text[32];
+        if (g->innerMade == 0)
+                snprintf(text, sizeof(text), "Libera.Chat");
+        else
+                snprintf(text, sizeof(text), "#channel%d", g->innerMade);
+        bmds_tab_page_set_title(gui, page, text);
+        bmds_tab_page_set_closable(gui, page, g->innerMade > 0); // the network's own stays
+        const uint32_t label = bmds_label_new(gui, page);
+        snprintf(text, sizeof(text), "Conversation %d", g->innerMade);
+        bmds_label_set_text(gui, label, text);
+        g->innerPages[at] = page;
+        g->innerUnread[at] = 0;
+        ++g->innerMade;
+        return at;
+}
+
+static void innerRead(Gallery *g, int at) {
+        g->innerUnread[at] = 0;
+        bmds_tab_page_set_badge(g->gui, g->innerPages[at], "");
+        bmds_tab_page_set_attention(g->gui, g->innerPages[at], 0);
+        return;
+}
+
+static void innerClose(Gallery *g, int at) {
+        bmds_gui_destroy(g->gui, g->innerPages[at]); // its tab with it
+        g->innerPages[at] = 0;
+        return;
+}
+
+// The Tabs tab's events (its pages' go on to the status bar too). @return 1 if it was one.
+static int tabsEvent(Gallery *g, const bmds_gui_event_t *e) {
+        bmds_gui_t *gui = g->gui;
+        if (e->source == g->innerNew) {
+                // After the network's own tab, and shown.
+                const int made = innerAdd(g);
+                if (made >= 0) {
+                        bmds_tab_page_set_index(gui, g->innerPages[made], 1);
+                        bmds_tabs_set_current(gui, g->inner, 1);
+                }
+                return 1;
+        }
+        if (e->source == g->innerRow && bmds_gui_event_is(gui, e, BMDS_GUI_CHECK_BOX_TOGGLED) && e->count == 1) {
+                bmds_tabs_set_bar_visible(gui, g->inner, (int)e->values[0].number);
+                return 1;
+        }
+        if (e->source == g->innerNews && bmds_gui_event_is(gui, e, BMDS_GUI_CHECK_BOX_TOGGLED) && e->count == 1) {
+                if (e->values[0].number != 0)
+                        bmds_timer_start(gui, g->innerTimer);
+                else
+                        bmds_timer_stop(gui, g->innerTimer);
+                return 1;
+        }
+        if (e->source == g->innerTimer) {
+                // News in a conversation not in view: its count up, activity, every fourth an alert.
+                bmds_gui_value_t v;
+                int32_t          current = -1;
+                if (bmds_tabs_get_current(gui, g->inner, &v) == 0) current = (int32_t)v.number;
+                int open[64], n = 0;
+                for (int i = 0; i < 64; ++i) {
+                        if (g->innerPages[i] == 0) continue;
+                        if (bmds_tab_page_get_index(gui, g->innerPages[i], &v) == 0 && v.number == current) continue;
+                        open[n++] = i;
+                }
+                if (n == 0) return 1;
+                const int at = open[rand() % n];
+                char      badge[8];
+                snprintf(badge, sizeof(badge), "%d", ++g->innerUnread[at]);
+                bmds_tab_page_set_badge(gui, g->innerPages[at], badge);
+                int level = (++g->innerTicks % 4) == 0 ? 2 : 1;
+                if (bmds_tab_page_get_attention(gui, g->innerPages[at], &v) == 0 && v.number > level)
+                        level = (int)v.number;
+                bmds_tab_page_set_attention(gui, g->innerPages[at], level);
+                return 1;
+        }
+        if (e->source == g->inner && bmds_gui_event_is(gui, e, BMDS_GUI_TABS_CHANGED) && e->count == 1) {
+                // Gone to: read (the widget cleared its attention already).
+                bmds_gui_value_t v;
+                for (int i = 0; i < 64; ++i)
+                        if (g->innerPages[i] != 0 && bmds_tab_page_get_index(gui, g->innerPages[i], &v) == 0 &&
+                            v.number == e->values[0].number)
+                                innerRead(g, i);
+                showEvent(g, e);
+                return 1;
+        }
+        for (int i = 0; i < 3; ++i) {
+                if (e->source != g->innerItems[i]) continue;
+                const int at = innerIndex(g, (uint32_t)g->innerMenuPage);
+                if (at < 0) return 1;
+                if (i == 0) bmds_tab_page_set_index(gui, g->innerPages[at], 0);
+                if (i == 1) innerRead(g, at);
+                if (i == 2 && at != 0) innerClose(g, at);
+                return 1;
+        }
+        const int at = innerIndex(g, e->source);
+        if (at < 0) return 0;
+        if (bmds_gui_event_is(gui, e, BMDS_GUI_TAB_PAGE_CLOSE_REQUESTED)) {
+                showEvent(g, e);
+                innerClose(g, at);
+                return 1;
+        }
+        if (bmds_gui_event_is(gui, e, BMDS_GUI_TAB_PAGE_MENU_REQUESTED) && e->count == 2) {
+                showEvent(g, e);
+                g->innerMenuPage = (int)e->source;
+                bmds_menu_item_set_enabled(gui, g->innerItems[2], at != 0);
+                bmds_menu_popup(gui, g->innerMenu, (int32_t)e->values[0].number, (int32_t)e->values[1].number);
+                return 1;
+        }
+        return 0;
+}
+
 static const char GalleryService[] = "org.bmds.guigallery";
 
 static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
@@ -605,6 +739,7 @@ static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
                 return 1;
         }
         if (chatEvent(g, e)) return 1;
+        if (tabsEvent(g, e)) return 1;
         if (e->source == g->timerButton) {
                 bmds_gui_value_t active;
                 if (bmds_timer_get_active(gui, g->timer, &active) == 0 && active.number != 0) {
@@ -995,6 +1130,31 @@ int main(void) {
         bmds_timer_set_interval(gui, g.chatTimer, 1500);
         for (int i = 0; i < 6; ++i) chatLine(&g, ChatSamples[i]);
         bmds_timer_start(gui, g.chatTimer);
+
+        // Tabs: conversations in tabs, more than fit, marked by news on a timer
+        const uint32_t tabsPage = bmds_tab_page_new(gui, g.tabs);
+        bmds_tab_page_set_title(gui, tabsPage, "Tabs");
+        const uint32_t tabsRow = bmds_gui_new(gui, "Box", tabsPage);
+        bmds_box_set_direction(gui, tabsRow, "across");
+        g.innerNew = bmds_button_new(gui, tabsRow);
+        bmds_button_set_text(gui, g.innerNew, "&New tab");
+        g.innerRow = bmds_check_box_new(gui, tabsRow);
+        bmds_check_box_set_text(gui, g.innerRow, "The &row");
+        bmds_check_box_set_checked(gui, g.innerRow, 1);
+        g.innerNews = bmds_check_box_new(gui, tabsRow);
+        bmds_check_box_set_text(gui, g.innerNews, "Ne&ws");
+        bmds_check_box_set_checked(gui, g.innerNews, 1);
+        g.inner = bmds_tabs_new(gui, tabsPage);
+        for (int i = 0; i < 12; ++i) (void)innerAdd(&g);
+        g.innerMenu = bmds_menu_new(gui, g.window);
+        static const char *const innerChoices[] = {"To the &front", "&Mark as read", "&Close"};
+        for (int i = 0; i < 3; ++i) {
+                g.innerItems[i] = bmds_menu_item_new(gui, g.innerMenu);
+                bmds_menu_item_set_text(gui, g.innerItems[i], innerChoices[i]);
+        }
+        g.innerTimer = bmds_gui_new(gui, "Timer", 0);
+        bmds_timer_set_interval(gui, g.innerTimer, 2000);
+        bmds_timer_start(gui, g.innerTimer);
 
         // Terminal: a shell on our own pty
         const uint32_t termPage = bmds_tab_page_new(gui, g.tabs);

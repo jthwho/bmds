@@ -5,7 +5,7 @@ chats in tabs by default, a tree instead in View). The client ships after the ne
 anyway, so `Tabs` can gain what it needs in that release. **Approved as proposed** by the user
 (2026-11-16): T1-T6 as §4 proposes.
 
-Status: **steps 1 and 2 built** (§7, §8); step 3, the gallery and `guitest`, next.
+Status: **steps 1 to 3 built** (§7, §8, §9); step 4 is the IRC client's (bmds-apps).
 
 ## 1. Why
 
@@ -167,3 +167,24 @@ asked for wholly shown and found by a point in its middle.
   current, and told a right click with its path. `guitest` fails three checks that predate
   this (`Clipboard.changed` reaching its Clipboard objects after `ChatView.copy()`, and a tray
   icon count): step 3 fixes `guitest` for them.
+
+## 9. As built: step 3, the gallery and `guitest` (2026-11-17)
+
+- **`guigallery`'s Tabs tab:** 12 conversations in an inner `Tabs` (the network's own tab not
+  closable), news every 2 s marking one not in view (its count in the badge, activity, every
+  fourth an alert), cleared when the user goes to it; New tab puts one after the network's
+  (`index` 1) and shows it; close buttons and middle clicks close pages; a right click opens a
+  menu at the click (To the front, Mark as read, Close); check boxes hide the row and stop the
+  news. On the board, maximized: the row filled and then scrolled as tabs were added, the menu
+  opened at the pointer and moved a tab, a close button closed one, the row hid and came back.
+  The gallery's own row (12 tabs now) scrolls at its 440-pixel start.
+- **`guitest`'s `tabsTest`:** the additions described; 20 pages (past the old 16), then 256 with
+  the 257th `NoMem`; a badge cut at 7 bytes and before a character across it; attention 0-2
+  (3 and -1 `BadValue`, the level kept); `closable`; `index` moving the current page (followed)
+  and the others shifting, past the end `BadValue`; a destroyed page's followers shifting; the
+  row hidden and shown; a tree's marks on rows shown and not yet, unmarked forgotten, attention 3
+  and a 64-byte path `BadValue`, `clear`; none of it told back.
+- **`guitest` fixed for the VNC work's changes** (the three failures of §8): the clipboard test
+  now checks `Clipboard.changed` (the other connection's object told of a copy) and drains the
+  rest before the next test; the tray test checks eight icons an application, the limit since
+  the panel needed five of its own (vnc.md R9). `guitest: ok` on the board.

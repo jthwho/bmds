@@ -10,8 +10,9 @@
  * request gets, events from methods (a button's click), what a client's own change doesn't tell
  * back, containers letting go of children (tabs, a splitter, a menu, a menu bar), a one-shot
  * timer, images (shown by widgets and outliving their objects while shown), a canvas's pixels,
- * a chat view's properties and methods (its events are the user's: guigallery's Chat tab), and
- * many objects made and destroyed. Prints "guitest: ok", or each failure and exits 1.
+ * a chat view's properties and methods (its events are the user's: guigallery's Chat tab), tabs'
+ * badges, attention, close buttons and places for up to 256 pages and a tree's marks (their events
+ * the user's too: guigallery's Tabs tab), and many objects made and destroyed. Prints "guitest: ok", or each failure and exits 1.
  */
 
 #include <bmds/guiclasses.h>
@@ -531,9 +532,12 @@ static void clipboardTest(bmds_gui_t *gui) {
         savedLength[0] = pasteOf(other, b, "clipboard", "text", saved[0], sizeof(saved[0]), NULL);
         savedLength[1] = pasteOf(other, b, "primary", "text", saved[1], sizeof(saved[1]), NULL);
 
-        // Text copied by one, pasted by the other.
+        // Text copied by one, pasted by the other; every Clipboard object told of the change.
         bmds_clipboard_copy_text(gui, a, "clipboard", "hello, clipboard");
         bmds_gui_sync(gui);
+        bmds_gui_event_t e;
+        CHECK(waitFor(other, b, BMDS_GUI_CLIPBOARD_CHANGED, 3000, &e) && e.count == 1 &&
+              e.values[0].number == bmds_gui_atom(other, "clipboard"));
         bmds_gui_value_t v;
         CHECK(bmds_clipboard_owns(gui, a, "clipboard", &v) == 0 && v.number == 1);
         CHECK(bmds_clipboard_types(other, b, "clipboard", &v) == 0 && v.count == 1);
@@ -548,7 +552,6 @@ static void clipboardTest(bmds_gui_t *gui) {
         bmds_gui_sync(gui);
         bmds_clipboard_paste(other, b, "primary", "application/x-guitest");
         bmds_gui_flush(other);
-        bmds_gui_event_t e;
         CHECK(waitFor(gui, a, BMDS_GUI_CLIPBOARD_REQUESTED, 3000, &e) && e.count == 3 &&
               e.values[1].number == bmds_gui_atom(gui, "primary") && e.values[2].length == 21 &&
               memcmp(e.values[2].text, "application/x-guitest", 21) == 0);
@@ -609,6 +612,8 @@ static void clipboardTest(bmds_gui_t *gui) {
         bmds_gui_destroy(gui, c);
         EXPECT_NONE();
         bmds_gui_close(other);
+        // The changes told to its objects since (Clipboard.changed): not the later tests' events.
+        while (nextEvent(gui, &e, 200) == 1) continue;
         return;
 }
 
@@ -701,6 +706,141 @@ static int itemIs(const bmds_gui_value_t *list, uint32_t index, const char *want
         bmds_gui_value_t item;
         return bmds_gui_list_item(list, index, &item) == 0 && item.length == strlen(want) &&
                memcmp(item.text, want, item.length) == 0;
+}
+
+// Tabs for many pages (devplan/tabs.md): the additions described; more than the 16 tabs there used
+// to be, up to 256 (the next refused); each page's badge (cut on a character), attention, close
+// button and place (moving one, the current one followed); the row hidden; a tree's marks; none
+// of it told back (the events come from the user's clicks).
+static void tabsTest(bmds_gui_t *gui, uint32_t window) {
+        uint32_t parent = 0, creatable = 0;
+        int      found = 0;
+        CHECK(describe(gui, "Tabs", &parent, &creatable, 0, "barVisible", BMDS_GUI_BOOL, &found) == 0 && found);
+        CHECK(describe(gui, "TabPage", &parent, &creatable, 0, "badge", BMDS_GUI_STRING, &found) == 0 && found);
+        CHECK(describe(gui, "TabPage", &parent, &creatable, 0, "attention", BMDS_GUI_INT, &found) == 0 && found);
+        CHECK(describe(gui, "TabPage", &parent, &creatable, 0, "closable", BMDS_GUI_BOOL, &found) == 0 && found);
+        CHECK(describe(gui, "TabPage", &parent, &creatable, 0, "index", BMDS_GUI_INT, &found) == 0 && found);
+        CHECK(describe(gui, "TabPage", &parent, &creatable, 2, "closeRequested", ~0u, &found) == 0 && found);
+        CHECK(describe(gui, "TabPage", &parent, &creatable, 2, "menuRequested", BMDS_GUI_INT, &found) == 0 && found);
+        CHECK(describe(gui, "TreeView", &parent, &creatable, 1, "setBadge", ~0u, &found) == 0 && found);
+        CHECK(describe(gui, "TreeView", &parent, &creatable, 1, "setAttention", ~0u, &found) == 0 && found);
+        CHECK(describe(gui, "TreeView", &parent, &creatable, 2, "menuRequested", BMDS_GUI_STRING, &found) == 0 &&
+              found);
+
+        // 20 pages: past the 16 there used to be.
+        const uint32_t   tabs = bmds_tabs_new(gui, window);
+        static uint32_t  pages[256];
+        bmds_gui_value_t v;
+        char             title[16];
+        for (int i = 0; i < 20; ++i) {
+                pages[i] = bmds_tab_page_new(gui, tabs);
+                snprintf(title, sizeof(title), "page %d", i);
+                bmds_tab_page_set_title(gui, pages[i], title);
+        }
+        EXPECT_NONE();
+        CHECK(bmds_tab_page_get_index(gui, pages[19], &v) == 0 && v.number == 19);
+        CHECK(bmds_tabs_get_bar_visible(gui, tabs, &v) == 0 && v.number == 1);
+        CHECK(stringIs(gui, pages[3], "badge", ""));
+        CHECK(bmds_tab_page_get_attention(gui, pages[3], &v) == 0 && v.number == 0);
+        CHECK(bmds_tab_page_get_closable(gui, pages[3], &v) == 0 && v.number == 0);
+
+        // A badge: seven bytes at most, cut on a character; empty: none.
+        bmds_tab_page_set_badge(gui, pages[3], "12");
+        CHECK(stringIs(gui, pages[3], "badge", "12"));
+        bmds_tab_page_set_badge(gui, pages[3], "123456789");
+        CHECK(stringIs(gui, pages[3], "badge", "1234567"));
+        bmds_tab_page_set_badge(gui, pages[3], "123456\xc3\xa9"); // é across the seventh byte: left out
+        CHECK(stringIs(gui, pages[3], "badge", "123456"));
+        bmds_tab_page_set_badge(gui, pages[3], "");
+        CHECK(stringIs(gui, pages[3], "badge", ""));
+
+        // Attention: 0 to 2; others refused, the level kept.
+        bmds_tab_page_set_attention(gui, pages[4], 2);
+        CHECK(bmds_tab_page_get_attention(gui, pages[4], &v) == 0 && v.number == 2);
+        bmds_tab_page_set_attention(gui, pages[4], 3);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_tab_page_set_attention(gui, pages[4], -1);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        CHECK(bmds_tab_page_get_attention(gui, pages[4], &v) == 0 && v.number == 2);
+        bmds_tab_page_set_attention(gui, pages[4], 1);
+        CHECK(bmds_tab_page_get_attention(gui, pages[4], &v) == 0 && v.number == 1);
+
+        bmds_tab_page_set_closable(gui, pages[5], 1);
+        CHECK(bmds_tab_page_get_closable(gui, pages[5], &v) == 0 && v.number == 1);
+        bmds_tab_page_set_closable(gui, pages[5], 0);
+        CHECK(bmds_tab_page_get_closable(gui, pages[5], &v) == 0 && v.number == 0);
+
+        // Moving a page: the others shift, the current page followed, the marks go with it.
+        bmds_tabs_set_current(gui, tabs, 4);
+        bmds_tab_page_set_index(gui, pages[4], 0);
+        CHECK(bmds_tab_page_get_index(gui, pages[4], &v) == 0 && v.number == 0);
+        CHECK(bmds_tab_page_get_index(gui, pages[0], &v) == 0 && v.number == 1);
+        CHECK(bmds_tab_page_get_index(gui, pages[5], &v) == 0 && v.number == 5);
+        CHECK(bmds_tabs_get_current(gui, tabs, &v) == 0 && v.number == 0);
+        CHECK(bmds_tab_page_get_attention(gui, pages[4], &v) == 0 && v.number == 1);
+        bmds_tab_page_set_index(gui, pages[4], 19);
+        CHECK(bmds_tab_page_get_index(gui, pages[4], &v) == 0 && v.number == 19);
+        CHECK(bmds_tab_page_get_index(gui, pages[19], &v) == 0 && v.number == 18);
+        CHECK(bmds_tabs_get_current(gui, tabs, &v) == 0 && v.number == 19);
+        bmds_tab_page_set_index(gui, pages[4], 20);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_tab_page_set_index(gui, pages[4], -1);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        CHECK(bmds_tab_page_get_index(gui, pages[4], &v) == 0 && v.number == 19);
+
+        // A page destroyed: those after it shift.
+        bmds_gui_destroy(gui, pages[0]); // at 0
+        CHECK(bmds_tab_page_get_index(gui, pages[1], &v) == 0 && v.number == 0);
+        CHECK(bmds_tab_page_get_index(gui, pages[4], &v) == 0 && v.number == 18);
+        pages[0] = 0;
+
+        // The row hidden: a stack of pages.
+        bmds_tabs_set_bar_visible(gui, tabs, 0);
+        CHECK(bmds_tabs_get_bar_visible(gui, tabs, &v) == 0 && v.number == 0);
+        bmds_tabs_set_bar_visible(gui, tabs, 1);
+        EXPECT_NONE();
+
+        // 256 at most: the next refused.
+        int made = 19;
+        for (int i = 20; i < 256; ++i) {
+                pages[i] = bmds_tab_page_new(gui, tabs);
+                ++made;
+        }
+        EXPECT_NONE();
+        CHECK(made == 255);
+        const uint32_t last = bmds_tab_page_new(gui, tabs);
+        CHECK(bmds_tab_page_get_index(gui, last, &v) == 0 && v.number == 255);
+        const uint32_t past = bmds_tab_page_new(gui, tabs);
+        EXPECT(BMDS_GUI_NO_MEM);
+        (void)past;
+        bmds_gui_event_t e;
+        CHECK(nextEvent(gui, &e, 200) == 0); // its own changes, not told back
+        bmds_gui_destroy(gui, tabs);         // its pages with it
+        EXPECT_NONE();
+
+        // A tree's rows marked by path, shown or not yet.
+        const uint32_t tree = bmds_tree_view_new(gui, window);
+        bmds_tree_view_add_root(gui, tree, "net");
+        static const char *const children[] = {"#a", "#b"};
+        bmds_tree_view_set_children(gui, tree, "net", children, 2);
+        bmds_tree_view_set_badge(gui, tree, "net/#a", "3");
+        bmds_tree_view_set_attention(gui, tree, "net/#a", 2);
+        bmds_tree_view_set_attention(gui, tree, "net/#later", 1); // not a row yet
+        bmds_tree_view_set_badge(gui, tree, "net/#a", "");
+        bmds_tree_view_set_attention(gui, tree, "net/#a", 0); // unmarked: forgotten
+        EXPECT_NONE();
+        bmds_tree_view_set_attention(gui, tree, "net/#a", 3);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        char longPath[80];
+        memset(longPath, 'x', sizeof(longPath) - 1);
+        longPath[sizeof(longPath) - 1] = '\0';
+        bmds_tree_view_set_badge(gui, tree, longPath, "1"); // past 63 bytes
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_tree_view_clear(gui, tree); // the marks too
+        CHECK(nextEvent(gui, &e, 200) == 0);
+        bmds_gui_destroy(gui, tree);
+        EXPECT_NONE();
+        return;
 }
 
 // ChatView (devplan/chatview.md): its entries described, its properties' defaults and bad values,
@@ -868,14 +1008,15 @@ static void trayTest(bmds_gui_t *gui) {
         EXPECT(BMDS_GUI_BAD_VALUE);
         bmds_tray_icon_set_icon_image(gui, t, 0); // its name's again
         CHECK(bmds_tray_icon_get_icon_image(gui, t, &v) == 0 && v.number == 0);
-        // The application's tray icons: four at most, shown.
-        uint32_t more[4];
-        for (int i = 0; i < 4; ++i) {
+        // The application's tray icons: eight at most, shown (four until the panel needed five of
+        // its own: devplan/vnc.md R9). This one and eight more: the last refused.
+        uint32_t more[8];
+        for (int i = 0; i < 8; ++i) {
                 more[i] = bmds_tray_icon_new(gui, 0);
                 bmds_tray_icon_set_visible(gui, more[i], 1);
         }
         EXPECT(BMDS_GUI_BAD_ACCESS);
-        for (int i = 0; i < 4; ++i) bmds_gui_destroy(gui, more[i]);
+        for (int i = 0; i < 8; ++i) bmds_gui_destroy(gui, more[i]);
         bmds_tray_icon_set_visible(gui, t, 0);
         bmds_gui_destroy(gui, t); // its menu with it
         bmds_gui_destroy(gui, menu);
@@ -1106,6 +1247,7 @@ int main(void) {
         dropTypesTest(gui, window);
         fontTest(gui, window);
         chatViewTest(gui, window);
+        tabsTest(gui, window);
         notificationTest(gui);
         trayTest(gui);
         servicesTest(gui);
