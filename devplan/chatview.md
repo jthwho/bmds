@@ -4,7 +4,7 @@ Planned 2026-11-16 for the IRC client (bmds-apps' `devplan/irc.md`: the client l
 bmds-apps repository and is released after the next BMDS release, which brings TLS for programs,
 network.md §35, and this class). Approved as proposed by the user (2026-11-16), the name too.
 
-Status: **steps 1 and 2 built** (§7, §8).
+Status: **steps 1 to 3 built** (§7, §8, §9); step 4 is the IRC client's (bmds-apps).
 
 ## 1. Why
 
@@ -162,4 +162,25 @@ their bytes.
 - **Open:** a rewrap of 2000 lines takes about a third of a second, which is fine for the
   window manager's one resize at the end of a drag; a live resize would want only the shown
   lines rewrapped. Nothing caches the shown lines' layouts between paints yet.
+
+## 9. As built: step 3, the gallery and guitest (2026-11-16)
+
+- **`guigallery`'s Chat tab:** a `ChatView` (500 lines kept) fed a styled line every 1.5 s by a
+  timer: bold, italic, underline, strike, mono, the colours, an RGB colour, reverse, links, a
+  long line wrapped, gutters of several widths, and a line with none. Buttons stop and start the
+  lines, mark what was read, and go to the end; a line typed in the field below is appended as
+  `me`. The view's `linkActivated` and `scrolledBack` go to the status bar like every other
+  event. On the board: a link clicked showed `linkActivated ... https://example.com/docs`, the
+  wheel `scrolledBack: 1`, "To the end" `scrolledBack: 0`, the marker landed under the last line
+  read, and a typed line came out with its link.
+- **`guitest`:** `ChatView` is in the Describe list (made by `Create`), with its palette's tag,
+  `appendMany` and both events' values described. It checks the defaults (`maxLines` 2000,
+  `followEnd`, `wrap`, an empty `selectedText` and `font`), every method, and that the client's
+  own changes send no event. It checks `maxLines`' range (0 and 100001 are `BadValue`, and the
+  value is kept), and the palette: IRC's 99, the first ones set and the rest IRC's, upper case
+  read back lower, a bad digit, a short one and 100 entries refused with the palette kept, and
+  an empty list back to IRC's. It also checks that `followEnd` can't be set (`BadAccess`), and
+  appends 200 lines at once past 50 kept, then clears them. `guitest: ok` on the board. The
+  events are the user's (a scroll, a click), which `guitest` can't make, so the gallery is
+  their test.
 

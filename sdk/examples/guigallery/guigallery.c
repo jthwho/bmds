@@ -11,7 +11,10 @@
  * (owned and modal, also on the window menu), and a close that asks first. Controls: a form of
  * check box, number field, slider (with a progress bar following it) and combo box. Layouts: a
  * splitter between a list view and an icon view. Views: the folders as a tree (children read as
- * a folder opens) and the chosen one's entries in a details view. Text: a code editor, its cursor and state shown. Terminal: a shell
+ * a folder opens) and the chosen one's entries in a details view. Text: a code editor, its cursor and state shown.
+ * Chat: a chat view fed lines on a timer (IRC's styles and colours, gutters, links), a marker
+ * under what was read, the end, and a line typed in; its link clicks and scrolling back show in
+ * the status bar. Terminal: a shell
  * on the program's own pseudo-terminal, its output written to the widget, the typing sent back.
  * Menus: File (Open and Save As through the file dialog, Quit), View (the status bar, a checked
  * item; the pointer, a submenu), Help (About), their shortcuts as keys. Dialogs: a message box, the colour dialog, a popup
@@ -53,6 +56,8 @@ typedef struct Gallery {
                 uint32_t    ask, answer, colorButton, colorDialog, popupButton, popup, popupItems[3];
                 uint32_t    fontButton, fontDialog, fontChooser;
                 uint32_t    timer, timerButton, ticks;
+                uint32_t    chat, chatTimer, chatStart, chatMark, chatEnd, chatEntry;
+                int         chatLines;
                 uint32_t    canvas, clearButton;
                 uint32_t    clipboard, clipEdit, clipCopy, clipOffer, clipPaste, clipState, dropTarget;
                 uint32_t    notifyButton, note, trayCheck, tray, trayShow, trayNotify, deskState;
@@ -379,6 +384,74 @@ static int desktopEvent(Gallery *g, const bmds_gui_event_t *e) {
 }
 
 // The gallery's name on the service bus.
+// ---- Chat: lines as a chat client gets them, a gutter (the time and the nick) before a tab
+
+static const char *const ChatSamples[] = {
+        "\x02"
+        "alice\x02\tHello! Styles: \x02"
+        "bold\x02, \x1d"
+        "italic\x1d, \x1f"
+        "underline\x1f, \x1e"
+        "strike\x1e, \x11"
+        "mono\x11.",
+        "\x03"
+        "04bob\x03\tColours: \x03"
+        "04red \x03"
+        "03green \x03"
+        "12blue \x03"
+        "08,01yellow on black\x03 \x04"
+        "ff8800orange\x0f.",
+        "carol\tThe docs are at https://example.com/docs, or www.example.org (clicked: the status bar).",
+        "dave\tA longer line wraps with a hanging indent: its rows start past the gutters' column, which is "
+        "as wide as the widest gutter seen, so the text lines up down the view.",
+        "\x02"
+        "-server-\x02\t\x16 Notice \x16 a line in reverse, then plain again.",
+        "a line with no gutter at all",
+};
+
+static void chatLine(Gallery *g, const char *nickAndText) {
+        char line[512];
+        snprintf(line, sizeof(line), "12:%02d %s", g->chatLines % 60, nickAndText);
+        bmds_chat_view_append(g->gui, g->chat, line);
+        ++g->chatLines;
+        return;
+}
+
+// The Chat tab's events (its view's own go on to the status bar). @return 1 if it was one.
+static int chatEvent(Gallery *g, const bmds_gui_event_t *e) {
+        bmds_gui_t *gui = g->gui;
+        if (e->source == g->chatTimer) {
+                chatLine(g, ChatSamples[g->chatLines % (int)(sizeof(ChatSamples) / sizeof(ChatSamples[0]))]);
+                return 1;
+        }
+        if (e->source == g->chatStart) {
+                bmds_gui_value_t active;
+                const int        on = bmds_timer_get_active(gui, g->chatTimer, &active) == 0 && active.number != 0;
+                if (on)
+                        bmds_timer_stop(gui, g->chatTimer);
+                else
+                        bmds_timer_start(gui, g->chatTimer);
+                bmds_button_set_text(gui, g->chatStart, on ? "&Start the lines" : "&Stop the lines");
+                return 1;
+        }
+        if (e->source == g->chatMark) {
+                bmds_chat_view_set_marker(gui, g->chat, "new since here");
+                return 1;
+        }
+        if (e->source == g->chatEnd) {
+                bmds_chat_view_scroll_to_end(gui, g->chat);
+                return 1;
+        }
+        if (e->source == g->chatEntry && bmds_gui_event_is(gui, e, BMDS_GUI_LINE_EDIT_ACCEPTED) && e->count == 1) {
+                char text[400];
+                snprintf(text, sizeof(text), "\x02me\x02\t%.*s", (int)e->values[0].length, e->values[0].text);
+                chatLine(g, text);
+                bmds_line_edit_set_text(gui, g->chatEntry, "");
+                return 1;
+        }
+        return 0;
+}
+
 static const char GalleryService[] = "org.bmds.guigallery";
 
 static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
@@ -531,6 +604,7 @@ static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
                 }
                 return 1;
         }
+        if (chatEvent(g, e)) return 1;
         if (e->source == g->timerButton) {
                 bmds_gui_value_t active;
                 if (bmds_timer_get_active(gui, g->timer, &active) == 0 && active.number != 0) {
@@ -902,6 +976,25 @@ int main(void) {
         g.deskState = bmds_label_new(gui, deskPage);
         bmds_label_set_text(gui, g.deskState, "What became of them shows here.");
         bmds_gui_new(gui, "Spacer", deskPage);
+
+        // Chat: a chat view, lines on a timer, a marker, the end, a line typed in
+        const uint32_t chatPage = bmds_tab_page_new(gui, g.tabs);
+        bmds_tab_page_set_title(gui, chatPage, "Chat");
+        g.chat = bmds_chat_view_new(gui, chatPage);
+        bmds_chat_view_set_max_lines(gui, g.chat, 500);
+        const uint32_t chatRow = bmds_gui_new(gui, "Box", chatPage);
+        bmds_box_set_direction(gui, chatRow, "across");
+        g.chatStart = bmds_button_new(gui, chatRow);
+        bmds_button_set_text(gui, g.chatStart, "&Stop the lines");
+        g.chatMark = bmds_button_new(gui, chatRow);
+        bmds_button_set_text(gui, g.chatMark, "&Mark as read");
+        g.chatEnd = bmds_button_new(gui, chatRow);
+        bmds_button_set_text(gui, g.chatEnd, "To the &end");
+        g.chatEntry = bmds_line_edit_new(gui, chatPage);
+        g.chatTimer = bmds_gui_new(gui, "Timer", 0);
+        bmds_timer_set_interval(gui, g.chatTimer, 1500);
+        for (int i = 0; i < 6; ++i) chatLine(&g, ChatSamples[i]);
+        bmds_timer_start(gui, g.chatTimer);
 
         // Terminal: a shell on our own pty
         const uint32_t termPage = bmds_tab_page_new(gui, g.tabs);

@@ -10,7 +10,8 @@
  * request gets, events from methods (a button's click), what a client's own change doesn't tell
  * back, containers letting go of children (tabs, a splitter, a menu, a menu bar), a one-shot
  * timer, images (shown by widgets and outliving their objects while shown), a canvas's pixels,
- * and many objects made and destroyed. Prints "guitest: ok", or each failure and exits 1.
+ * a chat view's properties and methods (its events are the user's: guigallery's Chat tab), and
+ * many objects made and destroyed. Prints "guitest: ok", or each failure and exits 1.
  */
 
 #include <bmds/guiclasses.h>
@@ -131,6 +132,7 @@ static void describeAll(bmds_gui_t *gui) {
                 {"TreeView", 1},    {"TextEdit", 1}, {"CodeEdit", 1},    {"Terminal", 1},    {"MenuBar", 1},
                 {"Menu", 1},        {"MenuItem", 1}, {"MessageBox", 1},  {"FileDialog", 1},  {"ColorDialog", 1},
                 {"Timer", 1},       {"Image", 1},    {"Canvas", 1},      {"FontDialog", 1},  {"FontButton", 1},
+                {"ChatView", 1},
         };
         uint32_t parent = 0, creatable = 0;
         int      found = 0;
@@ -694,6 +696,107 @@ static void fontTest(bmds_gui_t *gui, uint32_t window) {
         return;
 }
 
+// @p list's element @p index is the string @p want.
+static int itemIs(const bmds_gui_value_t *list, uint32_t index, const char *want) {
+        bmds_gui_value_t item;
+        return bmds_gui_list_item(list, index, &item) == 0 && item.length == strlen(want) &&
+               memcmp(item.text, want, item.length) == 0;
+}
+
+// ChatView (devplan/chatview.md): its entries described, its properties' defaults and bad values,
+// the palette, every method; none of the client's own changes is told back (its two events come
+// from the user's scrolling and clicks).
+static void chatViewTest(bmds_gui_t *gui, uint32_t window) {
+        uint32_t parent = 0, creatable = 0;
+        int      found = 0;
+        CHECK(describe(gui, "ChatView", &parent, &creatable, 0, "palette", BMDS_GUI_LIST, &found) == 0 && found);
+        CHECK(parent == bmds_gui_atom(gui, "Widget"));
+        CHECK(describe(gui, "ChatView", &parent, &creatable, 1, "appendMany", ~0u, &found) == 0 && found);
+        CHECK(describe(gui, "ChatView", &parent, &creatable, 2, "linkActivated", BMDS_GUI_STRING, &found) == 0 &&
+              found);
+        CHECK(describe(gui, "ChatView", &parent, &creatable, 2, "scrolledBack", BMDS_GUI_BOOL, &found) == 0 && found);
+
+        const uint32_t   chat = bmds_chat_view_new(gui, window);
+        bmds_gui_value_t v;
+        CHECK(bmds_chat_view_get_max_lines(gui, chat, &v) == 0 && v.number == 2000);
+        CHECK(bmds_chat_view_get_follow_end(gui, chat, &v) == 0 && v.number == 1);
+        CHECK(bmds_chat_view_get_wrap(gui, chat, &v) == 0 && v.number == 1);
+        CHECK(stringIs(gui, chat, "selectedText", ""));
+        CHECK(stringIs(gui, chat, "font", ""));
+
+        // Lines: one, many, styled, a gutter, a link; the marker; the end; a copy of nothing.
+        bmds_chat_view_append(gui, chat,
+                              "12:00 \x02nick\x02\tplain, \x03"
+                              "04red\x03 and https://example.com/");
+        static const char *const lines[] = {"12:01 a\tone", "12:02 longer nick\ttwo", "a line without a gutter", ""};
+        bmds_chat_view_append_many(gui, chat, lines, 4);
+        bmds_chat_view_set_marker(gui, chat, "new since you looked");
+        bmds_chat_view_append(gui, chat, "12:03 b\tafter the marker");
+        bmds_chat_view_clear_marker(gui, chat);
+        bmds_chat_view_set_marker(gui, chat, "");
+        bmds_chat_view_scroll_to_end(gui, chat);
+        bmds_chat_view_copy(gui, chat);
+        bmds_chat_view_set_wrap(gui, chat, 0);
+        CHECK(bmds_chat_view_get_wrap(gui, chat, &v) == 0 && v.number == 0);
+        bmds_chat_view_set_wrap(gui, chat, 1);
+        bmds_widget_set_font(gui, chat, "mono");
+        CHECK(stringIs(gui, chat, "font", "mono"));
+        bmds_widget_set_font(gui, chat, "");
+        bmds_gui_event_t e;
+        CHECK(nextEvent(gui, &e, 200) == 0); // its own changes, not told back
+        CHECK(bmds_chat_view_get_follow_end(gui, chat, &v) == 0 && v.number == 1);
+        EXPECT_NONE();
+
+        // The most lines kept: 1 to 100000; fewer drop the oldest.
+        bmds_chat_view_set_max_lines(gui, chat, 3);
+        CHECK(bmds_chat_view_get_max_lines(gui, chat, &v) == 0 && v.number == 3);
+        bmds_chat_view_set_max_lines(gui, chat, 0);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_chat_view_set_max_lines(gui, chat, 100001);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        CHECK(bmds_chat_view_get_max_lines(gui, chat, &v) == 0 && v.number == 3);
+
+        // The palette: IRC's 99; the first ones set, the rest IRC's again; an empty list all IRC's.
+        CHECK(bmds_chat_view_get_palette(gui, chat, &v) == 0 && v.count == 99 && itemIs(&v, 0, "#ffffff") &&
+              itemIs(&v, 4, "#ff0000") && itemIs(&v, 98, "#ffffff"));
+        static const char *const mine[] = {"#123456", "ABCDEF"};
+        bmds_chat_view_set_palette(gui, chat, mine, 2);
+        CHECK(bmds_chat_view_get_palette(gui, chat, &v) == 0 && v.count == 99 && itemIs(&v, 0, "#123456") &&
+              itemIs(&v, 1, "#abcdef") && itemIs(&v, 2, "#00007f"));
+        static const char *const one[] = {"#000001"};
+        bmds_chat_view_set_palette(gui, chat, one, 1);
+        CHECK(bmds_chat_view_get_palette(gui, chat, &v) == 0 && itemIs(&v, 0, "#000001") && itemIs(&v, 1, "#000000"));
+        static const char *const bad[] = {"#12345g"};
+        bmds_chat_view_set_palette(gui, chat, bad, 1);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        static const char *const shortOne[] = {"#12345"};
+        bmds_chat_view_set_palette(gui, chat, shortOne, 1);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        static const char *hundred[100];
+        for (int i = 0; i < 100; ++i) hundred[i] = "#000000";
+        bmds_chat_view_set_palette(gui, chat, hundred, 100);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        CHECK(bmds_chat_view_get_palette(gui, chat, &v) == 0 && itemIs(&v, 0, "#000001")); // as it was
+        bmds_chat_view_set_palette(gui, chat, NULL, 0);
+        CHECK(bmds_chat_view_get_palette(gui, chat, &v) == 0 && itemIs(&v, 0, "#ffffff"));
+
+        // Read only: followEnd, selectedText.
+        (void)bmds_gui_set_named(gui, chat, "followEnd", bmds_gui_bool(0));
+        EXPECT(BMDS_GUI_BAD_ACCESS);
+
+        // Many lines at once, past the most kept; cleared.
+        bmds_chat_view_set_max_lines(gui, chat, 50);
+        static const char *batch[200];
+        for (int i = 0; i < 200; ++i) batch[i] = (i % 2) != 0 ? "12:04 c\todd www.example.org" : "12:05 d\teven";
+        bmds_chat_view_append_many(gui, chat, batch, 200);
+        bmds_chat_view_clear(gui, chat);
+        CHECK(stringIs(gui, chat, "selectedText", ""));
+        CHECK(nextEvent(gui, &e, 200) == 0);
+        bmds_gui_destroy(gui, chat);
+        EXPECT_NONE();
+        return;
+}
+
 // A notification's fields read back, shown (silent, transient, briefly) until it expires, shown
 // again in place and closed.
 static void notificationTest(bmds_gui_t *gui) {
@@ -1002,6 +1105,7 @@ int main(void) {
         clipboardTest(gui);
         dropTypesTest(gui, window);
         fontTest(gui, window);
+        chatViewTest(gui, window);
         notificationTest(gui);
         trayTest(gui);
         servicesTest(gui);
