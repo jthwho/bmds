@@ -188,6 +188,7 @@ Error GuiConnection::screenCapture(Stream &clientEnd, GuiOpener::ScreenCapture &
         ScreenWatch::Capture c;
         c.format = capture.rgb565 ? ScreenWatch::Format::Rgb565 : ScreenWatch::Format::Bgr24;
         c.all = capture.all;
+        c.noPointer = capture.noPointer;
         c.buffer = capture.buffer;
         c.capacity = capture.capacity;
         c.rects = capture.rects;

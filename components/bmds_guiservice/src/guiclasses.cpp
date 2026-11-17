@@ -4043,6 +4043,8 @@ namespace {
                         uint16_t pointerX = 0;     // the last injected position
                         uint16_t pointerY = 0;
                         int16_t  watch = -1; // its ScreenWatch id (watch(true))
+                        uint8_t *pointer = nullptr; // pointerShape()'s answer (PSRAM), kept until the next
+                        size_t   pointerBytes = 0;
         };
         ScreenData &screenData(GuiObject &o) {
                 return *dataOf<ScreenData>(o);
@@ -4056,6 +4058,17 @@ namespace {
         // ScreenWatch's notification, on the presenting task: the loop takes it.
         void screenNotify(void *arg) {
                 (void)static_cast<GuiObject *>(arg)->connection->application().post(screenDue, arg);
+                return;
+        }
+        // The pointer's picture changed (devplan/vnc.md §20): told on the loop.
+        void pointerDue(void *arg) {
+                auto &o = *static_cast<GuiObject *>(arg);
+                o.connection->emit(o, "pointerChanged", Args());
+                return;
+        }
+        // ScreenWatch's, from the window manager's round: the loop takes it.
+        void pointerNotify(void *arg) {
+                (void)static_cast<GuiObject *>(arg)->connection->application().post(pointerDue, arg);
                 return;
         }
         void stopWatchingScreen(GuiObject &o) {
@@ -4083,7 +4096,40 @@ namespace {
                         return BadAccess;
                 }
                 d.watch = int16_t(id);
+                ScreenWatch::setPointerNotify(id, pointerNotify);
                 return Ok;
+        }
+        // The pointer as drawn (devplan/vnc.md §20): its size and hot spot as four 16-bit numbers,
+        // then its 0xAARRGGBB pixels, all little-endian; kept in the object until asked again.
+        GuiStatus call_ScreenShare_pointerShape(GuiObject &o, Args, Value &result) {
+                constexpr size_t Header = 8;
+                constexpr size_t Usual = Header + 32 * 32 * 4; // any pointer but a drag's
+                ScreenData      &d = screenData(o);
+                for (int tries = 0; tries < 3; ++tries) {
+                        const size_t                room = d.pointerBytes > Header ? (d.pointerBytes - Header) / 4 : 0;
+                        WindowManager::PointerImage image;
+                        const Error                 err = wmOf(o).pointerImage(
+                                image, room > 0 ? reinterpret_cast<uint32_t *>(d.pointer + Header) : nullptr, room);
+                        const size_t need = Header + size_t(image.width) * image.height * 4;
+                        // Room for it (a drag's taken back once it is over).
+                        if (err == Error::NoSpace || d.pointer == nullptr ||
+                            (d.pointerBytes > Usual && need <= Usual)) {
+                                Memory::free(d.pointer);
+                                d.pointerBytes = need > Usual ? need : Usual;
+                                d.pointer = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, d.pointerBytes));
+                                if (d.pointer == nullptr) {
+                                        d.pointerBytes = 0;
+                                        return NoMem;
+                                }
+                                continue; // the shape may have changed meanwhile: asked again
+                        }
+                        if (err.isError()) return BadMatch;
+                        const uint16_t header[4] = {image.width, image.height, image.hotX, image.hotY};
+                        std::memcpy(d.pointer, header, sizeof(header)); // little-endian, as the pixels
+                        result = Value::bytes(StringView(reinterpret_cast<const char *>(d.pointer), need));
+                        return Ok;
+                }
+                return BadMatch; // changing faster than it could be read
         }
         // ---- Injected input (devplan/vnc.md §5d): a virtual keyboard's and tablet's, into the window
         // manager as the local ones' (hotkeys, grabs and pointer lock apply), never waking the output.
@@ -4155,6 +4201,7 @@ namespace {
                 releaseInjected(o);
                 stopWatchingScreen(o);
                 o.connection->application().cancelPosts(&o);
+                Memory::free(screenData(o).pointer);
                 freeData<ScreenData>(o);
                 return;
         }

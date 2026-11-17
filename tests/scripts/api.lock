@@ -4099,3 +4099,7 @@ void ScreenShare::watch(bool)
 
 # 2026-11-17 (bmds-apps devplan/vnc.md §19): Clipboard.changed.
 void Clipboard::onChanged(StringCallback@)
+
+# 2026-11-17 (devplan/vnc.md §20): the pointer for a viewer drawing it itself.
+string ScreenShare::pointerShape()
+void ScreenShare::onPointerChanged(Callback@)

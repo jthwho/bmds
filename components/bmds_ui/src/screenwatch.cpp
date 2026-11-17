@@ -35,6 +35,7 @@ namespace {
                         bool                used = false;
                         bool                notified = false; // told of changes not yet captured
                         ScreenWatch::Notify notify = nullptr;
+                        ScreenWatch::Notify pointer = nullptr; // the pointer's picture changed
                         void               *arg = nullptr;
                         uint32_t            client = 0;       // its GUI client (the tray's mark)
                         const Surface      *source = nullptr; // the surface its tiles are of
@@ -53,6 +54,61 @@ namespace {
         // shown or still waiting for its swap since). Null until a present seen with watchers.
         constinit const Surface *latestSurface = nullptr;
         constinit const uint8_t *latestBuffer = nullptr;
+
+        // The pointer drawn into a buffer of the desktop's: its area and what it covers (vnc.md
+        // §20), one slot a buffer (double-buffered: two). A slot changes only as its buffer is
+        // presented again, which waits while a capture holds the swaps; so it is as its buffer is.
+        struct PointerSlot {
+                        const uint8_t *buffer = nullptr; // the buffer it belongs to
+                        Rect           area;             // empty: no pointer drawn there
+                        uint8_t       *under = nullptr;  // PSRAM: area's B, G, R, rows packed
+                        size_t         capacity = 0;
+        };
+        constinit PointerSlot pointerSlots[2];
+
+        // The slots' memory given back (no watchers). Lock held.
+        void freePointerSlots() {
+                for (PointerSlot &slot : pointerSlots) {
+                        Memory::free(slot.under);
+                        slot = PointerSlot();
+                }
+                return;
+        }
+
+        // The pointer taken out of the rectangles @p c copied from buffer @p from: what it covers put
+        // back where it was. Lock held.
+        void unpoint(ScreenWatch::Capture &c, const uint8_t *from) {
+                const PointerSlot *slot = nullptr;
+                for (const PointerSlot &s : pointerSlots)
+                        if (s.buffer == from && s.under != nullptr && !s.area.isEmpty()) slot = &s;
+                if (slot == nullptr) return;
+                const Rect  &p = slot->area;
+                const bool   rgb565 = c.format == ScreenWatch::Format::Rgb565;
+                const size_t bpp = rgb565 ? 2 : 3;
+                size_t       at = 0;
+                for (size_t i = 0; i < c.count; ++i) {
+                        const Rect &r = c.rects[i];
+                        const Rect  in = r.intersected(p);
+                        for (uint16_t y = 0; y < in.height; ++y) {
+                                const uint8_t *src =
+                                        slot->under + (size_t(in.y + y - p.y) * p.width + size_t(in.x - p.x)) * 3;
+                                uint8_t *to =
+                                        c.buffer + at + (size_t(in.y + y - r.y) * r.width + size_t(in.x - r.x)) * bpp;
+                                if (!rgb565) {
+                                        std::memcpy(to, src, size_t(in.width) * 3);
+                                        continue;
+                                }
+                                for (uint16_t x = 0; x < in.width; ++x, src += 3, to += 2) {
+                                        const uint16_t px =
+                                                uint16_t((src[2] >> 3) << 11 | (src[1] >> 2) << 5 | src[0] >> 3);
+                                        to[0] = uint8_t(px);
+                                        to[1] = uint8_t(px >> 8);
+                                }
+                        }
+                        at += size_t(r.width) * r.height * bpp;
+                }
+                return;
+        }
 
         // The lock, made on first use (whoever loses the race frees theirs).
         Mutex &lock() {
@@ -317,6 +373,10 @@ namespace {
                         take(*job.watcher, c, *shown, bpp);
                 }
                 copy(c, *shown, shown->shown(), lines);
+                if (c.noPointer && shown == &desktop) {
+                        Mutex::Locker locker(lock(), WaitForever);
+                        unpoint(c, shown->shown());
+                }
                 if (held != nullptr) held->holdSwaps(false);
                 return;
         }
@@ -339,6 +399,10 @@ namespace {
                         }
                 }
                 if (from != nullptr) copy(c, desktop, from, desktop.height());
+                if (from != nullptr && c.noPointer) {
+                        Mutex::Locker locker(lock(), WaitForever);
+                        unpoint(c, from);
+                }
                 desktop.holdSwaps(false);
                 return from != nullptr;
         }
@@ -390,11 +454,59 @@ void ScreenWatch::remove(uint8_t id) {
         if (!w.used) return;
         w.used = false;
         w.notify = nullptr;
+        w.pointer = nullptr;
         if (active.fetch_sub(1, std::memory_order_acq_rel) == 1) {
                 Surface::setPresentHook(nullptr, nullptr);
+                freePointerSlots();
                 if (chain.isCreated()) chain->stop(); // its 2D-DMA pool given back
         }
         countChanged();
+        return;
+}
+
+void ScreenWatch::setPointerNotify(uint8_t id, Notify notify) {
+        if (id >= MaxWatchers || watchers == nullptr) return;
+        Mutex::Locker locker(lock(), WaitForever);
+        if (watchers[id].used) watchers[id].pointer = notify;
+        return;
+}
+
+void ScreenWatch::pointerChanged() {
+        if (active.load(std::memory_order_acquire) == 0) return;
+        Mutex::Locker locker(lock(), WaitForever);
+        for (size_t i = 0; i < MaxWatchers; ++i) {
+                const Watcher &w = watchers[i];
+                if (w.used && w.pointer != nullptr) w.pointer(w.arg);
+        }
+        return;
+}
+
+void ScreenWatch::pointerDrawn(const Surface &surface, const Rect &area, const uint8_t *under) {
+        if (active.load(std::memory_order_acquire) == 0 || display == nullptr || &surface != &display->surface())
+                return;
+        const uint8_t *buffer = surface.drawn();
+        const size_t   bytes = under != nullptr ? size_t(area.width) * area.height * 3 : 0;
+        Mutex::Locker  locker(lock(), WaitForever);
+        // This buffer's slot; else one not the latest present's (a capture may be copying that).
+        PointerSlot *slot = nullptr;
+        for (PointerSlot &s : pointerSlots)
+                if (s.buffer == buffer) slot = &s;
+        for (PointerSlot &s : pointerSlots)
+                if (slot == nullptr && s.buffer != latestBuffer) slot = &s;
+        if (slot == nullptr) slot = &pointerSlots[0];
+        slot->buffer = buffer;
+        slot->area = Rect();
+        if (bytes == 0) return;
+        if (bytes > slot->capacity) {
+                // Grown for a drag's image (the arrow's is a few KB): rare, and kept until the last
+                // watcher goes.
+                Memory::free(slot->under);
+                slot->under = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, bytes));
+                slot->capacity = slot->under != nullptr ? bytes : 0;
+                if (slot->under == nullptr) return; // that buffer's captures keep the pointer
+        }
+        std::memcpy(slot->under, under, bytes);
+        slot->area = area;
         return;
 }
 

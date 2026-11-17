@@ -457,3 +457,10 @@ GUI_EVENT(ScreenShare, changed, On)
 /* ---- 2026-11-17 (bmds-apps' devplan/vnc.md §19): a selection's contents changed, anyone's copy
  * or emptied (a VNC server sends the desktop's copies to its viewers) */
 GUI_EVENT(Clipboard, changed, On, Atom)
+
+/* ---- 2026-11-17 (devplan/vnc.md §20): the pointer for a viewer drawing it itself: its picture as
+ * drawn (Bytes, little-endian: width, height, hot x, hot y as 16-bit numbers, then 0xAARRGGBB
+ * pixels row by row; 0 x 0: none drawn), and pointerChanged when that changes while watching.
+ * gui_screen_capture's BMDS_CAPTURE_NO_POINTER leaves it out of the pixels */
+GUI_METHOD(ScreenShare, pointerShape, Bytes)
+GUI_EVENT(ScreenShare, pointerChanged, On)

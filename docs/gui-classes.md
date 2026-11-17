@@ -826,7 +826,9 @@ Made by `Create`.
 | `watch` | Bool | none |
 | `injectKey` | Int, Int, Int | none |
 | `injectPointer` | Int, Int, Int, Int | none |
+| `pointerShape` | none | Bytes |
 
 | Event | Values | Sent |
 |---|---|---|
 | `changed` | none | on |
+| `pointerChanged` | none | on |

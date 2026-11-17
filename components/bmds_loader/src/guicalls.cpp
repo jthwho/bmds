@@ -114,8 +114,9 @@ int32_t bmds_k_gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture) 
         bmds_screen_capture_t c;
         int32_t               r = bmds::detail::copyIn(capture, c);
         if (r < 0) return r;
-        if ((c.format != BMDS_PIXEL_BGR24 && c.format != BMDS_PIXEL_RGB565) || (c.flags & ~BMDS_CAPTURE_ALL) != 0 ||
-            c.buffer == nullptr || c.capacity == 0 || c.rects == nullptr || c.max_rects == 0)
+        if ((c.format != BMDS_PIXEL_BGR24 && c.format != BMDS_PIXEL_RGB565) ||
+            (c.flags & ~(BMDS_CAPTURE_ALL | BMDS_CAPTURE_NO_POINTER)) != 0 || c.buffer == nullptr || c.capacity == 0 ||
+            c.rects == nullptr || c.max_rects == 0)
                 return -BMDS_EINVAL;
         const uint32_t maxRects = c.max_rects < MaxCaptureRects ? c.max_rects : MaxCaptureRects;
         if (!bmds::detail::canWrite(c.buffer, c.capacity) ||
@@ -125,6 +126,7 @@ int32_t bmds_k_gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture) 
         bmds::GuiOpener::ScreenCapture k;
         k.rgb565 = c.format == BMDS_PIXEL_RGB565;
         k.all = (c.flags & BMDS_CAPTURE_ALL) != 0;
+        k.noPointer = (c.flags & BMDS_CAPTURE_NO_POINTER) != 0;
         k.share = c.share; // 0 from programs built before it (a 48-byte struct)
         k.buffer = static_cast<uint8_t *>(c.buffer);
         k.capacity = c.capacity;

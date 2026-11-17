@@ -967,3 +967,5 @@ _Static_assert(offsetof(bmds_surface_timing_t, frames) == 4 && offsetof(bmds_sur
                "ABI: bmds_surface_timing_t");
 _Static_assert(BMDS_MIDI_LATENCY == 5, "ABI: BMDS_MIDI_LATENCY");
 _Static_assert(BMDS_MIDI_ALLOW_LATENCY == 6, "ABI: BMDS_MIDI_ALLOW_LATENCY");
+/* Captures without the pointer (devplan/vnc.md §20, 2026-11-17). */
+_Static_assert(BMDS_CAPTURE_NO_POINTER == 2, "ABI: BMDS_CAPTURE_NO_POINTER");

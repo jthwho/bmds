@@ -784,6 +784,26 @@ class WindowManager {
                 /** @brief Returns where the pointer's tip is, on the desktop (`ScreenWidth` across). */
                 void pointerPosition(uint16_t &x, uint16_t &y);
 
+                /** @brief The pointer's picture as drawn now (`pointerImage()`). */
+                struct PointerImage {
+                                uint16_t width = 0; ///< 0 × 0: no pointer drawn.
+                                uint16_t height = 0;
+                                uint16_t hotX = 0; ///< The tip, in the picture.
+                                uint16_t hotY = 0;
+                };
+
+                /** @brief `pointerImage()`'s largest side: a drag's image and its pointer. */
+                static constexpr uint16_t PointerImageMax = 160;
+
+                /**
+                 * @brief The pointer as it is drawn now (devplan/vnc.md §20), for a viewer drawing it
+                 *        itself: its picture in the palette's colours, a drag's image under it as
+                 *        blended, as 0xAARRGGBB pixels row by row into @p argb (@p capacity pixels).
+                 *        0 × 0 when none is drawn (`None`, hidden).
+                 * @return `Ok`; `NoSpace` (@p out says the size: call again with room).
+                 */
+                Error pointerImage(PointerImage &out, uint32_t *argb, size_t capacity);
+
                 /**
                  * @brief Starts a drag from window @p id (`devplan/clipboard.md` §5c): the
                  *        pointer is the drag's until its button comes up. The source made its
@@ -1155,6 +1175,8 @@ class WindowManager {
                 static void     menuClosed(void *arg);
                 void            applyPointer();
                 bool            dndShowing() const { return _dnd.drag != 0 && !_dnd.dropped; }
+                uint32_t        pointerLook() const; // a signature of the pointer's picture
+                void            tellPointer();       // ScreenWatch told what this round's pointer is
                 uint8_t         dropTargetAt(uint16_t x, uint16_t y) const; // 0: none
                 void            dndTell(uint8_t id, DropEvent::Type type, uint16_t x, uint16_t y);
                 void            dndMotion(uint16_t x, uint16_t y);  // the window under it told
@@ -1264,6 +1286,7 @@ class WindowManager {
                                 uint8_t   *under = nullptr; // PSRAM: the image and pointer's area
                 };
                 Dnd           _dnd;
+                uint32_t      _pointerLook = 0; // what the pointer's picture is made of, as last told (ScreenWatch)
                 uint32_t      _dndSerial = 0;
                 uint32_t     *_dndOldImage = nullptr; // an ended drag's, freed once not drawn
                 uint8_t      *_dndOldUnder = nullptr;

@@ -250,8 +250,8 @@ is off (§9), audio.
   screen): needs a live change of surface 0's size (the window manager's work area, maximized
   windows) and refusing or changing the mode when the output comes on. Later, with
   `display.md`'s mode work.
-- **The pointer's shape** for a viewer to draw locally (RFB's Cursor pseudo-encoding): a
-  `SHELL` event with the shape's image id when it changes. Appended when the server wants it.
+- **The pointer's shape** for a viewer to draw locally (RFB's Cursor pseudo-encoding): done
+  differently, §20 (a ScreenShare method and event, and captures without the pointer).
 - **L8 program surfaces** in a capture: converted through the palette by the PPA, or refused.
 - **Window moves as copies** (RFB's CopyRect): the window manager knows a move's source and
   destination; a watcher could be told them instead of the tiles. Later, if bandwidth says so.
@@ -475,3 +475,43 @@ change`); on bmds0 `clip copy` reached a viewer within a second.
 - **Tried on bmds0** with vncserver's viewers (bmds-apps' vnc.md §21): four at once, each its own
   updates; a viewer's keys typed only while it had the input.
 
+
+## 20. The pointer for viewers (2026-11-17, §9's open question, for RFB's Cursor)
+
+A viewer drawing the pointer itself moves it at once, without waiting for an update; the screen's
+picture must then be without it, or the viewer shows two. The window manager draws the pointer into
+the frame (`drawCursor()`), what it covers saved first (`_under`, put back by the next round's
+`restoreUnder()`), so both are known to it.
+
+- **The shape:** `ScreenShare.pointerShape()` (a method, its result `Bytes`): little-endian, the
+  width, height and hot spot's x and y as four 16-bit numbers, then width × height 0xAARRGGBB
+  pixels, row by row. The arrow (or the shape now shown: the double arrows, the I-beam, the starting
+  hourglass's current frame, a drag's) in the palette's colours, a drag's image under it blended as
+  drawn. 0 × 0 when no pointer is drawn (`None`, hidden while typing, `setPointerVisible(false)`).
+  At most 160 × 160 (a drag's 128-pixel image and its pointer): 100 KB, under the protocol's 256 KB.
+- **`ScreenShare.pointerChanged`** (an event, on): the shape differs from the last drawn: told to
+  every watching ScreenShare from the round that draws it (a signature of what the picture is made
+  of compared each round, only while something watches), posted to its loop once until sent.
+- **`BMDS_CAPTURE_NO_POINTER`** (a capture flag, 0x2): the desktop's pixels under the pointer in
+  place of it. The window manager hands ScreenWatch the area and what it covers before each
+  present (`ScreenWatch::pointerDrawn()`, copied into one of two slots, each kept with the buffer it
+  belongs to); a capture patches the rectangles it copied from the slot of the buffer it copied.
+  The swaps held during a capture keep that buffer, and so its slot, unchanged (its drawer waits for
+  the swap before drawing it again, §16). A program's full screen has no pointer drawn: nothing
+  patched. A kernel without the flag answers `EINVAL`: a program tries again without it (and
+  leaves the Cursor encoding off).
+- **Moves still mark tiles:** a pointer moving changes the frame, so its tiles come in captures
+  even when, patched, they are as before. A viewer gets a small update that changes nothing. Left
+  for now (a pointer-only change could be told apart by the window manager later).
+- **Not here:** where the pointer is (RFB's PointerPos, for a viewer to follow the board's own
+  mouse); the server can add it later from the same event.
+- **As built:** `WindowManager::pointerImage()` and `tellPointer()` (after the round's batch ends:
+  the batch's patches fill the saved pixels), `ScreenWatch::pointerDrawn()`, `pointerChanged()`,
+  `setPointerNotify()` and `Capture::noPointer` (the slots grown only for a drag's image, freed with
+  the last watcher). ABI: the flag (its lock line), the method and event (gui.lock, angel's
+  api.lock).
+- **Tried on bmds0** with vncserver (bmds-apps' vnc.md §24): the arrow (12 × 19, its tip at 0, 0)
+  in a viewer's first update; with the pointer moved to 640, 400, a capture without it showed the
+  wallpaper under it, and one with it differed in the arrow's 118 pixels only; sweeping the pointer
+  over guigallery's window brought the side and corner arrows as it crossed the edges. **Not
+  tried:** a drag's image, the starting pointer, a hidden one.

@@ -19,6 +19,8 @@
 
 BMDS_NAMESPACE_BEGIN
 
+class Surface;
+
 /**
  * @brief Programs watching display 0's picture (`devplan/vnc.md` §5b, §5c): what changed since
  *        each last looked, and those parts copied out, whole frames only.
@@ -58,6 +60,7 @@ namespace ScreenWatch {
         struct Capture {
                         Format     format = Format::Bgr24;
                         bool       all = false;      ///< Every tile, not only the changed ones.
+                        bool       noPointer = false; ///< What the pointer covers in its place (vnc.md §20).
                         uint8_t   *buffer = nullptr; ///< The rectangles' pixels, packed one after the other.
                         size_t     capacity = 0;     ///< Its bytes.
                         Span<Rect> rects;            ///< Filled with the rectangles copied, in order.
@@ -88,6 +91,26 @@ namespace ScreenWatch {
          * @return How many watch (all of them, though only @p max are written).
          */
         size_t clients(uint32_t *out, size_t max);
+
+        /**
+         * @brief Sets watcher @p id's pointer listener (null: none), told with its `add()` argument
+         *        when the pointer's picture changes (`pointerChanged()`); must not block.
+         */
+        void setPointerNotify(uint8_t id, Notify notify);
+
+        /**
+         * @brief The window manager's: the pointer's picture changed this round (devplan/vnc.md
+         *        §20). Its watchers told. @nonblocking (a short lock)
+         */
+        void pointerChanged();
+
+        /**
+         * @brief The window manager's, before each present of @p surface (the desktop's): the
+         *        pointer drawn over @p area (empty: none) of the buffer being drawn, @p under
+         *        what it covers (@p area's pixels, B, G, R, rows packed). Kept with that buffer
+         *        for captures without the pointer.
+         */
+        void pointerDrawn(const Surface &surface, const Rect &area, const uint8_t *under);
 
         /** @brief Removes watcher @p id (waits for a notification under way). Idempotent. */
         void remove(uint8_t id);

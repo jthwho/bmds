@@ -26,6 +26,7 @@
 #include <bmds/mnemonic.h>
 #include <bmds/staticobject.h>
 #include <bmds/programlauncher.h>
+#include <bmds/screenwatch.h>
 #include <bmds/surface.h>
 #include <bmds/system.h>
 #include <bmds/taskowner.h>
@@ -1234,6 +1235,79 @@ WindowManager::CursorPicture WindowManager::arrowPicture() {
         return out;
 }
 
+Error WindowManager::pointerImage(PointerImage &out, uint32_t *argb, size_t capacity) {
+        Mutex::Locker lock(_lock, WaitForever);
+        out = PointerImage();
+        if (!isCursorDrawn()) return Error::Ok;
+        // The picture's box and the drag image's, from the tip.
+        const Picture &p = pictureOf(_shape, _startingFrame);
+        int            x0 = -int(p.hotX), y0 = -int(p.hotY);
+        int            x1 = x0 + p.width, y1 = y0 + p.height;
+        const bool     image = dndShowing() && _dnd.image != nullptr;
+        if (image) {
+                x0 = std::min(x0, -int(_dnd.hotX));
+                y0 = std::min(y0, -int(_dnd.hotY));
+                x1 = std::max(x1, int(_dnd.width) - int(_dnd.hotX));
+                y1 = std::max(y1, int(_dnd.height) - int(_dnd.hotY));
+        }
+        out.width = uint16_t(std::min(x1 - x0, int(PointerImageMax)));
+        out.height = uint16_t(std::min(y1 - y0, int(PointerImageMax)));
+        out.hotX = uint16_t(-x0);
+        out.hotY = uint16_t(-y0);
+        if (argb == nullptr || capacity < size_t(out.width) * out.height) return Error::NoSpace;
+        std::memset(argb, 0, size_t(out.width) * out.height * sizeof(uint32_t));
+        const auto put = [&](int x, int y) -> uint32_t * {
+                return x >= 0 && y >= 0 && x < out.width && y < out.height ? argb + size_t(y) * out.width + x : nullptr;
+        };
+        if (image) // under the picture, as drawn (drawCursorPixels())
+                for (int r = 0; r < _dnd.height; ++r)
+                        for (int c = 0; c < _dnd.width; ++c)
+                                if (uint32_t *px = put(c - _dnd.hotX - x0, r - _dnd.hotY - y0); px != nullptr)
+                                        *px = _dnd.image[size_t(r) * _dnd.width + size_t(c)];
+        const uint32_t edge = 0xff000000u | _palette.color(Role::CursorEdge);
+        const uint32_t fill = 0xff000000u | _palette.color(Role::CursorFill);
+        for (int r = 0; r < p.height; ++r)
+                for (int c = 0; c < p.width; ++c) {
+                        const char ch = p.rows[r][c];
+                        if (ch == '.') continue;
+                        if (uint32_t *px = put(c - p.hotX - x0, r - p.hotY - y0); px != nullptr)
+                                *px = ch == 'X' ? edge : fill;
+                }
+        return Error::Ok;
+}
+
+// What the pointer's picture is made of, as a number: a change of shape, frame, drag image or
+// colours changes it (a look-alike collision only delays a viewer's new shape to the next change).
+uint32_t WindowManager::pointerLook() const {
+        if (!isCursorDrawn()) return 1;
+        uint32_t   h = 2166136261u;
+        const auto mix = [&h](uint32_t v) {
+                h = (h ^ v) * 16777619u;
+        };
+        mix(uint32_t(_shape));
+        mix(_shape == Pointer::Starting ? _startingFrame : 0);
+        mix(_palette.color(Role::CursorEdge));
+        mix(_palette.color(Role::CursorFill));
+        if (dndShowing() && _dnd.image != nullptr) {
+                mix(uint32_t(uintptr_t(_dnd.image)));
+                mix(uint32_t(_dnd.width) << 24 | uint32_t(_dnd.height) << 16 | uint32_t(_dnd.hotX) << 8 | _dnd.hotY);
+        }
+        return h == 0 || h == 1 ? 2 : h;
+}
+
+// This round's pointer to ScreenWatch, before the present (devplan/vnc.md §20): what it covers (a
+// capture without the pointer puts it back) and, if its picture changed, the watchers told.
+void WindowManager::tellPointer() {
+        if (ScreenWatch::count() == 0) return;
+        const uint32_t look = pointerLook();
+        if (look != _pointerLook) {
+                _pointerLook = look;
+                ScreenWatch::pointerChanged();
+        }
+        ScreenWatch::pointerDrawn(*_surface, _underRect, _underIn);
+        return;
+}
+
 void WindowManager::pointerPosition(uint16_t &x, uint16_t &y) {
         Mutex::Locker lock(_lock, WaitForever);
         x = _pointerX;
@@ -1682,6 +1756,7 @@ void WindowManager::round(uint32_t requests) {
         _bandMoved = false;
         drawCursor();
         drawError(_surface->endBatch(DrawTimeoutMs), "the round's batch");
+        tellPointer();        // what the batch saved under the pointer is there now
         _tools.stripHalf = 0; // everything drawn: the strip is free
         _tools.stripColumn = 0;
         const auto us = static_cast<uint32_t>(System::uptimeUs() - start);

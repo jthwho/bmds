@@ -1691,6 +1691,11 @@ typedef struct bmds_rect_t {
 
 /** @brief `bmds_screen_capture_t::flags`. */
 #define BMDS_CAPTURE_ALL 0x1u /**< Every part of the picture, not only what changed. */
+/**
+ * What the pointer covers in its place (appended 2026-11-17, devplan/vnc.md §20): for a viewer
+ * drawing the pointer itself (`ScreenShare.pointerShape`). A kernel before it answers `EINVAL`.
+ */
+#define BMDS_CAPTURE_NO_POINTER 0x2u
 
 /**
  * @brief A capture's `buffer` and `capacity` both multiples of this (a cache line) let the 2D-DMA

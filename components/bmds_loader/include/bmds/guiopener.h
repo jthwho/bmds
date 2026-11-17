@@ -67,6 +67,7 @@ namespace GuiOpener {
         struct ScreenCapture {
                         bool       rgb565 = false; ///< Else B, G, R bytes.
                         bool       all = false;    ///< Every part, not only what changed.
+                        bool       noPointer = false; ///< What the pointer covers in its place.
                         uint32_t   share = 0;      ///< The ScreenShare object's id; 0: the first watching.
                         uint8_t   *buffer = nullptr;
                         size_t     capacity = 0;

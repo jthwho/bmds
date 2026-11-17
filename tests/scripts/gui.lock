@@ -382,3 +382,7 @@ event ScreenShare.changed() on
 
 # 2026-11-17 (bmds-apps devplan/vnc.md §19): a selection changed, told to every Clipboard object.
 event Clipboard.changed(Atom) on
+
+# 2026-11-17 (devplan/vnc.md §20): the pointer for a viewer drawing it itself.
+method ScreenShare.pointerShape() -> Bytes
+event ScreenShare.pointerChanged() on
