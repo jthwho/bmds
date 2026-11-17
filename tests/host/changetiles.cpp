@@ -199,3 +199,20 @@ TEST_CASE("ChangeTiles: another's tiles OR in") {
         CHECK(rects[1].x == 64);
         CHECK(rects[1].y == 16);
 }
+
+TEST_CASE("ChangeTiles: touches and clears what a rectangle covers whole") {
+        ChangeTiles t;
+        REQUIRE(t.resize(100, 40)); // 4 × 3 tiles, the last column 4 wide, the last row 8 high
+        CHECK(t.touches(Rect{99, 39, 1, 1}));
+        // Partly covered tiles stay; whole ones (the edge ones' part in the picture) go.
+        t.clearCovered(Rect{10, 16, 90, 24});
+        CHECK(t.touches(Rect{0, 16, 32, 1})); // column 0: partly covered
+        CHECK_FALSE(t.touches(Rect{32, 16, 68, 24}));
+        CHECK(t.touches(Rect{32, 0, 1, 16})); // row 0: not covered
+        t.clear();
+        CHECK_FALSE(t.touches(Rect{0, 0, 100, 40}));
+        t.mark(Rect{64, 32, 1, 1});
+        CHECK(t.touches(Rect{90, 30, 5, 5}));
+        CHECK_FALSE(t.touches(Rect{0, 0, 64, 32}));
+        CHECK_FALSE(t.touches(Rect{200, 0, 10, 10})); // past the picture
+}

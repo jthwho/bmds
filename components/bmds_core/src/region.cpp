@@ -49,6 +49,20 @@ uint32_t Region::area() const {
         return a;
 }
 
+void Region::subtract(const Rect &rect) {
+        if (rect.isEmpty() || _count == 0) return;
+        Rect         was[MaxRects];
+        const size_t n = _count;
+        for (size_t i = 0; i < n; ++i) was[i] = _rects[i];
+        _count = 0;
+        for (size_t i = 0; i < n; ++i) {
+                Rect         cut[4];
+                const size_t m = bmds::subtract(was[i], rect, cut);
+                for (size_t k = 0; k < m; ++k) add(cut[k]);
+        }
+        return;
+}
+
 void Region::add(const Rect &rect) {
         if (rect.isEmpty() || tryAdd(rect)) return;
         // Too many rectangles: the cheapest neighbours merged, then once more.
@@ -75,7 +89,7 @@ bool Region::tryAdd(const Rect &rect) {
                 size_t nextCount = 0;
                 for (size_t p = 0; p < count; ++p) {
                         Rect         cut[4];
-                        const size_t n = subtract(pieces[p], _rects[i], cut);
+                        const size_t n = bmds::subtract(pieces[p], _rects[i], cut);
                         if (nextCount + n > MaxRects) return false;
                         for (size_t k = 0; k < n; ++k) next[nextCount++] = cut[k];
                 }
@@ -111,7 +125,7 @@ void Region::squeeze() {
                 for (size_t i = 0; i < _count; ++i) {
                         if (i == bi || i == bj || u.contains(_rects[i])) continue;
                         Rect         cut[4];
-                        const size_t pieces = subtract(_rects[i], u, cut);
+                        const size_t pieces = bmds::subtract(_rects[i], u, cut);
                         if (n + pieces + 1 > MaxRects) {
                                 collapse(u);
                                 return;

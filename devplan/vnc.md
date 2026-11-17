@@ -501,10 +501,9 @@ the frame (`drawCursor()`), what it covers saved first (`_under`, put back by th
   patched. A kernel without the flag answers `EINVAL`: a program tries again without it (and
   leaves the Cursor encoding off).
 - **Moves still mark tiles:** a pointer moving changes the frame, so its tiles come in captures
-  even when, patched, they are as before. A viewer gets a small update that changes nothing. Left
-  for now (a pointer-only change could be told apart by the window manager later).
+  even when, patched, they are as before. (Since §22: no longer; the pointer's drawing is apart.)
 - **Not here:** where the pointer is (RFB's PointerPos, for a viewer to follow the board's own
-  mouse); the server can add it later from the same event.
+  mouse). (Since §21: in each capture.)
 - **As built:** `WindowManager::pointerImage()` and `tellPointer()` (after the round's batch ends:
   the batch's patches fill the saved pixels), `ScreenWatch::pointerDrawn()`, `pointerChanged()`,
   `setPointerNotify()` and `Capture::noPointer` (the slots grown only for a drag's image, freed with
@@ -550,9 +549,9 @@ the frame (`drawCursor()`), what it covers saved first (`_under`, put back by th
   only the icon's cell (`TrayRow::CellWidth` × the tray's height): 32 × 32 on bmds0, the tray
   drawn as before.
 
-## 24. Copies for viewers: window moves (proposed 2026-11-17, for RFB's CopyRect)
+## 24. Copies for viewers: window moves (2026-11-17, for RFB's CopyRect)
 
-**Status: proposed, for the user's review.** Nothing built.
+**Status: built (the user's go-ahead, C1 then the rest); as built at the end.** The proposal:
 
 - **What there is:** nothing on the desktop copies pixels within the screen today but the `win`
   test command's scroll (`Painter::scroll()` → `Surface::copy()`). A window moved (at its drop: the
@@ -589,3 +588,54 @@ the frame (`drawCursor()`), what it covers saved first (`_under`, put back by th
 - **Cost (estimate):** C2 about 100 bytes a surface (internal); C3 about 200 bytes a watcher
   (PSRAM); C1 saves a window's redraw on each move.
 - **To decide:** C1 on its own first (the board's gain), then C2-C5; or all together.
+
+**As built (2026-11-17):**
+
+- **C1:** `dropLocked()` (a drop that only moves) and `move()` copy a window that showed whole
+  (`showsWhole()`: nothing over it, no update of it waiting, no band, no copies pending):
+  `planMoveCopy()` takes what it shows at its new place (less the frame if the focus changes) and
+  takes it out of the damage, but where what wasn't drawn yet at the source lands (an outline's
+  sides, a change of its own): copied whole, that is drawn again over the copy. Overlapping its
+  old place, it is copied in bands no deeper (or wider) than the move, the side it moves towards
+  first; more than 32 bands (a nudge), it is drawn as before. `runMoveCopies()` runs them first in
+  the next round (the pointer already off). `win stats` counts them ("Moves:"). `Region` gained
+  `subtract()`, `WindowStack` `clearDamage(rect)` (host-tested).
+- **C2:** `Surface::copy()` records a double-buffered frame's copies (8; a band joined to the one
+  before, the same move: one copy read at once). Their destinations go to a bitmap of their own
+  (`_copyDamage`, copied forward like the rest); a copy whose source was drawn earlier in the
+  frame, or past 8, is damage. The present hook gets the list.
+- **C3:** each watcher keeps up to `ScreenWatch::MaxCopies` (16) copies until it captures. A copy
+  is always kept (while there is room): its covered destination tiles are cleared, and the
+  source's tiles the watcher doesn't have as they are (its changes waiting; the pointer's
+  drawing, for a picture with the pointer) are marked where they land, so they come after it. A
+  capture gives them all (`Capture::copies`) or, too little room, their destinations as tiles; a
+  capture of everything drops them. Line mode: everything.
+- **C4, ABI:** `bmds_screen_copy_t {bmds_rect_t from; int32_t to_x, to_y}` (24 bytes) and
+  `bmds_screen_capture_t`'s `copies`, `max_copies`, `copy_count` (72 bytes; lock: the new size and
+  offsets, 60 before, and the new struct's).
+- **C5:** vncserver (bmds-apps' vnc.md §27).
+- **Tried on bmds0:** a window moved 13 ways (`win move`, `win drag`: overlapping in each
+  direction, under the panel, partly under another window, an unfocused one) matched, pixel for
+  pixel, the same place drawn by redrawing. A viewer with CopyRect got every move of a run of 7
+  (5 drags with their outline, 2 moves a second apart) as one copy each, its picture the board's
+  exactly. Over six drags, 13 % fewer pixels (11 % fewer bytes) than a viewer without it: the
+  place uncovered is drawn either way, and a drag's outline frames come before its drop.
+- **Not done:** a window's scrolling by copying (terminal, GUI views), which would come to viewers
+  through C2-C5 unchanged.
+
+## 25. A secret for its program: `BMDS_SYSCONF_FIELD_SECRET` (2026-11-17)
+
+- **ABI:** `sysconf_get`'s field 6, the current value with a secret's too (a secret's value field
+  still reads "(set)"). For vncserver's `vnc/password` (bmds-apps' vnc.md §28): VNC's challenge
+  needs the password itself, so it is stored obfuscated, not hashed, and read back. Every program
+  is root and the store is readable (network.md §24a): this hides nothing more than before, it
+  only gives a program its own setting without reading the store's file. Host-tested; lock line
+  appended.
+
+## 26. R7's virtual devices: no listing to put them in (2026-11-17)
+
+- §5d had `kbdN` and `tabletN` "in `usb`/`input` listings"; there is no `input` listing (`usb`
+  lists USB devices, `pad` gamepads), and an injector isn't a USB device. Left as a question for
+  the user: an `input` command listing every source (USB keyboards and mice, gamepads, and the
+  programs injecting: vncserver's viewers), or the tray's "screen shared" item (which names the
+  watching programs) as enough.

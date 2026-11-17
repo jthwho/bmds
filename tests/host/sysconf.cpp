@@ -708,6 +708,17 @@ TEST_CASE("SysConf: a secret is never shown; the password, hashed, in /etc/shado
         String shadow;
         REQUIRE(Password::shadowFile(shadow).isOk());
         CHECK(std::string(shadow.cStr()) == std::string("root:") + hash.cStr() + ":::::::\n");
+        // A program asks for the value itself (BMDS_SYSCONF_FIELD_SECRET); the value field still hides it.
+        bmds::FdTable fds;
+        Process       p(fds);
+        char          text[BMDS_SYSCONF_VALUE_MAX + 1];
+        const int32_t id = p.sysconfFind("system/password");
+        REQUIRE(id >= 0);
+        CHECK(p.sysconfGet(id, BMDS_SYSCONF_FIELD_SECRET, text, sizeof(text)) == int32_t(hash.size()));
+        CHECK(std::string(text) == hash.cStr());
+        CHECK(p.sysconfGet(id, BMDS_SYSCONF_FIELD_VALUE, text, sizeof(text)) == 5);
+        CHECK(std::string(text) == "(set)");
+        CHECK(p.sysconfGet(id, BMDS_SYSCONF_FIELD_SECRET + 1, text, sizeof(text)) == -BMDS_EINVAL);
         // Cleared.
         REQUIRE(Password::set("").isOk());
         CHECK_FALSE(Password::isSet());

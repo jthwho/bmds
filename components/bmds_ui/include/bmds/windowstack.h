@@ -451,6 +451,15 @@ class WindowStack {
                 void clearDamage() { _damage.clear(); }
 
                 /**
+                 * @brief Takes @p rect out of the damage: drawn some other way (a window moved by
+                 *        copying its pixels). What is left may stay wider (`Region::subtract()`).
+                 */
+                void clearDamage(const Rect &rect) {
+                        _damage.subtract(rect);
+                        return;
+                }
+
+                /**
                  * @brief Which layer shows each piece of @p damage: disjoint
                  *        pieces, the desktop's layer `count()`.
                  * @return The pieces written to @p out, or `Full` (`planCompose()`).

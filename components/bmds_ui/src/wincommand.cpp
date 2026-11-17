@@ -876,6 +876,8 @@ namespace {
                 ctx.printf("Deferred: %lu redraws (their windows' owners busy)\n",
                            static_cast<unsigned long>(s.deferred));
                 ctx.printf("Jobs:     %lu 2D-DMA jobs on the desktop's surface\n", static_cast<unsigned long>(s.jobs));
+                ctx.printf("Moves:    %lu windows moved by copying their pixels\n",
+                           static_cast<unsigned long>(s.moveCopies));
                 return Shell::ExitSuccess;
         }
 

@@ -52,6 +52,12 @@ class Region {
                 /** @brief Adds every rectangle of @p other. */
                 void add(const Region &other);
 
+                /**
+                 * @brief Takes @p rect out. What is left is covered exactly while its pieces fit
+                 *        `MaxRects`; past that, more widely (`add()`), never less.
+                 */
+                void subtract(const Rect &rect);
+
                 /** @brief Makes it empty. */
                 void clear() {
                         _count = 0;

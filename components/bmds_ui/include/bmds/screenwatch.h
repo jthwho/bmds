@@ -56,6 +56,16 @@ namespace ScreenWatch {
                 Rgb565, ///< A little-endian 16-bit word, R in the top 5 bits.
         };
 
+        /** @brief A copy inside the picture (`Capture::copies`): @p from's pixels to (@p toX, @p toY). */
+        struct Copy {
+                        Rect     from;
+                        uint16_t toX = 0;
+                        uint16_t toY = 0;
+        };
+
+        /** @brief Copies a watcher keeps until it captures (more: their destinations as changes). */
+        inline constexpr size_t MaxCopies = 16;
+
         /** @brief What `capture()` copies, and what it did. */
         struct Capture {
                         Format     format = Format::Bgr24;
@@ -64,12 +74,19 @@ namespace ScreenWatch {
                         uint8_t   *buffer = nullptr; ///< The rectangles' pixels, packed one after the other.
                         size_t     capacity = 0;     ///< Its bytes.
                         Span<Rect> rects;            ///< Filled with the rectangles copied, in order.
+                        /**
+                         * Filled with the copies to make first, in order, each reading the picture
+                         * as the ones before left it (vnc.md §24 C3); empty, or too small for them
+                         * all: their destinations are rectangles instead.
+                         */
+                        Span<Copy> copies;
                         // Out:
                         size_t   count = 0;    ///< Rectangles copied.
                         size_t   bytes = 0;    ///< Of the buffer used.
                         uint16_t width = 0;    ///< The shown picture's.
                         uint16_t height = 0;   ///< (a program's full screen may change it)
                         bool     more = false; ///< Changes left that didn't fit: capture again.
+                        size_t   copyCount = 0; ///< Copies written to `copies`.
                         int32_t  pointerX = -1; ///< The pointer's tip in the copied picture; -1: none drawn.
                         int32_t  pointerY = -1;
         };

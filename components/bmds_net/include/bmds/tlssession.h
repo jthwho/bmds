@@ -44,6 +44,7 @@ class TlsSession {
                         NoVerify = 1u << 0, ///< The chain, dates and name aren't checked (`verifyFlags()` still says).
                         Server = 1u << 1,   ///< The server's side (an accepted socket): network.md §37.
                         ClientCert = 1u << 2, ///< A server's: a client certificate asked for and required.
+                        ClientCertOptional = 1u << 3, ///< A server's: asked for, checked if given, not required.
                 };
 
                 /** @brief Why a certificate was refused (`verifyFlags()`), or what `NoVerify` let pass. */

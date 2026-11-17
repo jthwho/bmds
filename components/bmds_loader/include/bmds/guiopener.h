@@ -63,6 +63,16 @@ namespace GuiOpener {
         using CanvasSurface = Result<FileHandle::Ptr> (*)(Stream &connection, uint32_t canvas,
                                                           const SurfaceConfig &config);
 
+        /** @brief A copy inside the screen, made before a capture's rectangles (vnc.md §24). */
+        struct ScreenCopy {
+                        Rect     from;
+                        uint16_t toX = 0;
+                        uint16_t toY = 0;
+        };
+
+        /** @brief Copies a capture gives at most. */
+        inline constexpr size_t MaxScreenCopies = 16;
+
         /** @brief A screen capture's request and result (`gui_screen_capture`'s, checked). */
         struct ScreenCapture {
                         bool       rgb565 = false; ///< Else B, G, R bytes.
@@ -72,6 +82,7 @@ namespace GuiOpener {
                         uint8_t   *buffer = nullptr;
                         size_t     capacity = 0;
                         Span<Rect> rects; ///< The kernel's: filled with what was copied.
+                        Span<ScreenCopy> copies; ///< The kernel's: the copies first (none: rectangles).
                         // Out:
                         size_t   count = 0;
                         size_t   bytes = 0;
@@ -80,6 +91,7 @@ namespace GuiOpener {
                         bool     more = false;
                         int32_t  pointerX = -1; ///< The pointer's tip in the copied picture; -1: none.
                         int32_t  pointerY = -1;
+                        size_t   copyCount = 0;
         };
 
         /**

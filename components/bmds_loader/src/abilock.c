@@ -926,18 +926,18 @@ _Static_assert(BMDS_TLS_SERVER == 2 && BMDS_TLS_CLIENT_CERT == 4, "ABI: BMDS_TLS
 _Static_assert(BMDS_SYS_GUI_SCREEN_CAPTURE == 136, "ABI: slot GUI_SCREEN_CAPTURE");
 _Static_assert(BMDS_CAPTURE_ALL == 1 && BMDS_CAPTURE_ALIGN == 128, "ABI: BMDS_CAPTURE_*");
 #if UINTPTR_MAX == 0xffffffffu // (pointers inside)
-_Static_assert(offsetof(bmds_screen_capture_t, format) == 4 && offsetof(bmds_screen_capture_t, flags) == 8 &&
-                       offsetof(bmds_screen_capture_t, buffer) == 12 &&
-                       offsetof(bmds_screen_capture_t, capacity) == 16 &&
-                       offsetof(bmds_screen_capture_t, rects) == 20 &&
-                       offsetof(bmds_screen_capture_t, max_rects) == 24 &&
-                       offsetof(bmds_screen_capture_t, rect_count) == 28 &&
-                       offsetof(bmds_screen_capture_t, bytes) == 32 && offsetof(bmds_screen_capture_t, width) == 36 &&
-                       offsetof(bmds_screen_capture_t, height) == 40 && offsetof(bmds_screen_capture_t, more) == 44 &&
-                       offsetof(bmds_screen_capture_t, share) == 48 &&
-                       offsetof(bmds_screen_capture_t, pointer_x) == 52 &&
-                       offsetof(bmds_screen_capture_t, pointer_y) == 56 && sizeof(bmds_screen_capture_t) == 60,
-               "ABI: bmds_screen_capture_t"); /* 48 before 2026-11-17 (share appended), then 52 (pointer_x, _y) */
+_Static_assert(
+        offsetof(bmds_screen_capture_t, format) == 4 && offsetof(bmds_screen_capture_t, flags) == 8 &&
+                offsetof(bmds_screen_capture_t, buffer) == 12 && offsetof(bmds_screen_capture_t, capacity) == 16 &&
+                offsetof(bmds_screen_capture_t, rects) == 20 && offsetof(bmds_screen_capture_t, max_rects) == 24 &&
+                offsetof(bmds_screen_capture_t, rect_count) == 28 && offsetof(bmds_screen_capture_t, bytes) == 32 &&
+                offsetof(bmds_screen_capture_t, width) == 36 && offsetof(bmds_screen_capture_t, height) == 40 &&
+                offsetof(bmds_screen_capture_t, more) == 44 && offsetof(bmds_screen_capture_t, share) == 48 &&
+                offsetof(bmds_screen_capture_t, pointer_x) == 52 && offsetof(bmds_screen_capture_t, pointer_y) == 56 &&
+                offsetof(bmds_screen_capture_t, copies) == 60 && offsetof(bmds_screen_capture_t, max_copies) == 64 &&
+                offsetof(bmds_screen_capture_t, copy_count) == 68 && sizeof(bmds_screen_capture_t) == 72,
+        "ABI: bmds_screen_capture_t"); /* 48 before 2026-11-17 (share appended), then 52 (pointer_x, _y),
+                                                 then 60 (copies, max_copies, copy_count) */
 #endif
 _Static_assert(BMDS_TLS_HANDSHAKING == 0 && BMDS_TLS_OPEN == 1 && BMDS_TLS_FAILED == 2 && BMDS_TLS_CLOSED == 3 &&
                        BMDS_TLS_CLEAN_CLOSE == 1,
@@ -971,3 +971,11 @@ _Static_assert(BMDS_MIDI_LATENCY == 5, "ABI: BMDS_MIDI_LATENCY");
 _Static_assert(BMDS_MIDI_ALLOW_LATENCY == 6, "ABI: BMDS_MIDI_ALLOW_LATENCY");
 /* Captures without the pointer (devplan/vnc.md §20, 2026-11-17). */
 _Static_assert(BMDS_CAPTURE_NO_POINTER == 2, "ABI: BMDS_CAPTURE_NO_POINTER");
+/* Copies before a capture's rectangles (devplan/vnc.md §24, 2026-11-17). */
+_Static_assert(offsetof(bmds_screen_copy_t, from) == 0 && offsetof(bmds_screen_copy_t, to_x) == 16 &&
+                       offsetof(bmds_screen_copy_t, to_y) == 20 && sizeof(bmds_screen_copy_t) == 24,
+               "ABI: bmds_screen_copy_t");
+/* A secret's value for its program (vncserver's vnc/password, 2026-11-17). */
+_Static_assert(BMDS_SYSCONF_FIELD_SECRET == 6, "ABI: BMDS_SYSCONF_FIELD_SECRET");
+/* Optional client certificates (libtls's verify_client_optional, 2026-11-17). */
+_Static_assert(BMDS_TLS_CLIENT_CERT_OPTIONAL == 8, "ABI: BMDS_TLS_CLIENT_CERT_OPTIONAL");

@@ -5242,6 +5242,36 @@ static const char TlsTestLeafKey[] = "-----BEGIN PRIVATE KEY-----\n"
                                      "-----END PRIVATE KEY-----\n";
 /* The leaf's SHA-256 (of its DER), as the client must see it. */
 static const char TlsTestLeafSha256[] = "14dd86e03ee22937a4a761c3fe7eb96cbcd7ef6333ca3436588cab49f8ffc71a";
+/* A client CA (20 years from 2026-11-17), for servers asking for client certificates. */
+static const char TlsTestClientRoot[] = "-----BEGIN CERTIFICATE-----\n"
+                                        "MIIBnzCCAUWgAwIBAgIUEcL7EGvOxxCmsfxGeXl8ppwQwY8wCgYIKoZIzj0EAwIw\n"
+                                        "HTEbMBkGA1UEAwwScHJvZ3Rlc3QgY2xpZW50IENBMB4XDTI2MTExNzIwMzE1N1oX\n"
+                                        "DTQ2MTExMjIwMzE1N1owHTEbMBkGA1UEAwwScHJvZ3Rlc3QgY2xpZW50IENBMFkw\n"
+                                        "EwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEXWAGcTQxwpbt2JkRdQ/uxCUGryZMRctR\n"
+                                        "7b1tE0QM3iEAEHwl7o41IRymm+H+UMDSFN5Am9I7D5zyHb+VEIV6O6NjMGEwHQYD\n"
+                                        "VR0OBBYEFOqwA8EEBFJO8eCzdPYawZBRsUfLMB8GA1UdIwQYMBaAFOqwA8EEBFJO\n"
+                                        "8eCzdPYawZBRsUfLMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgIEMAoG\n"
+                                        "CCqGSM49BAMCA0gAMEUCIERP086gORgu6aKBpHa5CMEdSxXvoQda0FAq8OY3gZAw\n"
+                                        "AiEAlUCO1GgAeGPCizaxErvB8/uE+lcUuuWBaPUMSiV3TGo=\n"
+                                        "-----END CERTIFICATE-----\n";
+/* A client certificate from it (clientAuth). */
+static const char TlsTestClient[] = "-----BEGIN CERTIFICATE-----\n"
+                                    "MIIBqzCCAVGgAwIBAgIUIfKdBB6ElhHzXYWSg2cgB/STxmAwCgYIKoZIzj0EAwIw\n"
+                                    "HTEbMBkGA1UEAwwScHJvZ3Rlc3QgY2xpZW50IENBMB4XDTI2MTExNzIwMzE1N1oX\n"
+                                    "DTQ2MTExMjIwMzE1N1owGjEYMBYGA1UEAwwPcHJvZ3Rlc3QgY2xpZW50MFkwEwYH\n"
+                                    "KoZIzj0CAQYIKoZIzj0DAQcDQgAEEoTvkleDHIqr8xBkXq4m06u8krMxLUFP1Ybl\n"
+                                    "MXVDoPH93IOQp8CXTetGrVD+fwQWhKKQeTY+7GOD+MP/dX/39KNyMHAwCQYDVR0T\n"
+                                    "BAIwADAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAwwCgYIKwYBBQUHAwIwHQYDVR0O\n"
+                                    "BBYEFBKCAcIn5MTk96Nr/1tWwVeTUmWJMB8GA1UdIwQYMBaAFOqwA8EEBFJO8eCz\n"
+                                    "dPYawZBRsUfLMAoGCCqGSM49BAMCA0gAMEUCIGr3IoQWIIiCsE5gcASSKZ0y3rpe\n"
+                                    "koZHchDMLxXwbnwaAiEAz+szdmes0vQK+sN/1hYjGqaH3y1DBsY0eSdOgi1Yf4w=\n"
+                                    "-----END CERTIFICATE-----\n";
+/* Its key. */
+static const char TlsTestClientKey[] = "-----BEGIN PRIVATE KEY-----\n"
+                                       "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgNiWZEy5FudNiTvEq\n"
+                                       "38qgHRG7AES2upOpcggLiM6thMihRANCAAQShO+SV4MciqvzEGReribTq7ySszEt\n"
+                                       "QU/VhuUxdUOg8f3cg5CnwJdN60atUP5/BBaEopB5Nj7sY4P4w/91f/f0\n"
+                                       "-----END PRIVATE KEY-----\n";
 
 struct tls_server_job {
                 int         listener;
@@ -5249,7 +5279,9 @@ struct tls_server_job {
                 const char *cert;  /* the server's own (PEM: a chain if several), with key; NULL: the board's */
                 const char *key;
                 int         use_lib; /* libtls's tls_server()/tls_accept_socket() instead */
+                const char *ca;      /* roots for client certificates (with BMDS_TLS_CLIENT_CERT...) */
                 int         result;  /* 0: echoed a line; else the handshake's -errno */
+                int         peer;    /* 1: the client gave a certificate (its subject seen) */
 };
 
 static void *tls_server_thread(void *arg) {
@@ -5267,8 +5299,17 @@ static void *tls_server_thread(void *arg) {
                         tls_config_free(config);
                         config = NULL;
                 }
+                if (config != NULL && job->ca != NULL) {
+                        if (tls_config_set_ca_mem(config, (const uint8_t *)job->ca, strlen(job->ca)) == 0) {
+                                tls_config_verify_client_optional(config);
+                        } else {
+                                tls_config_free(config);
+                                config = NULL;
+                        }
+                }
                 if (server != NULL && config != NULL && tls_configure(server, config) == 0 &&
                     tls_accept_socket(server, &conn, fd) == 0 && tls_handshake(conn) == 0) {
+                        job->peer = tls_peer_cert_provided(conn);
                         const ssize_t n = tls_read(conn, line, sizeof(line) - 1);
                         if (n > 0 && tls_write(conn, line, (size_t)n) == n) job->result = 0;
                         (void)tls_close(conn);
@@ -5284,10 +5325,14 @@ static void *tls_server_thread(void *arg) {
                                .cert = (const uint8_t *)job->cert,
                                .cert_size = job->cert != NULL ? (uint32_t)strlen(job->cert) : 0u,
                                .key = (const uint8_t *)job->key,
-                               .key_size = job->key != NULL ? (uint32_t)strlen(job->key) : 0u};
+                               .key_size = job->key != NULL ? (uint32_t)strlen(job->key) : 0u,
+                               .ca = (const uint8_t *)job->ca,
+                               .ca_size = job->ca != NULL ? (uint32_t)strlen(job->ca) : 0u};
         int               r = bmds_tls_ctl(fd, BMDS_TLS_START, &c);
         if (r == 0) r = bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL);
         if (r == 0) {
+                bmds_tls_info_t i;
+                job->peer = tls_info(fd, &i) == 0 && i.subject[0] != '\0';
                 const ssize_t n = read(fd, line, sizeof(line) - 1);
                 r = n > 0 && write(fd, line, (size_t)n) == n ? 0 : -EIO;
         }
@@ -5317,13 +5362,21 @@ struct tls_round {
                 int         use_lib;
                 const char *cert, *key;
                 const char *ca, *name;
+                const char *server_ca;                /* the server's roots for client certificates */
+                const char *client_cert, *client_key; /* the client's certificate, if it gives one */
 };
+
+/* Whether the last round's server was given a client certificate. */
+static int tls_round_peer;
 
 /* One exchange: the line back. @p server_result the server's; the client's handshake in the result. */
 static int tls_server_round(const struct tls_round *round, int *server_result, bmds_tls_info_t *seen) {
         int                   port = 0;
-        struct tls_server_job job = {
-                .flags = round->flags, .cert = round->cert, .key = round->key, .use_lib = round->use_lib};
+        struct tls_server_job job = {.flags = round->flags,
+                                     .cert = round->cert,
+                                     .key = round->key,
+                                     .use_lib = round->use_lib,
+                                     .ca = round->server_ca};
         job.listener = tls_listener(&port);
         if (job.listener < 0) return -1;
         pthread_t thread;
@@ -5339,7 +5392,11 @@ static int tls_server_round(const struct tls_round *round, int *server_result, b
                                .flags = round->ca != NULL ? 0u : BMDS_TLS_NO_VERIFY,
                                .server_name = round->name,
                                .ca = (const uint8_t *)round->ca,
-                               .ca_size = round->ca != NULL ? (uint32_t)strlen(round->ca) : 0u};
+                               .ca_size = round->ca != NULL ? (uint32_t)strlen(round->ca) : 0u,
+                               .cert = (const uint8_t *)round->client_cert,
+                               .cert_size = round->client_cert != NULL ? (uint32_t)strlen(round->client_cert) : 0u,
+                               .key = (const uint8_t *)round->client_key,
+                               .key_size = round->client_key != NULL ? (uint32_t)strlen(round->client_key) : 0u};
         int               handshake = -EIO;
         if (fd >= 0 && bmds_tls_ctl(fd, BMDS_TLS_START, &c) == 0) {
                 handshake = bmds_tls_ctl(fd, BMDS_TLS_HANDSHAKE, NULL);
@@ -5356,6 +5413,7 @@ static int tls_server_round(const struct tls_round *round, int *server_result, b
         pthread_join(thread, NULL);
         close(job.listener);
         *server_result = job.result;
+        tls_round_peer = job.peer;
         return handshake != 0 ? handshake : ok;
 }
 
@@ -5378,7 +5436,12 @@ static int tls_server_test(void) {
         CHECK(fd >= 0);
         CHECK(tls_start(fd, NULL, BMDS_TLS_CLIENT_CERT | BMDS_TLS_NO_VERIFY, NULL) == -BMDS_EINVAL);
         CHECK(tls_start(fd, NULL, BMDS_TLS_SERVER | BMDS_TLS_CLIENT_CERT, NULL) == -BMDS_EINVAL); /* no CA */
-        CHECK(tls_start(fd, NULL, 8u, NULL) == -BMDS_EINVAL);
+        CHECK(tls_start(fd, NULL, 16u, NULL) == -BMDS_EINVAL);
+        CHECK(tls_start(fd, NULL, BMDS_TLS_CLIENT_CERT_OPTIONAL | BMDS_TLS_NO_VERIFY, NULL) == -BMDS_EINVAL);
+        CHECK(tls_start(fd, NULL, BMDS_TLS_SERVER | BMDS_TLS_CLIENT_CERT_OPTIONAL, NULL) == -BMDS_EINVAL); /* no CA */
+        CHECK(tls_start(fd, NULL,
+                        BMDS_TLS_SERVER | BMDS_TLS_CLIENT_CERT | BMDS_TLS_CLIENT_CERT_OPTIONAL | BMDS_TLS_NO_VERIFY,
+                        NULL) == -BMDS_EINVAL);
         bmds_tls_config_t half = {
                 .size = sizeof(half), .flags = BMDS_TLS_SERVER, .cert = (const uint8_t *)"x", .cert_size = 1};
         CHECK(bmds_tls_ctl(fd, BMDS_TLS_START, &half) == -BMDS_EINVAL); /* a certificate without its key */
@@ -5413,6 +5476,33 @@ static int tls_server_test(void) {
         CHECK(tls_server_round(&wantsCert, &server, NULL) != 0);
         CHECK(server == -BMDS_EKEYREJECTED || server == -BMDS_EPROTO);
         printf("tlsserver: no client certificate: refused (%s)\n", strerror(-server));
+
+        /* A client certificate asked for, not required (libtls's verify_client_optional): none given
+         * passes; one from the CA passes, the server seeing it; one from elsewhere is refused. */
+        const struct tls_round optionalNone = {.flags = BMDS_TLS_SERVER | BMDS_TLS_CLIENT_CERT_OPTIONAL,
+                                               .server_ca = TlsTestClientRoot};
+        CHECK(tls_server_round(&optionalNone, &server, NULL) == 0 && server == 0 && !tls_round_peer);
+        const struct tls_round optionalGiven = {.flags = BMDS_TLS_SERVER | BMDS_TLS_CLIENT_CERT_OPTIONAL,
+                                                .server_ca = TlsTestClientRoot,
+                                                .client_cert = TlsTestClient,
+                                                .client_key = TlsTestClientKey};
+        CHECK(tls_server_round(&optionalGiven, &server, NULL) == 0 && server == 0 && tls_round_peer);
+        const struct tls_round optionalStranger = {.flags = BMDS_TLS_SERVER | BMDS_TLS_CLIENT_CERT_OPTIONAL,
+                                                   .server_ca = TlsTestRoot,
+                                                   .client_cert = TlsTestClient,
+                                                   .client_key = TlsTestClientKey};
+        CHECK(tls_server_round(&optionalStranger, &server, NULL) != 0);
+        CHECK(server == -BMDS_EKEYREJECTED);
+        /* The same through libtls: none, then one. */
+        const struct tls_round optionalLib = {.use_lib = 1, .server_ca = TlsTestClientRoot};
+        CHECK(tls_server_round(&optionalLib, &server, NULL) == 0 && server == 0 && !tls_round_peer);
+        const struct tls_round optionalLibGiven = {.use_lib = 1,
+                                                   .server_ca = TlsTestClientRoot,
+                                                   .client_cert = TlsTestClient,
+                                                   .client_key = TlsTestClientKey};
+        CHECK(tls_server_round(&optionalLibGiven, &server, NULL) == 0 && server == 0 && tls_round_peer);
+        printf("tlsserver: an optional client certificate: none taken, one from the CA taken (seen), a "
+               "stranger's refused; libtls's verify_client_optional the same\n");
 
         /* libtls's server calls. */
         const struct tls_round lib = {.use_lib = 1};

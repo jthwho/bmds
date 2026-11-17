@@ -456,6 +456,7 @@ class WindowManager {
                                 uint32_t deferred = 0; ///< Redraws put off (`Painter::defer()`).
                                 uint32_t windows = 0;  ///< Windows now, shown and hidden (not a count).
                                 uint32_t jobs = 0;     ///< 2D-DMA jobs run on the desktop's surface (not a count).
+                                uint32_t moveCopies = 0; ///< Windows moved by copying their pixels (vnc.md §24).
                 };
 
                 /** @brief Window managers: one per display. */
@@ -1207,6 +1208,9 @@ class WindowManager {
                 WindowFrame     frame(uint8_t id, const Rect &outer) const;
                 void            drawCursor();
                 void            restoreUnder();     // what the pointer covered, put back
+                bool            showsWhole(uint8_t id, const Rect &at); // the window shows all of itself there
+                void            planMoveCopy(uint8_t id, const Rect &from, bool frameChanges, const Region &stale);
+                void            runMoveCopies();    // a round's first drawing: the move's copies
                 Rect            cursorArea() const; // where the pointer is drawn: on the screen, 4-pixel columns
                 uint16_t        cursorStripRows(uint16_t width) const;  // rows of it one patch takes
                 uint8_t         windowAt(uint16_t x, uint16_t y) const; // 0: the desktop
@@ -1298,6 +1302,16 @@ class WindowManager {
                 uint8_t       _dragId = 0;
                 Rect          _outline;
                 bool          _outlineShown = false;
+                // A dropped window's pixels copied to where it went, the next round (vnc.md §24 C1):
+                // in an order that never reads what an earlier one wrote.
+                static constexpr size_t MaxMoveCopies = 32;
+                struct MoveCopy {
+                                Rect     from;
+                                uint16_t toX = 0;
+                                uint16_t toY = 0;
+                };
+                MoveCopy      _moveCopies[MaxMoveCopies];
+                uint8_t       _moveCopyCount = 0;
                 uint8_t       _bandId = 0;        // the window a rubber band is over; 0: none
                 Rect          _band;              // where (screen coordinates)
                 bool          _bandMoved = false; // to draw this round

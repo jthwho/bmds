@@ -1725,8 +1725,8 @@ void WindowManager::round(uint32_t requests) {
                 _updates[i] |= _asked[i].exchange(0, std::memory_order_acq_rel);
         const Region damage = _stack.damage();
         _stack.clearDamage();
-        const bool drawing =
-                !damage.isEmpty() || hasUpdates() || (_dragId != 0 && !_outlineShown) || _cursorMoved || _bandMoved;
+        const bool drawing = !damage.isEmpty() || hasUpdates() || (_dragId != 0 && !_outlineShown) || _cursorMoved ||
+                             _bandMoved || _moveCopyCount != 0;
         if (!drawing) {
                 _drawn.store(requests, std::memory_order_release);
                 return;
@@ -1734,7 +1734,8 @@ void WindowManager::round(uint32_t requests) {
         const uint64_t start = System::uptimeUs();
         _surface->beginBatch(); // the round's fills and text in few jobs (windows.md §4n)
         restoreUnder();
-        dndFree();     // an ended drag's image and under: nothing drawn holds them now
+        runMoveCopies(); // a dropped window's pixels where it went (vnc.md §24 C1)
+        dndFree();       // an ended drag's image and under: nothing drawn holds them now
         restoreBand(); // under the pointer's: put back in the order they went on
         if (!damage.isEmpty()) {
                 auto [n, err] = _stack.plan(damage, Span<ComposePiece>(_pieces, MaxPieces));
@@ -2369,7 +2370,11 @@ Error WindowManager::move(uint8_t id, uint16_t x, uint16_t y) {
         auto [at, err] = _stack.rectOf(id);
         if (err.isError()) return err;
         if (_windows[id - 1].maximized) return Error::InvalidState;
+        // Showing whole where it is: its pixels copied (vnc.md §24 C1); what isn't drawn yet is no source.
+        const bool   copy = showsWhole(id, at);
+        const Region stale = copy ? _stack.damage() : Region();
         err = _stack.move(id, placed(Rect{x, y, at.width, at.height}));
+        if (err.isOk() && copy) planMoveCopy(id, at, false, stale);
         if (err.isOk() && _windows[id - 1].reserve != 0) workAreaChanged();
         if (err.isOk()) changed(focusId());
         return err;
@@ -3973,10 +3978,140 @@ Error WindowManager::dropLocked() {
         }
         _dragId = 0;
         _outlineShown = false;
-        Error err = _stack.raise(id);
+        // A move alone, of a window showing whole: its pixels copied, not drawn again (vnc.md §24
+        // C1). What isn't drawn yet (the outline's sides among it) is no source.
+        const Rect   from = _stack.rectOf(id).value();
+        const bool   moveOnly = _outline.width == from.width && _outline.height == from.height && !(_outline == from);
+        const bool   copy = moveOnly && showsWhole(id, from);
+        const Region stale = copy ? _stack.damage() : Region();
+        Error        err = _stack.raise(id);
         if (err.isOk()) err = resizeLocked(id, _outline, _windows[id - 1].decorations); // told if resized
+        if (err.isOk() && copy) planMoveCopy(id, from, oldTop != id, stale);
         changed(oldTop);
         return err;
+}
+
+// Window @p id shows all of itself at @p at (its place now): nothing over it, nothing of it
+// waiting to be drawn, no rubber band in it, no move's copies pending. With the lock held.
+bool WindowManager::showsWhole(uint8_t id, const Rect &at) {
+        const uint32_t bit = 1u << (id % 32);
+        if (_moveCopyCount != 0 || _bandId != 0 || _pieces == nullptr) return false;
+        if (((_updates[id / 32] | _asked[id / 32].load(std::memory_order_acquire)) & bit) != 0) return false;
+        auto [z, zerr] = _stack.layerOf(id);
+        if (zerr.isError()) return false;
+        Region whole;
+        whole.add(at);
+        auto [n, err] = _stack.plan(whole, Span<ComposePiece>(_pieces, MaxPieces));
+        if (err.isError()) return false;
+        for (size_t i = 0; i < n; ++i)
+                if (_pieces[i].layer != z) return false;
+        return true;
+}
+
+// The copies of window @p id's move from @p from (where it showed whole) to where it is now:
+// what it shows there, less the frame if @p frameChanges (its colours follow the focus). Their
+// damage is taken out but where @p stale (not drawn yet when it moved) lands: the next round
+// copies them first (runMoveCopies()), then draws that. If they don't fit, nothing changes: all
+// of it is drawn.
+// With the lock held.
+void WindowManager::planMoveCopy(uint8_t id, const Rect &from, bool frameChanges, const Region &stale) {
+        constexpr size_t MaxKeep = 32;
+        auto [to, rerr] = _stack.rectOf(id);
+        auto [z, zerr] = _stack.layerOf(id);
+        if (rerr.isError() || zerr.isError() || to.width != from.width || to.height != from.height) return;
+        const int  dx = int(to.x) - int(from.x), dy = int(to.y) - int(from.y);
+        const auto moved = [dx, dy](const Rect &r) {
+                return Rect{uint16_t(int(r.x) + dx), uint16_t(int(r.y) + dy), r.width, r.height};
+        };
+        // What it shows where it went.
+        Region whole;
+        whole.add(to);
+        auto [n, perr] = _stack.plan(whole, Span<ComposePiece>(_pieces, MaxPieces));
+        if (perr.isError()) return;
+        const Rect clip = frameChanges ? frame(id, to).client() : to;
+        Rect       keep[MaxKeep];
+        size_t     kept = 0;
+        for (size_t i = 0; i < n; ++i) {
+                if (_pieces[i].layer != z) continue;
+                const Rect r = _pieces[i].rect.intersected(clip);
+                if (r.isEmpty()) continue;
+                if (kept == MaxKeep) return;
+                keep[kept++] = r;
+        }
+        if (kept == 0) return;
+        // Copied whole (one copy, not pieces around an outline's sides), but what its sources held
+        // undrawn stays damage where it lands: drawn again over the copy.
+        Rect   clean[MaxKeep];
+        size_t cleanCount = kept;
+        for (size_t i = 0; i < kept; ++i) clean[i] = keep[i];
+        for (const Rect &s : stale.rects()) {
+                const Rect bad = s.intersected(from);
+                if (bad.isEmpty()) continue;
+                const Rect landed = moved(bad);
+                Rect       next[MaxKeep];
+                size_t     m = 0;
+                for (size_t i = 0; i < cleanCount; ++i) {
+                        Rect         cut[4];
+                        const size_t c = subtract(clean[i], landed, cut);
+                        if (m + c > MaxKeep) return;
+                        for (size_t k = 0; k < c; ++k) next[m++] = cut[k];
+                }
+                for (size_t i = 0; i < m; ++i) clean[i] = next[i];
+                cleanCount = m;
+        }
+        // Overlapping its old place: bands no deeper than the move, the side moved towards first,
+        // so none reads what one before it wrote (copies run in order).
+        const bool overlap = from.intersects(to);
+        const bool rows = dy != 0;
+        const int  step = rows ? (dy < 0 ? -dy : dy) : (dx < 0 ? -dx : dx);
+        size_t     count = 0;
+        for (size_t i = 0; i < kept; ++i) {
+                const Rect &r = keep[i];
+                const int   span = rows ? r.height : r.width;
+                const int   band = overlap ? step : span;
+                for (int at = 0; at < span; at += band) {
+                        if (count == MaxMoveCopies) {
+                                _moveCopyCount = 0;
+                                return;
+                        }
+                        const int  size = span - at < band ? span - at : band;
+                        const Rect piece = rows ? Rect{r.x, uint16_t(r.y + at), r.width, uint16_t(size)}
+                                                : Rect{uint16_t(r.x + at), r.y, uint16_t(size), r.height};
+                        _moveCopies[count++] = MoveCopy{Rect{uint16_t(int(piece.x) - dx), uint16_t(int(piece.y) - dy),
+                                                             piece.width, piece.height},
+                                                        piece.x, piece.y};
+                }
+        }
+        // Moving up (or left), the top (left) first; down (right), the bottom (right) first.
+        const bool ascending = rows ? dy < 0 : dx < 0;
+        for (size_t i = 1; i < count; ++i) {
+                const MoveCopy c = _moveCopies[i];
+                const int      key = rows ? c.toY : c.toX;
+                size_t         k = i;
+                for (; k > 0; --k) {
+                        const int prev = rows ? _moveCopies[k - 1].toY : _moveCopies[k - 1].toX;
+                        if (ascending ? prev <= key : prev >= key) break;
+                        _moveCopies[k] = _moveCopies[k - 1];
+                }
+                _moveCopies[k] = c;
+        }
+        _moveCopyCount = uint8_t(count);
+        for (size_t i = 0; i < cleanCount; ++i) _stack.clearDamage(clean[i]);
+        ++_stats.moveCopies;
+        return;
+}
+
+// The move's copies (planMoveCopy()), before anything else this round draws: the pointer is
+// already off (restoreUnder()), and what is drawn after goes over them.
+void WindowManager::runMoveCopies() {
+        if (_moveCopyCount == 0) return;
+        ++_stats.calls;
+        Surface::Copy copies[MaxMoveCopies];
+        for (size_t i = 0; i < _moveCopyCount; ++i)
+                copies[i] = Surface::Copy{_moveCopies[i].from, _moveCopies[i].toX, _moveCopies[i].toY};
+        drawError(_surface->copy(Span<const Surface::Copy>(copies, _moveCopyCount), DrawTimeoutMs), "a window's move");
+        _moveCopyCount = 0;
+        return;
 }
 
 Result<List<WindowManager::Info>> WindowManager::windows() {

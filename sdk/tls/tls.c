@@ -319,6 +319,11 @@ void tls_config_verify_client(struct tls_config *config) {
         return;
 }
 
+void tls_config_verify_client_optional(struct tls_config *config) {
+        config->verify_client = 2;
+        return;
+}
+
 /* --- Contexts --------------------------------------------------------------------------------- */
 
 static struct tls *new_context(void) {
@@ -382,7 +387,10 @@ int tls_accept_socket(struct tls *ctx, struct tls **cctx, int s) {
         }
         bmds_tls_config_t k = {
                 .size = sizeof(k),
-                .flags = BMDS_TLS_SERVER | (c->verify_client ? BMDS_TLS_CLIENT_CERT : 0u) |
+                .flags = BMDS_TLS_SERVER |
+                         (c->verify_client == 1   ? BMDS_TLS_CLIENT_CERT
+                          : c->verify_client == 2 ? BMDS_TLS_CLIENT_CERT_OPTIONAL
+                                                  : 0u) |
                          (c->noverifycert ? BMDS_TLS_NO_VERIFY : 0u),
                 .ca = c->ca,
                 .ca_size = (uint32_t)c->ca_len,

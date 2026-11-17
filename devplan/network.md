@@ -3299,4 +3299,17 @@ info's peer is "the other side"). `abilock.c` checks the two values. Errors as ย
   refused at `BMDS_TLS_START` (`EINVAL`). Passed on bmds0.
 - **Not done:** a stack probe of the first session making the key (on the caller's stack, mbedTLS's
   writers a few KB); optional client certificates (libtls's `verify_client_optional`).
+- **The key's making, measured (2026-11-17):** `CONFIG_BMDS_STACK_PROBE` (build-probe), the
+  server keys' folder set (not saved) to an empty one, vncserver's first VeNCrypt viewer: its one
+  `tls_ctl` made the P-256 key and the certificate, 3,716 bytes below the slot's entry, the
+  deepest slot of the run (then `proc_exec` 3,056, `open` 3,048). The 12 KB floor
+  (programs.md ยง21 d) leaves 8.3 KB.
+- **Optional client certificates (2026-11-17):** `BMDS_TLS_CLIENT_CERT_OPTIONAL` (8, appended;
+  lock line): asked for, not required; one given is checked against `ca` (needed, as with
+  `_CLIENT_CERT`; with `NO_VERIFY` any is taken), a bad one `-BMDS_EKEYREJECTED`; none, the
+  peer is empty. Not with `_CLIENT_CERT`. `TlsSession::ClientCertOptional`: mbedTLS's
+  `VERIFY_OPTIONAL`, `handshake()` judging only a certificate given (no clock: refused only if
+  one comes). libtls gained `tls_config_verify_client_optional()`. `progtest tlsserver` passed on
+  bmds0 with a client CA of its own (clientAuth): none taken, one from the CA taken and seen, a
+  stranger's refused, the same through libtls.
 

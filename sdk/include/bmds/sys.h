@@ -298,6 +298,12 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYSCONF_FIELD_KEY 3u     /**< The key. */
 #define BMDS_SYSCONF_FIELD_HELP 4u    /**< One line describing it. */
 #define BMDS_SYSCONF_FIELD_CHOICES 5u /**< An enum's words, separated by `|` ("" for other types). */
+/**
+ * The current value, a secret's too (appended 2026-11-17): for a program that needs its own secret
+ * back (vncserver's `vnc/password`: the VNC challenge needs the password itself, kept obfuscated).
+ * A kernel before it answers `-BMDS_EINVAL`.
+ */
+#define BMDS_SYSCONF_FIELD_SECRET 6u
 
 /** @brief `sysconf_set` operations. */
 #define BMDS_SYSCONF_OP_SET 0u    /**< The current value becomes `value` (checked; not saved). */
@@ -1338,13 +1344,23 @@ typedef struct bmds_fastpath_t {
 #define BMDS_TLS_CLIENT_CERT 4u
 
 /**
+ * @brief `bmds_tls_config_t::flags`, with `BMDS_TLS_SERVER` only (appended 2026-11-17): a client
+ *        certificate is asked for but not required (libtls's `verify_client_optional`); one given
+ *        is checked against `ca` (needed; with `BMDS_TLS_NO_VERIFY` any is taken), a bad one failing
+ *        with `-BMDS_EKEYREJECTED`. `BMDS_TLS_INFO`'s peer is empty if none came. Not with
+ *        `BMDS_TLS_CLIENT_CERT`. A kernel before it answers `-BMDS_EINVAL`.
+ */
+#define BMDS_TLS_CLIENT_CERT_OPTIONAL 8u
+
+/**
  * @brief How to start TLS (`BMDS_TLS_START`). Everything is copied: the buffers are the
  *        program's again when the call returns. Sizes: `ca` at most 256 KB, `cert` and `key` 16 KB
  *        each, `server_name` 253 bytes, `alpn` 127.
  */
 typedef struct bmds_tls_config_t {
                 uint32_t       size;        /**< `sizeof(bmds_tls_config_t)`. */
-                uint32_t       flags; /**< `BMDS_TLS_NO_VERIFY`, `_SERVER`, `_CLIENT_CERT`; others `-BMDS_EINVAL`. */
+                uint32_t
+                        flags; /**< `BMDS_TLS_NO_VERIFY`, `_SERVER`, `_CLIENT_CERT`(`_OPTIONAL`); others `-BMDS_EINVAL`. */
                 const char    *server_name; /**< SNI and the name checked; null only with `BMDS_TLS_NO_VERIFY`. */
                 const uint8_t *ca;          /**< More trusted roots (PEM, one or more, or a DER); null: none. */
                 uint32_t       ca_size;     /**< Its bytes. */
@@ -1709,6 +1725,16 @@ typedef struct bmds_rect_t {
  *        rectangles that changed since the last capture, their pixels packed one after the other
  *        in @ref buffer (each rectangle's rows `width` × bytes a pixel apart).
  */
+/**
+ * @brief A copy inside the screen (`bmds_screen_capture_t::copies`, devplan/vnc.md §24): @p from's
+ *        pixels to (@p to_x, @p to_y), read as the copies before it left them.
+ */
+typedef struct bmds_screen_copy_t {
+                bmds_rect_t from;
+                int32_t     to_x;
+                int32_t     to_y;
+} bmds_screen_copy_t;
+
 typedef struct bmds_screen_capture_t {
                 uint32_t     size;       /**< Set by the caller: `sizeof(bmds_screen_capture_t)`. */
                 uint32_t     format;     /**< `BMDS_PIXEL_BGR24` or `BMDS_PIXEL_RGB565`. */
@@ -1734,6 +1760,15 @@ typedef struct bmds_screen_capture_t {
                  */
                 int32_t pointer_x;
                 int32_t pointer_y; /**< Out. */
+                /**
+                 * Set by the caller (appended 2026-11-17, devplan/vnc.md §24): room for copies to
+                 * make before the rectangles (a window moved), `max_copies` of them (at most 16
+                 * are given); out, `copy_count`. 0 room, too little, or a struct without them: their
+                 * destinations come as rectangles instead.
+                 */
+                bmds_screen_copy_t *copies;
+                uint32_t            max_copies;
+                uint32_t            copy_count; /**< Out. */
 } bmds_screen_capture_t;
 
 /** @brief A buffer to show (`surface_present`). */

@@ -119,9 +119,16 @@ int32_t bmds_k_gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture) 
             c.rects == nullptr || c.max_rects == 0)
                 return -BMDS_EINVAL;
         const uint32_t maxRects = c.max_rects < MaxCaptureRects ? c.max_rects : MaxCaptureRects;
+        // Copies: none from a struct before them (copyIn leaves them 0).
+        const uint32_t maxCopies = c.copies == nullptr ? 0
+                                                       : (c.max_copies < bmds::GuiOpener::MaxScreenCopies
+                                                                  ? c.max_copies
+                                                                  : uint32_t(bmds::GuiOpener::MaxScreenCopies));
         if (!bmds::detail::canWrite(c.buffer, c.capacity) ||
-            !bmds::detail::canWrite(c.rects, maxRects * sizeof(bmds_rect_t)))
+            !bmds::detail::canWrite(c.rects, maxRects * sizeof(bmds_rect_t)) ||
+            (maxCopies > 0 && !bmds::detail::canWrite(c.copies, maxCopies * sizeof(bmds_screen_copy_t))))
                 return -BMDS_EFAULT;
+        bmds::GuiOpener::ScreenCopy    copies[bmds::GuiOpener::MaxScreenCopies];
         bmds::Rect                     rects[MaxCaptureRects];
         bmds::GuiOpener::ScreenCapture k;
         k.rgb565 = c.format == BMDS_PIXEL_RGB565;
@@ -131,6 +138,7 @@ int32_t bmds_k_gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture) 
         k.buffer = static_cast<uint8_t *>(c.buffer);
         k.capacity = c.capacity;
         k.rects = bmds::Span<bmds::Rect>(rects, maxRects);
+        k.copies = bmds::Span<bmds::GuiOpener::ScreenCopy>(copies, maxCopies);
         const Error err = bmds::GuiOpener::screenCapture(connection->stream(), k);
         if (err == Error::NotSupported) return -BMDS_ENOTTY;
         if (err == Error::PermissionDenied) return -BMDS_EACCES;
@@ -146,6 +154,11 @@ int32_t bmds_k_gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture) 
         c.more = k.more ? 1u : 0u;
         c.pointer_x = k.pointerX;
         c.pointer_y = k.pointerY;
+        for (size_t i = 0; i < k.copyCount; ++i)
+                c.copies[i] = bmds_screen_copy_t{
+                        bmds_rect_t{copies[i].from.x, copies[i].from.y, copies[i].from.width, copies[i].from.height},
+                        copies[i].toX, copies[i].toY};
+        c.copy_count = uint32_t(k.copyCount);
         r = bmds::detail::copyOut(c, capture);
         return r < 0 ? r : 0;
 }

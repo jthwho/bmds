@@ -100,11 +100,14 @@ class Surface {
                  *        @p tiles the tiles drawn since its last present (`TileWidth` × `TileHeight`,
                  *        @p rows rows of @p rowWords words, bit c of a row's word c / 32), or null
                  *        for all of it (a single-buffered surface keeps none); @p pointerTiles, the
-                 *        same, those drawn as the pointer's (`setPointerDrawing()`), or null. On the
-                 *        presenting task, before the swap; must not block.
+                 *        same, those drawn as the pointer's (`setPointerDrawing()`), or null;
+                 *        @p copies the frame's copies inside it (`copy()`), in order, @p copyCount of
+                 *        them: their destinations are in neither bitmap (`devplan/vnc.md` §24 C2). On
+                 *        the presenting task, before the swap; must not block.
                  */
                 using PresentHook = void (*)(void *arg, const Surface &surface, const uint32_t *tiles,
-                                             const uint32_t *pointerTiles, uint16_t rowWords, uint16_t rows);
+                                             const uint32_t *pointerTiles, const Copy *copies, size_t copyCount,
+                                             uint16_t rowWords, uint16_t rows);
 
                 /**
                  * @brief Sets the one present hook for all surfaces (null: none). A hook already
@@ -437,6 +440,9 @@ class Surface {
                 bool  inside(const Rect &rect) const; // inside
                 Error fillEdges(Span<const Rect> rects, uint32_t rgb, const Deadline &deadline);
                 void  markDamage(const Rect &rect);
+                void               markTiles(uint32_t *bits, const Rect &rect) const;
+                bool               anyTiles(const uint32_t *bits, const Rect &rect) const;
+                void               recordCopy(const Copy &c); // a copy's destination: told, or damage
                 Error copyForward(const uint32_t *tiles, const Deadline &deadline);
                 Error runChain(const Deadline &deadline); // the job written run, waited for; fill lines free
                 struct FillLine;                          // below
@@ -466,6 +472,11 @@ class Surface {
                 uint32_t             *_forward = nullptr; // the last present's, still to copy into the other buffer
                 uint32_t             *_select = nullptr;  // prepareFor()'s tiles to copy now
                 uint32_t             *_pointerDamage = nullptr; // the pointer's tiles drawn since then
+                uint32_t             *_copyDamage = nullptr;    // the frame's copies' destinations
+                // The frame's copies, told at present (vnc.md §24 C2); past them, copies are damage.
+                static constexpr size_t MaxFrameCopies = 8;
+                Copy                    _frameCopies[MaxFrameCopies];
+                uint8_t                 _frameCopyCount = 0;
                 uint16_t              _tileWords = 0;     // words a row of tiles
                 uint16_t              _tileRows = 0;
                 bool                  _forwardPending = false;

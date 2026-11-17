@@ -41,11 +41,16 @@ namespace {
                         const Surface      *source = nullptr; // the surface its tiles are of
                         ChangeTiles         tiles;
                         ChangeTiles         pointerTiles; // drawn as the pointer's (vnc.md §22)
+                        // Copies its next capture gives first (vnc.md §24 C3), in order.
+                        ScreenWatch::Copy   copies[ScreenWatch::MaxCopies];
+                        uint8_t             copyCount = 0;
+                        bool                lastNoPointer = false; // its last capture left the pointer out
                         char                owner[OwnerBytes] = {};
         };
 
         // In PSRAM: about 1.1 KB of tiles each, made with the first watcher, kept.
         constinit Watcher              *watchers = nullptr;
+        constinit ChangeTiles          *scratch = nullptr; // takeCopies()'s, after the watchers
         constinit std::atomic<Mutex *>  lockPtr{nullptr};
         constinit std::atomic<size_t>   active{0};
         constinit Display              *display = nullptr; // display 0, once a watcher was added
@@ -158,6 +163,7 @@ namespace {
                 if (!w.tiles.resize(s.width(), lines)) w.tiles = ChangeTiles(); // too big: nothing kept
                 if (!w.pointerTiles.resize(s.width(), lines)) w.pointerTiles = ChangeTiles();
                 w.pointerTiles.clear(); // the tiles' all marked are enough
+                w.copyCount = 0;
                 return;
         }
 
@@ -185,9 +191,48 @@ namespace {
                 return;
         }
 
+        // A frame's copies to watcher @p w, before its damage (drawn after them): each kept, its
+        // covered destination tiles cleared; where what it has at the source isn't what was copied
+        // (a change waiting there; with the pointer in its picture, the pointer's drawing), that
+        // part's landing place is a change, sent after the copy. No room: the destination is a
+        // change. Lock held.
+        void takeCopies(Watcher &w, const Surface::Copy *copies, size_t count, const uint32_t *pointerTiles,
+                        uint16_t rowWords, uint16_t rows) {
+                constexpr uint32_t TW = ChangeTiles::TileWidth, TH = ChangeTiles::TileHeight;
+                for (size_t k = 0; k < count; ++k) {
+                        const Surface::Copy &c = copies[k];
+                        const Rect           to{c.toX, c.toY, c.from.width, c.from.height};
+                        if (w.copyCount == ScreenWatch::MaxCopies) {
+                                w.tiles.mark(to);
+                                continue;
+                        }
+                        // What it has wrong now (before this copy's marks).
+                        ChangeTiles &stale = *scratch;
+                        stale = w.tiles;
+                        if (!w.lastNoPointer) {
+                                stale.orIn(w.pointerTiles);
+                                stale.orIn(pointerTiles, rowWords, rows);
+                        }
+                        w.copies[w.copyCount++] = ScreenWatch::Copy{c.from, c.toX, c.toY};
+                        w.tiles.clearCovered(to);
+                        w.pointerTiles.clearCovered(to);
+                        const int dx = int(c.toX) - int(c.from.x), dy = int(c.toY) - int(c.from.y);
+                        for (uint32_t y = c.from.y / TH * TH; y < c.from.bottom(); y += TH) {
+                                for (uint32_t x = c.from.x / TW * TW; x < c.from.right(); x += TW) {
+                                        const Rect tile{uint16_t(x), uint16_t(y), uint16_t(TW), uint16_t(TH)};
+                                        if (!stale.touches(tile)) continue;
+                                        const Rect part = tile.intersected(c.from);
+                                        w.tiles.mark(Rect{uint16_t(int(part.x) + dx), uint16_t(int(part.y) + dy),
+                                                          part.width, part.height});
+                                }
+                        }
+                }
+                return;
+        }
+
         // Every surface's present: the scanned one's changes to each watcher.
         void presented(void *, const Surface &surface, const uint32_t *tiles, const uint32_t *pointerTiles,
-                       uint16_t rowWords, uint16_t rows) {
+                       const Surface::Copy *copies, size_t copyCount, uint16_t rowWords, uint16_t rows) {
                 if (active.load(std::memory_order_acquire) == 0 || display == nullptr) return;
                 const bool desktop = &surface == &display->surface();
                 const bool isScanned = &surface == scanned();
@@ -208,16 +253,18 @@ namespace {
                                 if (tiles == nullptr) {
                                         w.tiles.markAll();
                                 } else if (lines == surface.height()) {
+                                        takeCopies(w, copies, copyCount, pointerTiles, rowWords, rows);
                                         w.tiles.orIn(tiles, rowWords, rows);
                                         w.pointerTiles.orIn(pointerTiles, rowWords, rows);
                                 } else {
+                                        if (copyCount > 0) w.tiles.markAll(); // line mode: no copies
                                         markMapped(w.tiles, tiles, rowWords, rows, surface.height(), lines);
                                         if (pointerTiles != nullptr)
                                                 markMapped(w.pointerTiles, pointerTiles, rowWords, rows,
                                                            surface.height(), lines);
                                 }
                         }
-                        if (!w.notified && !(w.tiles.isEmpty() && w.pointerTiles.isEmpty())) {
+                        if (!w.notified && !(w.tiles.isEmpty() && w.pointerTiles.isEmpty() && w.copyCount == 0)) {
                                 w.notified = true;
                                 w.notify(w.arg);
                         }
@@ -325,7 +372,21 @@ namespace {
                 // The pointer's own drawing: no change in a picture without it (where it went is said).
                 if (!c.noPointer) w.tiles.orIn(w.pointerTiles);
                 w.pointerTiles.clear();
-                if (c.all) w.tiles.markAll();
+                w.lastNoPointer = c.noPointer;
+                // The copies first, all of them; else their destinations as changes.
+                c.copyCount = 0;
+                if (c.all) {
+                        w.copyCount = 0;
+                        w.tiles.markAll();
+                } else if (w.copyCount > 0 && w.copyCount <= c.copies.size()) {
+                        for (size_t k = 0; k < w.copyCount; ++k) c.copies[k] = w.copies[k];
+                        c.copyCount = w.copyCount;
+                } else {
+                        for (size_t k = 0; k < w.copyCount; ++k)
+                                w.tiles.mark(Rect{w.copies[k].toX, w.copies[k].toY, w.copies[k].from.width,
+                                                  w.copies[k].from.height});
+                }
+                w.copyCount = 0;
                 c.count = w.tiles.takeRects(c.rects, uint32_t(c.capacity / bpp));
                 c.more = !w.tiles.isEmpty();
                 if (!c.more) w.notified = false; // the next change tells it again
@@ -431,9 +492,10 @@ Result<uint8_t> ScreenWatch::add(Notify notify, void *arg, StringView owner, uin
         if (derr.isError() || !d->isRunning()) return makeError<uint8_t>(Error::NotReady);
         Mutex::Locker locker(lock(), WaitForever);
         if (watchers == nullptr) {
-                void *mem = Memory::alloc(MemSpace::Psram, MaxWatchers * sizeof(Watcher));
+                void *mem = Memory::alloc(MemSpace::Psram, MaxWatchers * sizeof(Watcher) + sizeof(ChangeTiles));
                 if (mem == nullptr) return makeError<uint8_t>(Error::NoMem);
                 watchers = ::new (mem) Watcher[MaxWatchers];
+                scratch = ::new (static_cast<uint8_t *>(mem) + MaxWatchers * sizeof(Watcher)) ChangeTiles();
         }
         display = d;
         for (size_t i = 0; i < MaxWatchers; ++i) {
@@ -582,6 +644,7 @@ void ScreenWatch::setActivity(Activity activity, void *arg) {
 
 Error ScreenWatch::capture(uint8_t id, Capture &c, unsigned int timeoutMs) {
         c.count = 0;
+        c.copyCount = 0;
         c.bytes = 0;
         c.more = false;
         c.pointerX = c.pointerY = -1;

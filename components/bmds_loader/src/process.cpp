@@ -1173,8 +1173,16 @@ int32_t Process::sysconfFind(const char *key) {
 int32_t Process::sysconfGet(int32_t id, uint32_t field, char *out, uint32_t size) {
         SysConf::Id   which;
         SysConf::Info info;
-        if (field > BMDS_SYSCONF_FIELD_CHOICES) return -BMDS_EINVAL;
+        if (field > BMDS_SYSCONF_FIELD_SECRET) return -BMDS_EINVAL;
         if (!idArg(id, which)) return -BMDS_ENOENT;
+        if (field == BMDS_SYSCONF_FIELD_SECRET) {
+                String value(MemSpace::Psram);
+                if (const Error err = SysConf::getSecret(SysConf::keyOf(which), value); err.isError())
+                        return errnoFor(err);
+                const int32_t r = copyText(value.view(), out, size);
+                if (!value.isEmpty()) std::memset(const_cast<char *>(value.cStr()), 0, value.size());
+                return r;
+        }
         if (const Error err = SysConf::info(which, info); err.isError()) return errnoFor(err);
         switch (field) {
                 case BMDS_SYSCONF_FIELD_VALUE: return copyText(info.value.view(), out, size);

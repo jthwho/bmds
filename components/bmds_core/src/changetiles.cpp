@@ -74,6 +74,32 @@ void ChangeTiles::orIn(const uint32_t *tiles, uint16_t rowWords, uint16_t rows) 
         return;
 }
 
+bool ChangeTiles::touches(const Rect &rect) const {
+        if (rect.isEmpty() || rect.x >= _width || rect.y >= _height) return false;
+        const uint32_t right = rect.right() < _width ? rect.right() : _width;
+        const uint32_t bottom = rect.bottom() < _height ? rect.bottom() : _height;
+        const uint32_t c0 = rect.x / TileWidth, c1 = (right - 1) / TileWidth;
+        const uint32_t r0 = rect.y / TileHeight, r1 = (bottom - 1) / TileHeight;
+        for (uint32_t r = r0; r <= r1; ++r)
+                for (uint32_t c = c0; c <= c1; ++c)
+                        if (isSet(uint16_t(c), uint16_t(r))) return true;
+        return false;
+}
+
+void ChangeTiles::clearCovered(const Rect &rect) {
+        if (rect.isEmpty() || rect.x >= _width || rect.y >= _height) return;
+        const uint32_t right = rect.right() < _width ? rect.right() : _width;
+        const uint32_t bottom = rect.bottom() < _height ? rect.bottom() : _height;
+        // The first tile starting inside, to the last ending inside (or at the picture's edge).
+        const uint32_t c0 = (uint32_t(rect.x) + TileWidth - 1) / TileWidth;
+        const uint32_t r0 = (uint32_t(rect.y) + TileHeight - 1) / TileHeight;
+        const uint32_t c1 = right == _width ? _columns : right / TileWidth; // exclusive
+        const uint32_t r1 = bottom == _height ? _rows : bottom / TileHeight;
+        for (uint32_t r = r0; r < r1; ++r)
+                for (uint32_t c = c0; c < c1; ++c) clearTile(uint16_t(c), uint16_t(r));
+        return;
+}
+
 Rect ChangeTiles::pixels(uint16_t c0, uint16_t c1, uint16_t r0, uint16_t r1) const {
         const uint32_t x = uint32_t(c0) * TileWidth, y = uint32_t(r0) * TileHeight;
         const uint32_t right = uint32_t(c1) * TileWidth < _width ? uint32_t(c1) * TileWidth : _width;

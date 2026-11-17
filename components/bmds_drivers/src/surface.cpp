@@ -74,7 +74,7 @@ Error Surface::start(uint16_t width, uint16_t height, Buffering buffering, Memor
                 _tileWords = static_cast<uint16_t>((columns + 31) / 32);
                 _tileRows = static_cast<uint16_t>((height + TileHeight - 1) / TileHeight);
                 const size_t words = size_t(_tileWords) * _tileRows;
-                _damage = static_cast<uint32_t *>(Memory::alloc(MemSpace::Internal, words * 4 * sizeof(uint32_t)));
+                _damage = static_cast<uint32_t *>(Memory::alloc(MemSpace::Internal, words * 5 * sizeof(uint32_t)));
                 if (_damage == nullptr) {
                         stop();
                         return Error::NoMem;
@@ -82,7 +82,9 @@ Error Surface::start(uint16_t width, uint16_t height, Buffering buffering, Memor
                 _forward = _damage + words;
                 _select = _forward + words;
                 _pointerDamage = _select + words;
-                std::memset(_damage, 0, words * 4 * sizeof(uint32_t));
+                _copyDamage = _pointerDamage + words;
+                std::memset(_damage, 0, words * 5 * sizeof(uint32_t));
+                _frameCopyCount = 0;
         }
         const size_t lineBytes = (stride() + LineAlign - 1) / LineAlign * LineAlign;
         _line = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, lineBytes, LineAlign));
@@ -112,6 +114,8 @@ Error Surface::start(uint16_t width, uint16_t height, Buffering buffering, Memor
         if (_damage != nullptr) {
                 std::memset(_damage, 0, size_t(_tileWords) * _tileRows * sizeof(uint32_t));
                 std::memset(_pointerDamage, 0, size_t(_tileWords) * _tileRows * sizeof(uint32_t));
+                std::memset(_copyDamage, 0, size_t(_tileWords) * _tileRows * sizeof(uint32_t));
+                _frameCopyCount = 0;
         }
         if (err.isError()) stop();
         return err;
@@ -137,6 +141,8 @@ void Surface::stop() {
         Memory::free(_damage);
         _damage = nullptr;
         _pointerDamage = nullptr;
+        _copyDamage = nullptr;
+        _frameCopyCount = 0;
         _forward = nullptr;
         _select = nullptr;
         _width = 0;
@@ -257,12 +263,71 @@ Error Surface::prepareFor(const Deadline &deadline, Span<const Rect> writes, Spa
 
 // The tiles @p rect touches, marked drawn.
 void Surface::markDamage(const Rect &rect) {
+        markTiles(_pointerDrawing ? _pointerDamage : _damage, rect);
+        return;
+}
+
+// The tiles @p rect touches, set in @p bits (a bitmap of the surface's tiles).
+void Surface::markTiles(uint32_t *bits, const Rect &rect) const {
+        if (rect.isEmpty()) return;
         const uint32_t c0 = rect.x / TileWidth, c1 = (rect.right() - 1) / TileWidth;
         const uint32_t r0 = rect.y / TileHeight, r1 = (rect.bottom() - 1) / TileHeight;
         for (uint32_t r = r0; r <= r1; ++r) {
-                uint32_t *row = (_pointerDrawing ? _pointerDamage : _damage) + size_t(r) * _tileWords;
+                uint32_t *row = bits + size_t(r) * _tileWords;
                 for (uint32_t c = c0; c <= c1; ++c) row[c / 32] |= 1u << (c % 32);
         }
+        return;
+}
+
+// True if a tile @p rect touches is set in @p bits.
+bool Surface::anyTiles(const uint32_t *bits, const Rect &rect) const {
+        if (rect.isEmpty()) return false;
+        const uint32_t c0 = rect.x / TileWidth, c1 = (rect.right() - 1) / TileWidth;
+        const uint32_t r0 = rect.y / TileHeight, r1 = (rect.bottom() - 1) / TileHeight;
+        for (uint32_t r = r0; r <= r1; ++r) {
+                const uint32_t *row = bits + size_t(r) * _tileWords;
+                for (uint32_t c = c0; c <= c1; ++c)
+                        if ((row[c / 32] >> (c % 32)) & 1u) return true;
+        }
+        return false;
+}
+
+// A copy's destination (double-buffered): told to the present hook as a copy (vnc.md §24 C2), a
+// band of the one before merged into it (a move's bands read nothing the earlier ones wrote, so
+// they are one copy read at once); or, its source drawn this frame (not the last present's
+// pixels) or no room, plain damage.
+void Surface::recordCopy(const Copy &c) {
+        const Rect to{c.toX, c.toY, c.from.width, c.from.height};
+        // (The pointer's drawing isn't counted: what it covered is put back, the picture without
+        // it; a watcher whose picture has the pointer looks for itself.)
+        if (anyTiles(_damage, c.from)) {
+                markTiles(_damage, to);
+                return;
+        }
+        if (_frameCopyCount > 0) {
+                Copy      &l = _frameCopies[_frameCopyCount - 1];
+                const Rect lt{l.toX, l.toY, l.from.width, l.from.height};
+                const int  dx = int(c.toX) - int(c.from.x), dy = int(c.toY) - int(c.from.y);
+                const bool sameMove =
+                        int(l.toX) - int(l.from.x) == dx && int(l.toY) - int(l.from.y) == dy && !c.from.intersects(lt);
+                const bool column = l.from.x == c.from.x && l.from.width == c.from.width &&
+                                    (c.from.bottom() == l.from.y || l.from.bottom() == c.from.y);
+                const bool row = l.from.y == c.from.y && l.from.height == c.from.height &&
+                                 (c.from.right() == l.from.x || l.from.right() == c.from.x);
+                if (sameMove && (column || row)) {
+                        l.from = l.from.united(c.from);
+                        l.toX = uint16_t(int(l.from.x) + dx);
+                        l.toY = uint16_t(int(l.from.y) + dy);
+                        markTiles(_copyDamage, to);
+                        return;
+                }
+        }
+        if (_frameCopyCount == MaxFrameCopies) {
+                markTiles(_damage, to);
+                return;
+        }
+        _frameCopies[_frameCopyCount++] = c;
+        markTiles(_copyDamage, to);
         return;
 }
 
@@ -1022,7 +1087,7 @@ Error Surface::copy(Span<const Copy> copies, unsigned int timeoutMs) {
                         _chain.clear();
                         return err;
                 }
-                if (_buffering == Buffering::Double) markDamage(Rect{c.toX, c.toY, c.from.width, c.from.height});
+                if (_buffering == Buffering::Double) recordCopy(c);
         }
         return runChain(deadline);
 }
@@ -1037,7 +1102,7 @@ Result<uint32_t> Surface::present(unsigned int timeoutMs) {
                 }
                 const PresentHook hook = presentHook.load(std::memory_order_acquire);
                 if (hook != nullptr)
-                        hook(presentHookArg.load(std::memory_order_acquire), *this, nullptr, nullptr, 0, 0);
+                        hook(presentHookArg.load(std::memory_order_acquire), *this, nullptr, nullptr, nullptr, 0, 0, 0);
                 _shown.store(++_presents, std::memory_order_release);
                 return makeResult(_presents);
         }
@@ -1048,12 +1113,14 @@ Result<uint32_t> Surface::present(unsigned int timeoutMs) {
         const size_t      words = size_t(_tileWords) * _tileRows;
         const PresentHook hook = presentHook.load(std::memory_order_acquire);
         if (hook != nullptr)
-                hook(presentHookArg.load(std::memory_order_acquire), *this, _damage, _pointerDamage, _tileWords,
-                     _tileRows);
-        // The other buffer gets the pointer's tiles too.
-        for (size_t i = 0; i < words; ++i) _forward[i] = _damage[i] | _pointerDamage[i];
+                hook(presentHookArg.load(std::memory_order_acquire), *this, _damage, _pointerDamage, _frameCopies,
+                     _frameCopyCount, _tileWords, _tileRows);
+        // The other buffer gets the pointer's tiles and the copies' too.
+        for (size_t i = 0; i < words; ++i) _forward[i] = _damage[i] | _pointerDamage[i] | _copyDamage[i];
         std::memset(_damage, 0, words * sizeof(uint32_t));
         std::memset(_pointerDamage, 0, words * sizeof(uint32_t));
+        std::memset(_copyDamage, 0, words * sizeof(uint32_t));
+        _frameCopyCount = 0;
         _forwardPending = true;
         ++_presents;
         ++_stats.presents;

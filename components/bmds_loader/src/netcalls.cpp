@@ -387,14 +387,18 @@ namespace {
         int32_t tlsStart(Socket &s, const bmds_tls_config_t *in) {
                 bmds_tls_config_t c;
                 if (const int32_t r = bmds::detail::copyIn(in, c); r < 0) return r;
-                if ((c.flags & ~(BMDS_TLS_NO_VERIFY | BMDS_TLS_SERVER | BMDS_TLS_CLIENT_CERT)) != 0)
+                if ((c.flags & ~(BMDS_TLS_NO_VERIFY | BMDS_TLS_SERVER | BMDS_TLS_CLIENT_CERT |
+                                 BMDS_TLS_CLIENT_CERT_OPTIONAL)) != 0)
                         return -BMDS_EINVAL;
                 if (s.type() != Socket::Type::Stream) return -BMDS_ENOTSUP;
                 const bool         server = (c.flags & BMDS_TLS_SERVER) != 0;
                 TlsSession::Config config;
-                config.flags = ((c.flags & BMDS_TLS_NO_VERIFY) != 0 ? uint32_t(TlsSession::NoVerify) : 0u) |
-                               (server ? uint32_t(TlsSession::Server) : 0u) |
-                               ((c.flags & BMDS_TLS_CLIENT_CERT) != 0 ? uint32_t(TlsSession::ClientCert) : 0u);
+                config.flags =
+                        ((c.flags & BMDS_TLS_NO_VERIFY) != 0 ? uint32_t(TlsSession::NoVerify) : 0u) |
+                        (server ? uint32_t(TlsSession::Server) : 0u) |
+                        ((c.flags & BMDS_TLS_CLIENT_CERT) != 0 ? uint32_t(TlsSession::ClientCert) : 0u) |
+                        ((c.flags & BMDS_TLS_CLIENT_CERT_OPTIONAL) != 0 ? uint32_t(TlsSession::ClientCertOptional)
+                                                                        : 0u);
                 // A server's name is its certificate's; what the program said is ignored.
                 if (!server)
                         if (const int32_t r = programString(c.server_name, MaxServerName, config.serverName); r < 0)

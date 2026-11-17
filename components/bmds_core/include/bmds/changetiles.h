@@ -66,6 +66,15 @@ class ChangeTiles {
                 /** @brief Marks the tiles @p rect touches (clipped to the picture). */
                 void mark(const Rect &rect);
 
+                /** @brief Returns true if a tile @p rect touches is marked. */
+                bool touches(const Rect &rect) const;
+
+                /**
+                 * @brief Clears the tiles @p rect covers whole (what of each is in the picture): a
+                 *        copy over them leaves nothing of what they held.
+                 */
+                void clearCovered(const Rect &rect);
+
                 /**
                  * @brief ORs in another bitmap of the same tiles: @p rows rows of @p rowWords words
                  *        each, bit c of row r (word c / 32) the tile at column c (a `Surface`'s).

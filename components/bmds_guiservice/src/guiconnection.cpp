@@ -192,6 +192,10 @@ Error GuiConnection::screenCapture(Stream &clientEnd, GuiOpener::ScreenCapture &
         c.buffer = capture.buffer;
         c.capacity = capture.capacity;
         c.rects = capture.rects;
+        ScreenWatch::Copy copies[ScreenWatch::MaxCopies];
+        c.copies = Span<ScreenWatch::Copy>(copies, capture.copies.size() < ScreenWatch::MaxCopies
+                                                           ? capture.copies.size()
+                                                           : ScreenWatch::MaxCopies);
         const Error err = ScreenWatch::capture(uint8_t(watch), c, CaptureTimeoutMs);
         if (err == Error::NotExist) return Error::PermissionDenied;
         capture.count = c.count;
@@ -201,6 +205,9 @@ Error GuiConnection::screenCapture(Stream &clientEnd, GuiOpener::ScreenCapture &
         capture.more = c.more;
         capture.pointerX = c.pointerX;
         capture.pointerY = c.pointerY;
+        for (size_t i = 0; i < c.copyCount; ++i)
+                capture.copies[i] = GuiOpener::ScreenCopy{copies[i].from, copies[i].toX, copies[i].toY};
+        capture.copyCount = c.copyCount;
         return err;
 }
 

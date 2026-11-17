@@ -257,10 +257,13 @@ Result<TlsSession *> TlsSession::create(Socket &socket, const Config &config, St
         why.clear();
         const bool noVerify = (config.flags & NoVerify) != 0;
         const bool server = (config.flags & Server) != 0;
-        const bool clientCert = (config.flags & ClientCert) != 0;
-        if ((config.flags & ~uint32_t(NoVerify | Server | ClientCert)) != 0 ||
-            (!server && config.serverName.isEmpty() && !noVerify) || (clientCert && !server) ||
-            (clientCert && !noVerify && config.ca.isEmpty()) || config.cert.isEmpty() != config.key.isEmpty())
+        const bool required = (config.flags & ClientCert) != 0;
+        const bool optional = (config.flags & ClientCertOptional) != 0;
+        const bool clientCert = required || optional;
+        if ((config.flags & ~uint32_t(NoVerify | Server | ClientCert | ClientCertOptional)) != 0 ||
+            (required && optional) || (!server && config.serverName.isEmpty() && !noVerify) ||
+            (clientCert && !server) || (clientCert && !noVerify && config.ca.isEmpty()) ||
+            config.cert.isEmpty() != config.key.isEmpty())
                 return Result<TlsSession *>(nullptr, Error::Invalid);
         void *block = Memory::alloc(MemSpace::Psram, sizeof(Impl));
         if (block == nullptr) return Result<TlsSession *>(nullptr, Error::NoMem);
@@ -329,11 +332,12 @@ Result<TlsSession *> TlsSession::create(Socket &socket, const Config &config, St
         int ret = mbedtls_ssl_config_defaults(&m->conf, server ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT,
                                               MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
         if (ret == 0 && server) {
-                // A client certificate asked for only with ClientCert; with NoVerify any is taken
-                // (required all the same: handshake() checks one came).
-                mbedtls_ssl_conf_authmode(&m->conf, !clientCert ? MBEDTLS_SSL_VERIFY_NONE
-                                                    : noVerify  ? MBEDTLS_SSL_VERIFY_OPTIONAL
-                                                                : MBEDTLS_SSL_VERIFY_REQUIRED);
+                // A client certificate asked for only with ClientCert(Optional); with NoVerify, or
+                // optional, mbedTLS takes any and handshake() checks (one came, if required; a given
+                // one verified, unless NoVerify).
+                mbedtls_ssl_conf_authmode(&m->conf, !clientCert            ? MBEDTLS_SSL_VERIFY_NONE
+                                                    : noVerify || optional ? MBEDTLS_SSL_VERIFY_OPTIONAL
+                                                                           : MBEDTLS_SSL_VERIFY_REQUIRED);
                 mbedtls_ssl_conf_rng(&m->conf, random, nullptr);
                 if (clientCert && !config.ca.isEmpty()) mbedtls_ssl_conf_ca_chain(&m->conf, &m->roots, nullptr);
                 mbedtls_ssl_conf_verify(&m->conf, verifyClient, &m->session._peer);
@@ -432,7 +436,9 @@ Error TlsSession::handshake(uint32_t flags) {
 
         const char    *name = !_name.isEmpty() ? _name.cStr() : server ? "the client" : "the server";
         const uint32_t flagsSeen = mbedtls_ssl_get_verify_result(&m.ssl);
-        _verify = flagsSeen == uint32_t(-1) || (server && (_flags & ClientCert) == 0) ? 0 : verifyBits(flagsSeen);
+        const bool     asked = (_flags & (ClientCert | ClientCertOptional)) != 0;
+        // A server's: only a certificate asked for and given is judged (none, optional: fine).
+        _verify = flagsSeen == uint32_t(-1) || (server && (!asked || !_peer.isKnown)) ? 0 : verifyBits(flagsSeen);
         if (ret == 0 && server && (_flags & ClientCert) != 0 && !_peer.isKnown) {
                 _why.clear();
                 (void)_why.appendf("%s: gave no certificate", name);

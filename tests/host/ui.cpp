@@ -148,6 +148,31 @@ TEST_CASE("Region: adding keeps it disjoint and exact") {
         }
 }
 
+TEST_CASE("Region: subtracting takes exactly the rectangle out") {
+        Random rnd{13};
+        for (int t = 0; t < 500; ++t) {
+                Region region;
+                Bitmap want;
+                for (int i = 0; i < 4; ++i) {
+                        const Rect r = rnd.rect(false);
+                        region.add(r);
+                        want.add(r);
+                }
+                const Rect cut = rnd.rect(false);
+                region.subtract(cut);
+                checkDisjoint(region);
+                bool ok = true;
+                for (int y = 0; y < Height; ++y) {
+                        for (int x = 0; x < Width; ++x) {
+                                bool covered = false;
+                                for (const Rect &r : region.rects()) covered |= inside(r, x, y);
+                                ok &= covered == (want.at(x, y) > 0 && !inside(cut, x, y));
+                        }
+                }
+                REQUIRE(ok);
+        }
+}
+
 TEST_CASE("Region: neighbors merge; overflow collapses to the bounds") {
         Region region;
         region.add(Rect{0, 0, 10, 16});

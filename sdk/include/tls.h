@@ -12,8 +12,7 @@
  * What differs from OpenBSD's:
  * - A server with no keypair set presents the board's own certificate (`tls cert` shows it); its
  *   key stays in the kernel. `tls_accept_fds()` needs one socket for both directions;
- *   `tls_accept_cbs()` and optional client certificates aren't offered (`verify_client` is
- *   required ones).
+ *   `tls_accept_cbs()` isn't offered.
  * - TLS 1.2 only: `tls_config_set_protocols()` without TLSv1.2 fails. The cipher suites are the
  *   kernel's (`tls_config_set_ciphers()` takes the usual names and changes nothing).
  * - `tls_connect_fds()` needs one socket for both directions; `tls_connect_cbs()` isn't offered.
@@ -90,6 +89,7 @@ void tls_config_insecure_noverifytime(struct tls_config *config);
 void tls_config_verify(struct tls_config *config);
 /** @brief A server's: a client certificate required, checked against the CA (or any, with noverifycert). */
 void tls_config_verify_client(struct tls_config *config);
+void tls_config_verify_client_optional(struct tls_config *config);
 
 /** @brief Reads all of @p file (for the `_mem` calls); free with `tls_unload_file()`. */
 uint8_t *tls_load_file(const char *file, size_t *len, char *password);
