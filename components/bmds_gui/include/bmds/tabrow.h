@@ -23,8 +23,7 @@ BMDS_NAMESPACE_BEGIN
  * Each tab is its text, its badge and its close button with `Pad` either side, on 4-pixel
  * columns, side by side from the row's start. A row too narrow scrolls (`bar()`): the tabs in a
  * view at its left, three buttons past it; the scroll is a column multiple, so text stays on
- * its columns. (`place()` and `at()` are the row before it scrolled, until `TabWidget` moves
- * to the rest.)
+ * its columns.
  *
  * @par Thread Safety
  * Stateless; reentrant.
@@ -57,7 +56,7 @@ namespace TabRow {
         /**
          * @brief Lays out a tab: its title (@p titleWidth wide) at `Pad`, then a badge whose text is
          *        @p badgeWidth wide (0: none), then a close button if @p closable, the width up to a
-         *        column (4 pixels). With neither, it is `place()`'s width.
+         *        column (4 pixels). With neither: its title and `Pad` either side.
          */
         Parts parts(uint16_t titleWidth, uint16_t badgeWidth, bool closable);
 
@@ -77,14 +76,20 @@ namespace TabRow {
         /** @brief Shares a row @p rowWidth wide by tabs @p content wide together. */
         Bar bar(uint32_t content, uint32_t rowWidth);
 
-        /** @brief Returns how far the row scrolls at the most (0 when it fits). */
-        uint32_t maxScroll(uint32_t content, const Bar &bar);
+        /**
+         * @brief Returns how far the row scrolls at the most (0 when it fits): the first tab's left
+         *        edge from which the rest fit. Every scroll these functions give is a tab's left
+         *        edge, so the view always starts with a whole tab (only its right end is cut).
+         */
+        uint32_t maxScroll(Span<const uint32_t> lefts, uint32_t content, const Bar &bar);
 
         /**
-         * @brief Returns @p scroll changed as little as shows a tab at @p left, @p width wide (its
-         *        left edge, if it is wider than the view), within `maxScroll()`.
+         * @brief Returns @p scroll changed as little as shows tab @p tab (of @p lefts), @p width
+         *        wide, whole (from its left edge, if it is wider than the view), within
+         *        `maxScroll()`.
          */
-        uint32_t scrollToShow(uint32_t scroll, uint32_t left, uint16_t width, uint32_t content, const Bar &bar);
+        uint32_t scrollToShow(uint32_t scroll, Span<const uint32_t> lefts, size_t tab, uint16_t width, uint32_t content,
+                              const Bar &bar);
 
         /**
          * @brief Returns @p scroll moved @p by tabs (the buttons, the wheel): to the next tab's left
@@ -113,17 +118,6 @@ namespace TabRow {
          */
         Hit hit(Span<const uint32_t> lefts, Span<const uint16_t> widths, Span<const uint16_t> closes, uint32_t scroll,
                 const Bar &bar, int x);
-
-        /**
-         * @brief Places tabs whose texts are @p textWidths wide from @p start:
-         *        their left edges into @p lefts and widths into @p widths (as
-         *        many as @p textWidths).
-         * @return Where the last one ends.
-         */
-        uint32_t place(Span<const uint16_t> textWidths, uint16_t start, Span<uint16_t> lefts, Span<uint16_t> widths);
-
-        /** @brief Returns the tab placed at @p x (`place()`'s), or -1. */
-        int at(Span<const uint16_t> lefts, Span<const uint16_t> widths, int x);
 
         /**
          * @brief Returns the tab @p by tabs from @p current of @p count, around

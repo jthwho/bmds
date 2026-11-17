@@ -1552,21 +1552,7 @@ TEST_CASE("ListText: items between separators, inserted, replaced, removed, move
         CHECK(L::move("a;b", ';', 0, 2, out) == Error::Invalid);
 }
 
-TEST_CASE("TabRow: tabs side by side on columns, found by x, stepped around the ends") {
-        const uint16_t texts[] = {64, 37, 0};
-        uint16_t       lefts[3], widths[3];
-        CHECK(bmds::TabRow::place(texts, 2, lefts, widths) == 2 + 80 + 56 + 16);
-        CHECK(lefts[0] == 2);
-        CHECK(widths[0] == 80);
-        CHECK(lefts[1] == 82);
-        CHECK(widths[1] == 56); // 37 + 16, up to a column
-        CHECK(lefts[2] == 138);
-        CHECK(widths[2] == 16);
-        CHECK(bmds::TabRow::at(lefts, widths, 1) == -1);
-        CHECK(bmds::TabRow::at(lefts, widths, 2) == 0);
-        CHECK(bmds::TabRow::at(lefts, widths, 81) == 0);
-        CHECK(bmds::TabRow::at(lefts, widths, 82) == 1);
-        CHECK(bmds::TabRow::at(lefts, widths, 154) == -1);
+TEST_CASE("TabRow: the keys step around the ends") {
         CHECK(bmds::TabRow::step(0, 3, 1) == 1);
         CHECK(bmds::TabRow::step(2, 3, 1) == 0);
         CHECK(bmds::TabRow::step(0, 3, -1) == 2);
@@ -1576,7 +1562,7 @@ TEST_CASE("TabRow: tabs side by side on columns, found by x, stepped around the 
 
 TEST_CASE("TabRow: a tab's badge and close button, on columns") {
         namespace R = bmds::TabRow;
-        // Neither: place()'s width.
+        // Neither: the title and Pad either side, up to a column (37 + 16 = 53).
         R::Parts p = R::parts(37, 0, false);
         CHECK(p.width == 56);
         CHECK(p.badge == 0);
@@ -1599,7 +1585,7 @@ TEST_CASE("TabRow: a tab's badge and close button, on columns") {
         CHECK(p.badge + p.badgeWidth <= p.close);
 }
 
-TEST_CASE("TabRow: a row too narrow scrolls a tab at a time, and shows the one asked for") {
+TEST_CASE("TabRow: a row too narrow scrolls a tab at a time, from a tab's edge, and shows the one asked for") {
         namespace R = bmds::TabRow;
         const uint16_t widths[] = {80, 56, 16, 96};
         uint32_t       lefts[4];
@@ -1614,8 +1600,8 @@ TEST_CASE("TabRow: a row too narrow scrolls a tab at a time, and shows the one a
         R::Bar wide = R::bar(content, 300);
         CHECK_FALSE(wide.buttons);
         CHECK(wide.view == 300);
-        CHECK(R::maxScroll(content, wide) == 0);
-        CHECK(R::scrollToShow(0, 152, 96, content, wide) == 0);
+        CHECK(R::maxScroll(lefts, content, wide) == 0);
+        CHECK(R::scrollToShow(0, lefts, 3, 96, content, wide) == 0);
         CHECK(R::scrollBy(0, lefts, content, wide, 1) == 0);
         R::Bar exact = R::bar(content, 248);
         CHECK_FALSE(exact.buttons);
@@ -1624,34 +1610,36 @@ TEST_CASE("TabRow: a row too narrow scrolls a tab at a time, and shows the one a
         R::Bar bar = R::bar(content, 150);
         CHECK(bar.buttons);
         CHECK(bar.view == 100);
-        CHECK(R::maxScroll(content, bar) == 148);
+        // The rest fit from 148 on: from the next tab's edge, 152 (a blank past the last tab).
+        CHECK(R::maxScroll(lefts, content, bar) == 152);
 
-        CHECK(R::scrollToShow(0, 152, 96, content, bar) == 148); // its right edge at the view's
-        CHECK(R::scrollToShow(0, 80, 56, content, bar) == 36);
-        CHECK(R::scrollToShow(148, 0, 80, content, bar) == 0); // its left edge at the view's
-        CHECK(R::scrollToShow(0, 0, 80, content, bar) == 0);   // already shown: unchanged
-        CHECK(R::scrollToShow(36, 80, 56, content, bar) == 36);
-        CHECK(R::scrollToShow(1000, 152, 96, content, bar) == 148); // past the end (a resize): back in
+        CHECK(R::scrollToShow(0, lefts, 3, 96, content, bar) == 152); // 148 would cut tab 2: tab 3's edge
+        CHECK(R::scrollToShow(0, lefts, 1, 56, content, bar) == 80);  // 36 would cut tab 0: tab 1's edge
+        CHECK(R::scrollToShow(152, lefts, 0, 80, content, bar) == 0); // its left edge at the view's
+        CHECK(R::scrollToShow(0, lefts, 0, 80, content, bar) == 0);   // already shown: unchanged
+        CHECK(R::scrollToShow(80, lefts, 1, 56, content, bar) == 80);
+        CHECK(R::scrollToShow(80, lefts, 2, 16, content, bar) == 80);    // 136-152 within 80-180
+        CHECK(R::scrollToShow(1000, lefts, 3, 96, content, bar) == 152); // past the end (a resize): back in
+        CHECK(R::scrollToShow(0, lefts, 9, 16, content, bar) == 0);      // no such tab: unchanged
 
         // Wider than the view: its left edge.
         R::Bar narrow = R::bar(content, 100);
         CHECK(narrow.view == 52);
-        CHECK(R::scrollToShow(0, 0, 80, content, narrow) == 0);
-        CHECK(R::scrollToShow(0, 152, 96, content, narrow) == 152);
+        CHECK(R::scrollToShow(0, lefts, 0, 80, content, narrow) == 0);
+        CHECK(R::scrollToShow(0, lefts, 3, 96, content, narrow) == 152);
 
-        // A tab at a time, the end where the last fits.
+        // A tab at a time, the end where the rest fit.
         CHECK(R::scrollBy(0, lefts, content, bar, 1) == 80);
         CHECK(R::scrollBy(80, lefts, content, bar, 1) == 136);
-        CHECK(R::scrollBy(136, lefts, content, bar, 1) == 148);
-        CHECK(R::scrollBy(148, lefts, content, bar, 1) == 148);
-        CHECK(R::scrollBy(148, lefts, content, bar, -1) == 136);
+        CHECK(R::scrollBy(136, lefts, content, bar, 1) == 152);
+        CHECK(R::scrollBy(152, lefts, content, bar, 1) == 152);
+        CHECK(R::scrollBy(152, lefts, content, bar, -1) == 136);
         CHECK(R::scrollBy(136, lefts, content, bar, -1) == 80);
         CHECK(R::scrollBy(80, lefts, content, bar, -1) == 0);
         CHECK(R::scrollBy(0, lefts, content, bar, -1) == 0);
-        CHECK(R::scrollBy(0, lefts, content, bar, 5) == 148);
-        CHECK(R::scrollBy(148, lefts, content, bar, -2) == 80);
-        CHECK(R::scrollBy(36, lefts, content, bar, -1) == 0); // between tabs: the one before
-        CHECK(R::scrollBy(500, lefts, content, bar, 0) == 148);
+        CHECK(R::scrollBy(0, lefts, content, bar, 5) == 152);
+        CHECK(R::scrollBy(152, lefts, content, bar, -2) == 80);
+        CHECK(R::scrollBy(500, lefts, content, bar, 0) == 152);
 }
 
 TEST_CASE("TabRow: a point on a tab, its close button, or the buttons") {
@@ -1696,7 +1684,7 @@ TEST_CASE("TabRow: a point on a tab, its close button, or the buttons") {
         CHECK(R::hit({}, {}, {}, 0, R::bar(0, 100), 10).kind == K::None);
 }
 
-TEST_CASE("TabRow: any row's scroll stays on columns and in range, and shows what it is asked to") {
+TEST_CASE("TabRow: any row's scroll is a tab's edge and in range, and shows what it is asked to") {
         namespace R = bmds::TabRow;
         uint32_t seed = 12345;
         auto     next = [&](uint32_t most) {
@@ -1715,13 +1703,22 @@ TEST_CASE("TabRow: any row's scroll stays on columns and in range, and shows wha
                 }
                 const uint32_t content = R::placeAll({widths, count}, {lefts, count});
                 const R::Bar   bar = R::bar(content, 1 + next(1400));
-                const uint32_t most = R::maxScroll(content, bar);
+                const uint32_t most = R::maxScroll({lefts, count}, content, bar);
                 CHECK(most % 4 == 0);
+                // A tab's left edge, so the view starts with a whole tab.
+                auto isEdge = [&](uint32_t at) {
+                        for (size_t i = 0; i < count; ++i)
+                                if (lefts[i] == at) return true;
+                        return false;
+                };
+                REQUIRE(isEdge(most));
+                // The rest fit from it (unless it is the last tab's, a tab wider than the view).
+                REQUIRE((most == 0 || content - most <= bar.view || most == lefts[count - 1]));
                 uint32_t scroll = 0;
                 for (int k = 0; k < 20; ++k) {
                         const size_t t = next(uint32_t(count));
-                        scroll = R::scrollToShow(scroll, lefts[t], widths[t], content, bar);
-                        REQUIRE(scroll % 4 == 0);
+                        scroll = R::scrollToShow(scroll, {lefts, count}, t, widths[t], content, bar);
+                        REQUIRE(isEdge(scroll));
                         REQUIRE(scroll <= most);
                         if (widths[t] <= bar.view) {
                                 // Wholly in view, and a point in its middle on it.
@@ -1733,7 +1730,7 @@ TEST_CASE("TabRow: any row's scroll stays on columns and in range, and shows wha
                                 REQUIRE(h.tab == int(t));
                         }
                         scroll = R::scrollBy(scroll, {lefts, count}, content, bar, int(next(5)) - 2);
-                        REQUIRE(scroll % 4 == 0);
+                        REQUIRE(isEdge(scroll));
                         REQUIRE(scroll <= most);
                 }
         }

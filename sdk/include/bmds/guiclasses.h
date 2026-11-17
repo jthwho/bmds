@@ -1431,6 +1431,47 @@ static inline int bmds_screen_share_pointer_shape(bmds_gui_t *gui, uint32_t id, 
         return bmds_gui_call_named(gui, id, "pointerShape", NULL, 0, result);
 }
 #define BMDS_GUI_SCREEN_SHARE_POINTER_CHANGED "pointerChanged" /**< ScreenShare's event (no values). */
+static inline int bmds_tabs_set_bar_visible(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "barVisible", bmds_gui_bool(value));
+}
+static inline int bmds_tabs_get_bar_visible(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "barVisible", out);
+}
+static inline int bmds_tab_page_set_badge(bmds_gui_t *gui, uint32_t id, const char *value) {
+        return bmds_gui_set_named(gui, id, "badge", bmds_gui_string(value));
+}
+static inline int bmds_tab_page_get_badge(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "badge", out);
+}
+static inline int bmds_tab_page_set_attention(bmds_gui_t *gui, uint32_t id, int32_t value) {
+        return bmds_gui_set_named(gui, id, "attention", bmds_gui_int(value));
+}
+static inline int bmds_tab_page_get_attention(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "attention", out);
+}
+static inline int bmds_tab_page_set_closable(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "closable", bmds_gui_bool(value));
+}
+static inline int bmds_tab_page_get_closable(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "closable", out);
+}
+static inline int bmds_tab_page_set_index(bmds_gui_t *gui, uint32_t id, int32_t value) {
+        return bmds_gui_set_named(gui, id, "index", bmds_gui_int(value));
+}
+static inline int bmds_tab_page_get_index(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "index", out);
+}
+#define BMDS_GUI_TAB_PAGE_CLOSE_REQUESTED "closeRequested" /**< TabPage's event (no values). */
+#define BMDS_GUI_TAB_PAGE_MENU_REQUESTED "menuRequested" /**< TabPage's event (Int, Int). */
+static inline int bmds_tree_view_set_badge(bmds_gui_t *gui, uint32_t id, const char *a0, const char *a1) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0), bmds_gui_string(a1)};
+        return bmds_gui_call_named(gui, id, "setBadge", args, 2, NULL);
+}
+static inline int bmds_tree_view_set_attention(bmds_gui_t *gui, uint32_t id, const char *a0, int32_t a1) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0), bmds_gui_int(a1)};
+        return bmds_gui_call_named(gui, id, "setAttention", args, 2, NULL);
+}
+#define BMDS_GUI_TREE_VIEW_MENU_REQUESTED "menuRequested" /**< TreeView's event (String, Int, Int). */
 
 #ifdef __cplusplus
 }

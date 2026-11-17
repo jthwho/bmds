@@ -14,23 +14,6 @@ BMDS_NAMESPACE_BEGIN
 
 namespace TabRow {
 
-        uint32_t place(Span<const uint16_t> textWidths, uint16_t start, Span<uint16_t> lefts, Span<uint16_t> widths) {
-                uint32_t x = start;
-                for (size_t i = 0; i < textWidths.size() && i < lefts.size() && i < widths.size(); ++i) {
-                        const uint32_t w = (uint32_t(textWidths[i]) + 2u * Pad + 3u) & ~3u;
-                        lefts[i] = x > UINT16_MAX ? UINT16_MAX : uint16_t(x);
-                        widths[i] = w > UINT16_MAX ? UINT16_MAX : uint16_t(w);
-                        x += w;
-                }
-                return x;
-        }
-
-        int at(Span<const uint16_t> lefts, Span<const uint16_t> widths, int x) {
-                for (size_t i = 0; i < lefts.size() && i < widths.size(); ++i)
-                        if (x >= int(lefts[i]) && x < int(lefts[i]) + int(widths[i])) return int(i);
-                return -1;
-        }
-
         Parts parts(uint16_t titleWidth, uint16_t badgeWidth, bool closable) {
                 Parts    p;
                 uint32_t x = uint32_t(Pad) + titleWidth;
@@ -68,22 +51,43 @@ namespace TabRow {
                 return b;
         }
 
-        uint32_t maxScroll(uint32_t content, const Bar &bar) {
-                return content > bar.view ? content - bar.view : 0;
+        namespace {
+
+                // The first of @p lefts at or past @p x (they rise), or the last one if none is.
+                uint32_t leftFrom(Span<const uint32_t> lefts, uint32_t x) {
+                        size_t lo = 0, hi = lefts.size();
+                        while (lo < hi) {
+                                const size_t mid = (lo + hi) / 2;
+                                if (lefts[mid] < x)
+                                        lo = mid + 1;
+                                else
+                                        hi = mid;
+                        }
+                        if (lo < lefts.size()) return lefts[lo];
+                        return lefts.size() > 0 ? lefts[lefts.size() - 1] : 0;
+                }
+
+        } // namespace
+
+        uint32_t maxScroll(Span<const uint32_t> lefts, uint32_t content, const Bar &bar) {
+                return content > bar.view ? leftFrom(lefts, content - bar.view) : 0;
         }
 
-        uint32_t scrollToShow(uint32_t scroll, uint32_t left, uint16_t width, uint32_t content, const Bar &bar) {
-                uint32_t s = scroll;
+        uint32_t scrollToShow(uint32_t scroll, Span<const uint32_t> lefts, size_t tab, uint16_t width, uint32_t content,
+                              const Bar &bar) {
+                if (tab >= lefts.size()) return scroll;
+                const uint32_t left = lefts[tab];
+                uint32_t       s = scroll;
                 if (left < scroll || width >= bar.view)
                         s = left;
                 else if (left + width > scroll + bar.view)
-                        s = left + width - bar.view;
-                const uint32_t most = maxScroll(content, bar);
+                        s = leftFrom(lefts, left + width - bar.view); // at most `left`: it fits from there
+                const uint32_t most = maxScroll(lefts, content, bar);
                 return s < most ? s : most;
         }
 
         uint32_t scrollBy(uint32_t scroll, Span<const uint32_t> lefts, uint32_t content, const Bar &bar, int by) {
-                const uint32_t most = maxScroll(content, bar);
+                const uint32_t most = maxScroll(lefts, content, bar);
                 uint32_t       s = scroll < most ? scroll : most;
                 for (; by > 0 && s < most; --by) {
                         uint32_t next = most;

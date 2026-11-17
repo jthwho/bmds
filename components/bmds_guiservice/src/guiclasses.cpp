@@ -1077,15 +1077,51 @@ namespace {
                         if (tabs(tabsObject)->page(i) == page) return int(i);
                 return -1;
         }
+        // The tabs keep their pages' ids (`entries`), to tell a page its tab's events.
         GuiStatus tabsAdopt(GuiObject &self, GuiObject &child) {
                 if (!isClassNamed(&child, "TabPage")) return BadMatch;
+                if (self.entries.append(child.id).isError()) return NoMem;
                 const Error err = tabs(self)->addTab(child.widget, StringView());
-                return err.isOk() ? Ok : (err == Error::Full ? BadAccess : NoMem);
+                if (err.isError()) self.entries.removeAt(self.entries.size() - 1);
+                // Past MaxTabs as out of memory is (tabs.md §2).
+                return err.isOk() ? Ok : (err == Error::Full || err == Error::NoMem) ? NoMem : BadAccess;
         }
         void tabsRelease(GuiObject &self, GuiObject &child) {
                 const int at = tabIndex(self, child.widget);
                 if (at >= 0) tabs(self)->removeTab(size_t(at));
+                for (size_t i = 0; i < self.entries.size(); ++i)
+                        if (self.entries[i] == child.id) {
+                                self.entries.removeAt(i);
+                                break;
+                        }
                 return;
+        }
+        GuiObject *tabsPage(GuiObject &self, size_t index) {
+                const Widget *page = tabs(self)->page(index);
+                for (size_t i = 0; i < self.entries.size(); ++i)
+                        if (GuiObject *o = self.connection->find(self.entries[i]); o != nullptr && o->widget == page)
+                                return o;
+                return nullptr;
+        }
+        void tabsCloseRequested(void *arg, TabWidget &, size_t index) {
+                if (GuiObject *page = tabsPage(*static_cast<GuiObject *>(arg), index); page != nullptr)
+                        emitNone(*page, "closeRequested");
+                return;
+        }
+        void tabsMenuRequested(void *arg, TabWidget &, size_t index, int x, int y) {
+                GuiObject *page = tabsPage(*static_cast<GuiObject *>(arg), index);
+                if (page == nullptr) return;
+                const Value v[] = {Value::integer(x), Value::integer(y)};
+                page->connection->emit(*page, "menuRequested", Args(v, 2));
+                return;
+        }
+        GuiStatus set_Tabs_barVisible(GuiObject &o, const Value &v) {
+                tabs(o)->setBarVisible(v.number != 0);
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_Tabs_barVisible(GuiObject &o) {
+                return Value::boolean(tabs(o)->isBarVisible());
         }
         GuiStatus set_Tabs_current(GuiObject &o, const Value &v) {
                 if (v.number < 0 || v.number >= int64_t(tabs(o)->count())) return BadValue;
@@ -1108,6 +1144,8 @@ namespace {
                         o.release = tabsRelease;
                         o.widget->setStretch(1);
                         tabs(o)->setChanged(tabsChanged, &o);
+                        tabs(o)->setCloseRequested(tabsCloseRequested, &o);
+                        tabs(o)->setMenuRequested(tabsMenuRequested, &o);
                 }
                 return s;
         }
@@ -1123,6 +1161,63 @@ namespace {
         }
         Value get_TabPage_title(GuiObject &o) {
                 return Value::string(o.text.view());
+        }
+        // A page's tabs and its index in them (-1: none).
+        GuiObject *pageTabs(GuiObject &o, int &at) {
+                GuiObject *owner = o.connection->find(o.parent);
+                at = owner != nullptr ? tabIndex(*owner, o.widget) : -1;
+                return at >= 0 ? owner : nullptr;
+        }
+        GuiStatus set_TabPage_badge(GuiObject &o, const Value &v) {
+                int        at = -1;
+                GuiObject *owner = pageTabs(o, at);
+                if (owner == nullptr) return BadMatch;
+                tabs(*owner)->setBadge(size_t(at), v.text);
+                return Ok;
+        }
+        Value get_TabPage_badge(GuiObject &o) {
+                int        at = -1;
+                GuiObject *owner = pageTabs(o, at);
+                return Value::string(owner != nullptr ? tabs(*owner)->badge(size_t(at)) : StringView());
+        }
+        GuiStatus set_TabPage_attention(GuiObject &o, const Value &v) {
+                int        at = -1;
+                GuiObject *owner = pageTabs(o, at);
+                if (owner == nullptr) return BadMatch;
+                if (v.number < 0 || v.number > TabWidget::Alert) return BadValue;
+                tabs(*owner)->setAttention(size_t(at), uint8_t(v.number));
+                return Ok;
+        }
+        Value get_TabPage_attention(GuiObject &o) {
+                int        at = -1;
+                GuiObject *owner = pageTabs(o, at);
+                return Value::integer(owner != nullptr ? tabs(*owner)->attention(size_t(at)) : 0);
+        }
+        GuiStatus set_TabPage_closable(GuiObject &o, const Value &v) {
+                int        at = -1;
+                GuiObject *owner = pageTabs(o, at);
+                if (owner == nullptr) return BadMatch;
+                tabs(*owner)->setClosable(size_t(at), v.number != 0);
+                return Ok;
+        }
+        Value get_TabPage_closable(GuiObject &o) {
+                int        at = -1;
+                GuiObject *owner = pageTabs(o, at);
+                return Value::boolean(owner != nullptr && tabs(*owner)->isClosable(size_t(at)));
+        }
+        GuiStatus set_TabPage_index(GuiObject &o, const Value &v) {
+                int        at = -1;
+                GuiObject *owner = pageTabs(o, at);
+                if (owner == nullptr) return BadMatch;
+                if (v.number < 0 || v.number >= int64_t(tabs(*owner)->count())) return BadValue;
+                tabs(*owner)->moveTab(size_t(at), size_t(v.number));
+                o.connection->touched(o.owner);
+                return Ok;
+        }
+        Value get_TabPage_index(GuiObject &o) {
+                int at = -1;
+                (void)pageTabs(o, at);
+                return Value::integer(at);
         }
         GuiStatus create_TabPage(GuiObject &o, GuiObject *parent) {
                 if (!isClassNamed(parent, "Tabs")) return BadMatch;
@@ -1498,6 +1593,8 @@ namespace {
                 String path(MemSpace::Psram);
                 if (view.current() >= 0 && tree(o)->rows().pathOf(size_t(view.current()), path).isError()) return;
                 if (path.view() == o.path.view()) return;
+                // The user went to it: its attention seen (as a tab's).
+                (void)tree(o)->setAttention(path.view(), 0);
                 (void)o.path.assign(path.view());
                 const Value v = Value::string(path.view());
                 o.connection->emit(o, "currentChanged", Args(&v, 1));
@@ -1556,9 +1653,32 @@ namespace {
         GuiStatus call_TreeView_clear(GuiObject &o, Args, Value &) {
                 o.quiet = true;
                 tree(o)->clear();
+                tree(o)->clearMarks();
                 o.quiet = false;
                 o.path.clear();
                 return Ok;
+        }
+        GuiStatus call_TreeView_setBadge(GuiObject &o, Args args, Value &) {
+                const Error err = tree(o)->setBadge(args[0].text, args[1].text);
+                return err.isOk() ? Ok : err == Error::NoMem ? NoMem : BadValue;
+        }
+        GuiStatus call_TreeView_setAttention(GuiObject &o, Args args, Value &) {
+                if (args[1].number < 0 || args[1].number > 2) return BadValue;
+                const Error err = tree(o)->setAttention(args[0].text, uint8_t(args[1].number));
+                return err.isOk() ? Ok : err == Error::NoMem ? NoMem : BadValue;
+        }
+        // A right click on a row (or the Menu key): its path, and where in the window's client area.
+        void treeMenuAsked(void *arg, ItemView &, int row, uint16_t screenX, uint16_t screenY) {
+                auto  &o = *static_cast<GuiObject *>(arg);
+                String path(MemSpace::Psram);
+                if (row >= 0 && tree(o)->rows().pathOf(size_t(row), path).isError()) return;
+                GuiWindow *w = o.widget->window();
+                if (w == nullptr) return;
+                const Rect  s = w->screenRect();
+                const Value v[] = {Value::string(path.view()), Value::integer(int(screenX) - int(s.x)),
+                                   Value::integer(int(screenY) - int(s.y))};
+                o.connection->emit(o, "menuRequested", Args(v, 3));
+                return;
         }
         GuiStatus create_TreeView(GuiObject &o, GuiObject *parent) {
                 const GuiStatus s = makeWidget<TreeView>(o, parent);
@@ -1570,6 +1690,7 @@ namespace {
                 t->setExpanding(treeExpanding, &o);
                 t->setActivated(treeActivated, &o);
                 t->setChanged(treeChanged, &o);
+                t->setMenuAsked(treeMenuAsked, &o);
                 return Ok;
         }
 

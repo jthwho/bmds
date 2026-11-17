@@ -9,6 +9,7 @@
  */
 
 #include <cstdio>
+#include <cstring>
 #include <bmds/bitmapfont.h>
 #include <bmds/guiwindow.h>
 #include <bmds/treeview.h>
@@ -77,6 +78,59 @@ Error TreeView::setPathIcon(StringView path, const Icon *icon) {
 
 void TreeView::clearPathIcons() {
         for (PathIcon &e : _pathIcons) e.icon = nullptr;
+        update();
+        return;
+}
+
+Error TreeView::mark(StringView path, const StringView *badge, int attention) {
+        if (path.size() > MaxMarkPath) return Error::Invalid;
+        size_t at = 0;
+        while (at < _marks.size() && StringView(_marks[at].path) != path) ++at;
+        if (at == _marks.size()) {
+                if ((badge == nullptr || badge->isEmpty()) && attention <= 0) return Error::Ok; // nothing to mark
+                Mark m;
+                std::memcpy(m.path, path.data(), path.size());
+                const Error err = _marks.append(m);
+                if (err.isError()) return err;
+        }
+        Mark &m = _marks[at];
+        bool  changed = false;
+        if (badge != nullptr) {
+                size_t n = badge->size() < MaxBadge ? badge->size() : MaxBadge;
+                while (n > 0 && n < badge->size() && (uint8_t((*badge)[n]) & 0xc0) == 0x80) --n;
+                if (StringView(m.badge) != badge->left(n)) {
+                        std::memcpy(m.badge, badge->data(), n);
+                        m.badge[n] = '\0';
+                        changed = true;
+                }
+        }
+        if (attention >= 0) {
+                const uint8_t level = attention > 2 ? 2 : uint8_t(attention);
+                changed = changed || m.attention != level;
+                m.attention = level;
+        }
+        if (m.badge[0] == '\0' && m.attention == 0) _marks.removeAt(at);
+        if (changed) update();
+        return Error::Ok;
+}
+
+Error TreeView::setBadge(StringView path, StringView badge) {
+        return mark(path, &badge, -1);
+}
+
+Error TreeView::setAttention(StringView path, uint8_t level) {
+        return mark(path, nullptr, level);
+}
+
+uint8_t TreeView::attention(StringView path) const {
+        for (size_t i = 0; i < _marks.size(); ++i)
+                if (StringView(_marks[i].path) == path) return _marks[i].attention;
+        return 0;
+}
+
+void TreeView::clearMarks() {
+        if (_marks.size() == 0) return;
+        _marks.clear();
         update();
         return;
 }
@@ -277,6 +331,15 @@ void TreeView::paintRows(Painter &painter, const Rect &viewport) {
         int          pathRows[MaxPathIcons]; // setPathIcon()'s rows, found once
         for (size_t k = 0; k < MaxPathIcons; ++k)
                 pathRows[k] = _pathIcons[k].icon != nullptr ? _rows.find(StringView(_pathIcons[k].path)) : -1;
+        // The marks of the rows shown (the first VisibleMarks of them), found once.
+        constexpr size_t VisibleMarks = 128;
+        int16_t          marks[VisibleMarks];
+        for (int16_t &m : marks) m = -1;
+        for (size_t k = 0; k < _marks.size(); ++k) {
+                const int row = _rows.find(StringView(_marks[k].path));
+                if (row >= int(first) && size_t(row) <= last && size_t(row) - first < VisibleMarks)
+                        marks[size_t(row) - first] = int16_t(k);
+        }
         for (size_t row = first; row <= last && row < _rows.count(); ++row) {
                 const TreeRows::Row &r = _rows.row(row);
                 const int            y = int(viewport.y) + int(row) * rowHeight() - int(scrollY());
@@ -314,9 +377,31 @@ void TreeView::paintRows(Painter &painter, const Rect &viewport) {
                 const bool       current = int(row) == this->current();
                 const uint32_t   bg =
                         drawLabel(painter, viewport, tx - 2, y, tw + 4, selected, focus, current, background);
-                const uint32_t fg = p.color(selected && focus ? Role::HighlightText : Role::FaceText);
-                (void)painter.text(tx, y + (rowHeight() - textHeight()) / 2, name, font(), fg, bg,
-                                   uint16_t(tw > 0 ? tw : 1));
+                const Mark    *m = row - first < VisibleMarks && marks[row - first] >= 0
+                                           ? &_marks[size_t(marks[row - first])]
+                                           : nullptr;
+                const uint8_t  level = m != nullptr ? m->attention : 0;
+                const uint32_t fg = selected && focus ? p.color(Role::HighlightText)
+                                    : level == 2      ? p.color(Role::CloseBox)
+                                    : level == 1      ? p.color(Role::Highlight)
+                                                      : p.color(Role::FaceText);
+                const int      ty = y + (rowHeight() - textHeight()) / 2;
+                (void)painter.text(tx, ty, name, font(), fg, bg, uint16_t(tw > 0 ? tw : 1));
+                if (m != nullptr && m->badge[0] != '\0') {
+                        // The badge in a pill after the name, its text on a column (as a tab's).
+                        const StringView badge(m->badge);
+                        const int        bw = int(font().textWidth(badge));
+                        const int        bx = (tx + tw + 2 + 6 + 3) & ~3;
+                        const uint32_t   pill = level == 2   ? p.color(Role::CloseBox)
+                                                : level == 1 ? p.color(Role::Highlight)
+                                                             : p.color(Role::FaceShadow);
+                        const uint32_t   ink = level == 2 ? p.color(Role::CloseMark) : p.color(Role::HighlightText);
+                        const Rect       box = cut(bx - 4, y, bw + 8, rowHeight(), viewport);
+                        if (!box.isEmpty()) {
+                                (void)painter.fill(box, pill);
+                                (void)painter.text(bx, ty, badge, font(), ink, pill, uint16_t(bw > 0 ? bw : 1));
+                        }
+                }
                 if (!selected && focus && current) focusRect(painter, viewport, tx - 2, y, tw + 4);
         }
         return;

@@ -4103,3 +4103,21 @@ void Clipboard::onChanged(StringCallback@)
 # 2026-11-17 (devplan/vnc.md §20): the pointer for a viewer drawing it itself.
 string ScreenShare::pointerShape()
 void ScreenShare::onPointerChanged(Callback@)
+
+# 2026-11-17 (devplan/tabs.md): tabs for many pages; a tree's rows marked as tabs are.
+bool TabPage::get_closable() const
+bool Tabs::get_barVisible() const
+funcdef void StringIntIntCallback(const string&in, int, int)
+int TabPage::get_attention() const
+int TabPage::get_index() const
+string TabPage::get_badge() const
+void TabPage::onCloseRequested(Callback@)
+void TabPage::onMenuRequested(IntIntCallback@)
+void TabPage::set_attention(int)
+void TabPage::set_badge(const string&in)
+void TabPage::set_closable(bool)
+void TabPage::set_index(int)
+void Tabs::set_barVisible(bool)
+void TreeView::onMenuRequested(StringIntIntCallback@)
+void TreeView::setAttention(const string&in, int)
+void TreeView::setBadge(const string&in, const string&in)

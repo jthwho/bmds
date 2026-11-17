@@ -464,3 +464,20 @@ GUI_EVENT(Clipboard, changed, On, Atom)
  * gui_screen_capture's BMDS_CAPTURE_NO_POINTER leaves it out of the pixels */
 GUI_METHOD(ScreenShare, pointerShape, Bytes)
 GUI_EVENT(ScreenShare, pointerChanged, On)
+
+/* ---- 2026-11-17 (devplan/tabs.md): tabs for many pages. The row hidden (a stack the program
+ * chooses from); a tab's badge (a few characters in a pill), attention (0 none, 1 activity, 2 an
+ * alert; cleared when the user changes to it), close button and place in the row (written: moved
+ * there); closeRequested (its close button, a middle click: the program destroys the page or not)
+ * and menuRequested at (x, y) in the window's client area, as Menu.popup takes them. A tree's rows
+ * marked as tabs are, by path; menuRequested on a row */
+GUI_PROP(Tabs, barVisible, Bool, RW)
+GUI_PROP(TabPage, badge, String, RW)
+GUI_PROP(TabPage, attention, Int, RW)
+GUI_PROP(TabPage, closable, Bool, RW)
+GUI_PROP(TabPage, index, Int, RW)
+GUI_EVENT(TabPage, closeRequested, On)
+GUI_EVENT(TabPage, menuRequested, On, Int, Int)
+GUI_METHOD(TreeView, setBadge, None, String, String)
+GUI_METHOD(TreeView, setAttention, None, String, Int)
+GUI_EVENT(TreeView, menuRequested, On, String, Int, Int)

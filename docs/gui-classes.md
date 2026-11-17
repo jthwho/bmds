@@ -319,6 +319,7 @@ Made by `Create`; also has the entries of [Widget](#widget).
 | Property | Tag | Access | Values |
 |---|---|---|---|
 | `current` | Int | read, written |  |
+| `barVisible` | Bool | read, written |  |
 
 | Event | Values | Sent |
 |---|---|---|
@@ -331,6 +332,15 @@ Made by `Create`; also has the entries of [Box](#box), [Widget](#widget).
 | Property | Tag | Access | Values |
 |---|---|---|---|
 | `title` | String | read, written |  |
+| `badge` | String | read, written |  |
+| `attention` | Int | read, written |  |
+| `closable` | Bool | read, written |  |
+| `index` | Int | read, written |  |
+
+| Event | Values | Sent |
+|---|---|---|
+| `closeRequested` | none | on |
+| `menuRequested` | Int, Int | on |
 
 ## ToolBar
 
@@ -437,12 +447,15 @@ Made by `Create`; also has the entries of [Widget](#widget).
 | `expand` | String | none |
 | `collapse` | String | none |
 | `clear` | none | none |
+| `setBadge` | String, String | none |
+| `setAttention` | String, Int | none |
 
 | Event | Values | Sent |
 |---|---|---|
 | `expanding` | String | on |
 | `activated` | String | on |
 | `currentChanged` | String | on |
+| `menuRequested` | String, Int, Int | on |
 
 ## TextEdit
 

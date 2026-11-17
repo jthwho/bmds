@@ -386,3 +386,15 @@ event Clipboard.changed(Atom) on
 # 2026-11-17 (devplan/vnc.md §20): the pointer for a viewer drawing it itself.
 method ScreenShare.pointerShape() -> Bytes
 event ScreenShare.pointerChanged() on
+
+# 2026-11-17 (devplan/tabs.md): tabs for many pages; a tree's rows marked as tabs are.
+property Tabs.barVisible Bool RW
+property TabPage.badge String RW
+property TabPage.attention Int RW
+property TabPage.closable Bool RW
+property TabPage.index Int RW
+event TabPage.closeRequested() on
+event TabPage.menuRequested(Int, Int) on
+method TreeView.setBadge(String, String) -> None
+method TreeView.setAttention(String, Int) -> None
+event TreeView.menuRequested(String, Int, Int) on

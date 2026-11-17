@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/itemview.h>
+#include <bmds/list.h>
 #include <bmds/treerows.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -26,6 +27,11 @@ BMDS_NAMESPACE_BEGIN
  * expand and collapse (Left on a collapsed row goes to its parent, Right on
  * an expanded one to its first child). One row is selected at most;
  * `Changed` tells when it moves.
+ *
+ * A row may be marked by its path (devplan/tabs.md §2a, as a tab is): a badge
+ * after its name, and an attention level that draws the name in the
+ * highlight's color (activity) or the close box's (an alert). The marks are
+ * kept by path (in PSRAM), so they last while rows are given again.
  *
  * @par Thread Safety
  * As `Widget`.
@@ -65,6 +71,28 @@ class TreeView : public ItemView {
 
                 /** @brief Forgets every `setPathIcon()`. */
                 void clearPathIcons();
+
+                static constexpr size_t MaxMarkPath = 63;
+                static constexpr size_t MaxBadge = 7;
+
+                /**
+                 * @brief Gives the row at @p path (shown or not yet) badge @p badge (cut at
+                 *        `MaxBadge` bytes on a character; empty: none).
+                 * @return `Ok`, `NoMem`, `Invalid` (the path longer than `MaxMarkPath`).
+                 */
+                Error setBadge(StringView path, StringView badge);
+
+                /**
+                 * @brief Sets the row at @p path's attention (0 none, 1 activity, 2 an alert; more:
+                 *        2). @return `Ok`, `NoMem`, `Invalid` (the path too long).
+                 */
+                Error setAttention(StringView path, uint8_t level);
+
+                /** @brief Returns the row at @p path's attention. */
+                uint8_t attention(StringView path) const;
+
+                /** @brief Forgets every mark. */
+                void clearMarks();
 
                 /** @brief Adds a root (its name a path, `/sd0/p0`). @return `Ok` or `NoMem`. */
                 Error addRoot(StringView path);
@@ -154,6 +182,13 @@ class TreeView : public ItemView {
                                 char        path[64] = {};  // Vfs::MountInfo's
                 };
                 PathIcon    _pathIcons[MaxPathIcons];
+                struct Mark {
+                                char    path[MaxMarkPath + 1] = {};
+                                char    badge[MaxBadge + 1] = {};
+                                uint8_t attention = 0;
+                };
+                List<Mark>  _marks{MemSpace::Psram};                                       // none both: dropped
+                Error       mark(StringView path, const StringView *badge, int attention); // null, -1: kept
                 void        tellRowsChanged() {
                         if (_rowsChanged != nullptr) _rowsChanged(_rowsChangedArg, *this);
                         return;
