@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 18: The computer around your program
 //
 // A program can ask the computer what time it is, keep a setting of its own, run other

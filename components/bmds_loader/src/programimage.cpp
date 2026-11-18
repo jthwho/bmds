@@ -57,7 +57,7 @@ namespace {
         constexpr uint16_t EtExec = 2;
         constexpr uint16_t EmRiscv = 243;
         constexpr uint32_t PtLoad = 1, PtDynamic = 2, PtInterp = 3, PtNote = 4, PtTls = 7;
-        constexpr uint32_t ShtSymtab = 2, ShtRela = 4, ShtRel = 9;
+        constexpr uint32_t ShtSymtab = 2, ShtRela = 4, ShtNote = 7, ShtRel = 9;
         constexpr uint32_t ShfWrite = 0x1, ShfAlloc = 0x2;
         constexpr uint16_t ShnUndef = 0, ShnAbs = 0xfff1;
         constexpr uint32_t EfFloatAbiMask = 0x6, EfFloatAbiSingle = 0x2, EfRve = 0x8;
@@ -70,8 +70,10 @@ namespace {
         // A symbol table up to this size is read into memory once (one
         // sequential read), instead of a scattered read per relocation.
         constexpr uint32_t MaxCachedSymtabBytes = 512 * 1024;
-        // The same for a relocation section.
+        // The same for a relocation section, and for a patch list.
         constexpr uint32_t MaxCachedRelaBytes = 1024 * 1024;
+        constexpr uint32_t KnownProgramFlags = BMDS_PROGRAM_DISPLAY | BMDS_PROGRAM_PATCH_LIST;
+        static_assert(ProgramImage::PatchUpper == BMDS_PATCH_UPPER, "a list's words are the loader's patches");
 
         // What a relocation needs at load time.
         enum class Action : uint8_t {
@@ -233,7 +235,7 @@ namespace {
                                                         if (note.stack_size > BMDS_MAX_STACK_SIZE)
                                                                 return fail(problem, Error::NotSupported,
                                                                             "asks for too much stack", note.stack_size);
-                                                        if ((note.flags & ~BMDS_PROGRAM_DISPLAY) != 0)
+                                                        if ((note.flags & ~KnownProgramFlags) != 0)
                                                                 return fail(problem, Error::NotSupported,
                                                                             "unknown program flags", note.flags);
                                                         info.flags = note.flags;
@@ -313,7 +315,8 @@ namespace {
                                                 WritableByteSpan(reinterpret_cast<uint8_t *>(_headers), headerBytes));
                                         if (err.isError()) return err;
                                 }
-                                bool any = false;
+                                bool       any = false;
+                                const bool listed = (_info.flags & BMDS_PROGRAM_PATCH_LIST) != 0;
                                 if (_classify != nullptr) {
                                         _classify->writableOffset = _info.imageSize;
                                         std::memset(_classify->patchedPages, 0, sizeof(_classify->patchedPages));
@@ -326,6 +329,13 @@ namespace {
                                             (sh.flags & ShfWrite) != 0 && sh.size != 0 &&
                                             sh.addr < _classify->writableOffset)
                                                 _classify->writableOffset = sh.addr;
+                                        // A listed program's patches are its list, whatever else it kept.
+                                        if (listed) {
+                                                if (sh.type != ShtNote || (sh.flags & ShfAlloc) != 0) continue;
+                                                err = patchListIn(sh, patches, any);
+                                                if (err.isError()) return err;
+                                                continue;
+                                        }
                                         if (sh.type != ShtRela && sh.type != ShtRel) continue;
                                         Shdr target;
                                         if (sh.info >= _eh.shnum)
@@ -340,6 +350,9 @@ namespace {
                                         if (err.isError()) return err;
                                         any = true;
                                 }
+                                if (listed && !any)
+                                        return fail(_problem, Error::Invalid,
+                                                    "no patch list (BMDS_PROGRAM_PATCH_LIST)");
                                 // A program with code always has relocations (calls, branches);
                                 // none means they weren't kept.
                                 if (!any)
@@ -390,6 +403,89 @@ namespace {
                                         if (err.isError()) return err;
                                         for (uint32_t k = 0; k < n; ++k) {
                                                 err = relocation(buffer[k], target, patches);
+                                                if (err.isError()) return err;
+                                        }
+                                        done += n;
+                                }
+                                return Error::Ok;
+                        }
+
+                        // The patch list in note section @p sh, if it holds one (@p found: one was
+                        // seen already; a second is refused). Checked as relocations are: each word
+                        // in the file part of the image, and the words in increasing order.
+                        Error patchListIn(const Shdr &sh, uint32_t &patches, bool &found) {
+                                if (!within(sh.offset, sh.size, _fileSize))
+                                        return fail(_problem, Error::Invalid, "bad note section");
+                                for (uint32_t at = 0; sh.size - at >= 12;) {
+                                        uint32_t header[3]; // namesz, descsz, type
+                                        Error    err = _source.readAt(
+                                                sh.offset + at,
+                                                WritableByteSpan(reinterpret_cast<uint8_t *>(header), 12));
+                                        if (err.isError()) return err;
+                                        const uint64_t name = uint64_t(at) + 12;
+                                        const uint64_t desc = name + ((uint64_t(header[0]) + 3) & ~3ull);
+                                        const uint64_t next = desc + ((uint64_t(header[1]) + 3) & ~3ull);
+                                        if (next > sh.size) return fail(_problem, Error::Invalid, "bad note");
+                                        char noteName[5] = {};
+                                        if (header[0] == sizeof(noteName)) {
+                                                err = _source.readAt(
+                                                        sh.offset + uint32_t(name),
+                                                        WritableByteSpan(reinterpret_cast<uint8_t *>(noteName),
+                                                                         sizeof(noteName)));
+                                                if (err.isError()) return err;
+                                        }
+                                        if (header[0] == sizeof(noteName) &&
+                                            std::memcmp(noteName, BMDS_NOTE_NAME, sizeof(noteName)) == 0 &&
+                                            header[2] == BMDS_NOTE_PATCHES) {
+                                                if (found) return fail(_problem, Error::Invalid, "two patch lists");
+                                                found = true;
+                                                err = patchList(sh.offset + uint32_t(desc), header[1], patches);
+                                                if (err.isError()) return err;
+                                        }
+                                        at = uint32_t(next);
+                                }
+                                return Error::Ok;
+                        }
+
+                        // The list in the @p bytes of a `BMDS_NOTE_PATCHES` descriptor at @p offset.
+                        Error patchList(uint32_t offset, uint32_t bytes, uint32_t &patches) {
+                                bmds_patches_note_t head{};
+                                if (bytes < sizeof(head)) return fail(_problem, Error::Invalid, "bad patch list");
+                                Error err = readStruct(_source, offset, head);
+                                if (err.isError()) return err;
+                                if (head.size < sizeof(head) || head.size > bytes ||
+                                    head.count > (bytes - head.size) / sizeof(uint32_t))
+                                        return fail(_problem, Error::Invalid, "bad patch list");
+                                // In one read when there is memory for it, else a chunk at a time.
+                                const uint32_t listBytes = head.count * uint32_t(sizeof(uint32_t));
+                                uint32_t      *words = nullptr;
+                                uint32_t       step = 64;
+                                uint32_t       chunk[64];
+                                if (listBytes != 0 && listBytes <= MaxCachedRelaBytes)
+                                        words = static_cast<uint32_t *>(Memory::alloc(MemSpace::Psram, listBytes));
+                                if (words != nullptr) step = head.count;
+                                struct Freer {
+                                                void *p;
+                                                ~Freer() { Memory::free(p); }
+                                } freer{words};
+                                uint32_t *const buffer = words != nullptr ? words : chunk;
+                                uint64_t        last = 0; // one past the previous word's offset
+                                for (uint32_t done = 0; done < head.count;) {
+                                        const uint32_t n = head.count - done < step ? head.count - done : step;
+                                        err = _source.readAt(offset + head.size + done * uint32_t(sizeof(uint32_t)),
+                                                             WritableByteSpan(reinterpret_cast<uint8_t *>(buffer),
+                                                                              n * sizeof(uint32_t)));
+                                        if (err.isError()) return err;
+                                        for (uint32_t k = 0; k < n; ++k) {
+                                                const uint32_t at = buffer[k] & ~BMDS_PATCH_UPPER;
+                                                if (at < last)
+                                                        return fail(_problem, Error::Invalid, "patch list out of order",
+                                                                    at);
+                                                if (!within(at, 4, _info.fileSize))
+                                                        return fail(_problem, Error::Invalid,
+                                                                    "patch outside the image's file part", at);
+                                                last = uint64_t(at) + 1;
+                                                err = patch(at, (buffer[k] & BMDS_PATCH_UPPER) != 0, patches);
                                                 if (err.isError()) return err;
                                         }
                                         done += n;
@@ -470,24 +566,31 @@ namespace {
                                         return Error::Ok;
                                 }
                                 if (fixed) return Error::Ok;
+                                return patch(r.offset, action == Action::Upper, patches);
+                        }
+
+                        // One patch, at @p offset (checked to be in the file part of the image):
+                        // recorded, classified and applied as the run asks.
+                        Error patch(uint32_t offset, bool upper, uint32_t &patches) {
                                 if (_record != nullptr) {
                                         // inspect() counted them: a file that has more changed.
                                         if (patches == _info.relocations)
                                                 return fail(_problem, Error::Invalid, "the file changed while loading");
-                                        _record[patches] =
-                                                r.offset | (action == Action::Upper ? ProgramImage::PatchUpper : 0);
+                                        _record[patches] = offset | (upper ? ProgramImage::PatchUpper : 0);
                                 }
                                 if (_classify != nullptr) {
                                         // Both pages of a word that straddles two (RVC: 2-aligned).
-                                        for (const uint32_t at : {r.offset, r.offset + 3}) {
+                                        for (const uint32_t at : {offset, offset + 3}) {
                                                 const uint32_t page = at / ProgramImage::SharePageBytes;
                                                 _classify->patchedPages[page / 32] |= 1u << (page % 32);
                                         }
                                 }
                                 ++patches;
                                 if (_image == nullptr || _record != nullptr) return Error::Ok;
-                                word = patched(word, _base, action == Action::Upper);
-                                std::memcpy(_image + r.offset, &word, 4);
+                                uint32_t word = 0;
+                                std::memcpy(&word, _image + offset, 4);
+                                word = patched(word, _base, upper);
+                                std::memcpy(_image + offset, &word, 4);
                                 return Error::Ok;
                         }
 

@@ -42,6 +42,18 @@
  *   changes nothing about loading; a fault's report names the build by it,
  *   and its debug information is found by it (devplan/debuginfo.md).
  *   `bmds_add_program` and `bmds-cc` add it.
+ * - Optionally, a patch list in place of the relocations (appended
+ *   2026-11-18, devplan/programs.md §20): a program whose note has
+ *   `BMDS_PROGRAM_PATCH_LIST` holds, in a section that isn't allocated
+ *   (`.note.bmds.patches`), one note with the name "BMDS", type
+ *   `BMDS_NOTE_PATCHES` and a `bmds_patches_note_t` followed by `count`
+ *   words: each the image offset of a word the kernel patches, with
+ *   `BMDS_PATCH_UPPER` set for an upper immediate (`R_RISCV_HI20`'s patch),
+ *   in increasing order. The kernel applies exactly these, as it would the
+ *   relocations they came from, and reads no relocation or symbol table:
+ *   such a file needs neither (`sdk/tools/bmds-pack` makes one from a
+ *   program, checking every relocation as the kernel would). The section
+ *   headers stay.
  * - The entry point is `_start` (see bmds/sys.h for the startup state).
  * - Code uses the medany model (PC-relative addressing); libraries built
  *   for medlow (absolute `lui` addressing, like the toolchain's prebuilt libraries)
@@ -90,6 +102,18 @@ extern "C" {
  */
 #define BMDS_PROGRAM_DISPLAY 0x1u
 
+/**
+ * @brief A program flag (appended 2026-11-18): its patches are a list (`BMDS_NOTE_PATCHES`),
+ *        not relocations. `sdk/tools/bmds-pack` sets it.
+ */
+#define BMDS_PROGRAM_PATCH_LIST 0x2u
+
+/** @brief The note type of a program's patch list (in `.note.bmds.patches`, not loaded). */
+#define BMDS_NOTE_PATCHES 3u
+
+/** @brief In a patch list's word: the patch is an upper immediate (`lui`), not a data word. */
+#define BMDS_PATCH_UPPER 0x80000000u
+
 /** @brief What a program says about itself (the note's descriptor). */
 typedef struct bmds_program_note {
                 uint32_t size;        /**< sizeof(bmds_program_note_t) as built. */
@@ -109,6 +133,15 @@ typedef struct bmds_icon_note {
                 uint32_t format; /**< `BMDS_ICON_FORMAT_PNG`; another is skipped. */
                 uint32_t length; /**< Bytes of the image after the header. */
 } bmds_icon_note_t;
+
+/**
+ * @brief A patch list (a `BMDS_NOTE_PATCHES` note's descriptor): this header,
+ *        then `count` 32-bit words, from `size` bytes in.
+ */
+typedef struct bmds_patches_note {
+                uint32_t size;  /**< sizeof(bmds_patches_note_t) as built: where the words start. */
+                uint32_t count; /**< Words that follow. */
+} bmds_patches_note_t;
 
 #ifdef __cplusplus
 }

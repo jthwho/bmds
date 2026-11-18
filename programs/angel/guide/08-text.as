@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 8: Text
 //
 // Strings have functions of their own, written after a dot: name.length(). And the text screen

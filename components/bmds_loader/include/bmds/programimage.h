@@ -18,7 +18,8 @@ BMDS_NAMESPACE_BEGIN
 
 /**
  * @brief Reading and moving a BMDS program file (the format in the SDK's
- *        bmds/program.h): ELF, linked at 0, relocations kept.
+ *        bmds/program.h): ELF, linked at 0, relocations kept (or, flagged
+ *        `BMDS_PROGRAM_PATCH_LIST`, the list of patches made from them).
  *
  * `inspect()` checks everything the format promises (headers, the BMDS
  * note, the single segment, every relocation) without loading anything;

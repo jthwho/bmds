@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Guess the number: the computer thinks of a number from 1 to 100, and you guess it.
 // Run it with:  angel guess.as
 

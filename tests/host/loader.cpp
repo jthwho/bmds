@@ -239,8 +239,11 @@ TEST_CASE("Program format: what is not a BMDS program") {
         b.noteStack = BMDS_MAX_STACK_SIZE + 1;
         refused(b, Error::NotSupported, "too much stack");
         b = Builder();
-        b.noteFlags = 2;
+        b.noteFlags = 4;
         refused(b, Error::NotSupported, "unknown program flags");
+        b = Builder();
+        b.noteFlags = BMDS_PROGRAM_PATCH_LIST; // flagged, with relocations but no list
+        refused(b, Error::Invalid, "no patch list");
         b = Builder();
         b.interp = true;
         refused(b, Error::NotSupported, "dynamic linker");
@@ -702,5 +705,153 @@ TEST_CASE("Program format: bmds-link gathers what the loader patches at the imag
         }
         CHECK(checked >= 5);
         CHECK(sharedPages >= 4); // progtest's four, at least
+}
+#endif
+
+#ifdef BMDS_SDK_PACKED
+namespace {
+
+        std::vector<uint8_t> readAll(const std::string &path) {
+                std::vector<uint8_t> file;
+                FILE                *f = std::fopen(path.c_str(), "rb");
+                REQUIRE(f != nullptr);
+                uint8_t buf[4096];
+                size_t  n;
+                while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) file.insert(file.end(), buf, buf + n);
+                std::fclose(f);
+                return file;
+        }
+
+        // Where @p file's patch list starts (its bmds_patches_note_t), found by its note's type and name.
+        size_t patchListAt(const std::vector<uint8_t> &file) {
+                static const uint8_t mark[] = {3, 0, 0, 0, 'B', 'M', 'D', 'S', 0, 0, 0, 0};
+                const auto           at = std::search(file.begin(), file.end(), std::begin(mark), std::end(mark));
+                REQUIRE(at != file.end());
+                return size_t(at - file.begin()) + sizeof(mark);
+        }
+
+} // namespace
+
+TEST_CASE("Program format: packed programs load into the same images") {
+        // sdk/tools/bmds-pack (devplan/programs.md §20): the examples with a patch list in place of
+        // their relocations and symbols. Everything the loader learns, and every image it makes, is
+        // the unpacked program's.
+        size_t checked = 0;
+        for (const auto &entry : std::filesystem::directory_iterator(BMDS_SDK_PACKED)) {
+                const std::string packedPath = entry.path().string();
+                CAPTURE(packedPath);
+                const std::vector<uint8_t> packed = readAll(packedPath);
+                const std::vector<uint8_t> original =
+                        readAll(std::string(BMDS_SDK_EXAMPLES) + "/" + entry.path().filename().string());
+                const Checked p = check(packed), o = check(original);
+                CAPTURE(why(p));
+                REQUIRE(p.err == Error::Ok);
+                REQUIRE(o.err == Error::Ok);
+                CHECK((p.info.flags & BMDS_PROGRAM_PATCH_LIST) != 0);
+                CHECK((p.info.flags & ~BMDS_PROGRAM_PATCH_LIST) == o.info.flags);
+                CHECK(p.info.relocations == o.info.relocations);
+                CHECK(p.info.entry == o.info.entry);
+                CHECK(p.info.fileSize == o.info.fileSize);
+                CHECK(p.info.imageSize == o.info.imageSize);
+                CHECK(p.info.tlsSize == o.info.tlsSize);
+                CHECK(p.info.writableOffset == o.info.writableOffset);
+                CHECK(p.info.buildIdBytes == o.info.buildIdBytes);
+                CHECK(std::memcmp(p.info.patchedPages, o.info.patchedPages, sizeof(p.info.patchedPages)) == 0);
+                CHECK(packed.size() < original.size());
+                // The program note is in the image: its flags word gains BMDS_PROGRAM_PATCH_LIST, and
+                // nothing else differs.
+                static const uint8_t note[] = {5, 0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 'B', 'M', 'D', 'S', 0, 0, 0, 0};
+                const auto noteAt = std::search(original.begin(), original.end(), std::begin(note), std::end(note));
+                REQUIRE(noteAt != original.end());
+                const size_t flagsAt = size_t(noteAt - original.begin()) + sizeof(note) + 12 - o.info.fileOffset;
+                REQUIRE(flagsAt + 4 <= o.info.fileSize);
+                for (uint32_t base : {0u, 0x48010000u, 0x4A130000u}) {
+                        CAPTURE(base);
+                        Error                pe, oe;
+                        std::vector<uint8_t> image = loadAt(original, base, oe);
+                        REQUIRE(oe == Error::Ok);
+                        put32(image, flagsAt, get32(&image[flagsAt]) | BMDS_PROGRAM_PATCH_LIST);
+                        CHECK(loadAt(packed, base, pe) == image);
+                        CHECK(pe == Error::Ok);
+                        CHECK(placeAt(packed, base, pe) == image);
+                        CHECK(pe == Error::Ok);
+                }
+                ++checked;
+        }
+        CHECK(checked >= 5);
+}
+
+TEST_CASE("Program format: a damaged patch list is refused") {
+        const std::vector<uint8_t> packed = readAll(std::string(BMDS_SDK_PACKED) + "/hello.elf");
+        REQUIRE(check(packed).err == Error::Ok);
+        const size_t   list = patchListAt(packed);
+        const uint32_t count = get32(&packed[list + 4]);
+        REQUIRE(count >= 2);
+        const size_t first = list + 8;
+        auto         refused = [](const std::vector<uint8_t> &file, const char *reason) {
+                const Checked c = check(file);
+                CAPTURE(why(c));
+                CHECK(c.err.isError());
+                CHECK(why(c) == reason);
+        };
+        {
+                std::vector<uint8_t> file = packed; // two words swapped
+                const uint32_t       a = get32(&file[first]), b = get32(&file[first + 4]);
+                put32(file, first, b);
+                put32(file, first + 4, a);
+                refused(file, "patch list out of order");
+        }
+        {
+                std::vector<uint8_t> file = packed; // the last word past the image's file part
+                put32(file, first + 4 * (count - 1), 0x7FFFFFF0u);
+                refused(file, "patch outside the image's file part");
+        }
+        {
+                std::vector<uint8_t> file = packed; // more words than the note holds
+                put32(file, list + 4, count + 1);
+                refused(file, "bad patch list");
+        }
+        {
+                std::vector<uint8_t> file = packed; // the note's type changed: no list
+                put32(file, list - 12, 4);
+                refused(file, "no patch list (BMDS_PROGRAM_PATCH_LIST)");
+        }
+        {
+                // The flag cleared: the loader looks for relocations, which aren't there.
+                std::vector<uint8_t> file = packed;
+                static const uint8_t note[] = {5, 0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 'B', 'M', 'D', 'S', 0, 0, 0, 0};
+                const auto           at = std::search(file.begin(), file.end(), std::begin(note), std::end(note));
+                REQUIRE(at != file.end());
+                const size_t flags = size_t(at - file.begin()) + sizeof(note) + 12;
+                put32(file, flags, get32(&file[flags]) & ~BMDS_PROGRAM_PATCH_LIST);
+                refused(file, "no relocations (link with --emit-relocs; don't strip)");
+        }
+        // Random damage: refused, or loaded within the image as when read and placed.
+        uint32_t seed = 4242;
+        auto     next = [&seed] {
+                seed = seed * 1103515245u + 12345u;
+                return seed >> 8;
+        };
+        int accepted = 0;
+        for (int round = 0; round < 3000; ++round) {
+                std::vector<uint8_t> file = packed;
+                const int            hits = 1 + static_cast<int>(next() % 4);
+                for (int h = 0; h < hits; ++h) {
+                        // Mostly the list and the headers.
+                        const size_t which = next() % 3;
+                        const size_t at = which == 0   ? list - 12 + next() % (20 + 4 * count)
+                                          : which == 1 ? next() % 256
+                                                       : next() % file.size();
+                        if (at < file.size()) file[at] = static_cast<uint8_t>(next());
+                }
+                if (next() % 8 == 0) file.resize(next() % file.size());
+                Error                      err;
+                const std::vector<uint8_t> image = loadAt(file, 0x48010000, err);
+                if (err.isOk()) {
+                        ++accepted;
+                        CHECK(placeAt(file, 0x48010000, err) == image);
+                }
+        }
+        CHECK(accepted > 0);
 }
 #endif

@@ -10,8 +10,8 @@
 # header generated from the same list, and checks that every icon name BMDS's
 # files ask for is in the theme.
 #
-#   mkrom.py image OUT [--hash-header H] [--max-bytes N] [--file DEST=SRC] [--dir DEST=SRC]
-#                      [--link DEST=TARGET] [--mappable GLOB]...
+#   mkrom.py image OUT [--hash-header H] [--max-bytes N] [--log-bytes N] [--file DEST=SRC]
+#                      [--dir DEST=SRC] [--link DEST=TARGET] [--align SIZE=GLOB]...
 #   mkrom.py icons LIST ROOT OUT_ICONS OUT_LICENSES
 #   mkrom.py iconid LIST OUT_HEADER
 #   mkrom.py check LIST DIR...      (the Icon= of every .desktop file under DIR)
@@ -19,18 +19,28 @@
 # The formats (little-endian; on-disk formats, frozen once shipped; the readers are
 # bmds_core's RomImage and IconPack):
 #
-# BMRO, the image:
-#   header, 80 bytes: "BMRO", u16 format (1), u16 header size (80), u32 image size,
-#                     u32 entry count, u32 entries' offset, u32 names' offset,
-#                     u32 names' size, u32 flags (0), 32 bytes BLAKE2s-256 of the
-#                     image after the header, i64 build time (Unix seconds),
-#                     u32 0, u32 CRC-32 of the header's first 76 bytes
-#   entries, 16 bytes: u32 name offset, u16 name length, u8 kind (0 file,
-#                     1 directory), u8 flags (1 System, 2 Mappable), u32 data
-#                     offset or first child, u32 size or child count
-#                     Entry 0 is the root; a directory's children are contiguous,
-#                     sorted by name, after it (breadth first).
-#   names, then the files' bytes, each on a 64-byte boundary (Mappable: 4096).
+# BMRO, the partition (format 2, devplan/rom.md §12c):
+#   header, 64 bytes at 0: "BMRO", u16 format (2), u16 header size (64), u32 the log's offset
+#                     (a sector, 4096 here), u32 the log's size (whole sectors), u32 where the
+#                     files' space starts (64 KB-aligned here), u32 flags (0), 36 bytes 0,
+#                     u32 CRC-32 of the header's first 60 bytes
+#   the log: tree versions, each starting on a 4 KB sector; the rest erased (0xff). A version:
+#     header, 80 bytes: "BMRT", u16 header size (80), u16 entry size (64), u32 the version's
+#                     size (all of it, its CRC included), u32 sequence (newer is larger),
+#                     u32 entry count, u32 the paths' offset (from the version's start),
+#                     u32 the paths' size, u32 flags (0), i64 when written (Unix seconds),
+#                     32 bytes the firmware build it needs (0: any), 8 bytes 0
+#     entries, 64 bytes, one a file, sorted by path (bytes): u32 path offset, u16 path length,
+#                     u8 alignment (log2), u8 flags (1 System, 2 the user's), u32 offset in
+#                     the partition, u32 size, i64 time (Unix seconds), 32 bytes BLAKE2s-256
+#                     of its bytes, 8 bytes 0
+#     the paths (whole, from the root, no leading '/'; directories are implied), then
+#     u32 CRC-32 of the version before it.
+#   the files' bytes, each at its alignment (64 bytes unless --align says more); files
+#   aligned to 64 KB first, each taking whole 64 KB pages, then the rest. Unused bytes are
+#   0xff (erased flash).
+#   The content hash (--hash-header): BLAKE2s-256 of, for each entry in order, its path,
+#   a 0 byte, its flags (u8), its size (u32) and its hash.
 #
 # BMIC, the icon theme:
 #   header, 48 bytes: "BMIC", u16 format (1), u16 header size (48), u32 file
@@ -54,14 +64,16 @@ import zlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
-ROM_HEADER = 80
-ROM_ENTRY = 16
+ROM_HEADER = 64
+VERSION_HEADER = 80
+ROM_ENTRY = 64
+SECTOR = 4096
+PAGE = 65536
 DATA_ALIGN = 64
-MAP_ALIGN = 4096
-KIND_FILE = 0
-KIND_DIRECTORY = 1
+LOG_BYTES = 124 * 1024  # with the header's sector, the files start at 128 KB
+MAX_PATH = 255
+MAX_ALIGN = 1 << 24
 FLAG_SYSTEM = 1
-FLAG_MAPPABLE = 2
 LINK_COOKIE = b"!<symlink>"
 
 ICON_HEADER = 48
@@ -106,48 +118,34 @@ def align(n, a):
 # --- The image -----------------------------------------------------------------------------
 
 
-class Node:
-    def __init__(self, name, data=None, flags=0, mtime=0):
-        self.name = name
-        self.children = {} if data is None else None
-        self.data = data
-        self.flags = flags
-        self.mtime = mtime
-        self.index = 0
-        self.first = 0
+def check_path(path):
+    encoded = path.encode()
+    parts = path.split("/")
+    if not path or len(encoded) > MAX_PATH or "\0" in path or any(p in ("", ".", "..") for p in parts):
+        die("%r: not a path a ROM file may have (1 to %d bytes, no empty, . or .. part)" % (path, MAX_PATH))
 
 
-def place(root, dest, node):
-    parts = [p for p in dest.split("/") if p]
-    if not parts:
-        die("an empty destination")
-    at = root
-    for p in parts[:-1]:
-        child = at.children.get(p)
-        if child is None:
-            child = at.children[p] = Node(p)
-        if child.children is None:
-            die("%s: %s is a file" % (dest, p))
-        at = child
-    name = parts[-1]
-    if name in at.children:
-        die("%s given twice" % dest)
-    node.name = name
-    at.children[name] = node
-
-
-def build_image(out, files, dirs, links, mappable, hash_header, max_bytes):
-    root = Node("")
+def build_image(out, files, dirs, links, aligns, hash_header, max_bytes, log_bytes):
+    entries = {}  # path: [data, flags, alignment]
     newest = 0
+
+    def add(dest, data, flags):
+        path = dest.strip("/")
+        check_path(path)
+        if path in entries:
+            die("%s given twice" % path)
+        alignment = DATA_ALIGN
+        for size, glob in aligns:
+            if fnmatch.fnmatch(path, glob):
+                alignment = max(alignment, size)
+        entries[path] = (data, flags, alignment)
 
     def add_file(dest, src):
         nonlocal newest
         with open(src, "rb") as f:
             data = f.read()
-        mtime = int(os.stat(src).st_mtime)
-        newest = max(newest, mtime)
-        flags = FLAG_MAPPABLE if any(fnmatch.fnmatch(dest, g) for g in mappable) else 0
-        place(root, dest, Node("", data, flags))
+        newest = max(newest, int(os.stat(src).st_mtime))
+        add(dest, data, 0)
 
     for dest, src in files:
         add_file(dest, src)
@@ -163,68 +161,99 @@ def build_image(out, files, dirs, links, mappable, hash_header, max_bytes):
                 add_file(dest.rstrip("/") + "/" + rel if dest.strip("/") else rel, os.path.join(base, name))
     for dest, target in links:
         # Cygwin's system-file link, as the VFS writes one (devplan/storage.md §4).
-        data = LINK_COOKIE + b"\xff\xfe" + target.encode("utf-16-le") + b"\0\0"
-        place(root, dest, Node("", data, FLAG_SYSTEM))
+        add(dest, LINK_COOKIE + b"\xff\xfe" + target.encode("utf-16-le") + b"\0\0", FLAG_SYSTEM)
     newest = int(os.environ.get("SOURCE_DATE_EPOCH", newest))
 
-    # Breadth first: each directory's children contiguous, sorted by name, after it.
-    entries = [root]
-    queue = [root]
-    for d in queue:
-        kids = sorted(d.children.values(), key=lambda n: n.name.encode())
-        d.first = len(entries)
-        entries.extend(kids)
-        queue.extend(k for k in kids if k.children is not None)
-    if len(entries) > (1 << 20):
-        die("too many entries")
+    paths = sorted(entries, key=lambda p: p.encode())
+    for path in paths:
+        parts = path.split("/")
+        for i in range(1, len(parts)):
+            if "/".join(parts[:i]) in entries:
+                die("%s: %s is a file" % (path, "/".join(parts[:i])))
 
-    names = bytearray()
-    name_at = []
-    for e in entries:
-        encoded = e.name.encode()
-        if len(encoded) > 255:
-            die("%s: a name over 255 bytes" % e.name)
-        name_at.append((len(names), len(encoded)))
-        names += encoded
-    entries_at = ROM_HEADER
-    names_at = entries_at + len(entries) * ROM_ENTRY
-    offset = align(names_at + len(names), DATA_ALIGN)
-    data_at = []
-    for e in entries:
-        if e.children is not None:
-            data_at.append(0)
-            continue
-        offset = align(offset, MAP_ALIGN if e.flags & FLAG_MAPPABLE else DATA_ALIGN)
-        data_at.append(offset)
-        offset += len(e.data)
-    size = offset
+    # The files' places: those on 64 KB pages first (each its own pages), then by alignment.
+    if log_bytes <= 0 or log_bytes % SECTOR:
+        die("--log-bytes: whole %d-byte sectors" % SECTOR)
+    log_at = SECTOR
+    data_offset = align(log_at + log_bytes, PAGE)
+    offset = data_offset
+    place_at = {}
+    for path in sorted(paths, key=lambda p: (-entries[p][2], p.encode())):
+        data, _, alignment = entries[path]
+        offset = align(offset, alignment)
+        place_at[path] = offset
+        offset += len(data)
+        if alignment >= PAGE:
+            offset = align(offset, PAGE)
+    size = max(offset, data_offset)
     if size > 0xFFFFFFFF:
         die("the image is over 4 GB")
     if max_bytes is not None and size > max_bytes:
         die("the image is %d bytes: its partition holds %d" % (size, max_bytes))
 
-    image = bytearray(size)
-    for i, e in enumerate(entries):
-        at, length = name_at[i]
-        if e.children is not None:
-            fields = (at, length, KIND_DIRECTORY, 0, e.first, len(e.children))
-        else:
-            fields = (at, length, KIND_FILE, e.flags, data_at[i], len(e.data))
-            image[data_at[i]:data_at[i] + len(e.data)] = e.data
-        struct.pack_into("<IHBBII", image, entries_at + i * ROM_ENTRY, *fields)
-    image[names_at:names_at + len(names)] = names
-    digest = hashlib.blake2s(bytes(image[ROM_HEADER:])).digest()
-    struct.pack_into("<4sHHIIIIII32sqI", image, 0, b"BMRO", 1, ROM_HEADER, size, len(entries), entries_at,
-                     names_at, len(names), 0, digest, newest, 0)
-    struct.pack_into("<I", image, ROM_HEADER - 4, zlib.crc32(bytes(image[:ROM_HEADER - 4])) & 0xFFFFFFFF)
+    # The tree version: header, entries, paths, CRC.
+    path_bytes = bytearray()
+    table = bytearray()
+    content = hashlib.blake2s()
+    for path in paths:
+        data, flags, alignment = entries[path]
+        encoded = path.encode()
+        digest = hashlib.blake2s(data).digest()
+        table += struct.pack("<IHBBIIq32s8x", len(path_bytes), len(encoded), alignment.bit_length() - 1, flags,
+                             place_at[path], len(data), newest, digest)
+        path_bytes += encoded
+        content.update(encoded + b"\0" + bytes([flags]) + struct.pack("<I", len(data)) + digest)
+    paths_at = VERSION_HEADER + len(table)
+    record_bytes = paths_at + len(path_bytes) + 4
+    if record_bytes > log_bytes:
+        die("the tree (%d bytes) doesn't fit the log (%d)" % (record_bytes, log_bytes))
+    record = bytearray(struct.pack("<4sHHIIIIIIq32s8x", b"BMRT", VERSION_HEADER, ROM_ENTRY, record_bytes, 1,
+                                   len(paths), paths_at, len(path_bytes), 0, newest, bytes(32)))
+    record += table + path_bytes
+    record += struct.pack("<I", zlib.crc32(bytes(record)) & 0xFFFFFFFF)
+
+    image = bytearray(b"\xff" * size)
+    header = struct.pack("<4sHHIIII36x", b"BMRO", 2, ROM_HEADER, log_at, log_bytes, data_offset, 0)
+    image[0:ROM_HEADER] = header + struct.pack("<I", zlib.crc32(header) & 0xFFFFFFFF)
+    image[log_at:log_at + len(record)] = record
+    for path in paths:
+        data = entries[path][0]
+        image[place_at[path]:place_at[path] + len(data)] = data
     write_if_changed(out, bytes(image))
     if hash_header:
         text = ("// Generated by tools/mkrom.py: do not edit.\n"
-                "// The ROM image's content hash (BLAKE2s-256), as the firmware was built with it.\n"
+                "// The ROM's content hash (BLAKE2s-256), as the firmware was built with it.\n"
                 "#pragma once\n#include <cstdint>\n\nnamespace {\n\n"
                 "        constexpr uint8_t RomContentHash[32] = {%s};\n\n} // namespace\n"
-                % ", ".join("0x%02x" % b for b in digest))
+                % ", ".join("0x%02x" % b for b in content.digest()))
         write_if_changed(hash_header, text)
+
+
+def parse_size(text):
+    t = text.strip().lower()
+    scale = 1
+    if t.endswith("k"):
+        scale, t = 1024, t[:-1]
+    elif t.endswith("m"):
+        scale, t = 1024 * 1024, t[:-1]
+    try:
+        n = int(t, 0) * scale
+    except ValueError:
+        die("%s: not a size" % text)
+    return n
+
+
+def alignments(values):
+    out = []
+    for v in values:
+        if "=" not in v:
+            die("--align %s: SIZE=GLOB" % v)
+        size, glob = v.split("=", 1)
+        n = parse_size(size)
+        if n < 1 or n > MAX_ALIGN or n & (n - 1):
+            die("--align %s: a power of two up to %d" % (size, MAX_ALIGN))
+        out.append((n, glob.strip("/")))
+    return out
 
 
 # --- PNG (8-bit RGBA, not interlaced: what tools/render-icons writes) ----------------------
@@ -454,7 +483,7 @@ def main(argv):
         if not args:
             die("image OUT ...")
         out, rest = args[0], args[1:]
-        files, dirs, links, mappable, hash_header, max_bytes = [], [], [], [], None, None
+        files, dirs, links, aligns, hash_header, max_bytes, log_bytes = [], [], [], [], None, None, LOG_BYTES
         i = 0
         while i < len(rest):
             option = rest[i]
@@ -467,17 +496,19 @@ def main(argv):
                 dirs.append(value)
             elif option == "--link":
                 links.append(value)
-            elif option == "--mappable":
-                mappable.append(value)
+            elif option == "--align":
+                aligns.append(value)
             elif option == "--hash-header":
                 hash_header = value
             elif option == "--max-bytes":
-                max_bytes = int(value, 0)
+                max_bytes = parse_size(value)
+            elif option == "--log-bytes":
+                log_bytes = parse_size(value)
             else:
                 die("no option %s" % option)
             i += 2
-        build_image(out, pairs(files, "--file"), pairs(dirs, "--dir"), pairs(links, "--link"), mappable,
-                    hash_header, max_bytes)
+        build_image(out, pairs(files, "--file"), pairs(dirs, "--dir"), pairs(links, "--link"), alignments(aligns),
+                    hash_header, max_bytes, log_bytes)
     elif command == "icons" and len(args) == 4:
         build_icons(*args)
     elif command == "iconid" and len(args) == 2:

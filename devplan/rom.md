@@ -105,7 +105,9 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
 - **Built by the build:** `tools/mkrom.py` writes `build/rom.bin` from the repository's `rom/`
   tree and generated parts (the icon set, the zone bundle); CMake's
   `esptool_py_flash_to_partition(flash rom ...)` makes `idf.py flash` write it.
-- **The format, `BMRO`** (little-endian, our own: simple to map, nothing to unpack):
+- **The format, `BMRO`** (little-endian, our own: simple to map, nothing to unpack). **Format 1,
+  below, was replaced by format 2 on 2026-11-18 (§12c, §12m):** a flat table in a log of tree
+  versions, so files can be added and removed.
   - **Header** (80 bytes): magic `BMRO`, format version, header size, the image's size, entry
     count, the offsets of the entries and the names, the content's hash (BLAKE2s-256 of
     everything after the header, 32 bytes), the build time (every file's time), a CRC-32 of the
@@ -296,6 +298,10 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
 
 - **Measured 2026-10-22:** 5.94 MB used; about half of each program file is relocations and
   symbols the loader doesn't apply (1.69 MB of 3.47 MB). Ways to shrink them: `programs.md` §20.
+- **angel moved to the card (2026-11-18,** `scripting.md` §2): the ROM went from 8,557,991 to
+  5,660,903 bytes. Programs in `/rom` are copied into PSRAM to run, as on the card, so a program
+  belongs here only if the system needs it without a card (the SSH tools, `tlsclient`).
+- **The ROM's programs packed (2026-11-18,** `programs.md` §20): 5,660,903 to 4,858,919 bytes.
 - **Flash:** the ROM's 9.375 MB, used at first about 1.3 MB (icons about 1 MB, the bundle
   0.23 MB); the main firmware a few KB more (the volume, `Vfs::map()`, the command).
 - **RAM:** none at rest beyond the mount's record; icons from `/rom` cost no PSRAM.
@@ -326,6 +332,8 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
 5. **Then the media player** (`mediaplayer.md` step 3) uses the `media-*` names.
 6. **Later, each with its own plan:** the recovery firmware and `reboot recovery`; updates;
    programs' read-only `mmap()` (§6), after the store-to-flash check.
+7. **A ROM that changes** (planned 2026-11-18): files added and removed, updates file by file
+   (§12).
 
 ## 11. As built
 
@@ -473,3 +481,312 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
 
 **Benchmarks moved (2026-10-17):** `fsbench` became `fs.smallfiles` and `win bench icons` became
 `gui.icons` (`devplan/bench.md` §11). The figures above were taken with the old commands.
+
+## 12. A ROM that changes: files added and removed (plan, 2026-11-18)
+
+The user's idea (2026-11-18): files added to and removed from `/rom` while BMDS runs (through a
+command of its own, not `cp`), the ROM keeping what makes it useful: every file's bytes at one
+address, mappable. For what: programs and data that need no card, then installable kernel
+extensions (their own plan, later). Updates become file by file, and **the update always wins**:
+a system file the user changed or replaced is written back, so an update leaves a known good
+system. The user's decisions through the discussion (2026-11-18): changes take effect at the next
+boot; a flat table of full paths; each file's own alignment, up to the MMU's 64 KB page; files
+of an alignment kept together; files moved while running (§12d); recovery applies updates, no
+space reserved for the user's files, `rom install` only (§12i); `rom` shows everything (§12h).
+
+### 12a. What stands in the way today (read 2026-11-18)
+
+- **The kernel's uses already find files by name.** Nothing holds an offset into the ROM: the
+  icon pack (`IconTheme`, the window manager), fonts (`SystemFonts`), voices, the gamepad
+  database and the synth's bank call `Vfs::map(path)` when first needed; the time zones and leap
+  seconds read through the volume's reader. **But they keep the span for the boot:** an erase
+  under one is a crash or wrong data. Hence §12b.
+- **The tie to the firmware is the whole image's hash** (`RomDisk`, `romhash.h`): one yes or no.
+  It becomes per file (§12f).
+- **`RomImage` is a tree** checked whole at mount (`open()`): adding a file means rewriting the
+  tree. Hence a flat table (§12c).
+- **Files have one time (the build's).** Each entry gets its own. (An id per file isn't needed,
+  corrected while building step 1: the VFS gives every file, the ROM's too, an id from its path
+  (`vfs.cpp`), so the image cache (`ImageCache::Key`) keeps the ROM's programs already; and a
+  file can't change within a boot (§12b), while the cache starts empty at each.)
+- **Writing flash stalls everything** reading it (auto-suspend off, `update.md` §16): the ROM's
+  erase took 17 s of an update. Writes from the main firmware happen when nothing is playing, as
+  `/flash`'s are held (`cfg.md`), with progress shown for a large file.
+- **The main firmware can't write the ROM it has mounted** (§3b) holds for the tree booted; it
+  can write the space no tree uses (§12b).
+
+### 12b. Changes take effect at the next boot
+
+- **The tree a boot starts with is the only one it sees.** `RomVolume` stays a read-only view of
+  one fixed table, so every span `Vfs::map()` gave stays good until the reboot: no reference
+  counts, no stale handles, no generations. The kernel's lifetime of a mapped file is the boot.
+- **A change writes a pending tree.** The next boot takes the newest good tree. Each install,
+  removal or move builds on the pending tree if there is one.
+- **The space rule, all the allocator needs:**
+  - **Usable now:** space neither the booted tree nor the pending one uses.
+  - **Usable after the next boot:** space only the booted tree uses (files replaced, removed or
+    moved).
+  - **Files written since boot** are in no booted tree, so nothing maps them: they can be moved,
+    rewritten or erased at once (a file replaced twice frees its first copy at once).
+- **`rom` says what is pending:** the files to be added, replaced and removed at the next boot.
+  `rom discard` drops the pending tree.
+- **The cost:** a program installed in the ROM runs after a reboot. Kernel extensions need one
+  anyway; a program wanted at once goes on the card.
+
+### 12c. The format: BMRO format 2
+
+Nothing is released, so format 1's reader goes (no compatibility shim): the first format 2 image
+comes by a flash over the cable or an update.
+
+- **The partition:** a header (magic, format, the partition's layout), the directory area (§12e)
+  at its start, the files' space after it. Every place is an offset in the partition, which
+  starts on a 64 KB page (§3a), so an offset aligned to 64 KB is a page of flash.
+- **A tree version** (one table): a header (its sequence number, the firmware build it needs
+  (§12f), the time it was written, its size, a CRC-32 of all of it), then the entries, then the
+  paths.
+- **Entries, sorted by path** (bytes, as `memcmp`; strictly increasing): the path's offset and
+  length (the whole path from the root, at most 255 bytes, no `.` or `..` parts, no empty
+  parts), the file's offset and size in the partition, its alignment (a power of two, as its
+  log2: 6 is 64 bytes, 12 a page, 16 the MMU's page), flags (System: a link, as today; User: the
+  user's, else the system's), its time, its BLAKE2s-256. The byte layout: `tools/mkrom.py`'s
+  header comment.
+- **Directories are implied:** one exists while a path is under it. No empty directories (an
+  install makes the directories its path needs, a removal of the last file takes them); a
+  directory's time is the newest under it. A path that is a file and a directory both (`a` and
+  `a/b`) is refused at mount.
+- **Finding a path** is one binary search. **Listing a directory:** every path under `d/` is one
+  run of the sorted table (any common prefix is): found by a binary search, walked, a part with
+  no `/` after it a file, else its first part a directory, named once and its run skipped by
+  another search. Listings aren't rare (`PATH` has `/rom/bin`, completion lists it, fonts,
+  voices, benchmarks and patterns scan folders), and this keeps them cheap.
+- **Checked at mount:** the CRC, the order, every entry's path and bytes inside the partition,
+  no two files overlapping, no file in the directory area, the file-or-directory rule. Nothing
+  after it reads outside. The hashes aren't checked at boot; `rom check` does (§12f).
+- **`RomImage` stays pure** (`bmds_core`, host-tested, fuzzed): the reader, and a writer of tree
+  versions that recovery and the main firmware both use; `mkrom.py` writes format 2.
+
+### 12d. Space: an allocator for flash
+
+It is `malloc` with three differences: freed space comes back at the next boot (§12b); flash is
+written only where erased, 4 KB at a time; and blocks **can** move, since the tree is the only
+pointer to them, so fragmentation is temporary.
+
+- **Two areas growing toward each other:**
+  - **Pages, from the end of the partition down:** files aligned to 64 KB, each taking whole
+    pages, its last page padded and shared with nothing (an MMU mapping shows whole pages, so
+    it mustn't show a neighbour's bytes).
+  - **Sectors, from after the directory area up:** files aligned to 4 KB or less.
+  - **Free space** is the gap between them and the holes that the space rule (§12b) frees.
+- **Erasing decides sharing:** a sector holding files of two installs can't be erased when one
+  goes. So **files written together share sectors** (packed at their alignment: the firmware's
+  image, an update's set, the files of one `rom install`), and each batch starts on a fresh
+  sector; a file installed alone takes whole sectors (at most 4 KB lost until compacted).
+- **Grouped by lifetime, too:** what is written together tends to go together. An update's
+  system files are one batch and the user's installs others, so the user's changes don't leave
+  holes among the system's, nor an update among the user's.
+- **Placing:** first fit in the holes usable now, else the gap's edge for its area; refused if
+  neither fits (§12g says what then).
+- **Compaction runs while the system runs** (`rom compact`): plan the packed layout (the system's
+  files first, then the user's), copy the files that move into space usable now, write the
+  pending tree pointing at the copies; the old places free at the next boot, so the boot only
+  takes the tree (no copying, no longer boot). It needs free space as large as what moves (the
+  ROM is 4.86 MB of 10). A power cut leaves the old tree or the new, as any change. Recovery may
+  compact as part of an update, in the same way.
+- **Who chooses an alignment:** `rom install --align SIZE`; a program may ask in its own note
+  (an appended flag, when there is a user: extensions); `mkrom.py`'s `--mappable` becomes
+  `--align SIZE=GLOB`. The default is 64 bytes (a cache line).
+- **Wear** doesn't matter at the rate files are installed; the directory area rotates (§12e).
+
+### 12e. The directory area: a log of tree versions
+
+- **A few erase sectors at the partition's start** (the size from the largest table expected: a
+  few hundred files are a few KB of paths and entries: 124 KB, after the header's own sector, so
+  the files start at 128 KB; the firmware's 78 files take a 7 KB version), written as a log: a new
+  version goes after the last, and a sector is erased for reuse only when it holds neither the
+  booted version nor the newest.
+- **Two pending changes in a row** each write a version, so a power cut while writing the second
+  leaves the first (two slots would lose both).
+- **At boot:** the newest version whose CRC holds and whose firmware requirement this firmware
+  meets; failing that the one booted last; failing that no `/rom` and a warning, as a blank
+  partition today.
+- **Writing a version** is the commit: the files it points at are written and read back first.
+
+### 12f. Hashes, the firmware and `rom check`
+
+- **The firmware embeds a manifest** (path, size, hash for every system file) in place of one
+  content hash, so `rom` lists which system files differ (changed, replaced, missing) rather than
+  saying yes or no; `rom check` hashes every file against its entry (and the system's against the
+  manifest).
+- **A tree version may name the firmware it needs** (its build id). An update writes the ROM's
+  part tied to the new firmware, so if `ota_0` didn't make it, the old firmware boots with the
+  old tree. Today a cut between the two writes leaves them mismatched.
+- **The ROM's files are untrusted input now:** every reader the kernel has (the icon pack, fonts,
+  voices, gamepads, the synth's bank, the zones) must refuse damaged files without crashing; to
+  check one by one (most check already). A bad system file that crashes the boot sends the board
+  to recovery (the crash counter), which can restore the system files (§12g).
+
+### 12g. Updates, file by file
+
+The package's ROM section (`update.md` §2, type 2) becomes a manifest and the files (its format
+to design with the step; the section type is new, appended, since `BMRO` format 1 isn't what it
+holds).
+
+- **Applying it:**
+  - A file whose hash matches already is skipped: most updates write little.
+  - A system file differing, missing, or changed or replaced by the user is written from the
+    package and marked the system's: **the update always wins.**
+  - A system file the new manifest doesn't list is removed.
+  - **The user's files are kept,** unless one sits at a path the system now claims: the system's
+    file wins and the update names the user's it displaced.
+  - All of it is one tree version, so the ROM is the old set or the new one, never half.
+- **Who applies it:** recovery, as now (the user's, §12i Q1): with nothing mapped it may also
+  write over the old system's space and compact. It checks first that the new system's files fit
+  beside the user's (none reserved, Q2): if not, nothing is written and it says how much is
+  missing.
+- **Restoring the system files** is applying the last package's ROM part again (`update apply`
+  of the package kept on the card), from the main firmware or from recovery.
+- **A full flash over the cable** (`idf.py flash`, the web installer) writes a fresh partition:
+  the user's files go, as today.
+
+### 12h. The `rom` command
+
+The user's (2026-11-18): **"full visibility into all the rom metadata and details."** Every field
+the format holds is shown by some form, nothing summarized away; each form's output is lines of
+`Name: value` (as `rom info` today) or a table with a header, the same order every time, so it is
+both read and parsed (`--raw`: exact bytes and offsets rather than KB and dates). Appended to §5's
+forms:
+
+- **Changing it** (each a pending change, §12b; only an update writes the system's files):
+  - `rom install [--align SIZE] SRC... DEST`: one batch (a `DEST` ending in `/` a directory).
+    Refused as not fitting with how much is needed, and whether compacting and rebooting would
+    make room.
+  - `rom remove PATH...`, `rom compact`, `rom discard`.
+- **The whole of it:**
+  - `rom` (`rom info`): the partition (label, offset in flash, size); the format; the booted
+    tree version (sequence, time, firmware build it needs, entry and file counts) and the pending
+    one if any; space used, usable now, usable after the next boot, in holes, in padding; the
+    largest file that fits now (a sector-area file and a page-area one); the manifest's match
+    (system files good, differing, missing); the firmware running (main or recovery).
+- **The files:**
+  - `rom ls [-l] [-R] [--pending] [PATH]`: the booted tree (or the pending one); `-l` adds every
+    entry field: the owner (system, user), flags, size, alignment, offset in the partition and in
+    flash, id, time, and the hash's first 16 hex digits.
+  - `rom stat PATH...`: one entry, every field in full (the whole hash, the space it takes with
+    its padding, the sectors or pages it covers, the mapped address `Vfs::map()` gives, the
+    manifest's hash for a system path and whether it matches, and its state: as booted, replaced
+    or removed in the pending tree, or new).
+- **The space:**
+  - `rom map [--sectors]`: the partition in order from start to end: the header, the directory
+    area, each file (path, owner, offset, size, padding), each hole (and whether it is usable now
+    or after the next boot), the gap between the two areas; `--sectors` one line a 4 KB sector
+    (free, erased, a file's or several files', booted, pending).
+- **The directory area:**
+  - `rom log`: each tree version in the log, oldest first: where it sits, sequence, time, size,
+    entry count, firmware build needed, its CRC good or bad, and which is booted, pending, or
+    superseded; the sectors erased and free for the next.
+- **Differences:**
+  - `rom diff [--manifest | --pending]`: the system's files against the firmware's manifest
+    (changed, replaced by the user, missing, extra), or the booted tree against the pending one
+    (added, replaced, removed, moved): what an update or the next boot would change.
+  - `rom manifest`: the firmware's manifest itself (path, size, hash).
+- **Checking:**
+  - `rom check [PATH...]`: every file's (or these files') hash against its entry, and the
+    system's against the manifest; each bad file named, the time taken.
+
+### 12i. Decided (the user, 2026-11-18)
+
+- **Q1. Recovery applies an update's ROM part** (as recommended): nothing is mapped there, so it
+  may write over the old system's space and compact as it goes, however full the ROM is. The
+  main firmware doesn't stage it (§12g).
+- **Q2. No space reserved for the user's files:** an update may use the whole ROM. The user's
+  files stay, and an update that can't fit beside them is refused before anything is written,
+  saying how much is missing (the user removes files and tries again).
+- **Q3. `rom install` only:** `/rom` stays read-only to the VFS; no `cp` into it.
+
+### 12j. ABI impact
+
+- **Kept once shipped:** `BMRO` format 2 (the partition, the tree version, the entry: version
+  fields to grow), the `rom` command's new forms, the update package's new ROM section type.
+  Format 1 and the old section type were never released (`update.md` §2).
+- **Not frozen:** the allocator's choices (where files go), `RomImage`'s and `RomVolume`'s
+  interfaces (kernel classes).
+- **None in the SDK** until programs' read-only `mmap()` (§6) or extensions use it.
+
+### 12k. Budget (estimates)
+
+- **Flash:** the header's sector and the log, 128 KB of the 10 MB; alignment's padding at most
+  64 KB a file aligned to the MMU's page, 4 KB a lone install until compacted.
+- **RAM:** the booted table is read in place (mapped); a change builds the new table in PSRAM
+  (a few KB) and frees it.
+- **Boot:** the log's versions' headers and the chosen table's check: a millisecond or two.
+- **Firmware:** the writer, the allocator, `rom`'s new forms; the manifest (a few KB for a few
+  hundred files) in place of a 32-byte hash.
+
+### 12l. Steps
+
+1. **Format 2, host-tested** (done, 2026-11-18, §12m): `RomImage` (reader, writer, checks),
+   `mkrom.py`, `RomVolume` on the flat table (lookups, listings, links), times per file; a
+   libFuzzer target.
+2. **The firmware on format 2:** the directory log at boot, the manifest, and `rom`'s viewing
+   forms (`info`, `ls`, `stat`, `map`, `log`, `diff`, `manifest`, `check`; §12h); the readers
+   checked as untrusted input (§12f). Flashed over the cable.
+3. **Changes while running:** the allocator, `rom install`, `remove`, `discard`, pending trees,
+   tested on the board across reboots and with resets during writes (as `/flash`'s were).
+4. **Compaction** (`rom compact`), with resets during it.
+5. **Updates file by file:** the package's new section, `mkupdate`, recovery applying it,
+   restoring the system's files; a user's file replaced and restored by an update on the board.
+6. **Then, each with its own plan:** programs' read-only `mmap()` (§6); files mapped through the
+   MMU at 64 KB; kernel extensions.
+
+### 12m. As built: step 1, format 2 (2026-11-18)
+
+- **`RomImage`** (`bmds_core`): `open()` checks the header (format 2, its CRC, the log in whole
+  sectors before the files' space, reserved bytes 0), then takes the version with the largest
+  sequence among those whose header is sane and CRC holds, checking it whole (every path valid
+  and in strictly increasing order, flags, alignment, offset and size inside the partition past
+  the log, times a `Timestamp` holds, no path both a file and a directory); a version whole but
+  wrong falls back to the next newest. `find()` walks the path a part at a time (each part along
+  the way a directory: `noPath` as before), then one binary search for a file, or the run of a
+  directory (`Node`: `[first, end)` and its prefix); `nextChild()` lists a directory, skipping
+  each subdirectory's run with a search for its path and `'0'` (the byte after `/`).
+  `contentHash()` (each file's path, flags, size and hash: not places or times) is what the
+  firmware compares until the manifest (step 2); `verifyFile()`, `verify()`.
+- **The writer:** `writeHeader()`, `versionBytes()`, `writeVersion()` (sorted `NewEntry`s,
+  checked as `open()` checks them but for their places). Tested to make `mkrom.py`'s header and
+  version byte for byte, and a version it writes after mkrom's to be the tree.
+- **`mkrom.py image`:** format 2; `--align SIZE=GLOB` (largest match wins; default 64 bytes) in
+  place of `--mappable`; `--log-bytes` (124 KB). Files aligned to 64 KB are placed first, each
+  on its own pages, then the rest by alignment. Unused bytes are 0xff. Every file has the
+  image's time (the newest source, or `SOURCE_DATE_EPOCH`), as before.
+- **`RomVolume`:** files have their entry's time, directories the newest time under them;
+  `statfs` gives the log and the files' bytes. **`RomDisk`** compares the content hash and logs
+  the file count; **`rom`** says format 2, the files, the tree version and when it was written,
+  and `rom check` hashes each file.
+- **Tests** (`tests/host/rom.cpp`, 10 cases): the fixture gained `docs.txt` (it sorts between
+  `docs`'s run and `a.txt`: the listing skips runs correctly), `--align 4k=images/*` and
+  `64k=a.txt`. Lookups, listings, alignments, the content hash; damage refused (the header,
+  the log's bounds, a file cut short, each entry field with the CRC made right, a doubled `/`, a
+  `..`, a file and a directory at one path); the newest good version chosen (by sequence, not
+  place; a cut newer one or a whole but wrong one falls back; an empty tree); 3,000 random
+  damages with the CRC made right; the writer.
+- **`rom_fuzz`** (`tests/fuzz/rom.cpp`, seeds by `make-rom-seeds.sh`): CRCs made right before
+  each run. It found within seconds that a time near `INT64_MAX` overflowed `Timestamp`'s
+  nanoseconds (undefined behaviour); times outside a `Timestamp`'s range are now refused (a host
+  test each for an entry's and a version's). Then 5.2 million runs in 5 minutes, nothing.
+- **Size:** `romimage.cpp`'s code 1,812 → 4,939 bytes (the writer, unused by the firmware until
+  step 3, is dropped by the linker). The firmware's ROM is 4,987,075 bytes (+128 KB: the header's
+  sector and the log), 78 files, its tree version 7,087 bytes.
+- **A format 1 ROM isn't read** by this firmware, so firmware and ROM go together (an update
+  package or `idf.py flash` writes both).
+- **On the board** (bmds0, 2026-11-18, `build update` and `tools/bmds-update`; recovery wrote the
+  ROM): mounted 23 ms after reset ("4739 KB, 78 files"), `rom` says format 2, tree version 1,
+  matching the firmware; `rom check` hashed the 78 files (4,739 KB) in 1,384 ms, all good. `find
+  /rom` gave the image's 72 files, 6 links and 30 directories exactly; `sha256sum` of every file
+  matched the image built on the host. Directories show the newest time under them; missing paths,
+  a path through a file and a prefix of a name (`/rom/bi`) are "No such file"; `mkdir`, `touch`
+  and `rm` are "Read-only file system". What maps or reads the ROM worked: the desktop (its
+  pattern, the icon pack, the fonts), `say` with the ROM's voice, `font list` and `font draw` from
+  `/rom/share/fonts`; and its programs: `dropbear` serving (`/rom/bin/dropbear`, a link), `scp`
+  both ways (200 KB, identical), `sftp` listing `/rom/bin`, `dropbearkey`, `ssh -V`, `tlsclient`
+  to example.com.
+

@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 12: A game
 //
 // Games are made of the same parts: things that move each moment (tick), a picture of how

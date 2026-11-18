@@ -66,7 +66,7 @@ namespace {
 
 AngelSupport::AngelSupport(GuiApplication &app, const Context &context, Listener &listener)
     : _app(app), _context(context), _listener(listener) {
-        // angel, found as a shell would (the ROM's /rom/bin is on PATH).
+        // angel, found as a shell would (on PATH: the card's bin, where its package installs it).
         StringView path;
         for (const StringView &v : context.environment)
                 if (v.startsWith(StringView("PATH="))) path = v.mid(5);

@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 10: Drawing
 //
 // Screen opens a window to draw on. Places in it are counted in pixels (dots) from its top-left

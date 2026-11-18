@@ -622,3 +622,14 @@ firmware, the package installed everything but the bootloader (that firmware ski
 unknown); the new firmware ran on the old bootloader with IDF's layout; `--bootloader` with the same
 package then had recovery write only the bootloader, and the board came back with BMDS's layout.
 A plain `update apply` of the same version names `--bootloader` when the bootloader is its only news.
+
+## 21. Updates file by file (planned 2026-11-18)
+
+The ROM becomes changeable (`rom.md` §12): files added and removed while BMDS runs, taking effect
+at the next boot. An update's ROM part becomes a manifest and the files: those already right are
+skipped, the system's files are written back whatever the user did to them (the update always
+wins), the system's files it drops are removed, and the user's are kept unless the system claims
+their path. All of it lands as one tree version, tied to the firmware it was written for, so a
+cut leaves the old set or the new (`rom.md` §12g). Recovery applies it (the user's, `rom.md` §12i);
+no space is reserved for the user's files, so an update that can't fit beside them is refused
+before anything is written.

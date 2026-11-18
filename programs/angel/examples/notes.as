@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // A notepad in a window of its own (the GUI's classes: devplan/guiprograms.md §13): a menu bar
 // with shortcuts, a toolbar, the text, and a status bar with the cursor's place. The one-line
 // dialogs do the asking (chooseFile(), chooseSaveFile(), ask(), askText(), alert()), and the

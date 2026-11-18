@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // A piano: click the keys (drag across them for a glissando), or play them on the keyboard:
 // A S D F G H J K the white keys, W E T Y U the black ones; hold several for a chord. Z and X
 // change the octave, 1-4 the instrument. A note sounds from noteOn() while its key is down to

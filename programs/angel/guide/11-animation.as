@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 11: Animation
 //
 // Moving pictures are still pictures shown one after another, fast. A program draws a picture

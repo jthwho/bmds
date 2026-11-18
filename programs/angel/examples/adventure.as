@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // A very small text adventure: rooms joined by exits, things to pick up, and a goal.
 // Type "go north", "take key", "look", "inventory" or "quit".  Run it with:  angel adventure.as
 

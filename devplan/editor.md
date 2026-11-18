@@ -187,7 +187,7 @@ working name and this replaces it, open until the user settles it (§13).
   `edit`, and run (not opened) from a terminal or by double click with Ctrl.
 - **Settings** (`sysconf`, `editor/...`): the scheme, tab width and tabs or spaces (per language
   where they differ), line numbers, word wrap, the undo log's size, the scripts' folder
-  (`~/scripts`), the examples' folder (`/rom/share/angel/examples`).
+  (`~/scripts`), the examples' folder (`/sd0/p0/share/angel/examples`).
 - **Keys:** every action bound, declared in its `controls.conf` (`controls.md`).
 
 ## 9. `LanguageSupport`
@@ -217,7 +217,7 @@ optional.
   machine form, so the editor goes to the line. Stop: SIGTERM, then SIGKILL after a second.
   Windows the script opens are its own, as from a terminal.
 - **Help:** F1 shows the declaration and help line from `--api-help`; Help ▸ Examples opens
-  `/rom/share/angel/examples` (read-only there: Save As to the scripts' folder).
+  `/sd0/p0/share/angel/examples` (Save As to the scripts' folder).
 
 **C and C++** (later, with a compiler on the device): the same `Syntax` already colours them;
 check through the compiler's `-fsyntax-only`, run through build then run, errors in the GCC

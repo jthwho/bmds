@@ -275,6 +275,10 @@ int TextCommands::head(CommandContext &ctx) {
                 const char *value = args[i][2] != '\0' ? args[i] + 2 : (i + 1 < args.size() ? args[++i] : "");
                 if (!parseCount(value, count)) return ctx.usage();
                 ++i;
+        } else if (i < args.size() && args[i][0] == '-' && args[i][1] >= '0' && args[i][1] <= '9') {
+                // The historical `-count` (`head -3`), which GNU's and BusyBox's take too.
+                if (!parseCount(args[i] + 1, count)) return ctx.usage();
+                ++i;
         }
         const Args files = args.mid(i);
         ReadBuffer buffer;
@@ -550,7 +554,7 @@ BMDS_SHELL_COMMAND(cat, TextCommands::cat, "[file]...", "Copy files (or standard
 BMDS_SHELL_COMMAND(echo, TextCommands::echo, "[-neE] [word]...", "Print the words, separated by spaces")
 BMDS_SHELL_COMMAND(grep, TextCommands::grep, "[-civnqEFG] [-e pattern]... | pattern [file]...",
                    "Print the lines of files (or standard input) that match a regular expression")
-BMDS_SHELL_COMMAND(head, TextCommands::head, "[-n count | -c bytes] [file]...",
+BMDS_SHELL_COMMAND(head, TextCommands::head, "[-n count | -c bytes | -count] [file]...",
                    "Print the first lines (10), or bytes, of files")
 BMDS_SHELL_COMMAND(wc, TextCommands::wc, "[-lwc] [file]...", "Count lines, words and bytes of files")
 

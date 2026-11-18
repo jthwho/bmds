@@ -12,7 +12,9 @@ esac
 cp "$PKGDIR/Makefile" Makefile
 $BMDS_MAKE AS="$AS" SRC="$SRC" PRESO="$ROOT/programs/preso" MD4C="$ROOT/thirdparty/md4c" CC="$CC" CXX="$CXX" \
         AR="$AR" DEFINES="$DEFINES" angel
-mkdir -p "$DESTDIR/bin" "$DESTDIR/share/licenses/angel"
+mkdir -p "$DESTDIR/bin" "$DESTDIR/share/licenses/angel" "$DESTDIR/share/angel"
 cp angel "$DESTDIR/bin/angel"
+# The examples and the guide's lessons (the editor's Help menu: editor/angel-examples, -guide).
+cp -r "$SRC/examples" "$SRC/guide" "$DESTDIR/share/angel/"
 cp "$AS/LICENSE" "$DESTDIR/share/licenses/angel/angelscript.LICENSE"
 cp "$ROOT/thirdparty/md4c/LICENSE.md" "$DESTDIR/share/licenses/angel/md4c.LICENSE.md"

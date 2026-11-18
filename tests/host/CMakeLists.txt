@@ -281,7 +281,7 @@ if(Python3_Interpreter_FOUND)
                         --file share/icons/bmds.icons=${BMDS_ROM_OUT}/bmds.icons
                         ${BMDS_TEST_ROM_ZONES}
                         --link docs/hello-link=/rom/hello.txt
-                        --mappable images/*
+                        --align 4k=images/* --align 64k=a.txt
                         --hash-header ${BMDS_ROM_OUT}/include/romhash.h
                 DEPENDS ${BMDS_MKROM} ${BMDS_TEST_ROM_FILES} ${CMAKE_CURRENT_LIST_DIR}/png/grey.png
                         ${BMDS_ROM_OUT}/bmds.icons ${BMDS_TEST_ROM_ZONES_FILE}
@@ -348,6 +348,21 @@ if(BMDS_RISCV_GCC)
                 BMDS_SDK_EXAMPLES="${CMAKE_BINARY_DIR}/sdk-examples")
         add_test(NAME sdk_examples_are_programs
                  COMMAND bmds-elfcheck ${CMAKE_BINARY_DIR}/sdk-examples/hello.elf)
+        # The examples packed (sdk/tools/bmds-pack, devplan/programs.md §20): a patch list in place of
+        # their relocations and symbols, as the ROM's programs are; the loader must make the same
+        # images of them.
+        if(Python3_Interpreter_FOUND)
+                string(REGEX REPLACE "gcc$" "objcopy" BMDS_RISCV_OBJCOPY "${BMDS_RISCV_GCC}")
+                set(BMDS_SDK_PACKED ${CMAKE_BINARY_DIR}/sdk-examples-packed)
+                add_custom_target(sdk_examples_packed ALL
+                        COMMAND ${CMAKE_COMMAND} -E rm -rf ${BMDS_SDK_PACKED}
+                        COMMAND ${CMAKE_COMMAND} -E make_directory ${BMDS_SDK_PACKED}
+                        COMMAND sh -c "${Python3_EXECUTABLE} ${BMDS_ROOT}/sdk/tools/bmds-pack --objcopy ${BMDS_RISCV_OBJCOPY} -d ${BMDS_SDK_PACKED} $(ls ${CMAKE_BINARY_DIR}/sdk-examples/*.elf | grep -v '\\.debug\\.elf$')"
+                        DEPENDS sdk_examples ${BMDS_ROOT}/sdk/tools/bmds-pack
+                        VERBATIM)
+                add_dependencies(bmds_host_tests sdk_examples_packed)
+                target_compile_definitions(bmds_host_tests PRIVATE BMDS_SDK_PACKED="${BMDS_SDK_PACKED}")
+        endif()
 else()
         message(STATUS "riscv32-esp-elf-gcc not found: the SDK examples are not built or tested")
 endif()

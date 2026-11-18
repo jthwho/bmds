@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // A bouncing ball: draw, move, wait for the next frame, again. Close the window to stop.
 
 Screen w("Bounce", 640, 480);

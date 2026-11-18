@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // A music player (audio and speech: devplan/guiprograms.md §14): a file chosen, played in the
 // background (an AudioPlayer: WAV, MP3, Ogg Vorbis, FLAC, MIDI), paused, stopped, moved through
 // with the slider; its tags shown, and its title read aloud by a voice. A file can be given:

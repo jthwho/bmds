@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Fetches a page from the web and shows it, with what the server said about it:
 //     angel fetch.as https://example.com/
 

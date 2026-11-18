@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 3: Asking
 //
 // A program can ask a question and use the answer. input() waits for you to type a line in the

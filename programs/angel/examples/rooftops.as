@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Rooftops: two throwers on a city's roofs take turns throwing a bomb at each other. Type the
 // angle (0 to 90) and Enter, then the speed (1 to 100) and Enter, and watch it fly. Gravity
 // pulls it down and the wind pushes it; the buildings are knocked about where it lands. The

@@ -113,13 +113,14 @@ Error RomDisk::init() {
         if (ierr.isError()) return Error::Ok; // mounted above, so it opens: never here
         mountedImage = image;
         mounted = true;
-        matches = std::memcmp(image.hash().data(), RomContentHash, sizeof(RomContentHash)) == 0;
+        uint8_t content[RomImage::HashBytes];
+        image.contentHash(content);
+        matches = std::memcmp(content, RomContentHash, sizeof(RomContentHash)) == 0;
         char have[17];
-        hex(image.hash().data(), 8, have);
+        hex(content, 8, have);
         if (matches) {
-                bmdsInfo("RomDisk: /dev/%s mounted on %s, %u KB, %u entries, content %s", name, Path,
-                         static_cast<unsigned>(image.bytes().size() / 1024), static_cast<unsigned>(image.count()),
-                         have);
+                bmdsInfo("RomDisk: /dev/%s mounted on %s, %u KB, %u files, content %s", name, Path,
+                         static_cast<unsigned>(image.filesBytes() / 1024), static_cast<unsigned>(image.count()), have);
         } else {
                 char want[17];
                 hex(RomContentHash, 8, want);

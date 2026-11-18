@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // #! is skipped; #include adds a file's declarations (each file once, relative paths).
 #include "lib/twice.as"
 #include "lib/half.as"

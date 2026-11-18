@@ -102,7 +102,7 @@ elseif(NOT BOOTLOADER_BUILD)
                 message(STATUS "zic not found: the ROM has no time zone database (devplan/rom.md §3g)")
         endif()
         # The SSH programs (devplan/network.md §24, netfs.md): Dropbear, our sftp-server, sshfs and ssh-copy-id,
-        # angel (devplan/scripting.md) and tlsclient (network.md §35d), built by tools/bmds-dist into
+        # and tlsclient (network.md §35d), built by tools/bmds-dist into
         # this build directory (nested: no build wrapper, one job at a time; Dropbear's release is
         # fetched once into ~/.cache/bmds-dist) and put in /rom/bin.
         set(BMDS_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/../..)
@@ -126,47 +126,51 @@ elseif(NOT BOOTLOADER_BUILD)
         set(BMDS_ROM_SFTP ${BMDS_ROM_DIST}/stage/sftp-server)
         set(BMDS_ROM_SSHFS ${BMDS_ROM_DIST}/stage/sshfs)
         set(BMDS_ROM_COPYID ${BMDS_ROM_DIST}/stage/ssh-copy-id)
-        set(BMDS_ROM_ANGEL ${BMDS_ROM_DIST}/stage/angel)
         set(BMDS_ROM_TLSCLIENT ${BMDS_ROM_DIST}/stage/tlsclient)
-        file(GLOB BMDS_ROM_ANGEL_EXAMPLES CONFIGURE_DEPENDS ${BMDS_ROOT_DIR}/programs/angel/examples/*
-             ${BMDS_ROOT_DIR}/programs/angel/guide/*)
         file(GLOB_RECURSE BMDS_ROM_DIST_SOURCES CONFIGURE_DEPENDS ${BMDS_ROOT_DIR}/dist/dropbear/*
              ${BMDS_ROOT_DIR}/dist/sftp-server/* ${BMDS_ROOT_DIR}/programs/sftp-server/*
              ${BMDS_ROOT_DIR}/dist/sshfs/* ${BMDS_ROOT_DIR}/programs/sshfs/*
              ${BMDS_ROOT_DIR}/dist/ssh-copy-id/* ${BMDS_ROOT_DIR}/programs/ssh-copy-id/*
-             ${BMDS_ROOT_DIR}/dist/angel/* ${BMDS_ROOT_DIR}/programs/angel/*
              ${BMDS_ROOT_DIR}/dist/tlsclient/* ${BMDS_ROOT_DIR}/sdk/examples/tlsclient/* ${BMDS_ROOT_DIR}/sdk/tls/*
-             # angel's stage: Preso's scene code (devplan/preso.md §8c) and md4c
-             ${BMDS_ROOT_DIR}/programs/preso/core/* ${BMDS_ROOT_DIR}/programs/preso/script/*
-             ${BMDS_ROOT_DIR}/programs/preso/bmds/* ${BMDS_ROOT_DIR}/thirdparty/md4c/*
-             ${BMDS_ROOT_DIR}/thirdparty/angelscript/source/* ${BMDS_ROOT_DIR}/thirdparty/angelscript/include/*
-             ${BMDS_ROOT_DIR}/thirdparty/angelscript/add_on/*
              ${BMDS_ROOT_DIR}/sdk/crt/* ${BMDS_ROOT_DIR}/sdk/include/* ${BMDS_ROOT_DIR}/sdk/cmake/*
-             ${BMDS_ROOT_DIR}/sdk/game/* ${BMDS_ROOT_DIR}/sdk/http/*
-             ${BMDS_ROOT_DIR}/components/bmds_core/src/http.cpp ${BMDS_ROOT_DIR}/components/bmds_core/src/string.cpp
              ${BMDS_ROOT_DIR}/components/bmds_core/include/bmds/*
              ${BMDS_ROOT_DIR}/sdk/ld/*)
         add_custom_command(OUTPUT ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
                                   ${BMDS_ROM_SSHFS}/bin/sshfs ${BMDS_ROM_COPYID}/bin/ssh-copy-id
-                                  ${BMDS_ROM_ANGEL}/bin/angel ${BMDS_ROM_TLSCLIENT}/bin/tlsclient
+                                  ${BMDS_ROM_TLSCLIENT}/bin/tlsclient
                            COMMAND ${BMDS_ROM_ENV} ${BMDS_STORAGE_PYTHON} ${BMDS_ROOT_DIR}/tools/bmds-dist --out ${BMDS_ROM_DIST}
-                                   --nested build dropbear sftp-server sshfs ssh-copy-id angel tlsclient
+                                   --nested build dropbear sftp-server sshfs ssh-copy-id tlsclient
                            DEPENDS ${BMDS_ROOT_DIR}/tools/bmds-dist ${BMDS_ROM_DIST_SOURCES}
                            VERBATIM)
+        # Packed for the ROM (sdk/tools/bmds-pack, devplan/programs.md §20): their relocations and
+        # symbols replaced by the list of words the loader patches, about half the bytes. The stage
+        # (what the card's packages hold) keeps everything, and so do the builds the host's tools
+        # name faults and profiles from.
+        set(BMDS_ROM_PACKED ${BMDS_ROM_OUT}/packed)
+        set(BMDS_ROM_PROGRAMS ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
+                              ${BMDS_ROM_SSHFS}/bin/sshfs ${BMDS_ROM_COPYID}/bin/ssh-copy-id
+                              ${BMDS_ROM_TLSCLIENT}/bin/tlsclient)
+        set(BMDS_ROM_PACKED_PROGRAMS)
+        foreach(_program ${BMDS_ROM_PROGRAMS})
+                get_filename_component(_name ${_program} NAME)
+                list(APPEND BMDS_ROM_PACKED_PROGRAMS ${BMDS_ROM_PACKED}/${_name})
+        endforeach()
+        add_custom_command(OUTPUT ${BMDS_ROM_PACKED_PROGRAMS}
+                           COMMAND ${CMAKE_COMMAND} -E make_directory ${BMDS_ROM_PACKED}
+                           COMMAND ${BMDS_STORAGE_PYTHON} ${BMDS_ROOT_DIR}/sdk/tools/bmds-pack
+                                   --objcopy ${CMAKE_OBJCOPY} -d ${BMDS_ROM_PACKED} ${BMDS_ROM_PROGRAMS}
+                           DEPENDS ${BMDS_ROOT_DIR}/sdk/tools/bmds-pack ${BMDS_ROM_PROGRAMS}
+                           VERBATIM)
         set(BMDS_ROM_SSH
-            --file bin/dropbearmulti=${BMDS_ROM_DROPBEAR}/bin/dropbearmulti
+            --file bin/dropbearmulti=${BMDS_ROM_PACKED}/dropbearmulti
             --link bin/dropbear=dropbearmulti --link bin/dbclient=dropbearmulti --link bin/ssh=dropbearmulti
             --link bin/dropbearkey=dropbearmulti --link bin/dropbearconvert=dropbearmulti
             --link bin/scp=dropbearmulti
-            --file bin/sftp-server=${BMDS_ROM_SFTP}/bin/sftp-server
-            --file bin/sshfs=${BMDS_ROM_SSHFS}/bin/sshfs
-            --file bin/ssh-copy-id=${BMDS_ROM_COPYID}/bin/ssh-copy-id
+            --file bin/sftp-server=${BMDS_ROM_PACKED}/sftp-server
+            --file bin/sshfs=${BMDS_ROM_PACKED}/sshfs
+            --file bin/ssh-copy-id=${BMDS_ROM_PACKED}/ssh-copy-id
             --file share/licenses/dropbear/LICENSE=${BMDS_ROM_DROPBEAR}/share/licenses/dropbear/LICENSE
-            --file bin/angel=${BMDS_ROM_ANGEL}/bin/angel
-            --file bin/tlsclient=${BMDS_ROM_TLSCLIENT}/bin/tlsclient
-            --dir share/angel/examples=${BMDS_ROOT_DIR}/programs/angel/examples
-            --dir share/angel/guide=${BMDS_ROOT_DIR}/programs/angel/guide
-            --file share/licenses/angelscript/LICENSE=${BMDS_ROM_ANGEL}/share/licenses/angel/angelscript.LICENSE)
+            --file bin/tlsclient=${BMDS_ROM_PACKED}/tlsclient)
         # IANA's leap-second list (devplan/network.md §31e): CLOCK_TAI and PTP's UTC offset; a newer one
         # on the card (clock/leapseconds) wins.
         set(BMDS_ROM_LEAP_FILE ${BMDS_ROOT_DIR}/thirdparty/tzdata/leap-seconds.list)
@@ -239,9 +243,7 @@ elseif(NOT BOOTLOADER_BUILD)
                                    ${BMDS_ROM_PADS} ${BMDS_ROM_PATTERNS} ${BMDS_ROM_FONTS} ${BMDS_ROM_BANKS}
                                    ${BMDS_ROM_NOTICES} --hash-header ${BMDS_ROM_HASH}
                            DEPENDS ${BMDS_MKROM} ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/bmds.LICENSES
-                                   ${BMDS_ROM_DROPBEAR}/bin/dropbearmulti ${BMDS_ROM_SFTP}/bin/sftp-server
-                                   ${BMDS_ROM_SSHFS}/bin/sshfs ${BMDS_ROM_COPYID}/bin/ssh-copy-id
-                                   ${BMDS_ROM_ANGEL}/bin/angel ${BMDS_ROM_ANGEL_EXAMPLES} ${BMDS_ROM_TREE_FILES} ${BMDS_ROM_ZONES_FILE} ${BMDS_ROM_LEAP_FILE}
+                                   ${BMDS_ROM_PACKED_PROGRAMS} ${BMDS_ROM_TREE_FILES} ${BMDS_ROM_ZONES_FILE} ${BMDS_ROM_LEAP_FILE}
                                    ${BMDS_ROM_SPEECH_FILES} ${BMDS_ROM_PADS_FILE} ${BMDS_ROM_PATTERN_FILES}
                                    ${BMDS_ROM_FONT_FILES} ${BMDS_ROM_PLEX}/LICENSE.txt ${BMDS_ROM_OPL}/dmxopl3.op2
                                    ${BMDS_ROM_OPL}/dmxopl3-LICENSE ${BMDS_ROM_NOTICE_FILES}

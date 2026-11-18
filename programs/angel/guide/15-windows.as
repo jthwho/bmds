@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 15: Windows and buttons
 //
 // The programs so far ran from top to bottom: print, ask, print again. A program with a window

@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // The system at a glance (the services: devplan/guiprograms.md §14): its names, memory, CPU
 // load and network, refreshed each second; a clock in a time zone kept as the example's own
 // setting (declared, saved when changed); and a command run with its output coming in line by

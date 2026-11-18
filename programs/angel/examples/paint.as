@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // A paint program in windows of its own (the GUI's classes: devplan/guiprograms.md §13). The
 // picture is a Canvas, drawn with a Screen's methods; a Tools window beside it holds the tools,
 // the colours and the brush's size. The left button paints in the first colour, the right in the

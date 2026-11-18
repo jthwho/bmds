@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // The system's fonts: each family written in itself, at a size you choose. Up and Down change the
 // size, S changes the smoothing, B bold, I italic. Close the window to stop.
 

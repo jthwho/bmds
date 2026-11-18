@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 16: A small application
 //
 // A notepad that keeps what you write: a window with a menu, a big box of text, and a status

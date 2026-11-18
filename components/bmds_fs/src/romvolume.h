@@ -20,9 +20,11 @@ BMDS_NAMESPACE_BEGIN
  * @brief A ROM image while mounted: a read-only tree whose files are read
  *        where they lie (`BlockDevice::mapped()`), nothing copied.
  *
- * A static pool of `MaxVolumes`. Every file has the image's build time and
- * the ReadOnly attribute (System too where the image says so: an emulated
- * link). Files and directories still open when it is unmounted go stale:
+ * A static pool of `MaxVolumes`. Every file has its entry's time and the
+ * ReadOnly attribute (System too where the image says so: an emulated link);
+ * a directory has the newest time under it. The tree is the one found at
+ * mount: a change to the ROM takes effect at the next mount (devplan/rom.md
+ * §12b). Files and directories still open when it is unmounted go stale:
  * they fail with `NoMedia` (a generation number tells them).
  */
 class RomVolume final : public Volume {
@@ -71,13 +73,13 @@ class RomVolume final : public Volume {
                 void                    closeDirectory(Cursor *cursor) override;
                 Result<ByteSpan>        map(StringView path, bool &noPath) override;
 
-                /** @brief Fills @p info from entry @p index. */
-                Error describe(uint32_t index, FileInfo &info) const;
+                /** @brief Fills @p info from @p node (a file or a directory) named @p name. */
+                Error describe(const RomImage::Node &node, StringView name, FileInfo &info) const;
 
         private:
-                // Finds @p path: `Ok` and the entry, else `NotExist` (with @p noPath).
-                Result<uint32_t> find(StringView path, bool &noPath) const;
-                // Finds file @p path (`IsDir` for a directory).
+                // Finds @p path: `Ok` and what it is, else `NotExist` (with @p noPath).
+                Result<RomImage::Node> find(StringView path, bool &noPath) const;
+                // Finds file @p path: its entry (`IsDir` for a directory).
                 Result<uint32_t> findFile(StringView path, bool &noPath) const;
 
                 RomImage     _image;

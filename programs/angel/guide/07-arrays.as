@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 7: Lists
 //
 // An array holds many values of one type, in order: a shopping list, the scores in a game, the

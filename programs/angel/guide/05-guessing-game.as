@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 5: A guessing game
 //
 // Your first game, made of what the first four lessons showed. The computer picks a secret

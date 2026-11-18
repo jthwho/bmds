@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 13: Sound
 //
 // The computer has a synthesizer: it can beep, play notes and tunes, and even talk.

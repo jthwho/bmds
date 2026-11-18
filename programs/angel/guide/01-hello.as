@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 1: Hello!
 //
 // Welcome to the guide. Each lesson is a small program, and you're reading one now. The lines

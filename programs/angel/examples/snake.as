@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Snake: steer with the arrow keys (or WASD, or a gamepad), eat the apples, don't hit the walls or
 // yourself. A game in Screen.run(): tick() moves the snake ten times a second, and draw() shows each
 // move. The sounds are play()'s notes, in the background ("MB") so the game goes on.

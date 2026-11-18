@@ -40,6 +40,10 @@ the host tests: they run for as long as one lets them.
   loaded, every index inside its mesh and every name found again, and every mesh drawn wire, flat,
   Gouraud and environment-mapped; no fault, no read outside the file, no undefined behaviour, no
   leak. Seeds: `tests/fuzz/make-model-seeds.sh DIR` (`bmds-mesh3d` from `build-host`).
+- **`rom_fuzz`:** the ROM's partition (`devplan/rom.md` §12c): any bytes, its header's CRC and
+  each tree version's made right first so the checks behind them are what is fuzzed; what opens
+  keeps every file inside the partition, lists every file once from the root, finds each by its
+  path, and is taken again by the writer. Seeds: `tests/fuzz/make-rom-seeds.sh DIR`.
 - **`soundfont_fuzz`:** SoundFonts (§22): load, play notes on every preset, the drums and across
   the keyboard with controllers and bends, render; every sample finite, no leak.
 
@@ -68,6 +72,11 @@ TMPDIR=/mnt/data/tmp ./fontface_fuzz -fork=3 -ignore_crashes=1 -max_len=16384 -m
 ```sh
 mkdir -p pkg-seeds && cp ../tests/host/pkg/* pkg-seeds/       # and manifest, stanza and version texts
 ./pkg_fuzz -fork=3 -ignore_crashes=1 -max_len=131072 -max_total_time=900 -artifact_prefix=./pkg- pkg-corpus pkg-seeds
+```
+
+```sh
+tests/fuzz/make-rom-seeds.sh rom-seeds                   # small partitions made by tools/mkrom.py
+./rom_fuzz -max_len=131072 -max_total_time=300 -print_funcs=0 -artifact_prefix=./rom- rom-corpus rom-seeds
 ```
 
 ```sh

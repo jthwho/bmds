@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 17: Two windows
 //
 // A program can have as many windows as it likes. They're variables like any other, so the

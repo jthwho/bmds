@@ -22,9 +22,9 @@ BMDS_NAMESPACE_BEGIN
 
 namespace {
 
-        BMDS_SYSCONF(editorExamples, "editor/angel-examples", Config::Type::String, "/rom/share/angel/examples",
+        BMDS_SYSCONF(editorExamples, "editor/angel-examples", Config::Type::String, "/sd0/p0/share/angel/examples",
                      "Where the text editor's Help > Examples looks for AngelScript examples", 0, 0, nullptr, nullptr)
-        BMDS_SYSCONF(editorGuide, "editor/angel-guide", Config::Type::String, "/rom/share/angel/guide",
+        BMDS_SYSCONF(editorGuide, "editor/angel-guide", Config::Type::String, "/sd0/p0/share/angel/guide",
                      "Where the text editor's Help > Guide finds the AngelScript guide's lessons", 0, 0, nullptr,
                      nullptr)
         BMDS_SYSCONF(editorScripts, "editor/scripts", Config::Type::String, "${HOME}/scripts",
@@ -50,12 +50,12 @@ namespace {
 
         constexpr Template Templates[] = {
                 {nullptr, ""},
-                {"angelscript", "#!/rom/bin/angel\n"
+                {"angelscript", "#!/bin/env angel\n"
                                 "// A program: say what it does here. F5 runs it.\n"
                                 "\n"
                                 "string name = input(\"What's your name? \");\n"
                                 "println(\"Hello, \" + name + \"!\");\n"},
-                {"angelscript", "#!/rom/bin/angel\n"
+                {"angelscript", "#!/bin/env angel\n"
                                 "// A game: the arrow keys steer the ball. F5 runs it; close its window to stop.\n"
                                 "\n"
                                 "Window w(\"My Game\", 640, 480);\n"

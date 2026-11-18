@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 4: Loops
 //
 // A loop runs the same lines again and again. That's how a computer counts to a million

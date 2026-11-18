@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Serpents: eat the numbers 1 to 9 in turn; each makes you longer. Eat the 9 and the next level
 // has new walls, and everything goes faster. Don't hit a wall, yourself or the other serpent.
 // One player steers with the arrow keys; a second with W A S D. Press 1 or 2 to start.

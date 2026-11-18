@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Chat with a friend on another computer. One of you waits:
 //     angel chat.as
 // and it shows the address to give your friend, who joins with it:

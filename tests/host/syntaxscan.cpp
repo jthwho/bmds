@@ -96,7 +96,8 @@ TEST_CASE("Syntax: a file's language from its name or its #! line") {
         CHECK(id("data.json") == "json");
         CHECK(id("/cfg/profile") == "shell");
         CHECK(id("notes.txt") == "plain");
-        CHECK(id("hello", "#!/rom/bin/angel") == "angelscript");
+        CHECK(id("hello", "#!/sd0/p0/bin/angel") == "angelscript");
+        CHECK(id("hello", "#!/bin/env angel") == "angelscript");
         CHECK(id("hello", "#!/usr/bin/env sh") == "shell");
         CHECK(id("hello", "#! /bin/sh -e") == "shell");
         CHECK(id("hello", "#!/usr/bin/python3") == "plain");
@@ -112,7 +113,7 @@ TEST_CASE("Syntax: AngelScript") {
               "float:type 1.5e3f:number 2.5d:number .5:number");
         CHECK(styled("angelscript", "int8 v = x8 + 8;") == "int8:type 8:number"); // digits in words
         CHECK(styled("angelscript", "#include \"lib.as\"") == "#include:preproc \"lib.as\":string");
-        CHECK(styled("angelscript", "#!/rom/bin/angel") == "#!/rom/bin/angel:comment");
+        CHECK(styled("angelscript", "#!/bin/env angel") == "#!/bin/env angel:comment");
         CHECK(styled("angelscript", "a = b + 1;", true) == "=:operator +:operator 1:number");
 
         // A block comment and a long string across lines.

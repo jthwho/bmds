@@ -1,6 +1,6 @@
 # Scripting: AngelScript, a Runtime with the Whole System, and an IDE
 
-Status: **steps 1-9 built** (2026-10-22): C++ in the SDK; `angel` in the ROM with its core,
+Status: **steps 1-9 built** (2026-10-22): C++ in the SDK; `angel` (on the card since 2026-11-18, §2) with its core,
 the text screen, files and other programs, graphics and input, sound, the network; the patches;
 the corpus and the API lock; the editor and the IDE (`editor.md`: `edit`, its AngelScript mode,
 `angel --serve` and `--report-fd`); the debugger (`angel --debug`, `editor.md` §17). As built
@@ -33,7 +33,11 @@ compiler is for those who outgrow it.
 - The language is AngelScript, not one of our own and not a BASIC.
 - It works with the kernel through the public SDK, as an ordinary program. Nothing of
   AngelScript runs in the kernel.
-- **The runtime is called `angel`.** It goes in the ROM.
+- **The runtime is called `angel`.** It went in the ROM at first; **since 2026-11-18 it is on the
+  card**, as its package (`dist/angel`, in `bmds-standard`) with the examples and the guide
+  (`/sd0/p0/share/angel`). The user's decision: programs in `/rom` are copied into PSRAM to run
+  as on the card (`programs.md` §14), so the ROM gave angel nothing but running without a card,
+  and it was a third of the ROM (2.78 MB of 8.56 MB; `rom.md` §7).
 - **Decimal literals default to `float`** (`1.5`), and `1.5d` asks for a `double`. The default
   is a choice made when `angel` is compiled (`ANGEL_FLOAT_LITERALS`), not per script (§4).
 - **Top-level statements are allowed.** A script needs no `main()`: the file runs from top to
@@ -134,7 +138,7 @@ program built with `bmds-cc`, and ran on the board.
 
   So a function made of the top-level statements fits in with what is there. What needs care
   is the order of global initialization (§4).
-- **`#!` works** (`programs.md` D7), so a script with `#!/rom/bin/angel` at the top runs by name
+- **`#!` works** (`programs.md` D7, §17), so a script with `#!/bin/env angel` at the top runs by name
   from the shell.
 - **The GUI toolkit** (`gui.md`, `bmds_gui`) is kernel-side C++ for built-in applications, the
   media player and the system monitor among them. It has a `LineEdit` but no multi-line text
@@ -429,8 +433,8 @@ Each step finishes with its measurements and examples, and gets a row in the roa
 
 - **Flash:** about 0.7–0.8 MB for `angel` (the core is 583–724 KB, plus our types and
   bindings).
-  - In the ROM (10 MB, `rom.md` §3a; the user's decision) it sits beside BusyBox and Dropbear,
-    and is there on every board without a card, as QBasic came with DOS.
+  - In the ROM at first (10 MB, `rom.md` §3a), there on every board without a card, as QBasic
+    came with DOS; on the card since 2026-11-18 (§2).
   - Which optimization level it ships at (`-O2` is about 140 KB larger than `-Os`) is decided
     by measuring both in step 2.
 - **PSRAM:**
@@ -671,7 +675,7 @@ calls). New system calls, if a binding needs one, follow the usual rules.
 **The editor's Help menu:**
 - **Guide** and **Examples** are submenus listing the files, read when the menu opens. A click
   opens the file. `Examples` replaces the file dialog it had.
-- **Folders:** both are settings: `editor/angel-guide` (`/rom/share/angel/guide`) and the
+- **Folders:** both are settings: `editor/angel-guide` (`/sd0/p0/share/angel/guide`) and the
   existing `editor/angel-examples`.
 - **Menu text from file names:** an example's name is its file's (`snake.as` is "Snake"). A
   lesson's number loses its leading zero, and dashes become spaces.

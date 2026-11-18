@@ -871,7 +871,7 @@ const Syntax *Syntax::forFile(StringView path, StringView firstLine) {
         for (const Syntax *s : All)
                 for (const char *const *p = s->patterns; p != nullptr && *p != nullptr; ++p)
                         if (matches(name, *p)) return s;
-        // `#!/rom/bin/angel` or `#!/usr/bin/env sh`: the interpreter's name, the last word before
+        // `#!/sd0/p0/bin/angel` or `#!/bin/env angel`: the interpreter's name, the last word before
         // its arguments.
         if (!firstLine.startsWith("#!")) return nullptr;
         StringView rest = firstLine.mid(2).trimmed();

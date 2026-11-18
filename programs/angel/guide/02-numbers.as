@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 2: Numbers
 //
 // Computers are good at sums. This lesson is about numbers, and about variables: names that

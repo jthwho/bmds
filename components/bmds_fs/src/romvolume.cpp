@@ -92,24 +92,35 @@ namespace {
                         ByteSpan _data;
         };
 
-        // A directory's position: its children, one after another.
+        // A directory's position: its children, one after another (each directory under it
+        // once, RomImage::nextChild()).
         class RomCursor final : public Volume::Cursor {
                 public:
-                        RomCursor(const RomVolume &volume, uint32_t first, uint32_t count)
-                            : _volume(volume), _next(first), _end(first + count), _generation(volume.generation()) {}
+                        RomCursor(const RomVolume &volume, const RomImage::Node &dir)
+                            : _volume(volume), _dir(dir), _next(dir.first), _generation(volume.generation()) {}
 
                         Error next(FileInfo &info) override {
                                 if (!_volume.isMounted() || _volume.generation() != _generation) return Error::NoMedia;
-                                if (_next >= _end) return Error::EndOfFile;
-                                return _volume.describe(_next++, info);
+                                if (_next == RomImage::NoEntry) return Error::EndOfFile;
+                                RomImage::Child child;
+                                _next = _volume.image().nextChild(_dir, _next, child);
+                                if (_next == RomImage::NoEntry) return Error::EndOfFile;
+                                return _volume.describe(child.node, child.name, info);
                         }
 
                 private:
-                        const RomVolume &_volume;
-                        uint32_t         _next;
-                        const uint32_t   _end;
-                        const uint32_t   _generation;
+                        const RomVolume     &_volume;
+                        const RomImage::Node _dir;
+                        uint32_t             _next;
+                        const uint32_t       _generation;
         };
+
+        // The last part of @p path ("" for the root).
+        StringView lastPart(StringView path) {
+                while (!path.isEmpty() && path[path.size() - 1] == '/') path = path.left(path.size() - 1);
+                const size_t slash = path.lastIndexOf('/');
+                return slash == StringView::NPos ? path : path.mid(slash + 1);
+        }
 
 } // namespace
 
@@ -147,40 +158,48 @@ Result<FsInfo> RomVolume::info() {
         if (!_mounted) return makeError<FsInfo>(Error::NoMedia);
         FsInfo info;
         info.type = "rom";
-        info.totalBytes = _image.bytes().size();
+        info.totalBytes = _image.dataOffset() + _image.filesBytes();
         info.freeBytes = 0;
         info.clusterBytes = 1;
         return makeResult(info);
 }
 
-Result<uint32_t> RomVolume::find(StringView path, bool &noPath) const {
+Result<RomImage::Node> RomVolume::find(StringView path, bool &noPath) const {
         noPath = false;
-        if (!_mounted) return makeError<uint32_t>(Error::NoMedia);
+        if (!_mounted) return makeError<RomImage::Node>(Error::NoMedia);
         return _image.find(path, noPath);
 }
 
 Result<uint32_t> RomVolume::findFile(StringView path, bool &noPath) const {
-        Result<uint32_t> found = find(path, noPath);
-        if (found.error().isOk() && _image.entry(found.value()).directory) return makeError<uint32_t>(Error::IsDir);
-        return found;
+        const Result<RomImage::Node> found = find(path, noPath);
+        if (found.error().isError()) return makeError<uint32_t>(found.error());
+        if (found.value().directory) return makeError<uint32_t>(Error::IsDir);
+        return makeResult(found.value().index);
 }
 
-Error RomVolume::describe(uint32_t index, FileInfo &info) const {
-        const RomImage::Entry e = _image.entry(index);
+Error RomVolume::describe(const RomImage::Node &node, StringView name, FileInfo &info) const {
         info = FileInfo();
-        const Error err = info.name.assign(e.name);
+        const Error err = info.name.assign(name);
         if (err.isError()) return err;
-        info.type = e.directory ? FileType::Directory : FileType::File;
-        info.size = e.directory ? 0 : e.data.size();
-        info.modified = _image.buildTime();
-        info.attributes = FileInfo::ReadOnly | ((e.flags & RomImage::System) != 0 ? FileInfo::System : 0);
+        info.attributes = FileInfo::ReadOnly;
+        if (node.directory) {
+                // A directory is as new as the newest file under it.
+                info.type = FileType::Directory;
+                info.modified = _image.newest(node.first, node.end);
+                return Error::Ok;
+        }
+        const RomImage::Entry e = _image.entry(node.index);
+        info.type = FileType::File;
+        info.size = e.data.size();
+        info.modified = e.modified;
+        if ((e.flags & RomImage::System) != 0) info.attributes |= FileInfo::System;
         return Error::Ok;
 }
 
 Error RomVolume::stat(StringView path, FileInfo &info, bool &noPath) {
-        const Result<uint32_t> found = find(path, noPath);
+        const Result<RomImage::Node> found = find(path, noPath);
         if (found.error().isError()) return found.error();
-        return describe(found.value(), info);
+        return describe(found.value(), lastPart(path), info);
 }
 
 Result<FileHandle::Ptr> RomVolume::open(StringView path, uint8_t flags, const FileIdentity &identity, bool &noPath,
@@ -233,7 +252,7 @@ void RomVolume::closeReader(Reader *reader) {
 }
 
 Error RomVolume::mkdir(StringView path, bool &noPath) {
-        const Result<uint32_t> found = find(path, noPath);
+        const Result<RomImage::Node> found = find(path, noPath);
         if (found.error().isOk()) return Error::Exists;
         return noPath ? found.error() : Error(Error::ReadOnly);
 }
@@ -270,17 +289,16 @@ Error RomVolume::writeLink(StringView path, ByteSpan contents, bool &noPath) {
 }
 
 Result<Volume::Cursor *> RomVolume::openDirectory(StringView path, bool &noPath) {
-        const Result<uint32_t> found = find(path, noPath);
+        const Result<RomImage::Node> found = find(path, noPath);
         if (found.error().isError()) return makeError<Cursor *>(found.error());
-        const RomImage::Entry e = _image.entry(found.value());
-        if (!e.directory) {
+        if (!found.value().directory) {
                 // A file (perhaps a link): the VFS looks for a link there.
                 noPath = true;
                 return makeError<Cursor *>(Error::NotExist);
         }
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(RomCursor));
         if (mem == nullptr) return makeError<Cursor *>(Error::NoMem);
-        return makeResult<Cursor *>(::new (mem) RomCursor(*this, e.first, e.count));
+        return makeResult<Cursor *>(::new (mem) RomCursor(*this, found.value()));
 }
 
 void RomVolume::closeDirectory(Cursor *cursor) {

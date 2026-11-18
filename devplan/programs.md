@@ -1083,7 +1083,7 @@ pages by the AXI-GDMA against the CPU's 2.1 ms (`docs/platforms/esp32p4.md` §3)
 - **A measuring pitfall:** BusyBox's `time` (over ssh, `time` is `/sd0/p0/bin/time`) runs `sh` as
   BusyBox's own shell (`FEATURE_PREFER_APPLETS`), not ours: `time sh script` timed BusyBox's
   shell, four times slower on that loop. Time native commands from the PC, or with `bench`.
-## 20. Smaller program files (idea, 2026-10-22; not scheduled)
+## 20. Smaller program files (idea, 2026-10-22; 1 and 2 built for the ROM 2026-11-18)
 
 The user's question: is the ROM's space used well? Measured on the ROM as built (5.94 MB of
 10 MB): the data files are stored as they should be (the speech voices and the icons are read
@@ -1139,6 +1139,55 @@ and symbols the loader doesn't apply**. The user's decision: not now, recorded h
 
 Together, 1 and 2 take the five programs from 3.47 MB to about 1.8 MB (the ROM to about 4.3 MB),
 and shrink programs on the card the same way.
+
+### 20a. As built: packed programs in the ROM (2026-11-18)
+
+The user's decision (2026-11-18): strip the ROM's programs, not the card's, where there is room
+for symbols and debug information. Compression stays a separate, later step (3).
+
+- **The format, an addition** (`bmds/program.h`; `ABI:`): a program flag
+  `BMDS_PROGRAM_PATCH_LIST` (0x2) and, in a section that isn't loaded (`.note.bmds.patches`), a
+  note "BMDS" of type `BMDS_NOTE_PATCHES` (3): a `bmds_patches_note_t` (`size`, `count`), then
+  `count` words, each a patched word's image offset with `BMDS_PATCH_UPPER` (bit 31) for a
+  `lui`, in increasing order: the loader's own `Patch`. Such a file needs no relocation or
+  symbol table; its section headers stay (the loader finds the list, the first writable section
+  and the icons through them). A kernel from before refuses the flag ("unknown program flags").
+  The flag is in the program note, which is loaded, so a packed program's image differs from its
+  original in that one bit.
+- **One list, no symbols** rather than 1 and 2 separately: with the list, nothing on the board
+  needs the symbols (faults are logged as offsets and a build-id; names come from the build's
+  ELF on the host, `bmds-fault`, `bmds-prof`, or from debug files, `debuginfo.md`), so the ROM's
+  copies keep none.
+- **The loader** (`ProgramImage`): for a flagged file, the patch list replaces the relocation walk
+  (`patchListIn()`, `patchList()`); each word is checked to lie in the image's file part and the
+  list to be in order, a second list or none is refused, and the patches are recorded,
+  classified into pages and applied by the same `patch()` the relocations use. What the loader
+  no longer checks on the board, a packed program's position independence, `bmds-pack` checked
+  when it was made.
+- **`sdk/tools/bmds-pack`** (Python, standard library only): every relocation checked as the
+  loader's `Relocator` does (the same refusals, the same reasons), the list written, `objcopy
+  --strip-all --remove-section=.comment --add-section .note.bmds.patches=...`, the loaded segment
+  compared byte for byte with the input's, then the flag set.
+- **The ROM build** (`bmds_storage`) packs its five programs into `build/rom/packed/` and puts
+  those in the image. The stage (`build/rom/dist/stage`, as the card's packages are made) is
+  unchanged.
+- **Measured:** the ROM from 5,660,903 to 4,858,919 bytes (−802 KB). Each program:
+
+  | Program | before | packed | patches |
+  |---|---:|---:|---:|
+  | dropbearmulti | 768,572 | 408,768 | 350 |
+  | sshfs | 253,552 | 140,752 | 31 |
+  | tlsclient | 244,064 | 123,796 | 38 |
+  | sftp-server | 216,656 | 107,144 | 57 |
+  | ssh-copy-id | 197,504 | 97,852 | 36 |
+  | angel (not in the ROM now; for scale) | 2,781,376 | 1,375,256 | 3,719 |
+
+- **Tests (host):** the SDK examples packed by the host build (`sdk_examples_packed`), each
+  inspected and loaded at three bases and read and placed: the same `Info` (patches, pages, first
+  writable section) and the same images as the unpacked program's but for the note's flag; a
+  damaged list refused (out of order, past the image, a count past the note, no list, the flag
+  cleared) and 3,000 random damages refused or loaded within the image; the flag on a file with
+  only relocations refused.
 
 ## 21. Program faults end the program, not the system (2026-11-13; built)
 

@@ -748,6 +748,11 @@ _Static_assert(offsetof(bmds_icon_note_t, width) == 4, "ABI: icon.width");
 _Static_assert(offsetof(bmds_icon_note_t, height) == 6, "ABI: icon.height");
 _Static_assert(offsetof(bmds_icon_note_t, format) == 8, "ABI: icon.format");
 _Static_assert(offsetof(bmds_icon_note_t, length) == 12, "ABI: icon.length");
+_Static_assert(BMDS_PROGRAM_PATCH_LIST == 0x2u, "ABI: program flag PATCH_LIST");
+_Static_assert(BMDS_NOTE_PATCHES == 3 && BMDS_PATCH_UPPER == 0x80000000u, "ABI: patch list note type and flag");
+_Static_assert(sizeof(bmds_patches_note_t) == 8, "ABI: bmds_patches_note_t size");
+_Static_assert(offsetof(bmds_patches_note_t, size) == 0, "ABI: patches.size");
+_Static_assert(offsetof(bmds_patches_note_t, count) == 4, "ABI: patches.count");
 
 // --- bmds/errno.h ---------------------------------------------------------
 

@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 19: A scene, played a step at a time
 //
 // Lesson 11 drew every frame itself. A scene works the other way round: you make objects (a

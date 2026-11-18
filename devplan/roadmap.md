@@ -590,6 +590,13 @@ Plan: [`input.md`](input.md).
       tested on the board. Fetching from a URL postponed (the user's, 2026-10-14; planned in §17).
     - [x] Last: `ota_1` cut to 1.375 MB (recovery is 0.9 MB), `rom` 10 MB; `/boot` moved with its
       contents (§19).
+  - [ ] A ROM that changes (`rom.md` §12, the user's, 2026-11-18; planned): files added and
+    removed while running (`rom install`, `remove`, `compact`), taking effect at the next boot; a
+    flat table of paths, each file's own alignment (up to the MMU's 64 KB), a log of tree versions;
+    updates file by file in recovery, the system's files always written back; `rom` shows all of
+    its metadata (§12h). Step 1 done (2026-11-18): format 2 (a log of tree versions, a
+    flat sorted table, each file's alignment), `RomImage`'s reader and writer, `mkrom.py`, the
+    volume, host tests and `rom_fuzz` (§12m).
   - [x] `/cfg` on the card, `/boot` renamed `/flash` (`cfg.md`, the user's, 2026-10-14): the
     configuration on the card when there is one (no flash writes, so no audio stalls), else on
     `/flash`; no syncing; `/flash`'s writes held while audio plays. All three steps built and

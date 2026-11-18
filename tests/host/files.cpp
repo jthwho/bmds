@@ -43,7 +43,7 @@ namespace {
                 {"df", "[-h]", "", bmds::FsCommands::df},
                 {"echo", "[-neE] [word]...", "", bmds::TextCommands::echo},
                 {"grep", "[-civnqEFG] [-e pattern]... | pattern [file]...", "", bmds::TextCommands::grep},
-                {"head", "[-n count | -c bytes] [file]...", "", bmds::TextCommands::head},
+                {"head", "[-n count | -c bytes | -count] [file]...", "", bmds::TextCommands::head},
                 {"hexdump", "[-C] [file]", "", bmds::FileCommands::hexdump},
                 {"ln", "-s [-f] target name | -s [-f] target... dir", "", bmds::FileCommands::ln},
                 {"ls", "[-la1] [path]...", "", bmds::FileCommands::ls},
@@ -201,6 +201,7 @@ TEST_CASE("Files: the text commands read files") {
               "cat: /disk0/p0/missing: No such file or directory\nalpha\nbeta\ngamma\n");
         CHECK(f.out("cd /disk0/p0; head -n 1 one two") == "==> one <==\nalpha\n\n==> two <==\ndelta\n");
         CHECK(f.out("cd /disk0/p0; head -n 2 one") == "alpha\nbeta\n");
+        CHECK(f.out("cd /disk0/p0; head -1 one two") == "==> one <==\nalpha\n\n==> two <==\ndelta\n");
         CHECK(f.out("cd /disk0/p0; head -c 8 one two") == "==> one <==\nalpha\nbe\n==> two <==\ndelta\nal");
         CHECK(f.out("cd /disk0/p0; head -n0 one") == "");
         CHECK(f.out("head -c 5 /dev/zero | wc -c") == "5\n");

@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+# @file      bmds-pack
+# @copyright Jason Howard. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+# See LICENSE file in the project root folder for license information.
+#
+# Packs a BMDS program: its relocations and symbols replaced by the list of words the kernel patches
+# (bmds/program.h, BMDS_PROGRAM_PATCH_LIST; devplan/programs.md §20). The file loads into the same
+# image at every address and is about half the size, but keeps no names: debuggers and bmds-fault
+# need the unpacked file (or its debug file, found by its build-id). The firmware's ROM packs its
+# programs; programs on the card stay as they are.
+#
+#   bmds-pack [--objcopy PATH] IN OUT
+#   bmds-pack [--objcopy PATH] -d DIR IN...     (each into DIR, by its name)
+#
+# Every relocation is checked as the kernel's loader checks it (ProgramImage, the Relocator), so a
+# program it would refuse is refused here instead, with the same reason. The loaded segment is
+# compared byte for byte with the input's after packing. Python's standard library only; needs the
+# toolchain's objcopy (--objcopy, $OBJCOPY, riscv32-esp-elf-objcopy on PATH or under ~/.espressif).
+
+import argparse
+import glob
+import os
+import shutil
+import struct
+import subprocess
+import sys
+
+PT_LOAD, PT_NOTE = 1, 4
+SHT_SYMTAB, SHT_RELA, SHT_REL = 2, 4, 9
+SHF_ALLOC = 2
+SHN_UNDEF, SHN_ABS = 0, 0xFFF1
+NOTE_NAME = b"BMDS\0"
+NOTE_PROGRAM, NOTE_PATCHES = 1, 3
+PROGRAM_PATCH_LIST = 0x2
+PATCH_UPPER = 0x80000000
+LIST_SECTION = ".note.bmds.patches"
+
+# What the loader does with each relocation type (programimage.cpp, actionFor()).
+WORD, UPPER, PC_UPPER = "word", "upper", "pc-upper"
+NOTHING_TYPES = {0, 16, 17, 18, 19, 24, 25, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 43, 44,
+                 45, 51, 52, 53, 54, 55, 56, 57, 60, 61}
+
+
+def action(kind):
+    if kind == 1:
+        return WORD
+    if kind == 26:
+        return UPPER
+    if kind == 23:
+        return PC_UPPER
+    return None if kind in NOTHING_TYPES else "refuse"
+
+
+class Refused(Exception):
+    pass
+
+
+def u32(data, at):
+    return struct.unpack_from("<I", data, at)[0]
+
+
+def program_note(data):
+    """The file offset of the BMDS program note's flags word, and the PT_LOAD segment's (offset, size)."""
+    if data[:4] != b"\x7fELF" or data[4] != 1 or data[5] != 1:
+        raise Refused("not a little-endian ELF32 file")
+    phoff = u32(data, 28)
+    phentsize, phnum = struct.unpack_from("<HH", data, 42)
+    flags_at = None
+    load = None
+    for i in range(phnum):
+        kind, offset, vaddr, _, filesz, memsz = struct.unpack_from("<IIIIII", data, phoff + i * phentsize)
+        if kind == PT_LOAD:
+            if load is not None:
+                raise Refused("more than one PT_LOAD segment")
+            if vaddr != 0:
+                raise Refused("not linked at address 0")
+            load = (offset, filesz)
+        elif kind == PT_NOTE:
+            at = offset
+            while at + 12 <= offset + filesz:
+                namesz, descsz, note = struct.unpack_from("<III", data, at)
+                name = at + 12
+                desc = name + ((namesz + 3) & ~3)
+                if data[name:name + namesz] == NOTE_NAME and note == NOTE_PROGRAM and descsz >= 16:
+                    flags_at = desc + 12
+                at = desc + ((descsz + 3) & ~3)
+    if flags_at is None:
+        raise Refused("not a BMDS program (no BMDS note)")
+    if load is None:
+        raise Refused("no PT_LOAD segment")
+    return flags_at, load
+
+
+def sections(data):
+    shoff = u32(data, 32)
+    shentsize, shnum = struct.unpack_from("<HH", data, 46)
+    if shoff == 0 or shnum == 0:
+        raise Refused("no section headers (stripped? relocations are needed)")
+    return [struct.unpack_from("<IIIIIIIIII", data, shoff + i * shentsize) for i in range(shnum)]
+
+
+def patch_list(data, load):
+    """The words the loader patches, as it finds them: each relocation of an allocated section
+    checked, the patches of those that move with the image kept."""
+    secs = sections(data)
+    load_offset, file_size = load
+    out = []
+    any_relocations = False
+    for _, kind, _, _, offset, size, link, info, _, entsize in secs:
+        if kind not in (SHT_RELA, SHT_REL):
+            continue
+        if info >= len(secs):
+            raise Refused("bad relocation section")
+        _, _, tflags, taddr, _, tsize, _, _, _, _ = secs[info]
+        if not tflags & SHF_ALLOC:
+            continue  # debug information
+        if kind == SHT_REL:
+            raise Refused("REL relocations (only RELA)")
+        if entsize != 12 or size % 12:
+            raise Refused("bad relocation section")
+        any_relocations = True
+        if link >= len(secs) or secs[link][1] != SHT_SYMTAB:
+            raise Refused("bad symbol table")
+        sym_offset, sym_size = secs[link][4], secs[link][5]
+        for k in range(size // 12):
+            r_offset, r_info, _ = struct.unpack_from("<IIi", data, offset + 12 * k)
+            what = action(r_info & 0xFF)
+            if what == "refuse":
+                raise Refused("unsupported relocation type %d" % (r_info & 0xFF))
+            if what is None:
+                continue
+            if r_offset < taddr or r_offset + 4 > taddr + tsize or r_offset + 4 > file_size:
+                raise Refused("relocation outside its section (0x%x)" % r_offset)
+            index = r_info >> 8
+            if index == 0 or index >= sym_size // 16:
+                raise Refused("bad symbol index %d" % index)
+            shndx, = struct.unpack_from("<H", data, sym_offset + 16 * index + 14)
+            fixed = shndx in (SHN_ABS, SHN_UNDEF)
+            if what == PC_UPPER:
+                if fixed and u32(data, load_offset + r_offset) & 0x7F != 0x37:
+                    raise Refused("PC-relative reference to an absolute symbol (0x%x)" % r_offset)
+                continue
+            if not fixed:
+                out.append(r_offset | (PATCH_UPPER if what == UPPER else 0))
+    if not any_relocations:
+        raise Refused("no relocations (link with --emit-relocs; don't strip)")
+    out.sort(key=lambda w: w & ~PATCH_UPPER)
+    for a, b in zip(out, out[1:]):
+        if a & ~PATCH_UPPER == b & ~PATCH_UPPER:
+            raise Refused("two patches of one word (0x%x)" % (a & ~PATCH_UPPER))
+    return out
+
+
+def note_bytes(words):
+    desc = struct.pack("<II", 8, len(words)) + b"".join(struct.pack("<I", w) for w in words)
+    return struct.pack("<III", len(NOTE_NAME), len(desc), NOTE_PATCHES) + NOTE_NAME + b"\0" * 3 + desc
+
+
+def find_objcopy(given):
+    for candidate in (given, os.environ.get("OBJCOPY"), shutil.which("riscv32-esp-elf-objcopy")):
+        if candidate:
+            return candidate
+    found = sorted(glob.glob(os.path.expanduser(
+        "~/.espressif/tools/riscv32-esp-elf/*/riscv32-esp-elf/bin/riscv32-esp-elf-objcopy")))
+    if found:
+        return found[-1]
+    raise Refused("riscv32-esp-elf-objcopy not found (--objcopy, or ESP-IDF's export.sh)")
+
+
+def pack(objcopy, src, dst):
+    with open(src, "rb") as f:
+        data = f.read()
+    flags_at, load = program_note(data)
+    if u32(data, flags_at) & PROGRAM_PATCH_LIST:
+        raise Refused("already packed")
+    words = patch_list(data, load)
+    note = dst + ".patches.tmp"
+    out = dst + ".tmp"
+    try:
+        with open(note, "wb") as f:
+            f.write(note_bytes(words))
+        # --strip-all takes the relocations, the symbols and the debug information; the loaded
+        # segment, the section headers and the notes (the icons') stay.
+        subprocess.run([objcopy, "--strip-all", "--remove-section=.comment",
+                        "--add-section", "%s=%s" % (LIST_SECTION, note),
+                        "--set-section-alignment", "%s=4" % LIST_SECTION, src, out], check=True)
+        with open(out, "rb") as f:
+            packed = bytearray(f.read())
+        packed_flags_at, packed_load = program_note(packed)
+        if packed[packed_load[0]:packed_load[0] + packed_load[1]] != data[load[0]:load[0] + load[1]]:
+            raise Refused("objcopy changed the loaded segment")
+        struct.pack_into("<I", packed, packed_flags_at, u32(packed, packed_flags_at) | PROGRAM_PATCH_LIST)
+        with open(out, "wb") as f:
+            f.write(packed)
+        os.chmod(out, os.stat(src).st_mode & 0o777)
+        os.replace(out, dst)
+    finally:
+        for path in (note, out):
+            if os.path.exists(path):
+                os.remove(path)
+    return len(data), len(packed), len(words)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Replace a BMDS program's relocations and symbols "
+                                                 "with the list of words the kernel patches.")
+    parser.add_argument("--objcopy", help="the toolchain's objcopy")
+    parser.add_argument("-d", "--dir", help="write each IN into DIR, by its name")
+    parser.add_argument("-v", "--verbose", action="store_true", help="say what each file became")
+    parser.add_argument("files", nargs="+", metavar="FILE")
+    opts = parser.parse_args()
+    if opts.dir:
+        jobs = [(f, os.path.join(opts.dir, os.path.basename(f))) for f in opts.files]
+    elif len(opts.files) == 2:
+        jobs = [tuple(opts.files)]
+    else:
+        parser.error("give IN and OUT, or -d DIR and the inputs")
+    status = 0
+    try:
+        objcopy = find_objcopy(opts.objcopy)
+    except Refused as e:
+        print("bmds-pack: %s" % e, file=sys.stderr)
+        return 1
+    for src, dst in jobs:
+        try:
+            before, after, count = pack(objcopy, src, dst)
+            if opts.verbose:
+                print("%s: %d -> %d bytes, %d patches" % (dst, before, after, count))
+        except Refused as e:
+            print("bmds-pack: %s: %s" % (src, e), file=sys.stderr)
+            status = 1
+        except (OSError, subprocess.CalledProcessError) as e:
+            print("bmds-pack: %s: %s" % (src, e), file=sys.stderr)
+            status = 1
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

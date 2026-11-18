@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 9: Classes
 //
 // A class is a new type of your own: a few variables that belong together, and the functions

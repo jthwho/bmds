@@ -61,7 +61,7 @@ check(raised, "a file raises");
 // ---- Types
 check(fileType(dir + "/a.txt") == "text/plain", "a text's type: " + fileType(dir + "/a.txt"));
 check(fileType(dir) == "inode/directory", "a folder's type: " + fileType(dir));
-check(fileType("/rom/bin/angel") == "application/x-executable", "a program's type: " + fileType("/rom/bin/angel"));
+check(fileType("/rom/bin/sshfs") == "application/x-executable", "a program's type: " + fileType("/rom/bin/sshfs"));
 check(fileType(dir + "/none") == "", "nothing there: \"\"");
 string[] names = listDirectory(dir);
 for (uint i = 0; i < names.length(); i++) removeFile(dir + "/" + names[i]);

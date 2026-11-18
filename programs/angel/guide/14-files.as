@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 14: Files
 //
 // Variables are forgotten when a program ends. Files are kept: a program can write one and read

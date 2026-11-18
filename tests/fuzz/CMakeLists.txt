@@ -82,6 +82,12 @@ target_compile_options(leapseconds_fuzz PRIVATE -fno-exceptions -fno-rtti)
 target_link_libraries(leapseconds_fuzz PRIVATE bmds_core)
 target_link_options(leapseconds_fuzz PRIVATE -fsanitize=fuzzer)
 
+# The ROM's partition (devplan/rom.md §12c): any bytes, the CRCs made right, read and written again.
+add_executable(rom_fuzz rom.cpp ${BMDS_ROOT}/tests/host/hostmemory.cpp)
+target_compile_options(rom_fuzz PRIVATE -fno-exceptions -fno-rtti)
+target_link_libraries(rom_fuzz PRIVATE bmds_core)
+target_link_options(rom_fuzz PRIVATE -fsanitize=fuzzer)
+
 add_executable(updatepackage_fuzz updatepackage.cpp)
 target_compile_options(updatepackage_fuzz PRIVATE -fno-exceptions -fno-rtti)
 target_link_libraries(updatepackage_fuzz PRIVATE bmds_core)

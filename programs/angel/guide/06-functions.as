@@ -1,4 +1,4 @@
-#!/rom/bin/angel
+#!/bin/env angel
 // Lesson 6: Functions
 //
 // A function is a few lines with a name. Write them once, then use the name as often as you
