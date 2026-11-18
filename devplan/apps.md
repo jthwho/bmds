@@ -47,6 +47,8 @@ against musl, so a folder is self-contained already); moving Unix ports out of t
   - `X-BMDS-Command`: its command's name in `/apps` (§5). Default: the id.
   - `X-BMDS-Display`: the presentation it suggests, `Window` or `FullScreen` (`games.md` §3c;
     the user's setting overrides it).
+  - `X-BMDS-Terminal-Hold`: with `Terminal=true`, the terminal stays open after the program
+    ends, until a key (`gui.md` G15): for a program that prints and exits. Any entry may have it.
 - **The program finds its folder:** the loader sets `BMDS_APP_DIR` in a program's environment
   when the program it runs (links followed, so through `/apps` too) is in a `NAME.app` folder,
   whoever started it: the launcher, the file browser, the shell, `execvp`, and `BMDS_APP_ID` to

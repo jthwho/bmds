@@ -82,6 +82,8 @@ Result<DesktopEntry> DesktopEntry::parse(StringView text, Warn warn, void *warnA
                         flag = &e.noDisplay;
                 } else if (key == "Hidden") {
                         flag = &e.hidden;
+                } else if (key == "X-BMDS-Terminal-Hold") {
+                        flag = &e.terminalHold;
                 } else if (key == "X-BMDS-Id") {
                         out = e.id;
                         outBytes = sizeof(e.id);

@@ -13,13 +13,15 @@
  * pty, the program launcher, a thread, and the font and glyph drawing of the
  * GUI.
  *
- *   terminal [X Y] [-e COMMAND [ARG...]]
+ *   terminal [X Y] [--hold] [-e COMMAND [ARG...]]
  *
  * A window of 100 x 30 cells with its top-left corner at X, Y, or where the
  * window manager cascades new windows (devplan/gui.md §4f). With -e, COMMAND
  * runs on the pty instead of the shell, found through PATH, and the window
  * closes when it ends; if it can't start, the window stays open to say why
- * (devplan/gui.md G15).
+ * (devplan/gui.md G15). With --hold, the window stays after COMMAND ends,
+ * saying how it ended, until a key is pressed or it is closed (a launcher
+ * entry's X-BMDS-Terminal-Hold: a program that prints and exits).
  *
  * Its colors (devplan/gui.md §4l) and clipboard switches are the system
  * configuration's `terminal/...` (devplan/sysconf.md §8), which it follows
@@ -182,6 +184,7 @@ namespace {
                         // The connection's, and the thread that runs the shell.
                         static void gone(void *arg);
                         static void shellMain(void *arg);
+                        void        holdOpen(FileHandle &console, int status);
                         static void reply(void *context, StringView text);
                         static void settingsChanged(void *arg);
                         // The copies and pastes, on the worker.
@@ -216,6 +219,7 @@ namespace {
 
                         const BuiltinProgram::Context &_context;
                         Span<const StringView>         _command; // -e's: the command and its arguments
+                        bool                           _hold = false; // --hold: kept open after it ends
                         WindowManager                 *_wm = nullptr;
                         uint8_t                        _client = 0;
                         std::atomic<uint8_t>           _window{0};
@@ -274,19 +278,32 @@ namespace {
                 // A window where asked: terminal [X Y].
                 Rect rect{32, 32, WindowFrame::outerWidth(Columns * CellWidth, WindowFrame::Standard),
                           WindowFrame::outerHeight(Rows * CellHeight, WindowFrame::Standard)};
-                size_t positional = _context.args.size();
+                StringView position[2];
+                size_t     positional = 0;
+                bool       usage = false, sawE = false;
                 for (size_t i = 1; i < _context.args.size(); ++i) {
-                        if (_context.args[i] != "-e") continue;
-                        positional = i;
-                        _command = Span<const StringView>(_context.args.data() + i + 1, _context.args.size() - i - 1);
-                        break;
+                        const StringView a = _context.args[i];
+                        if (a == "-e") {
+                                sawE = true;
+                                _command = Span<const StringView>(_context.args.data() + i + 1,
+                                                                  _context.args.size() - i - 1);
+                                break;
+                        }
+                        if (a == "--hold") {
+                                _hold = true;
+                        } else if (positional < 2 && !_hold) {
+                                position[positional++] = a;
+                        } else {
+                                usage = true;
+                        }
                 }
-                if (positional == 3) {
-                        rect.x = static_cast<uint16_t>(std::atoi(String::fromView(_context.args[1]).value().cStr()));
-                        rect.y = static_cast<uint16_t>(std::atoi(String::fromView(_context.args[2]).value().cStr()));
-                } else if (positional != 1 || (positional < _context.args.size() && _command.isEmpty())) {
-                        say("usage: terminal [X Y] [-e COMMAND [ARG...]]\n");
+                if (usage || positional == 1 || (sawE && _command.isEmpty()) || (_hold && !sawE)) {
+                        say("usage: terminal [X Y] [--hold] [-e COMMAND [ARG...]]\n");
                         return 2;
+                }
+                if (positional == 2) {
+                        rect.x = static_cast<uint16_t>(std::atoi(String::fromView(position[0]).value().cStr()));
+                        rect.y = static_cast<uint16_t>(std::atoi(String::fromView(position[1]).value().cStr()));
                 }
                 auto [wm, merr] = WindowManager::manager(0);
                 if (merr.isOk()) {
@@ -535,8 +552,9 @@ namespace {
                         // hangup ends the shell), so the pty outlives it.
                         if (err.isOk()) {
                                 auto [status, rerr] = self->_context.launcher->run(request);
-                                (void)status;
                                 err = rerr;
+                                FileHandle *in = fds.handle(FdTable::Stdin);
+                                if (err.isOk() && self->_hold && in != nullptr) self->holdOpen(*in, status);
                         }
                 }
                 if (err.isError()) {
@@ -554,6 +572,32 @@ namespace {
                         if (!self->_command.isEmpty()) return;
                 }
                 self->_pty->programEnded();
+                return;
+        }
+
+        // --hold: how the command ended, shown until a key (read from @p console: the window's
+        // close hangs up, which ends the read too).
+        void TerminalApp::holdOpen(FileHandle &console, int status) {
+                char       line[160];
+                const auto name = _command[0].mid(_command[0].lastIndexOf('/') + 1);
+                if (status == 0) {
+                        std::snprintf(line, sizeof(line), "\r\n[%.*s ended: press a key to close]", int(name.size()),
+                                      name.data());
+                } else if (status > 128) {
+                        std::snprintf(line, sizeof(line), "\r\n[%.*s ended by signal %d: press a key to close]",
+                                      int(name.size()), name.data(), status - 128);
+                } else {
+                        std::snprintf(line, sizeof(line), "\r\n[%.*s ended with status %d: press a key to close]",
+                                      int(name.size()), name.data(), status);
+                }
+                PtyConsole &out = _pty->console();
+                (void)out.write(StringView(line), 100);
+                // Any key as a byte, Ctrl-C too (no session reads it now).
+                Console::TermMode mode = out.mode();
+                mode.signals = false;
+                out.setMode(mode);
+                uint8_t key;
+                (void)console.read(WritableByteSpan(&key, 1), WaitForever);
                 return;
         }
 

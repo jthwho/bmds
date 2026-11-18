@@ -64,6 +64,18 @@ namespace {
                 return got;
         }
 
+        // The arguments before an entry's command: `terminal [--hold] -e` with Terminal=true
+        // (gui.md G15), none without. @return Their count, MaxTerminalArgs at most.
+        constexpr size_t MaxTerminalArgs = 3;
+        size_t           terminalArgs(const DesktopEntry &entry, StringView *args) {
+                if (!entry.terminal) return 0;
+                size_t n = 0;
+                args[n++] = "terminal";
+                if (entry.terminalHold) args[n++] = "--hold";
+                args[n++] = "-e";
+                return n;
+        }
+
 } // namespace
 
 void FolderActions::setApplications(StringView directories) {
@@ -118,17 +130,13 @@ Error FolderActions::programPath(StringView command, String &out) const {
 void FolderActions::launch(const DesktopEntry &entry, StringView file) {
         if (_context.launcher == nullptr) return;
         char         buffer[DesktopEntry::MaxExec + Vfs::MaxPath + 1];
-        StringView   args[DesktopEntry::MaxArgs + 2];
-        const size_t front = entry.terminal ? 2 : 0;
+        StringView   args[DesktopEntry::MaxArgs + MaxTerminalArgs];
+        const size_t front = terminalArgs(entry, args);
         auto [n, err] = DesktopEntry::splitExec(StringView(entry.exec), buffer, sizeof(buffer),
                                                 Span<StringView>(args + front, DesktopEntry::MaxArgs), file);
         if (err.isError()) {
                 say("panel: ", entry.name, ": its Exec line can't be used\n");
                 return;
-        }
-        if (entry.terminal) {
-                args[0] = "terminal";
-                args[1] = "-e";
         }
         const size_t count = n + front;
         String       found;
@@ -177,18 +185,14 @@ void FolderActions::launchFiles(const DesktopEntry &entry, StringView files) {
         const size_t size = DesktopEntry::MaxExec + bytes + 1;
         char        *buffer = static_cast<char *>(Memory::alloc(MemSpace::Psram, size));
         if (buffer == nullptr) return;
-        StringView   args[DesktopEntry::MaxArgs + 2];
-        const size_t front = entry.terminal ? 2 : 0;
+        StringView   args[DesktopEntry::MaxArgs + MaxTerminalArgs];
+        const size_t front = terminalArgs(entry, args);
         auto [n, err] = DesktopEntry::splitExec(StringView(entry.exec), buffer, size,
                                                 Span<StringView>(args + front, DesktopEntry::MaxArgs), list.span());
         if (err.isError()) {
                 say("panel: ", entry.name, ": too many files for its command\n");
                 Memory::free(buffer);
                 return;
-        }
-        if (entry.terminal) {
-                args[0] = "terminal";
-                args[1] = "-e";
         }
         String found;
         err = programPath(args[0], found);

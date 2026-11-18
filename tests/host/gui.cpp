@@ -186,9 +186,11 @@ TEST_CASE("DesktopEntry: an application folder's keys") {
                                             "Exec=blocks\n"
                                             "X-BMDS-Id=blocks\n"
                                             "X-BMDS-Command=tetris\n"
-                                            "X-BMDS-Display=FullScreen\n",
+                                            "X-BMDS-Display=FullScreen\n"
+                                            "X-BMDS-Terminal-Hold=true\n",
                                             Warnings::warn, &w);
         REQUIRE(err.isOk());
+        CHECK(e.terminalHold);
         CHECK(std::string(e.id) == "blocks");
         CHECK(std::string(e.command) == "tetris");
         CHECK(e.display == DesktopEntry::Display::FullScreen);
@@ -197,6 +199,7 @@ TEST_CASE("DesktopEntry: an application folder's keys") {
                 DesktopEntry::parse("[Desktop Entry]\nName=x\nExec=y\nX-BMDS-Display=Huge\n", Warnings::warn, &w);
         REQUIRE(perr.isOk());
         CHECK(plain.id[0] == '\0');
+        CHECK(!plain.terminalHold);
         CHECK(plain.display == DesktopEntry::Display::Default);
         CHECK(w.lines == std::vector<uint32_t>{4});
         std::string longId = "[Desktop Entry]\nName=x\nExec=y\nX-BMDS-Id=" + std::string(32, 'i') + "\n";

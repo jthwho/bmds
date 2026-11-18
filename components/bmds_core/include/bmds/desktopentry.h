@@ -25,7 +25,7 @@ BMDS_NAMESPACE_BEGIN
  * The `[Desktop Entry]` group's `Type`, `Name`, `Comment`, `Exec`, `Icon`,
  * `Terminal`, `Categories`, `MimeType`, `NoDisplay` and `Hidden`, and an application
  * folder's `X-BMDS-Id`, `X-BMDS-Command` and `X-BMDS-Display`
- * (`devplan/apps.md` §3); localized keys, other keys and other groups are
+ * (`devplan/apps.md` §3), and `X-BMDS-Terminal-Hold` (`devplan/gui.md` G15); localized keys, other keys and other groups are
  * ignored. Strings are kept unescaped, in fixed
  * sizes (a longer value makes the file invalid rather than cut a command).
  *
@@ -60,6 +60,7 @@ struct DesktopEntry {
                 bool terminal = false;                   ///< Run in a terminal.
                 bool noDisplay = false;                  ///< Not shown in menus.
                 bool hidden = false;                     ///< As if it didn't exist (hides another of its name).
+                bool    terminalHold = false; ///< `X-BMDS-Terminal-Hold`: with `terminal`, kept open after it ends.
                 char    id[MaxId + 1] = {};                 ///< `X-BMDS-Id` (empty: not said).
                 char    command[MaxId + 1] = {};            ///< `X-BMDS-Command` (empty: not said).
                 Display display = Display::Default;         ///< `X-BMDS-Display`.

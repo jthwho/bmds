@@ -4,5 +4,6 @@ Name=App Info
 Comment=An application folder, id and data folder
 Exec=appinfo
 Terminal=true
+X-BMDS-Terminal-Hold=true
 Categories=Development;
 X-BMDS-Id=appinfo

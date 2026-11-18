@@ -160,7 +160,6 @@ namespace {
         constexpr size_t      MaxEntries = 48;
         constexpr uint32_t    WatchDelayMs = 200; // changes from elsewhere, taken together after
         constexpr size_t      MaxItems = 8;
-        constexpr size_t      MaxCategories = 8;
         // A row of buttons in a raised bar: the bevel, a pixel, the buttons, a pixel, the bevel.
         constexpr uint16_t MarginX = 4; // the sides: a 4-pixel column
         constexpr uint16_t MarginY = 3;
@@ -170,10 +169,28 @@ namespace {
         }
         constexpr uint16_t Spacing = 4;
 
-        // The main categories (freedesktop.org's), in the launcher's order; the rest are Other.
-        constexpr const char *Categories[MaxCategories - 1] = {
-                "System", "Utility", "Development", "Office", "Graphics", "AudioVideo", "Game",
+        // The main categories (freedesktop.org's), in the launcher's order, which is also the
+        // choice for an entry with several (Settings;System; is System's); the rest are Other. A
+        // submenu is there only while an installed entry is in it.
+        constexpr const char *Categories[] = {
+                "System",    "Settings", "Utility",  "Development", "Network", "Office",
+                "Education", "Science",  "Graphics", "AudioVideo",  "Game",
         };
+        constexpr size_t MaxCategories = sizeof(Categories) / sizeof(Categories[0]) + 1; // and Other
+        static_assert(MaxCategories <= 255);
+
+        // Its submenu in Categories, or MaxCategories - 1 (Other) for @p categories (a `;` list).
+        // Audio or Video alone count as AudioVideo, as the specification means them to come with it.
+        uint8_t menuCategory(StringView categories) {
+                for (size_t k = 0; k + 1 < MaxCategories; ++k) {
+                        if (DesktopEntry::hasCategory(categories, Categories[k])) return uint8_t(k);
+                        if (StringView(Categories[k]) == "AudioVideo" &&
+                            (DesktopEntry::hasCategory(categories, "Audio") ||
+                             DesktopEntry::hasCategory(categories, "Video")))
+                                return uint8_t(k);
+                }
+                return uint8_t(MaxCategories - 1);
+        }
 
         using Entry = PanelEntry;
 
@@ -789,17 +806,15 @@ namespace {
                                                      StringView(), entryIcon(_entries[i], GuiStyle::IconSize));
                         }
                 } else {
+                        uint8_t which[MaxEntries];
+                        for (size_t i = 0; i < _entryCount; ++i)
+                                which[i] = menuCategory(StringView(_entries[i].entry.categories));
                         for (size_t c = 0; c < MaxCategories; ++c) {
                                 const StringView category =
                                         c + 1 < MaxCategories ? StringView(Categories[c]) : StringView("Other");
                                 Menu *sub = nullptr;
                                 for (size_t i = 0; i < _entryCount; ++i) {
-                                        size_t which = MaxCategories - 1;
-                                        for (size_t k = 0; k + 1 < MaxCategories && which == MaxCategories - 1; ++k)
-                                                if (DesktopEntry::hasCategory(_entries[i].entry.categories,
-                                                                              Categories[k]))
-                                                        which = k;
-                                        if (which != c) continue;
+                                        if (which[i] != c) continue;
                                         if (sub == nullptr) {
                                                 void *m = Memory::alloc(MemSpace::Psram, sizeof(Menu));
                                                 if (m == nullptr) break;
