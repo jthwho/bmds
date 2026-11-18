@@ -111,6 +111,13 @@ namespace RomManifest {
         /** @brief Returns how @p what is said ("added", "removed", "replaced", "moved"). */
         const char *text(Change what);
 
+        /**
+         * @brief Returns true if @p tree's system files are @p package's files exactly (paths,
+         *        sizes, hashes, flags): nothing for an update to write (§12g). The user's files
+         *        don't count, unless one sits at a path the package has.
+         */
+        bool sameSystemFiles(const RomImage &tree, const RomImage &package);
+
 } // namespace RomManifest
 
 BMDS_NAMESPACE_END

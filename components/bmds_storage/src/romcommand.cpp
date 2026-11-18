@@ -21,10 +21,15 @@
 #include <bmds/clock.h>
 #include <bmds/command.h>
 #include <bmds/datetime.h>
+#include <bmds/flashwrites.h>
+#include <bmds/romeditor.h>
+#include <bmds/semaphore.h>
+#include <bmds/waitlist.h>
 #include <bmds/romdisk.h>
 #include <bmds/rommanifest.h>
 #include <bmds/romspace.h>
 #include <bmds/shell.h>
+#include <bmds/list.h>
 #include <bmds/string.h>
 #include <bmds/timezone.h>
 #include <bmds/vfs.h>
@@ -41,8 +46,10 @@ namespace {
                         bool              pending = false;   // ls, diff --pending
                         bool              manifest = false;  // diff --manifest
                         bool              sectors = false;   // map --sectors
+                        bool              removeAll = false; // remove -r
+                        const char       *align = nullptr;   // install --align SIZE
                         Span<char *const> operands;
-                        char             *given[16] = {}; // operands' storage
+                        char             *given[64] = {}; // operands' storage
         };
 
         // What the forms work on: the tree booted, the pending one (a newer version written
@@ -193,10 +200,11 @@ namespace {
                            timeText(when, ctx, o, v.written), firmwareText(fw, v.firmware));
                 if (trees.hasPending) {
                         const RomImage::Version &p = trees.pendingImage.version();
-                        ctx.printf("Pending:      version %u at 0x%x, %u files, written %s (rom diff --pending)\n",
+                        const bool same = RomManifest::compareTrees(image, trees.pendingImage, nullptr, nullptr) == 0;
+                        ctx.printf("Pending:      version %u at 0x%x, %u files, written %s (%s)\n",
                                    static_cast<unsigned>(p.sequence), static_cast<unsigned>(p.offset),
-                                   static_cast<unsigned>(trees.pendingImage.count()),
-                                   timeText(when, ctx, o, p.written));
+                                   static_cast<unsigned>(trees.pendingImage.count()), timeText(when, ctx, o, p.written),
+                                   same ? "the booted tree's files: nothing changes" : "rom diff --pending");
                 } else {
                         ctx.printf("Pending:      none\n");
                 }
@@ -585,7 +593,8 @@ namespace {
                                 state = "booted";
                         } else if (trees.hasPending && r.offset == trees.pendingImage.version().offset) {
                                 state = "pending (the next boot takes it)";
-                        } else if (r.sequence > image.version().sequence) {
+                        } else if (r.sequence > (trees.hasPending ? trees.pendingImage : image).version().sequence) {
+                                // Newer than what the next boot takes, which passes it over.
                                 state = "newer, passed over (for another firmware)";
                         }
                         ctx.printf("0x%06x   %7u %-8s %8u %-19s %6u %-18s %s\n", static_cast<unsigned>(r.offset),
@@ -710,6 +719,283 @@ namespace {
                 return status;
         }
 
+        // --- install, remove, discard, compact (§12b, §12d) -----------------------------------
+
+        // A file on any filesystem as an install's bytes.
+        class FileSource final : public RomEditor::Source {
+                public:
+                        FileSource(FileHandle::Ptr file, uint64_t size) : _file(std::move(file)), _size(size) {}
+                        uint64_t       size() const override { return _size; }
+                        Result<size_t> read(WritableByteSpan buf) override {
+                                auto [n, err] = _file->read(buf, WaitForever);
+                                if (err == Error::EndOfFile) return makeResult(size_t(0));
+                                return err.isError() ? makeError<size_t>(err) : makeResult(n);
+                        }
+
+                private:
+                        FileHandle::Ptr _file;
+                        uint64_t        _size;
+        };
+
+        // Flash writes stall everything reading flash: none while audio holds them (as /flash's).
+        bool waitForFlash(CommandContext &ctx) {
+                if (!FlashWrites::isHeld()) return true;
+                ctx.printf("rom: waiting: audio is playing (a flash write would stall it)\n");
+                Semaphore       wake(1, 0);
+                WaitList::Entry entry(FlashWrites::releases(), wake);
+                while (FlashWrites::isHeld()) {
+                        if (ctx.isInterrupted()) return false;
+                        (void)wake.acquire(500); // Ctrl+C looked at twice a second
+                }
+                return true;
+        }
+
+        // Progress for a large change: a line at each quarter.
+        struct Progress {
+                        CommandContext *ctx;
+                        unsigned        quarter = 0;
+        };
+
+        void tellProgress(void *context, uint64_t done, uint64_t total) {
+                auto &p = *static_cast<Progress *>(context);
+                if (total < 512 * 1024) return;
+                const unsigned q = static_cast<unsigned>(done * 4 / total);
+                if (q <= p.quarter || q == 0) return;
+                p.quarter = q;
+                p.ctx->printf("rom: written %u KB of %u KB\n", static_cast<unsigned>(done / 1024),
+                              static_cast<unsigned>(total / 1024));
+        }
+
+        void tellShortfall(CommandContext &ctx, const RomEditor::Shortfall &s) {
+                Options raw;
+                char    a[32], b[32], c[32], d[32];
+                ctx.eprintf("rom: no room: needs %s together; %s free now, the largest run %s; %s after the next "
+                            "boot (rom remove, rom compact, then reboot)\n",
+                            bytesText(a, raw, s.needed), bytesText(b, raw, s.freeNow), bytesText(c, raw, s.largestNow),
+                            bytesText(d, raw, s.freeAfterBoot));
+                return;
+        }
+
+        void tellDone(CommandContext &ctx, const char *what, const RomEditor::Report &r) {
+                ctx.printf("rom: %s; tree version %u written: it takes effect at the next boot (rom diff --pending)\n",
+                           what, static_cast<unsigned>(r.sequence));
+                return;
+        }
+
+        int failed(CommandContext &ctx, Error err, const char *verb, StringView path) {
+                if (!path.isEmpty()) {
+                        ctx.eprintf("rom: %s %s/%.*s: %s\n", verb, RomDisk::Path, static_cast<int>(path.size()),
+                                    path.data(),
+                                    err == Error::Invalid ? "not a path a file may have there (a directory, a file "
+                                                            "along it, given twice, or . and ..)"
+                                                          : CommandContext::errorText(err));
+                } else {
+                        ctx.eprintf("rom: %s: %s\n", verb, CommandContext::errorText(err));
+                }
+                return Shell::ExitFailure;
+        }
+
+        struct InstallJob {
+                        CommandContext            *ctx;
+                        Span<const RomEditor::Add> adds;
+                        RomEditor::Report          report;
+                        RomEditor::Shortfall       shortfall;
+                        String                     failedPath;
+        };
+
+        int install(CommandContext &ctx, const Options &o) {
+                if (o.operands.size() < 2) return ctx.usage();
+                uint8_t alignLog2 = 6;
+                if (o.align != nullptr) {
+                        char         *end = nullptr;
+                        unsigned long n = std::strtoul(o.align, &end, 0);
+                        if (end != nullptr && (*end == 'k' || *end == 'K')) {
+                                n *= 1024;
+                                ++end;
+                        }
+                        if (end == nullptr || *end != '\0' || n < 1 || n > (1ul << RomImage::MaxAlignLog2) ||
+                            (n & (n - 1)) != 0) {
+                                ctx.eprintf("rom: --align %s: a power of two (64, 4k, 64k) up to 16 MB\n", o.align);
+                                return Shell::ExitUsage;
+                        }
+                        alignLog2 = 0;
+                        while ((1ul << alignLog2) < n) ++alignLog2;
+                        if (alignLog2 < 6) alignLog2 = 6; // a cache line at least
+                }
+                // DEST: a directory with several sources, a trailing '/', or one in the tree; else
+                // the file's path.
+                const size_t     sources = o.operands.size() - 1;
+                const char      *dest = o.operands[sources];
+                const StringView destPath = treePath(dest);
+                bool             intoDir = sources > 1 || StringView(dest).endsWith('/') || destPath.isEmpty();
+                if (!intoDir) {
+                        bool unused = false;
+                        auto [now, err] = RomImage::open(RomDisk::mapped(), RomDisk::firmware());
+                        if (err.isOk()) {
+                                const auto there = now.find(destPath, unused);
+                                intoDir = there.error().isOk() && there.value().directory;
+                        }
+                }
+                List<String>         paths;
+                List<FileSource>     files;
+                List<RomEditor::Add> adds;
+                if (paths.reserve(sources).isError() || files.reserve(sources).isError() ||
+                    adds.reserve(sources).isError()) {
+                        ctx.eprintf("rom: out of memory\n");
+                        return Shell::ExitFailure;
+                }
+                const Timestamp now = Clock::now();
+                for (size_t i = 0; i < sources; ++i) {
+                        const char *src = o.operands[i];
+                        auto [info, serr] = Vfs::stat(src, ctx.vfs());
+                        if (serr.isError() || info.isDirectory()) {
+                                ctx.eprintf("rom: %s: %s\n", src,
+                                            serr.isError() ? CommandContext::errorText(serr)
+                                                           : "a directory (give its files)");
+                                return Shell::ExitFailure;
+                        }
+                        auto [file, oerr] = Vfs::open(src, Vfs::Read, ctx.vfs());
+                        if (oerr.isError()) {
+                                ctx.eprintf("rom: %s: %s\n", src, CommandContext::errorText(oerr));
+                                return Shell::ExitFailure;
+                        }
+                        String path;
+                        if (intoDir) {
+                                StringView   name(src);
+                                const size_t slash = name.lastIndexOf('/');
+                                if (slash != StringView::NPos) name = name.mid(slash + 1);
+                                (void)path.assign(destPath);
+                                if (!destPath.isEmpty() && !destPath.endsWith('/')) (void)path.append("/");
+                                (void)path.append(name);
+                        } else {
+                                (void)path.assign(destPath);
+                        }
+                        (void)paths.append(std::move(path));
+                        (void)files.append(FileSource(std::move(file), info.size));
+                }
+                for (size_t i = 0; i < sources; ++i) {
+                        RomEditor::Add a;
+                        a.path = paths[i].view();
+                        a.source = &files[i];
+                        a.alignLog2 = alignLog2;
+                        a.flags = RomImage::User;
+                        a.modified = now;
+                        (void)adds.append(a);
+                }
+                if (!waitForFlash(ctx)) return Shell::ExitFailure;
+                InstallJob  job{&ctx, Span<const RomEditor::Add>(adds.data(), adds.size()), {}, {}, {}};
+                const Error err = RomDisk::edit(
+                        [](RomEditor &editor, void *c) {
+                                auto    &j = *static_cast<InstallJob *>(c);
+                                Progress p{j.ctx};
+                                editor.setProgress(tellProgress, &p);
+                                const Error e = editor.install(j.adds, j.report);
+                                j.shortfall = editor.shortfall();
+                                (void)j.failedPath.assign(editor.failedPath());
+                                return e;
+                        },
+                        &job);
+                if (err == Error::NoSpace) {
+                        tellShortfall(ctx, job.shortfall);
+                        return Shell::ExitFailure;
+                }
+                if (err.isError()) return failed(ctx, err, "install", job.failedPath.view());
+                char what[96], kb[32];
+                std::snprintf(what, sizeof(what), "%u file%s installed (%s)", static_cast<unsigned>(job.report.written),
+                              job.report.written == 1 ? "" : "s", bytesText(kb, o, job.report.bytesWritten));
+                tellDone(ctx, what, job.report);
+                return Shell::ExitSuccess;
+        }
+
+        struct RemoveJob {
+                        Span<const StringView> paths;
+                        bool                   recursive;
+                        RomEditor::Report      report;
+                        String                 failedPath;
+        };
+
+        int removePaths(CommandContext &ctx, const Options &o) {
+                if (o.operands.isEmpty()) return ctx.usage();
+                StringView paths[64];
+                for (size_t i = 0; i < o.operands.size(); ++i) paths[i] = treePath(o.operands[i]);
+                if (!waitForFlash(ctx)) return Shell::ExitFailure;
+                RemoveJob   job{Span<const StringView>(paths, o.operands.size()), o.removeAll, {}, {}};
+                const Error err = RomDisk::edit(
+                        [](RomEditor &editor, void *c) {
+                                auto       &j = *static_cast<RemoveJob *>(c);
+                                const Error e = editor.remove(j.paths, j.recursive, j.report);
+                                (void)j.failedPath.assign(editor.failedPath());
+                                return e;
+                        },
+                        &job);
+                if (err == Error::IsDir) {
+                        ctx.eprintf("rom: remove %s/%s: a directory (rom remove -r)\n", RomDisk::Path,
+                                    job.failedPath.cStr());
+                        return Shell::ExitFailure;
+                }
+                if (err.isError()) return failed(ctx, err, "remove", job.failedPath.view());
+                char what[64];
+                std::snprintf(what, sizeof(what), "%u file%s removed", static_cast<unsigned>(job.report.removed),
+                              job.report.removed == 1 ? "" : "s");
+                tellDone(ctx, what, job.report);
+                return Shell::ExitSuccess;
+        }
+
+        int discardPending(CommandContext &ctx, const Options &o) {
+                if (!o.operands.isEmpty()) return ctx.usage();
+                if (!waitForFlash(ctx)) return Shell::ExitFailure;
+                RomEditor::Report report;
+                const Error       err = RomDisk::edit(
+                        [](RomEditor &editor, void *c) { return editor.discard(*static_cast<RomEditor::Report *>(c)); },
+                        &report);
+                if (err.isError()) return failed(ctx, err, "discard", StringView());
+                if (report.sequence == 0) {
+                        ctx.printf("rom: nothing pending: the next boot takes the booted tree\n");
+                } else {
+                        ctx.printf("rom: the pending changes dropped (tree version %u: the booted tree's files)\n",
+                                   static_cast<unsigned>(report.sequence));
+                }
+                return Shell::ExitSuccess;
+        }
+
+        struct CompactJob {
+                        CommandContext      *ctx;
+                        RomEditor::Report    report;
+                        RomEditor::Shortfall shortfall;
+                        bool                 more = false;
+        };
+
+        int compactFiles(CommandContext &ctx, const Options &o) {
+                if (!o.operands.isEmpty()) return ctx.usage();
+                if (!waitForFlash(ctx)) return Shell::ExitFailure;
+                CompactJob  job{&ctx, {}, {}, false};
+                const Error err = RomDisk::edit(
+                        [](RomEditor &editor, void *c) {
+                                auto    &j = *static_cast<CompactJob *>(c);
+                                Progress p{j.ctx};
+                                editor.setProgress(tellProgress, &p);
+                                const Error e = editor.compact(j.report, j.more);
+                                j.shortfall = editor.shortfall();
+                                return e;
+                        },
+                        &job);
+                if (err == Error::NoSpace) {
+                        tellShortfall(ctx, job.shortfall);
+                        return Shell::ExitFailure;
+                }
+                if (err.isError()) return failed(ctx, err, "compact", StringView());
+                if (job.report.moved == 0) {
+                        ctx.printf("rom: packed as far as it can be now\n");
+                        return Shell::ExitSuccess;
+                }
+                char what[64];
+                std::snprintf(what, sizeof(what), "%u file%s moved together", static_cast<unsigned>(job.report.moved),
+                              job.report.moved == 1 ? "" : "s");
+                tellDone(ctx, what, job.report);
+                if (job.more) ctx.printf("rom: after that boot, rom compact again packs them down\n");
+                return Shell::ExitSuccess;
+        }
+
         // --- the command ----------------------------------------------------------------------
 
         int runRom(CommandContext &ctx) {
@@ -735,12 +1021,17 @@ namespace {
                                 o.manifest = true;
                         } else if (a == "--sectors") {
                                 o.sectors = true;
+                        } else if (a == "--align") {
+                                if (i + 1 >= args.size()) return ctx.usage();
+                                o.align = args[++i];
                         } else if (a[1] != '-') {
                                 for (size_t k = 1; k < a.size(); ++k) {
                                         if (a[k] == 'l') {
                                                 o.longForm = true;
                                         } else if (a[k] == 'R') {
                                                 o.recursive = true;
+                                        } else if (a[k] == 'r') {
+                                                o.removeAll = true;
                                         } else {
                                                 return ctx.usage();
                                         }
@@ -756,6 +1047,8 @@ namespace {
                 if (o.pending && !listing && f != "diff") return ctx.usage();
                 if (o.manifest && f != "diff") return ctx.usage();
                 if (o.sectors && f != "map") return ctx.usage();
+                if (o.removeAll && f != "remove") return ctx.usage();
+                if (o.align != nullptr && f != "install") return ctx.usage();
                 if (f == "info") return o.operands.isEmpty() ? showInfo(ctx, o) : ctx.usage();
                 if (listing) return list(ctx, o);
                 if (f == "stat") return statPaths(ctx, o);
@@ -764,6 +1057,10 @@ namespace {
                 if (f == "diff") return showDiff(ctx, o);
                 if (f == "manifest") return o.operands.isEmpty() ? showManifest(ctx, o) : ctx.usage();
                 if (f == "check") return check(ctx, o);
+                if (f == "install") return install(ctx, o);
+                if (f == "remove") return removePaths(ctx, o);
+                if (f == "discard") return discardPending(ctx, o);
+                if (f == "compact") return compactFiles(ctx, o);
                 return ctx.usage();
         }
 
@@ -771,9 +1068,11 @@ namespace {
 
 BMDS_SHELL_COMMAND(rom, runRom,
                    "[info | ls [-lR] [--pending] [PATH] | stat PATH... | map [--sectors] | log | "
-                   "diff [--manifest | --pending] | manifest | check [PATH...]] [--raw]",
+                   "diff [--manifest | --pending] | manifest | check [PATH...] | install [--align SIZE] SRC... DEST | "
+                   "remove [-r] PATH... | discard | compact] [--raw]",
                    "Show everything /rom holds (the files that come with the firmware): the partition, its "
                    "trees, each file, where each byte goes, the log of versions, what differs from the "
-                   "firmware or the pending tree; or check the files' hashes")
+                   "firmware or the pending tree; check the files' hashes; or change it (each change takes effect at "
+                   "the next boot)")
 
 BMDS_NAMESPACE_END

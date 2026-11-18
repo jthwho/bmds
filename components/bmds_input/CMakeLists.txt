@@ -23,18 +23,28 @@ set(BMDS_INPUT_PURE_SRCS
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
 
 if(COMMAND idf_component_register)
+        # USB MIDI, and bmds_midi with it, but in the recovery firmware (devplan/update.md §4): it has
+        # no MIDI, and so not the network, which bmds_midi brings (RTP-MIDI). A build property, not
+        # CONFIG_BMDS_RECOVERY: requirements are expanded before Kconfig's values are known.
+        idf_build_get_property(bmds_recovery BMDS_RECOVERY)
+        if(bmds_recovery)
+                set(BMDS_INPUT_MIDI_SRCS src/usbnomidi.cpp)
+                set(BMDS_INPUT_MIDI)
+        else()
+                set(BMDS_INPUT_MIDI_SRCS src/usbdevicemidi.cpp src/usbmidi.cpp)
+                set(BMDS_INPUT_MIDI bmds_midi)
+        endif()
         idf_component_register(SRCS ${BMDS_INPUT_PURE_SRCS}
                                     src/input.cpp
                                     src/padcommand.cpp
                                     src/pads.cpp
                                     src/usbcommand.cpp
                                     src/usbdevice.cpp
-                                    src/usbdevicemidi.cpp
                                     src/usbhost.cpp
-                                    src/usbmidi.cpp
+                                    ${BMDS_INPUT_MIDI_SRCS}
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_console bmds_fs bmds_midi bmds_sysconf bmds_shell bmds_tinyusb esp_driver_gpio esp_hw_support esp_system soc
+                               PRIV_REQUIRES bmds_board bmds_console bmds_fs ${BMDS_INPUT_MIDI} bmds_sysconf bmds_shell bmds_tinyusb esp_driver_gpio esp_hw_support esp_system soc
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()

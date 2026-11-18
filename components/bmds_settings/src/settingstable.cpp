@@ -387,6 +387,7 @@ namespace SettingsTable {
                         {.key = "bench/paths", .label = "Benchmarks from", .editor = E::List},
                         section("Updates"),
                         {.key = "update/dir", .label = "Packages in", .editor = E::Folder},
+                        {.key = "update/rom-backup", .label = "Your replaced ROM files in", .editor = E::Folder},
                 };
 
                 // Software (devplan/thirdparty.md §5): the sources and keys are the page's own

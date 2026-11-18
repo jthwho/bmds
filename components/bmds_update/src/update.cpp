@@ -9,6 +9,7 @@
  * runs in one job on an internal stack, reading the package from the card in chunks.
  */
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -32,6 +33,9 @@
 #include <bmds/memory.h>
 #include <bmds/notificationlog.h>
 #include <bmds/notifications.h>
+#include <bmds/romeditor.h>
+#include <bmds/romimage.h>
+#include <bmds/rommanifest.h>
 #include <bmds/storage.h>
 #include <bmds/sysconf.h>
 #include <bmds/system.h>
@@ -67,6 +71,10 @@ namespace {
         BMDS_SYSCONF(updateDir, "update/dir", Config::Type::Path, "/sd0/p0/update",
                      "Where update packages (.bmup) are kept: tools/bmds-update copies them here", 0, 255, nullptr,
                      nullptr)
+        BMDS_SYSCONF(romBackupDir, "update/rom-backup", Config::Type::Path, "/sd0/p0/rom-backup",
+                     "Where an update keeps the user's ROM files it replaces (rom install's): a folder for each "
+                     "update, by its version",
+                     0, 255, nullptr, nullptr)
 
         enum class Mode : uint8_t {
                 Check,
@@ -90,6 +98,8 @@ namespace {
                         size_t           headBytes = 0; // CheckHead: what `head` holds
                         uint64_t         fileBytes = 0; // CheckHead: the whole file's size
                         Error            result;
+                        String           resultNote; // more lines for the result (a ROM backup)
+                        bool             romMerged = false;
         };
 
         // The bootloader's place (the P4's: from its offset to the partition table), which the
@@ -178,6 +188,331 @@ namespace {
                 }
                 h.final(digest);
                 return Error::Ok;
+        }
+
+        Error writeChecked(Job &job, size_t index, Update::Stage stage);
+
+        // --- The ROM, file by file (devplan/rom.md §12g) ------------------------------------------
+
+        // The ROM's partition mapped and written, for a RomEditor. Each write turns the caches off:
+        // on the job's internal stack.
+        class PartitionRom final : public RomFlash {
+                public:
+                        explicit PartitionRom(const esp_partition_t *p) : _p(p) {
+                                const void *mapped = nullptr;
+                                if (p != nullptr && esp_partition_mmap(p, 0, p->size, ESP_PARTITION_MMAP_DATA, &mapped,
+                                                                       &_map) == ESP_OK)
+                                        _bytes = ByteSpan(static_cast<const uint8_t *>(mapped), p->size);
+                        }
+                        ~PartitionRom() override {
+                                if (!_bytes.isEmpty()) esp_partition_munmap(_map);
+                        }
+                        PartitionRom(const PartitionRom &) = delete;
+                        PartitionRom &operator=(const PartitionRom &) = delete;
+
+                        bool     isMapped() const { return !_bytes.isEmpty(); }
+                        ByteSpan bytes() const override { return _bytes; }
+                        Error    erase(uint32_t offset, uint32_t bytes) override {
+                                return esp_partition_erase_range(_p, offset, bytes) == ESP_OK ? Error::Ok
+                                                                                                 : Error::IoError;
+                        }
+                        Error write(uint32_t offset, ByteSpan data) override {
+                                return esp_partition_write(_p, offset, data.data(), data.size()) == ESP_OK
+                                               ? Error::Ok
+                                               : Error::IoError;
+                        }
+                        Error read(uint32_t offset, WritableByteSpan out) override {
+                                return esp_partition_read(_p, offset, out.data(), out.size()) == ESP_OK
+                                               ? Error::Ok
+                                               : Error::IoError;
+                        }
+
+                private:
+                        const esp_partition_t      *_p;
+                        esp_partition_mmap_handle_t _map = 0;
+                        ByteSpan                    _bytes;
+        };
+
+        // The build id a ROM tree is written for: the package's firmware (none: any).
+        Span<const uint8_t> romFirmware(const Update::Report &r) {
+                bool any = true;
+                for (uint8_t b : r.package.buildId) any = any && b == 0;
+                return any ? Span<const uint8_t>() : Span<const uint8_t>(r.package.buildId, sizeof(r.package.buildId));
+        }
+
+        // The tree the installed main firmware (ota_0's) boots with (rom.md §12e): kept whole by an
+        // update's writes, so if the new firmware doesn't make it the old one still has its own.
+        // Empty if there is none.
+        RomImage installedTree(const PartitionRom &rom) {
+                const esp_partition_t *main = partitionFor(uint32_t(SectionType::Firmware));
+                esp_app_desc_t         desc;
+                if (main == nullptr || esp_ota_get_partition_description(main, &desc) != ESP_OK) return RomImage();
+                auto [tree, err] = RomImage::open(rom.bytes(), Span<const uint8_t>(desc.app_elf_sha256, 32));
+                return err.isOk() ? tree : RomImage();
+        }
+
+        // The ROM section read whole into PSRAM (its hash checked), freed by its owner.
+        // Progress is told as @p base + bytes read of @p total.
+        Result<uint8_t *> readRomSection(Job &job, const UpdatePackage::Section &s, Update::Stage stage, uint64_t base,
+                                         uint64_t total) {
+                auto *bytes = static_cast<uint8_t *>(Memory::alloc(MemSpace::Psram, s.size + 1));
+                if (bytes == nullptr) return makeError<uint8_t *>(Error::NoMem);
+                Blake2s h;
+                for (uint32_t at = 0; at < s.size;) {
+                        const uint32_t n = s.size - at < ChunkBytes ? s.size - at : uint32_t(ChunkBytes);
+                        const Error    err = readAt(job, uint64_t(s.offset) + at, bytes + at, n);
+                        if (err.isError()) {
+                                Memory::free(bytes);
+                                return makeError<uint8_t *>(err);
+                        }
+                        h.update(bytes + at, n);
+                        at += n;
+                        report(job, stage, base + at, total);
+                }
+                uint8_t digest[32];
+                h.final(digest);
+                if (std::memcmp(digest, s.hash, sizeof(digest)) != 0) {
+                        Memory::free(bytes);
+                        return makeError<uint8_t *>(Error::CorruptData);
+                }
+                return makeResult(bytes);
+        }
+
+        // How the package's ROM compares with the partition's tree: the same when its system files
+        // are the package's and it is for this firmware or any; else it differs, and must fit
+        // beside the user's files (refused otherwise, nothing written: §12i Q2).
+        Result<bool> checkRom(Job &job, size_t index, const uint8_t *bytes) {
+                Update::Report               &r = *job.report;
+                const UpdatePackage::Section &s = r.package.sections[index];
+                auto [package, perr] = RomImage::open(ByteSpan(bytes, s.size));
+                if (perr.isError()) return refuse(job, "the ROM's image is damaged");
+                PartitionRom              rom(partitionFor(uint32_t(SectionType::Rom)));
+                const Span<const uint8_t> firmware = romFirmware(r);
+                r.flashed[index] = Update::Flashed::Differs;
+                if (!rom.isMapped()) return makeResult(true);
+                // An update builds on the newest tree, whatever firmware it is for: the user's last
+                // changes, or the last update's.
+                auto [tree, terr] = RomImage::open(rom.bytes());
+                if (terr.isError()) return makeResult(true); // no tree there: written whole
+                bool tied = true;                            // for this firmware, or any
+                for (uint8_t b : tree.version().firmware) tied = tied && b == 0;
+                if (!tied && !firmware.isEmpty())
+                        tied = std::memcmp(tree.version().firmware.data(), firmware.data(), firmware.size()) == 0;
+                if (tied && RomManifest::sameSystemFiles(tree, package)) {
+                        r.flashed[index] = Update::Flashed::Same;
+                        return makeResult(true);
+                }
+                const RomImage installed = installedTree(rom);
+                RomEditor      editor(rom, installed.version().bytes > 0 ? &installed : nullptr, {});
+                if (editor.load().isError()) return makeResult(true);
+                const Error fits = editor.checkApply(package);
+                if (fits == Error::NoSpace) {
+                        const RomEditor::Shortfall &f = editor.shortfall();
+                        bmdsWarn("Update: the ROM's new files need %u KB together; %u KB free beside the user's",
+                                 static_cast<unsigned>(f.needed / 1024), static_cast<unsigned>(f.freeAfterBoot / 1024));
+                        return refuse(job, "the ROM's new files don't fit beside the user's (rom remove some, rom "
+                                           "compact, then try again)");
+                }
+                if (fits.isError()) return makeError<bool>(fits);
+                return makeResult(true);
+        }
+
+        // Recovery's ROM on one bar: the section read (the first half), then the files written.
+        struct RomProgress {
+                        Job     *job;
+                        uint64_t read;
+        };
+
+        void romProgress(void *context, uint64_t done, uint64_t total) {
+                const auto &p = *static_cast<RomProgress *>(context);
+                report(*p.job, Update::Stage::WritingRom, p.read + (total > 0 ? done * p.read / total : 0), 2 * p.read);
+                return;
+        }
+
+        void romDisplaced(void *, StringView path) {
+                bmdsWarn("Update: the system's /rom/%.*s takes the place of the user's", static_cast<int>(path.size()),
+                         path.data());
+                return;
+        }
+
+        // The user's ROM files an update would replace (rom.md §12g): copied to the card first, into
+        // update/rom-backup/VERSION/ by their paths, unless the package's file is the same bytes.
+        // A system file is only ever an update's, so nothing else is backed up.
+        struct Backup {
+                        Job            *job;
+                        const RomImage *tree;
+                        const RomImage *package;
+                        String          dir; // this update's folder, once made
+                        uint32_t        files = 0;
+                        Error           err;
+        };
+
+        Error makeDirs(StringView path) {
+                Vfs::Context context;
+                for (size_t i = 1; i <= path.size(); ++i) {
+                        if (i < path.size() && path[i] != '/') continue;
+                        const Error made = Vfs::mkdir(path.left(i), context);
+                        if (made.isError() && made != Error::Exists) return made;
+                }
+                return Error::Ok;
+        }
+
+        void backUp(void *context, StringView path) {
+                auto &b = *static_cast<Backup *>(context);
+                if (b.err.isError()) return;
+                bool       noPath = false;
+                const auto have = b.tree->find(path, noPath);
+                if (have.error().isError() || have.value().directory) return;
+                const RomImage::Entry e = b.tree->entry(have.value().index);
+                const auto            want = b.package->find(path, noPath);
+                if (want.error().isOk() && !want.value().directory) {
+                        const RomImage::Entry p = b.package->entry(want.value().index);
+                        if (p.data.size() == e.data.size() &&
+                            std::memcmp(p.hash.data(), e.hash.data(), RomImage::HashBytes) == 0)
+                                return; // the same bytes: nothing of the user's is lost
+                }
+                Vfs::Context context2;
+                if (b.dir.isEmpty()) {
+                        // update/rom-backup/VERSION, or VERSION-2 ... if that is there already.
+                        String base;
+                        if (SysConf::get(StringView("update/rom-backup"), base).isError() || base.isEmpty()) {
+                                b.err = Error::NotExist;
+                                return;
+                        }
+                        for (unsigned n = 1; n < 100 && b.dir.isEmpty(); ++n) {
+                                String candidate;
+                                (void)candidate.appendf("%s/%s", base.cStr(), b.job->report->package.versionText);
+                                if (n > 1) (void)candidate.appendf("-%u", n);
+                                if (Vfs::stat(candidate.view(), context2).error() == Error::NotExist)
+                                        b.dir = std::move(candidate);
+                        }
+                        if (b.dir.isEmpty()) {
+                                b.err = Error::Exists;
+                                return;
+                        }
+                }
+                String target;
+                (void)target.appendf("%s/%.*s", b.dir.cStr(), int(path.size()), path.data());
+                const size_t slash = target.view().lastIndexOf('/');
+                b.err = makeDirs(target.view().left(slash));
+                if (b.err.isError()) return;
+                auto [file, oerr] = Vfs::open(target.view(), Vfs::Write | Vfs::Create | Vfs::Truncate, context2);
+                if (oerr.isError()) {
+                        b.err = oerr;
+                        return;
+                }
+                // Through internal RAM: the card's driver isn't given flash addresses.
+                for (size_t at = 0; at < e.data.size() && b.err.isOk();) {
+                        const size_t n = std::min(e.data.size() - at, ChunkBytes);
+                        std::memcpy(b.job->chunk, e.data.data() + at, n);
+                        auto [w, werr] = file->write(ByteSpan(b.job->chunk, n), WaitForever);
+                        if (werr.isOk() && w != n) werr = Error::IoError;
+                        b.err = werr;
+                        at += n;
+                }
+                if (b.err.isOk()) {
+                        ++b.files;
+                        bmdsInfo("Update: the user's /rom/%.*s backed up to %s", int(path.size()), path.data(),
+                                 target.cStr());
+                }
+                return;
+        }
+
+        // After an update (its firmware written too): the ROM's holes filled (rom.md §12p). In
+        // recovery nothing is mapped and the new tree is the one that boots, so what moved is free at
+        // once and it goes again until nothing moves.
+        void compactRom(Job &job) {
+                PartitionRom rom(partitionFor(uint32_t(SectionType::Rom)));
+                RomEditor    editor(rom, nullptr, {});
+                editor.setTime(Clock::now());
+                if (!rom.isMapped() || editor.load().isError()) return;
+                uint32_t moved = 0;
+                for (int round = 0; round < 16; ++round) {
+                        RomEditor::Report r;
+                        bool              more = false;
+                        const Error       err = editor.compact(r, more);
+                        if (err.isError()) {
+                                bmdsWarn("Update: compacting the ROM: %s", err.desc());
+                                break;
+                        }
+                        if (r.moved == 0) break;
+                        moved += r.moved;
+                        report(job, Update::Stage::WritingRom, uint64_t(round) + 1, 16);
+                }
+                if (moved > 0) bmdsInfo("Update: the ROM compacted: %u files moved", static_cast<unsigned>(moved));
+                return;
+        }
+
+        // Recovery's ROM: the package's tree merged into the partition's (its system files written
+        // where they differ, the user's kept), compacted first if that makes it fit; written whole
+        // when the partition holds no tree (blank, or another format).
+        Error writeRom(Job &job, size_t index) {
+                const UpdatePackage::Section &s = job.report->package.sections[index];
+                auto [bytes, rerr] = readRomSection(job, s, Update::Stage::WritingRom, 0, 2 * uint64_t(s.size));
+                RomProgress progress{&job, s.size};
+                if (rerr.isError()) return rerr;
+                auto [package, perr] = RomImage::open(ByteSpan(bytes, s.size));
+                Error err = perr.isError() ? Error(Error::CorruptData) : Error(Error::Ok);
+                bool  whole = false;
+                if (err.isOk()) {
+                        PartitionRom              rom(partitionFor(uint32_t(SectionType::Rom)));
+                        const Span<const uint8_t> firmware = romFirmware(*job.report);
+                        const RomImage            installed = installedTree(rom);
+                        RomEditor                 editor(rom, installed.version().bytes > 0 ? &installed : nullptr, {});
+                        editor.setTime(Clock::now());
+                        editor.setProgress(romProgress, &progress);
+                        if (!rom.isMapped() || editor.load().isError()) {
+                                whole = true;
+                        } else {
+                                // The user's files it would replace: to the card first; if that
+                                // fails, nothing is changed.
+                                Backup backup{&job, &editor.committed(), &package, {}, 0, Error::Ok};
+                                err = editor.checkApply(package, backUp, &backup);
+                                if (err == Error::NoSpace) err = Error::Ok; // compacted below, then checked
+                                if (err.isOk() && backup.err.isError()) {
+                                        bmdsErr("Update: backing up the user's ROM files: %s", backup.err.desc());
+                                        err = Error::Cancelled;
+                                }
+                                if (err.isOk() && backup.files > 0) {
+                                        (void)Vfs::sync();
+                                        (void)job.resultNote.appendf("backup: %u of the user's ROM files to %s\n",
+                                                                     static_cast<unsigned>(backup.files),
+                                                                     backup.dir.cStr());
+                                }
+                                RomEditor::Report done;
+                                if (err.isOk()) err = editor.apply(package, firmware, romDisplaced, nullptr, done);
+                                // Too little room together: the files moved down (free at once in
+                                // recovery), then again.
+                                for (int round = 0; err == Error::NoSpace && round < 8; ++round) {
+                                        RomEditor::Report moved;
+                                        bool              more = false;
+                                        if (editor.compact(moved, more).isError() || moved.moved == 0) break;
+                                        bmdsInfo("Update: the ROM compacted: %u files moved",
+                                                 static_cast<unsigned>(moved.moved));
+                                        err = editor.apply(package, firmware, romDisplaced, nullptr, done);
+                                }
+                                if (err.isOk()) {
+                                        bmdsInfo("Update: the ROM: %u files written (%u KB), %u kept, %u removed, %u "
+                                                 "of the "
+                                                 "user's displaced; tree version %u",
+                                                 static_cast<unsigned>(done.written),
+                                                 static_cast<unsigned>(done.bytesWritten / 1024),
+                                                 static_cast<unsigned>(done.kept), static_cast<unsigned>(done.removed),
+                                                 static_cast<unsigned>(done.displaced),
+                                                 static_cast<unsigned>(done.sequence));
+                                        job.report->flashed[index] = Update::Flashed::Same;
+                                        job.romMerged = true;
+                                } else if (err == Error::NoSpace) {
+                                        bmdsErr("Update: the ROM's new files don't fit beside the user's");
+                                }
+                        }
+                }
+                Memory::free(bytes);
+                if (whole) {
+                        bmdsInfo("Update: no ROM tree to merge into: the ROM written whole");
+                        return writeChecked(job, index, Update::Stage::WritingRom);
+                }
+                return err;
         }
 
         // The head's checks (devplan/update.md §2): the signature, the board, the chip revision, the
@@ -285,6 +620,19 @@ namespace {
                                 return refuse(job, UpdatePackage::verdictText(UpdatePackage::Verdict::BadHash));
                         }
                         if (partition == nullptr) continue;
+                        if (s.type == uint32_t(SectionType::Rom)) {
+                                // Its tree against the partition's (§12g), not its bytes.
+                                auto [bytes, rerr] = readRomSection(job, s, Update::Stage::Checking, done, total);
+                                if (rerr == Error::CorruptData)
+                                        return refuse(job, UpdatePackage::verdictText(UpdatePackage::Verdict::BadHash));
+                                if (rerr.isError()) return makeError<bool>(rerr);
+                                auto [good, cerr] = checkRom(job, i, bytes);
+                                Memory::free(bytes);
+                                if (cerr.isError() || !good) return Result<bool>(good, cerr);
+                                done += s.size;
+                                report(job, Update::Stage::Checking, done, total);
+                                continue;
+                        }
                         err = hashPartition(job, partition, s.size, digest, Update::Stage::Checking, done, total);
                         if (err.isError()) return makeError<bool>(err);
                         r.flashed[i] = std::memcmp(digest, s.hash, sizeof(digest)) == 0 ? Update::Flashed::Same
@@ -483,12 +831,13 @@ namespace {
                                     t.day, t.hour, t.minute, t.second);
         }
 
-        void writeResultOf(StringView path, const char *version, const char *message) {
+        void writeResultOf(StringView path, const char *version, const char *message, StringView note = {}) {
                 String text;
                 (void)text.appendf("status: %s\npackage: %.*s\nversion: %s\n",
                                    message == nullptr ? "applied" : "failed", int(path.size()), path.data(), version);
                 (void)appendWhen(text);
                 if (message != nullptr) (void)text.appendf("message: %s\n", message);
+                if (!note.isEmpty()) (void)text.append(note);
                 if (writeFile(Update::ResultPath, text.view()).isError() || writeFile(UnseenPath, "").isError()) {
                         bmdsErr("Update: can't write the result");
                 }
@@ -496,7 +845,7 @@ namespace {
         }
 
         void writeResult(const Job &job, const char *message) {
-                writeResultOf(job.path, job.report->package.versionText, message);
+                writeResultOf(job.path, job.report->package.versionText, message, job.resultNote.view());
                 return;
         }
 
@@ -549,14 +898,24 @@ namespace {
                 const Update::Observer *o = observer.load(std::memory_order_acquire);
                 if (failure == nullptr && o != nullptr && o->started != nullptr) o->started(o->arg, r);
                 size_t index = 0;
+                // The ROM first: its tree is for the new firmware, so if the firmware doesn't make it
+                // the old one passes it over for the tree before (rom.md §12f).
+                if (failure == nullptr && differing(r, SectionType::Rom, index) != nullptr) {
+                        const Error err = writeRom(job, index);
+                        if (err == Error::NoSpace) {
+                                failure = "the ROM's new files don't fit beside the user's";
+                        } else if (err == Error::Cancelled) {
+                                failure = "the user's ROM files couldn't be backed up to the card: nothing changed";
+                        } else if (err.isError()) {
+                                failure = "writing the ROM failed";
+                        }
+                }
                 if (failure == nullptr && differing(r, SectionType::Firmware, index) != nullptr &&
                     writeChecked(job, index, Update::Stage::WritingFirmware).isError()) {
                         failure = "writing the firmware failed";
                 }
-                if (failure == nullptr && differing(r, SectionType::Rom, index) != nullptr &&
-                    writeChecked(job, index, Update::Stage::WritingRom).isError()) {
-                        failure = "writing the ROM failed";
-                }
+                // Both written: the ROM's holes (its old system files' places) filled.
+                if (failure == nullptr && job.romMerged) compactRom(job);
                 // Last, and only when confirmed. If it didn't write right (the old one written back,
                 // or not even that), recovery stays: a restart could find no bootloader to start.
                 bool bootloaderFailed = false;

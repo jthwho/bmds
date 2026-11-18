@@ -191,6 +191,7 @@ add_executable(bmds_host_tests
         process.cpp
         regex.cpp
         rom.cpp
+        romeditor.cpp
         result.cpp
         run.cpp
         pty.cpp

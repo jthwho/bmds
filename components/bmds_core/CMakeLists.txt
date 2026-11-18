@@ -35,6 +35,7 @@ set(BMDS_CORE_SRCS
         src/romimage.cpp
         src/rommanifest.cpp
         src/romspace.cpp
+        src/romeditor.cpp
         src/sha512.cpp
         src/signedcontainer.cpp
         src/sha1.cpp

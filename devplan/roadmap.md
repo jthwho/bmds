@@ -590,7 +590,7 @@ Plan: [`input.md`](input.md).
       tested on the board. Fetching from a URL postponed (the user's, 2026-10-14; planned in §17).
     - [x] Last: `ota_1` cut to 1.375 MB (recovery is 0.9 MB), `rom` 10 MB; `/boot` moved with its
       contents (§19).
-  - [ ] A ROM that changes (`rom.md` §12, the user's, 2026-11-18; planned): files added and
+  - [x] A ROM that changes (`rom.md` §12, the user's, 2026-11-18; done): files added and
     removed while running (`rom install`, `remove`, `compact`), taking effect at the next boot; a
     flat table of paths, each file's own alignment (up to the MMU's 64 KB), a log of tree versions;
     updates file by file in recovery, the system's files always written back; `rom` shows all of
@@ -598,7 +598,10 @@ Plan: [`input.md`](input.md).
     flat sorted table, each file's alignment), `RomImage`'s reader and writer, `mkrom.py`, the
     volume, host tests and `rom_fuzz` (§12m). Step 2 done (2026-11-18): the tree for this firmware at boot,
     the firmware's manifest of system files, `rom info|ls|stat|map|log|diff|manifest|check`,
-    the ROM's readers fuzzed (`romdata_fuzz`); open: SVOX Pico trusts its voice files (§12n).
+    the ROM's readers fuzzed (`romdata_fuzz`); open: SVOX Pico trusts its voice files (§12n). Steps 3-5 done
+    (2026-11-18): `RomEditor` (changes into free space, one tree version each, a cut at any point
+    safe), `rom install|remove|discard|compact`, updates merged file by file in recovery (the
+    system's files written back, the user's kept); recovery without MIDI and the network (§12p).
   - [x] `/cfg` on the card, `/boot` renamed `/flash` (`cfg.md`, the user's, 2026-10-14): the
     configuration on the card when there is one (no flash writes, so no audio stalls), else on
     `/flash`; no syncing; `/flash`'s writes held while audio plays. All three steps built and

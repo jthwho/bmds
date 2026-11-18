@@ -12,6 +12,7 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/romimage.h>
+#include <bmds/romeditor.h>
 #include <bmds/rommanifest.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -65,6 +66,22 @@ namespace RomDisk {
          *        now, a tree written since boot included (the pending one, §12b).
          */
         ByteSpan mapped();
+
+        /** @brief A change to the ROM's tree, run by `edit()` with an editor loaded. */
+        using EditFn = Error (*)(RomEditor &editor, void *context);
+
+        /** @brief The stack a change runs on (internal RAM: flash writes turn the caches off). */
+        inline constexpr size_t EditStackBytes = 12 * 1024;
+
+        /**
+         * @brief Runs @p fn with an editor of the ROM's tree (`devplan/rom.md` §12b): one
+         *        change at a time, on a thread with an internal stack, the booted tree never
+         *        written. Each change is a pending tree the next boot takes. The caller waits
+         *        first while flash writes are held (`FlashWrites`: audio playing).
+         * @return `fn`'s result, `NoMedia` (no ROM mounted), or `NoMem` (no thread).
+         * @blocking
+         */
+        Error edit(EditFn fn, void *context);
 
         /** @brief Returns the partition's size in bytes (0: no partition). */
         size_t partitionBytes();

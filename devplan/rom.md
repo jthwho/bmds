@@ -586,12 +586,16 @@ pointer to them, so fragmentation is temporary.
   holes among the system's, nor an update among the user's.
 - **Placing:** first fit in the holes usable now, else the gap's edge for its area; refused if
   neither fits (§12g says what then).
-- **Compaction runs while the system runs** (`rom compact`): plan the packed layout (the system's
-  files first, then the user's), copy the files that move into space usable now, write the
-  pending tree pointing at the copies; the old places free at the next boot, so the boot only
-  takes the tree (no copying, no longer boot). It needs free space as large as what moves (the
-  ROM is 4.86 MB of 10). A power cut leaves the old tree or the new, as any change. Recovery may
-  compact as part of an update, in the same way.
+- **Compaction runs while the system runs** (`rom compact`): copy the files that move into space
+  usable now, write the pending tree pointing at the copies; the old places free at the next
+  boot, so the boot only takes the tree (no copying, no longer boot). It needs free space as
+  large as what moves (the ROM is 4.86 MB of 10). A power cut leaves the old tree or the new, as
+  any change. As built (§12q): from the top down, each file (not those on 64 KB pages) moves into
+  the lowest run of free sectors below it that holds it: holes filled, free space gathered at the
+  top, files never moved up, and no more moved than fills the holes. (First built as "the files
+  after the first hole, together", §12p, which after an update of an early file would have moved
+  nearly everything, twice.) Recovery compacts after every update, and before one that doesn't
+  fit.
 - **Who chooses an alignment:** `rom install --align SIZE`; a program may ask in its own note
   (an appended flag, when there is a user: extensions); `mkrom.py`'s `--mappable` becomes
   `--align SIZE=GLOB`. The default is 64 bytes (a cache line).
@@ -620,7 +624,9 @@ pointer to them, so fragmentation is temporary.
   manifest).
 - **A tree version may name the firmware it needs** (its build id). An update writes the ROM's
   part tied to the new firmware, so if `ota_0` didn't make it, the old firmware boots with the
-  old tree. Today a cut between the two writes leaves them mismatched.
+  old tree. Today a cut between the two writes leaves them mismatched. **Only an update's version
+  names one** (as built, §12p): the user's changes are for any firmware, so no firmware passes
+  over what the user did.
 - **The ROM's files are untrusted input now:** every reader the kernel has (the icon pack, fonts,
   voices, gamepads, the synth's bank, the zones) must refuse damaged files without crashing; to
   check one by one (most check already). A bad system file that crashes the boot sends the board
@@ -628,9 +634,9 @@ pointer to them, so fragmentation is temporary.
 
 ### 12g. Updates, file by file
 
-The package's ROM section (`update.md` §2, type 2) becomes a manifest and the files (its format
-to design with the step; the section type is new, appended, since `BMRO` format 1 isn't what it
-holds).
+The package's ROM section (`update.md` §2, type 2) is a format 2 image as `mkrom.py` makes it:
+its tree is the manifest, its files the bytes (as built, §12p: no new section type was needed;
+format 1 was never released).
 
 - **Applying it:**
   - A file whose hash matches already is skipped: most updates write little.
@@ -639,11 +645,17 @@ holds).
   - A system file the new manifest doesn't list is removed.
   - **The user's files are kept,** unless one sits at a path the system now claims: the system's
     file wins and the update names the user's it displaced.
+  - **The user's files it replaces are backed up first** (the user's, 2026-11-18): copied to the
+    card, `update/rom-backup/VERSION/PATH`, unless the package's file is the same bytes; if that
+    fails, the ROM isn't changed. A system file is only ever an update's, so going from one
+    update to the next backs nothing up.
+  - **Compacted after** (the user's, 2026-11-18): once the firmware is written too, its holes
+    (the old system files' places) are filled.
   - All of it is one tree version, so the ROM is the old set or the new one, never half.
-- **Who applies it:** recovery, as now (the user's, §12i Q1): with nothing mapped it may also
-  write over the old system's space and compact. It checks first that the new system's files fit
-  beside the user's (none reserved, Q2): if not, nothing is written and it says how much is
-  missing.
+- **Who applies it:** recovery, as now (the user's, §12i Q1). The main firmware checks first
+  that the new system's files fit beside the user's (none reserved, Q2): if not, it refuses
+  before rebooting and says why. Recovery merges onto the newest tree and keeps the installed
+  firmware's tree whole (§12p): so changed files need room beside the old ones.
 - **Restoring the system files** is applying the last package's ROM part again (`update apply`
   of the package kept on the card), from the main firmware or from recovery.
 - **A full flash over the cable** (`idf.py flash`, the web installer) writes a fresh partition:
@@ -731,10 +743,12 @@ forms:
 2. **The firmware on format 2** (done, 2026-11-18, §12n): the directory log at boot, the
    manifest, and `rom`'s viewing forms (`info`, `ls`, `stat`, `map`, `log`, `diff`, `manifest`,
    `check`; §12h); the readers checked as untrusted input (§12f). Flashed by an update package.
-3. **Changes while running:** the allocator, `rom install`, `remove`, `discard`, pending trees,
+3. **Changes while running** (done, 2026-11-18, §12p): the allocator, `rom install`, `remove`,
+   `discard`, pending trees,
    tested on the board across reboots and with resets during writes (as `/flash`'s were).
-4. **Compaction** (`rom compact`), with resets during it.
-5. **Updates file by file:** the package's new section, `mkupdate`, recovery applying it,
+4. **Compaction** (`rom compact`), with resets during it (done, 2026-11-18, §12p).
+5. **Updates file by file** (done, 2026-11-18, §12p): the package's ROM section merged, recovery
+   applying it,
    restoring the system's files; a user's file replaced and restored by an update on the board.
 6. **Then, each with its own plan:** programs' read-only `mmap()` (§6); files mapped through the
    MMU at 64 KB; kernel extensions.
@@ -847,4 +861,102 @@ forms:
   `diff --pending` and `ls --pending` (none), `manifest`, `check` (78 files, 4,740 KB in 1,386 ms;
   a directory and a file: 12 files), and usage errors (exit 2). A pending tree and a tree for
   another firmware can't be made on the board until step 3; the host tests cover them.
+
+### 12p. As built: steps 3 to 5, changes, compaction, updates file by file (2026-11-18)
+
+- **`RomEditor`** (`bmds_core`, `bmds/romeditor.h`) over a `RomFlash` (the partition mapped, the
+  chip's erase, write and read): `install()` (a batch), `remove()` (`-r` for a directory's
+  files), `discard()` (a version of the booted tree's files), `compact()`, `apply()` (an
+  update's tree merged) and `checkApply()` (the same, writing nothing). Each change: the new
+  tree checked as the version will be (`writeVersion()`) before anything is written; new bytes
+  into space neither the booted nor the committed tree uses (whole sectors: erased, written,
+  read back from the chip and hashed); then the version, into erased sectors of the log if
+  enough are together, else into sectors no kept version holds (the booted's, the committed's,
+  newer ones passed over), read back; the committed tree reloaded.
+- **Space:** files aligned to 64 KB or more take whole pages from the top down; the rest of a
+  change are packed together at their alignments into the lowest run of free sectors that holds
+  them. `NoSpace` says what was needed, what is free now, the largest run and what is free after
+  the next boot.
+- **Firmware ties:** an update's version names its firmware; every other change's is for any
+  (found on the board: a removal tied to one firmware was undone by an update for another). An
+  update builds on the **newest tree** whatever it is for, and keeps the tree the installed
+  firmware (`ota_0`'s) boots with whole, as a booted tree: if the new firmware doesn't make it,
+  the old one has its own (found reviewing the board's run: building on "the tree for the new
+  firmware" could pass over the newest and write over the files of the one the old firmware
+  would boot). So an update's changed files need room beside the old ones.
+- **The kernel:** `RomDisk::edit()` runs a change with an editor loaded, one at a time, on a
+  12 KB internal stack (flash writes turn the caches off). `rom install [--align SIZE] SRC...
+  DEST` (DEST a directory with several sources, a trailing `/`, or one in the tree), `rom remove
+  [-r] PATH...`, `rom discard`, `rom compact`: each waits first while audio holds flash writes
+  (`FlashWrites`, Ctrl+C looked at twice a second), says what it wrote and that it takes effect
+  at the next boot; a large write tells its progress by quarters. `rom log` now judges each
+  version against the tree the next boot takes; `rom` says when the pending tree is the booted
+  one's files.
+- **Updates** (`update.cpp`): the ROM section read whole into PSRAM; the main firmware compares
+  its tree with the partition's newest (`RomManifest::sameSystemFiles()`, and whether that is for
+  the package's firmware or any): the same, or it differs and `checkApply()` must fit (refused
+  before rebooting otherwise). Recovery merges it **before** the firmware (its version for the
+  new firmware), compacting first if that makes room, logging each user's file displaced; a
+  partition with no tree (blank, another format) is written whole as before.
+- **The recovery firmware leaves MIDI out** (the user's, 2026-11-18): it had grown to 1,560,672
+  bytes, over `ota_1`'s 1,441,792, since `bmds_input` → `bmds_midi` → `bmds_net` (Network MIDI)
+  had brought the network and mbedTLS into it. Recovery's `CMakeLists.txt` sets the build
+  property `BMDS_RECOVERY` (Kconfig's values aren't known when requirements are expanded) and
+  `bmds_input` builds `usbnomidi.cpp` there in place of its USB MIDI. Recovery is 1,230,096
+  bytes now (with §12q's backups; 207 KB free); the ROM's code in it is about 34 KB.
+- **Tests** (`tests/host/romeditor.cpp`, 8 cases) on a simulated NOR flash (writes clear bits,
+  erases set 0xff, the space past the image holding old bytes, a cut at any operation): adds,
+  a batch on a page and at 4 KB, a system file replaced, removals (`IsDir`, `NotExist`),
+  discard; refusals change nothing; pending-only space free at once, the booted's after a boot;
+  60 changes in a row (the log reused, the booted version kept); **a power cut at every erase
+  and write of an install, a removal, a discard, a compaction and an update**, each leaving the
+  old tree or the new, whole, the booted tree's bytes untouched; compaction over two boots to no
+  holes; an update merged (written, kept, removed, displaced, its manifest matching, the older
+  tree for another firmware) and refused when it can't fit; the user's change after an update
+  for any firmware; an update keeping the installed firmware's tree whole. No byte was ever
+  written that wasn't erased.
+- **On the board** (bmds0): installs (a program run from `/rom/test/hello` after the reboot, a
+  1 MB file at the partition's top at about 150 KB/s, hashes matching the host's); a system file
+  replaced, discard, remove (`-r`, a directory, a missing path); compaction of a hole over two
+  boots to none; three `reboot panic`s during a 1 MB install (at a quarter, half, and after the
+  data): the tree before each time, `rom check` good. Updates: a user's file over
+  `gamepads.txt` written back by the update with the user's other three files kept; the same
+  package again "the same as rom"; a package with one system file changed: that file alone
+  written. The firmware: +17.7 KB for the editor and the new forms (3,348,288 → 3,366,608).
+- **Found on the way:** `build update` carries `build-recovery/`'s image as it is: a package went
+  out with a three-day-old recovery, which wrote the ROM whole and lost the test's installed
+  files. Recovery is built first (`cd build-recovery && build`) whenever code it runs changes.
+
+### 12q. As built: backups and compaction with updates (2026-11-18)
+
+The user's, after steps 3-5: "compact after an update (in recovery)", and "whenever we're doing a
+system update ... copy any files to the sd card that will be overwritten ... only if they've
+changed since the update. ... if updating the rom fs from a previous update, nothing gets backed up
+to sd. If there's a file the user changed, we'd back it up to SD before we replace it."
+
+- **What is backed up:** an update only replaces the user's files (`RomImage::User`: `rom
+  install`'s), at a path its package claims or under one; system files are only ever an update's,
+  so nothing else is. `RomEditor::checkApply()` now tells each user's file it would displace;
+  recovery copies those (through internal RAM, the card's driver isn't given flash addresses) to
+  `update/rom-backup` (a new setting, default `/sd0/p0/rom-backup`, in Settings' Updates as "Your
+  replaced ROM files in") under a folder named by the package's version (`-2`, `-3` if taken), at
+  their paths; a file the package has as the same bytes is skipped. A backup that fails (no card,
+  full) leaves the ROM unchanged and the update failed ("the user's ROM files couldn't be backed
+  up to the card: nothing changed"). The result gains a line, `backup: N of the user's ROM files
+  to DIR`, which `update status` shows: the user is told what was replaced and where it is.
+- **Compaction reworked** (§12d): from the top down, each file into the lowest run below it that
+  holds it, each at a sector's start; never up; nothing moved if nothing fits lower. Writing a
+  change now erases exactly the sectors its new files cover, in runs (the files of one change may
+  be in several places). In the main firmware the old places free at the next boot; in recovery,
+  at once.
+- **Compaction after an update:** recovery, once the ROM is merged and the firmware written (the
+  new firmware and its tree in place, so nothing older needs keeping), compacts until nothing
+  moves.
+- **Tests:** a hole at the bottom filled by the top file alone (one moved, the rest where they
+  were, no holes after the boot); the power-cut test cuts every operation of the new compaction.
+- **On the board** (bmds0): the user's `gamepads.txt` (over the system's) and `mine.txt`; the
+  update backed up the first to `/sd0/p0/rom-backup/0.3.1+0b14ff9a-dirty/share/gamepads.txt`
+  (its bytes), wrote the system's back, kept `mine.txt`, said so in its result, and compacted
+  (4 KB of holes to none). The same package again: "the same as rom", nothing backed up. The
+  log wrapped round on the board too (versions back in its first sectors).
 

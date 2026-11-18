@@ -15,6 +15,10 @@
 #include <esp_partition.h>
 #include <bmds/blockdevice.h>
 #include <bmds/blockdevices.h>
+#include <bmds/clock.h>
+#include <bmds/mutex.h>
+#include <bmds/romeditor.h>
+#include <bmds/thread.h>
 #include <bmds/log.h>
 #include <bmds/romdisk.h>
 #include <bmds/rommanifest.h>
@@ -72,6 +76,55 @@ namespace {
         constinit bool                       mounted = false;
         constinit RomManifest::Counts        counts;
         constinit size_t                     partitionSize = 0;
+        constinit const esp_partition_t     *partitionInfo = nullptr;
+        constinit StaticObject<Mutex>        editLock; // one change at a time
+
+        // The partition as RomEditor writes it. Each call turns the caches off: called on an
+        // internal stack (RomDisk::edit()).
+        class PartitionFlash final : public RomFlash {
+                public:
+                        PartitionFlash(const esp_partition_t &p, ByteSpan mapped) : _p(p), _mapped(mapped) {}
+
+                        ByteSpan bytes() const override { return _mapped; }
+
+                        Error erase(uint32_t offset, uint32_t bytes) override {
+                                return esp_partition_erase_range(&_p, offset, bytes) == ESP_OK ? Error::Ok
+                                                                                               : Error::IoError;
+                        }
+
+                        Error write(uint32_t offset, ByteSpan data) override {
+                                return esp_partition_write(&_p, offset, data.data(), data.size()) == ESP_OK
+                                               ? Error::Ok
+                                               : Error::IoError;
+                        }
+
+                        Error read(uint32_t offset, WritableByteSpan out) override {
+                                return esp_partition_read(&_p, offset, out.data(), out.size()) == ESP_OK
+                                               ? Error::Ok
+                                               : Error::IoError;
+                        }
+
+                private:
+                        const esp_partition_t &_p;
+                        ByteSpan               _mapped;
+        };
+
+        struct EditJob {
+                        RomDisk::EditFn fn;
+                        void           *context;
+                        Error           err;
+        };
+
+        // A change's work, on its internal stack.
+        void runEdit(void *arg) {
+                auto          &job = *static_cast<EditJob *>(arg);
+                PartitionFlash flash(*partitionInfo, partition->mapped());
+                RomEditor      editor(flash, &mountedImage, RomDisk::firmware());
+                editor.setTime(Clock::now());
+                job.err = editor.load();
+                if (job.err.isOk()) job.err = job.fn(editor, job.context);
+                return;
+        }
 
         void hex(const uint8_t *bytes, size_t n, char *out) {
                 for (size_t i = 0; i < n; ++i) {
@@ -102,6 +155,8 @@ Error RomDisk::init() {
                 return Error::Ok;
         }
         partitionSize = found->size;
+        partitionInfo = found;
+        editLock.create();
         RomPartition &device = partition.create();
         err = device.open(*found);
         char name[BlockDevices::MaxName + 1] = {};
@@ -167,6 +222,15 @@ bool RomDisk::matchesFirmware() {
 
 RomManifest::Counts RomDisk::manifestCounts() {
         return counts;
+}
+
+Error RomDisk::edit(EditFn fn, void *context) {
+        if (!mounted || partitionInfo == nullptr) return Error::NoMedia;
+        Mutex::Locker lock(*editLock, WaitForever);
+        EditJob       job{fn, context, Error::Ok};
+        // A stack for the editor, the card's reads and a command's printing.
+        const Error err = Thread::runOnInternalStack("rom", EditStackBytes, runEdit, &job);
+        return err.isError() ? err : job.err;
 }
 
 size_t RomDisk::partitionBytes() {

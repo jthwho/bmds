@@ -633,3 +633,15 @@ their path. All of it lands as one tree version, tied to the firmware it was wri
 cut leaves the old set or the new (`rom.md` §12g). Recovery applies it (the user's, `rom.md` §12i);
 no space is reserved for the user's files, so an update that can't fit beside them is refused
 before anything is written.
+
+**As built (2026-11-18, `rom.md` §12p):** the ROM section stays type 2, a format 2 image whose
+tree is compared and merged (`RomEditor::apply()`); the main firmware refuses a package whose new
+ROM files don't fit beside the user's; recovery writes the ROM before the firmware, its tree for
+the new firmware, and keeps the installed firmware's tree whole. The recovery firmware leaves
+MIDI (and so the network) out: 1,230,096 bytes (with §12q's backups). Recovery must be rebuilt
+(`build-recovery/`) before `build update` when code it runs changes: a package carries that image
+as it is.
+Since (`rom.md` §12q): the user's ROM files an update replaces are copied to the card first
+(`update/rom-backup/VERSION/`, a `backup:` line in the result), and recovery compacts the ROM
+after the update.
+

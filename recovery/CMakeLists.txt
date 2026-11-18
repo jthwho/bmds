@@ -23,6 +23,10 @@ get_filename_component(BMDS_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 idf_build_set_property(COMPILE_OPTIONS "-ffile-prefix-map=${BMDS_ROOT}=/BMDS" APPEND)
 
 idf_build_set_property(MINIMAL_BUILD ON)
+# For the components' requirements, which are expanded before Kconfig's values are known (as
+# CONFIG_BMDS_RECOVERY is): what this firmware leaves out (bmds_input: MIDI, and with it the
+# network).
+idf_build_set_property(BMDS_RECOVERY ON)
 
 # PROJECT_VER: the same version as the main firmware's (cmake/version.cmake).
 include(${CMAKE_CURRENT_LIST_DIR}/../cmake/version.cmake)

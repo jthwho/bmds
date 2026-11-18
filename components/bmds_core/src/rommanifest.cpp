@@ -88,6 +88,26 @@ namespace RomManifest {
                 return changes;
         }
 
+        bool sameSystemFiles(const RomImage &tree, const RomImage &package) {
+                uint32_t matched = 0;
+                for (uint32_t i = 0; i < tree.count(); ++i) {
+                        const RomImage::Entry e = tree.entry(i);
+                        bool                  noPath = false;
+                        const auto            found = package.find(e.path, noPath);
+                        if ((e.flags & RomImage::User) != 0) {
+                                if (found.error().isOk()) return false; // the user's where the system's goes
+                                continue;
+                        }
+                        if (found.error().isError() || found.value().directory) return false;
+                        const RomImage::Entry p = package.entry(found.value().index);
+                        if (p.data.size() != e.data.size() || p.flags != e.flags ||
+                            std::memcmp(p.hash.data(), e.hash.data(), RomImage::HashBytes) != 0)
+                                return false;
+                        ++matched;
+                }
+                return matched == package.count();
+        }
+
         const char *text(Change what) {
                 switch (what) {
                         case Change::Added: return "added";
