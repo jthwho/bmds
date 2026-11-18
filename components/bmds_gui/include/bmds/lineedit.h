@@ -42,6 +42,18 @@ class LineEdit : public Widget {
                 /** @brief Told of Enter or Esc (on the loop's thread). */
                 using Done = void (*)(void *arg, LineEdit &edit);
 
+                /** @brief Keys its owner can take from it (`setKeysTaken()`). */
+                enum TakenKey : uint8_t {
+                        TakeTab = 1u << 0,
+                        TakeUp = 1u << 1,
+                        TakeDown = 1u << 2,
+                        TakePageUp = 1u << 3,
+                        TakePageDown = 1u << 4,
+                };
+
+                /** @brief Told of a taken key (one `TakenKey`), with the `KeyEvent` modifiers down. */
+                using KeyTaken = void (*)(void *arg, LineEdit &edit, uint8_t key, uint8_t modifiers);
+
                 /** @brief Told that the wrapped text now takes @p lines lines (`setWrapping()`). */
                 using LinesChanged = void (*)(void *arg, LineEdit &edit, size_t lines);
 
@@ -65,6 +77,29 @@ class LineEdit : public Widget {
 
                 /** @brief Selects from @p start to @p end (byte offsets), the cursor at @p end. */
                 void setSelection(size_t start, size_t end);
+
+                /** @brief Returns the cursor's place (a byte offset). */
+                size_t cursor() const { return _model.cursor(); }
+
+                /** @brief Puts the cursor at @p offset (a byte offset; cut to the text, on a character), nothing selected. */
+                void setCursor(size_t offset) { setSelection(offset, offset); }
+
+                /**
+                 * @brief Has the keys in @p keys (`TakenKey` bits; pressed without Ctrl or Alt)
+                 *        told to `KeyTaken` instead of their use (Tab moving the focus, Up and
+                 *        Down a wrapped field's lines): a chat's completion and history.
+                 */
+                void setKeysTaken(uint8_t keys) { _keysTaken = keys; }
+
+                /** @brief Returns the keys taken. */
+                uint8_t keysTaken() const { return _keysTaken; }
+
+                /** @brief Has @p fn told of the keys taken. */
+                void setKeyTaken(KeyTaken fn, void *arg) {
+                        _keyTaken = fn;
+                        _keyTakenArg = arg;
+                        return;
+                }
 
                 /** @brief Stops typing at @p bytes (at most `LineEditModel::MaxBytes`). */
                 void setMaxLength(size_t bytes) { _model.setMaxBytes(bytes); }
@@ -167,6 +202,9 @@ class LineEdit : public Widget {
                 uint32_t            _dropDrag = 0; // a drop being read
                 Done          _accepted = nullptr;
                 void         *_acceptedArg = nullptr;
+                KeyTaken            _keyTaken = nullptr;
+                void               *_keyTakenArg = nullptr;
+                uint8_t             _keysTaken = 0;
                 Done          _cancelled = nullptr;
                 void         *_cancelledArg = nullptr;
                 Done                _edited = nullptr;

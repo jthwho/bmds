@@ -246,6 +246,19 @@ void LineEdit::moveLine(int by, bool select) {
 bool LineEdit::keyPressed(const KeyEvent &event) {
         const bool shift = event.hasShift();
         const bool ctrl = event.hasCtrl() && !event.hasAlt();
+        // A key its owner takes (completion, history): told, its own use not made of it.
+        if (_keysTaken != 0 && _keyTaken != nullptr && !event.hasCtrl() && !event.hasAlt()) {
+                const uint8_t key = event.usage == HidKey::Tab        ? TakeTab
+                                    : event.usage == HidKey::Up       ? TakeUp
+                                    : event.usage == HidKey::Down     ? TakeDown
+                                    : event.usage == HidKey::PageUp   ? TakePageUp
+                                    : event.usage == HidKey::PageDown ? TakePageDown
+                                                                      : 0;
+                if ((key & _keysTaken) != 0) {
+                        _keyTaken(_keyTakenArg, *this, key, event.modifiers);
+                        return true;
+                }
+        }
         bool       edited = false; // the text, not only the cursor or the selection
         switch (event.usage) {
                 case HidKey::Left: _model.left(shift); break;

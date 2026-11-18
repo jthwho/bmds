@@ -398,3 +398,8 @@ event TabPage.menuRequested(Int, Int) on
 method TreeView.setBadge(String, String) -> None
 method TreeView.setAttention(String, Int) -> None
 event TreeView.menuRequested(String, Int, Int) on
+
+# 2026-11-17 (devplan/chatview.md §10): a chat's input line: its cursor, keys taken for completion and history.
+property LineEdit.cursor Int RW
+property LineEdit.keys List RW
+event LineEdit.keyPressed(Atom, Int) on

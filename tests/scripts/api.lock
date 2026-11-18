@@ -4121,3 +4121,11 @@ void Tabs::set_barVisible(bool)
 void TreeView::onMenuRequested(StringIntIntCallback@)
 void TreeView::setAttention(const string&in, int)
 void TreeView::setBadge(const string&in, const string&in)
+
+# 2026-11-17 (devplan/chatview.md §10): a chat's input line: its cursor, keys taken for completion and history.
+funcdef void StringIntCallback(const string&in, int)
+int LineEdit::get_cursor() const
+string[]@ LineEdit::get_keys() const
+void LineEdit::onKeyPressed(StringIntCallback@)
+void LineEdit::set_cursor(int)
+void LineEdit::set_keys(const string[]&in)

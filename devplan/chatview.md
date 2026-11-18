@@ -4,7 +4,8 @@ Planned 2026-11-16 for the IRC client (bmds-apps' `devplan/irc.md`: the client l
 bmds-apps repository and is released after the next BMDS release, which brings TLS for programs,
 network.md §35, and this class). Approved as proposed by the user (2026-11-16), the name too.
 
-Status: **steps 1 to 3 built** (§7, §8, §9); step 4 is the IRC client's (bmds-apps).
+Status: **steps 1 to 3 built** (§7, §8, §9), and the input line's additions (§10); step 4 is
+the IRC client's (bmds-apps).
 
 ## 1. Why
 
@@ -184,3 +185,25 @@ their bytes.
   events are the user's (a scroll, a click), which `guitest` can't make, so the gallery is
   their test.
 
+
+## 10. The input line's additions (2026-11-17)
+
+The IRC client's input line needs Tab completion and the history on Up and Down (bmds-apps'
+irc.md §6), which a `LineEdit` couldn't give: Tab moved the focus, Up and Down did nothing
+unwrapped, and the cursor's place wasn't readable. Appended for the same release as `ChatView`:
+
+| Kind | Name | Type | What |
+|---|---|---|---|
+| property | `LineEdit.cursor` | Int, RW | The cursor's place, a byte offset (past the text: `BadValue`) |
+| property | `LineEdit.keys` | List, RW | Keys the program takes: `Tab`, `Up`, `Down`, `PageUp`, `PageDown` (another name: `BadValue`, the list kept) |
+| event | `LineEdit.keyPressed` | On, (Atom key, Int modifiers) | A taken key pressed without Ctrl or Alt (Shift reported): told instead of its use. The modifiers as `Canvas.key` gives them |
+
+- **Natively:** `LineEdit::setKeysTaken()` and `KeyTaken`, `cursor()` and `setCursor()`; the
+  taken keys are checked first in `keyPressed()`, so the window's Tab never sees them. Ctrl+Tab
+  and Ctrl+PageUp/Down still reach a `TabWidget` around it (`keyBeforeChild`, which comes first).
+- **Tested:** `guitest` describes the three, moves the cursor (past the end and below 0
+  `BadValue`), sets the keys and reads them back, refuses `Enter` keeping the list, and expects
+  no event from the program's own changes. guigallery's Chat line takes Tab, Up and Down and shows
+  each in the status bar with the cursor: on the board, Tab after "hello al" was told (cursor 8)
+  and the focus stayed in the line.
+- **ABI:** `classes.def`, `gui.lock`, angel's `api.lock` (5 lines).

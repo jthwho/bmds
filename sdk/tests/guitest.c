@@ -12,7 +12,8 @@
  * timer, images (shown by widgets and outliving their objects while shown), a canvas's pixels,
  * a chat view's properties and methods (its events are the user's: guigallery's Chat tab), tabs'
  * badges, attention, close buttons and places for up to 256 pages and a tree's marks (their events
- * the user's too: guigallery's Tabs tab), and many objects made and destroyed. Prints "guitest: ok", or each failure and exits 1.
+ * the user's too: guigallery's Tabs tab), a line edit's cursor and taken keys, and many objects
+ * made and destroyed. Prints "guitest: ok", or each failure and exits 1.
  */
 
 #include <bmds/guiclasses.h>
@@ -708,6 +709,42 @@ static int itemIs(const bmds_gui_value_t *list, uint32_t index, const char *want
                memcmp(item.text, want, item.length) == 0;
 }
 
+// A chat's input line (devplan/chatview.md §10): its cursor, and keys taken (their presses are the
+// user's: guigallery's Chat tab shows them).
+static void lineEditKeysTest(bmds_gui_t *gui, uint32_t window) {
+        uint32_t parent = 0, creatable = 0;
+        int      found = 0;
+        CHECK(describe(gui, "LineEdit", &parent, &creatable, 0, "cursor", BMDS_GUI_INT, &found) == 0 && found);
+        CHECK(describe(gui, "LineEdit", &parent, &creatable, 0, "keys", BMDS_GUI_LIST, &found) == 0 && found);
+        CHECK(describe(gui, "LineEdit", &parent, &creatable, 2, "keyPressed", BMDS_GUI_ATOM, &found) == 0 && found);
+        const uint32_t   edit = bmds_line_edit_new(gui, window);
+        bmds_gui_value_t v;
+        bmds_line_edit_set_text(gui, edit, "hello");
+        CHECK(bmds_line_edit_get_cursor(gui, edit, &v) == 0 && v.number == 5); // at the end
+        bmds_line_edit_set_cursor(gui, edit, 2);
+        CHECK(bmds_line_edit_get_cursor(gui, edit, &v) == 0 && v.number == 2);
+        bmds_line_edit_set_cursor(gui, edit, 6);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        bmds_line_edit_set_cursor(gui, edit, -1);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        CHECK(bmds_line_edit_get_keys(gui, edit, &v) == 0 && v.count == 0);
+        static const char *const keys[] = {"Tab", "Up", "Down"};
+        bmds_line_edit_set_keys(gui, edit, keys, 3);
+        CHECK(bmds_line_edit_get_keys(gui, edit, &v) == 0 && v.count == 3 && itemIs(&v, 0, "Tab") &&
+              itemIs(&v, 2, "Down"));
+        static const char *const bad[] = {"Tab", "Enter"};
+        bmds_line_edit_set_keys(gui, edit, bad, 2);
+        EXPECT(BMDS_GUI_BAD_VALUE);
+        CHECK(bmds_line_edit_get_keys(gui, edit, &v) == 0 && v.count == 3); // kept
+        bmds_line_edit_set_keys(gui, edit, NULL, 0);
+        CHECK(bmds_line_edit_get_keys(gui, edit, &v) == 0 && v.count == 0);
+        bmds_gui_event_t e;
+        CHECK(nextEvent(gui, &e, 200) == 0);
+        bmds_gui_destroy(gui, edit);
+        EXPECT_NONE();
+        return;
+}
+
 // Tabs for many pages (devplan/tabs.md): the additions described; more than the 16 tabs there used
 // to be, up to 256 (the next refused); each page's badge (cut on a character), attention, close
 // button and place (moving one, the current one followed); the row hidden; a tree's marks; none
@@ -1248,6 +1285,7 @@ int main(void) {
         fontTest(gui, window);
         chatViewTest(gui, window);
         tabsTest(gui, window);
+        lineEditKeysTest(gui, window);
         notificationTest(gui);
         trayTest(gui);
         servicesTest(gui);

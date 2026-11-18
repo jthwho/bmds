@@ -188,6 +188,8 @@ Made by `Create`; also has the entries of [Widget](#widget).
 | `text` | String | read, written |  |
 | `masked` | Bool | written only |  |
 | `maxLength` | Int | written only |  |
+| `cursor` | Int | read, written |  |
+| `keys` | List | read, written |  |
 
 | Method | Arguments | Result |
 |---|---|---|
@@ -197,6 +199,7 @@ Made by `Create`; also has the entries of [Widget](#widget).
 |---|---|---|
 | `accepted` | String | on |
 | `edited` | String | off |
+| `keyPressed` | Atom, Int | on |
 
 ## CheckBox
 

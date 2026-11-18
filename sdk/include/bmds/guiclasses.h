@@ -1472,6 +1472,19 @@ static inline int bmds_tree_view_set_attention(bmds_gui_t *gui, uint32_t id, con
         return bmds_gui_call_named(gui, id, "setAttention", args, 2, NULL);
 }
 #define BMDS_GUI_TREE_VIEW_MENU_REQUESTED "menuRequested" /**< TreeView's event (String, Int, Int). */
+static inline int bmds_line_edit_set_cursor(bmds_gui_t *gui, uint32_t id, int32_t value) {
+        return bmds_gui_set_named(gui, id, "cursor", bmds_gui_int(value));
+}
+static inline int bmds_line_edit_get_cursor(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "cursor", out);
+}
+static inline int bmds_line_edit_set_keys(bmds_gui_t *gui, uint32_t id, const char *const *value, uint32_t value_count) {
+        return bmds_gui_set_named(gui, id, "keys", bmds_gui_strings(gui, value, value_count));
+}
+static inline int bmds_line_edit_get_keys(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "keys", out);
+}
+#define BMDS_GUI_LINE_EDIT_KEY_PRESSED "keyPressed" /**< LineEdit's event (Atom, Int). */
 
 #ifdef __cplusplus
 }

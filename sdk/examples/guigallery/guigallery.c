@@ -13,8 +13,8 @@
  * splitter between a list view and an icon view. Views: the folders as a tree (children read as
  * a folder opens) and the chosen one's entries in a details view. Text: a code editor, its cursor and state shown.
  * Chat: a chat view fed lines on a timer (IRC's styles and colours, gutters, links), a marker
- * under what was read, the end, and a line typed in; its link clicks and scrolling back show in
- * the status bar. Tabs: tabs for many conversations (devplan/tabs.md): more than fit, scrolled
+ * under what was read, the end, and a line typed in (Tab, Up and Down taken from it, shown); its
+ * link clicks and scrolling back show in the status bar. Tabs: tabs for many conversations (devplan/tabs.md): more than fit, scrolled
  * and listed; news on a timer marks tabs not in view (a count in a badge, activity, every fourth
  * an alert); their close buttons and middle clicks close them, a right click opens a menu (to the
  * front, mark read, close), a new tab goes after the first, and the row can be hidden. Terminal: a shell
@@ -447,6 +447,17 @@ static int chatEvent(Gallery *g, const bmds_gui_event_t *e) {
         }
         if (e->source == g->chatEnd) {
                 bmds_chat_view_scroll_to_end(gui, g->chat);
+                return 1;
+        }
+        if (e->source == g->chatEntry && bmds_gui_event_is(gui, e, BMDS_GUI_LINE_EDIT_KEY_PRESSED) && e->count == 2) {
+                // Taken from the line (a chat's completion and history): named, with the cursor.
+                const char      *key = bmds_gui_atom_name(gui, (uint32_t)e->values[0].number);
+                bmds_gui_value_t cursor;
+                char             text[64];
+                snprintf(text, sizeof(text), "Key taken: %s (modifiers %lld), the cursor at %d",
+                         key != NULL ? key : "?", (long long)e->values[1].number,
+                         bmds_line_edit_get_cursor(gui, g->chatEntry, &cursor) == 0 ? (int)cursor.number : -1);
+                bmds_status_bar_set_field(gui, g->status, 0, text);
                 return 1;
         }
         if (e->source == g->chatEntry && bmds_gui_event_is(gui, e, BMDS_GUI_LINE_EDIT_ACCEPTED) && e->count == 1) {
@@ -1126,6 +1137,8 @@ int main(void) {
         g.chatEnd = bmds_button_new(gui, chatRow);
         bmds_button_set_text(gui, g.chatEnd, "To the &end");
         g.chatEntry = bmds_line_edit_new(gui, chatPage);
+        static const char *const chatKeys[] = {"Tab", "Up", "Down"}; // shown, not moving the focus
+        bmds_line_edit_set_keys(gui, g.chatEntry, chatKeys, 3);
         g.chatTimer = bmds_gui_new(gui, "Timer", 0);
         bmds_timer_set_interval(gui, g.chatTimer, 1500);
         for (int i = 0; i < 6; ++i) chatLine(&g, ChatSamples[i]);

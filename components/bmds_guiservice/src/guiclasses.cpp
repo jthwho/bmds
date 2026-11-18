@@ -564,6 +564,9 @@ namespace {
 
         // ---- LineEdit
 
+        bool                        readStrings(const Value &v, StringView *out, size_t max, size_t &count);
+        template <typename F> Value makeStrings(GuiObject &o, size_t count, F text);
+
         LineEdit *field(GuiObject &o) {
                 return static_cast<LineEdit *>(o.widget);
         }
@@ -600,11 +603,60 @@ namespace {
                 fieldEvent(*static_cast<GuiObject *>(arg), "edited");
                 return;
         }
+        GuiStatus set_LineEdit_cursor(GuiObject &o, const Value &v) {
+                if (v.number < 0 || v.number > int64_t(field(o)->text().size())) return BadValue;
+                field(o)->setCursor(size_t(v.number));
+                return Ok;
+        }
+        Value get_LineEdit_cursor(GuiObject &o) {
+                return Value::integer(int32_t(field(o)->cursor()));
+        }
+        // The keys a program takes, by name (chatview.md §10).
+        constexpr struct {
+                        const char *name;
+                        uint8_t     key;
+        } TakenKeys[] = {{"Tab", LineEdit::TakeTab},
+                         {"Up", LineEdit::TakeUp},
+                         {"Down", LineEdit::TakeDown},
+                         {"PageUp", LineEdit::TakePageUp},
+                         {"PageDown", LineEdit::TakePageDown}};
+        GuiStatus set_LineEdit_keys(GuiObject &o, const Value &v) {
+                StringView names[sizeof(TakenKeys) / sizeof(TakenKeys[0])];
+                size_t     count = 0;
+                if (!readStrings(v, names, sizeof(TakenKeys) / sizeof(TakenKeys[0]), count)) return BadValue;
+                uint8_t keys = 0;
+                for (size_t i = 0; i < count; ++i) {
+                        uint8_t key = 0;
+                        for (const auto &k : TakenKeys)
+                                if (names[i] == StringView(k.name)) key = k.key;
+                        if (key == 0) return BadValue;
+                        keys |= key;
+                }
+                field(o)->setKeysTaken(keys);
+                return Ok;
+        }
+        Value get_LineEdit_keys(GuiObject &o) {
+                const char *taken[sizeof(TakenKeys) / sizeof(TakenKeys[0])];
+                size_t      n = 0;
+                for (const auto &k : TakenKeys)
+                        if ((field(o)->keysTaken() & k.key) != 0) taken[n++] = k.name;
+                return makeStrings(o, n, [&](size_t i) { return StringView(taken[i]); });
+        }
+        void fieldKeyTaken(void *arg, LineEdit &, uint8_t key, uint8_t modifiers) {
+                auto &o = *static_cast<GuiObject *>(arg);
+                for (const auto &k : TakenKeys)
+                        if (k.key == key) {
+                                const Value v[] = {Value::atom(GuiAtoms::intern(k.name)), Value::integer(modifiers)};
+                                o.connection->emit(o, "keyPressed", Args(v, 2));
+                        }
+                return;
+        }
         GuiStatus create_LineEdit(GuiObject &o, GuiObject *parent) {
                 const GuiStatus s = makeWidget<LineEdit>(o, parent);
                 if (s == Ok) {
                         field(o)->setAccepted(fieldAccepted, &o);
                         field(o)->setEdited(fieldEdited, &o);
+                        field(o)->setKeyTaken(fieldKeyTaken, &o);
                 }
                 return s;
         }

@@ -481,3 +481,11 @@ GUI_EVENT(TabPage, menuRequested, On, Int, Int)
 GUI_METHOD(TreeView, setBadge, None, String, String)
 GUI_METHOD(TreeView, setAttention, None, String, Int)
 GUI_EVENT(TreeView, menuRequested, On, String, Int, Int)
+
+/* ---- 2026-11-17 (devplan/chatview.md §10): a chat's input line. Its cursor (a byte offset), and
+ * keys its program takes from it (a list of Tab, Up, Down, PageUp, PageDown): pressed without Ctrl
+ * or Alt, they are told (keyPressed: the key's name, the modifiers as Canvas.key gives them)
+ * instead of their use (Tab moving the focus), for completion and history */
+GUI_PROP(LineEdit, cursor, Int, RW)
+GUI_PROP(LineEdit, keys, List, RW)
+GUI_EVENT(LineEdit, keyPressed, On, Atom, Int)
