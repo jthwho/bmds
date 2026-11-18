@@ -956,6 +956,38 @@ and editors the toolkit lacked. All are ordinary public widgets, tried in `widge
   now 88 at both. A window's column stays flush with its frame by default (bars at the edges): a
   dialog of plain widgets sets `margin` and `spacing`, as the gallery's does.
 
+### 4v. A list's menu, finding in a chat, a paste of many lines (the IRC client's, 2026-11-17)
+
+The IRC client's step 5 (bmds-apps' `devplan/irc.md` §7c-§7l, approved by the user: a member
+list's right-click menu as mIRC's, Find in a conversation, paste protection) needs three things
+programs couldn't do. Appended for the same release as `ChatView` and the tabs:
+
+| Kind | Name | Type | What |
+|---|---|---|---|
+| event | `ItemView.menuRequested` | On, (Int row, Int x, Int y) | A right click (or the Menu key) on a list, details or icon view: the row under it (-1: none), selected unless it already was (a selection kept); (x, y) in the window's client area, for `Menu.popup` |
+| method | `ChatView.find` | (String text, Bool backward) → Bool | From the selection (nothing selected: the first line, or the end backward), round once; the match selected and scrolled into view (centred if any of its line was out of view); false: nothing changed |
+| property | `LineEdit.pasteLines` | Bool, RW | Off by default. On: a paste or drop with a line break inside (breaks only at its end are dropped and it is inserted), or longer than the room left, isn't inserted but told |
+| event | `LineEdit.pasteRequested` | On, (String) | That paste, at most 64 KiB (cut at a line's end) |
+
+- **Natively:** `ItemView::setMenuAsked()` was there for the tree (only the event is new);
+  `ChatText::find()` (the shown text, ASCII case ignored; host-tested) and `ChatView::find()`;
+  `LineEdit::setPasteLines()` and `setPasteRequested()`, the owner told last (it may destroy it).
+  A find leaving the end tells `scrolledBack`, as a user's scroll does.
+- **Adding rows was quadratic:** the item model reserved exactly one more row and exactly a
+  text's bytes, and `List::reserve()` gives what it is asked, so each `addRow` copied every row
+  and every text kept: 2,000 rows of three columns took 11.7 s on the board (500: 324 ms). The
+  model's lists (and `TreeRows`', the same pattern) now grow as an append grows them
+  (`Detail::listGrownCapacity`): 2,000 rows 299 ms, 5,000 875 ms. So no `DetailsView.addRows`
+  (planned only if `addRow` measured slow): a channel list of 2,000 rows is a third of a second.
+- **Tested:** `guitest` describes the four, reads `pasteLines`' default and sets it, and finds in
+  a chat view (forward from the first line, on from a match, backward, round, case and codes
+  ignored, none keeping the selection, an empty text). The user's events in guigallery: a right
+  click on the Layouts tab's list (Venus selected, "row 1", the Dialogs tab's menu at the
+  pointer); the Chat tab's find field (Enter back, Find on forward: carol at 12:26 then 12:20,
+  and 12:02 near the top scrolled to); three lines and a blank pasted into the Chat line given to
+  the program (3 lines, 58 bytes), one line with a newline pasted into the field as usual.
+- **ABI:** `classes.def`, `gui.lock` (4 lines), angel's `api.lock` (8).
+
 ## 5. Budget (estimates)
 
 - **Firmware:** the toolkit 10 to 15 KB, the panel 5 KB, the window manager's additions 4 KB, the

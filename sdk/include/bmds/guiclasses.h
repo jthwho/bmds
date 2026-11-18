@@ -1485,6 +1485,18 @@ static inline int bmds_line_edit_get_keys(bmds_gui_t *gui, uint32_t id, bmds_gui
         return bmds_gui_get_named(gui, id, "keys", out);
 }
 #define BMDS_GUI_LINE_EDIT_KEY_PRESSED "keyPressed" /**< LineEdit's event (Atom, Int). */
+#define BMDS_GUI_ITEM_VIEW_MENU_REQUESTED "menuRequested" /**< ItemView's event (Int, Int, Int). */
+static inline int bmds_chat_view_find(bmds_gui_t *gui, uint32_t id, const char *a0, int a1, bmds_gui_value_t *result) {
+        const bmds_gui_value_t args[] = {bmds_gui_string(a0), bmds_gui_bool(a1)};
+        return bmds_gui_call_named(gui, id, "find", args, 2, result);
+}
+static inline int bmds_line_edit_set_paste_lines(bmds_gui_t *gui, uint32_t id, int value) {
+        return bmds_gui_set_named(gui, id, "pasteLines", bmds_gui_bool(value));
+}
+static inline int bmds_line_edit_get_paste_lines(bmds_gui_t *gui, uint32_t id, bmds_gui_value_t *out) {
+        return bmds_gui_get_named(gui, id, "pasteLines", out);
+}
+#define BMDS_GUI_LINE_EDIT_PASTE_REQUESTED "pasteRequested" /**< LineEdit's event (String). */
 
 #ifdef __cplusplus
 }

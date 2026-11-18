@@ -312,10 +312,30 @@ bool LineEdit::keyPressed(const KeyEvent &event) {
         return true;
 }
 
+// With `setPasteLines()`: line breaks at the end of @p data taken off; then a line break left
+// inside, or more than the room left (all of it when @p replacing, else beside what's kept), and
+// it is the owner's. @return True if it is (told by the caller, last: the owner may destroy this).
+bool LineEdit::handsOver(StringView &data, bool replacing) const {
+        if (!_pasteLines || _pasteRequested == nullptr) return false;
+        size_t n = data.size();
+        while (n > 0 && (data[n - 1] == '\n' || data[n - 1] == '\r')) --n;
+        data = data.left(n);
+        bool lines = false;
+        for (size_t i = 0; i < n && !lines; ++i) lines = data[i] == '\n' || data[i] == '\r';
+        const size_t kept = replacing ? 0 : _model.text().size() - _model.selected().size();
+        return lines || kept + n > _model.maxBytes();
+}
+
 void LineEdit::pasted(void *arg, Error err, StringView type, StringView data) {
         (void)type;
         auto *self = static_cast<LineEdit *>(arg);
         if (err.isError()) return;
+        StringView one = data;
+        if (self->handsOver(one, false)) {
+                self->_pasteRequested(self->_pasteRequestedArg, *self, data);
+                return;
+        }
+        data = one;
         if (!self->_model.insert(data)) return;
         self->changed();
         if (self->_edited != nullptr) self->_edited(self->_editedArg, *self);
@@ -448,6 +468,12 @@ void LineEdit::dropRead(void *arg, Error err, StringView type, StringView data) 
         GuiWindow     *w = self->window();
         const uint32_t drag = self->_dropDrag;
         self->_dropDrag = 0;
+        StringView one = data;
+        if (err.isOk() && self->handsOver(one, true)) {
+                if (w != nullptr) (void)w->application().windowManager().finishDrop(drag, DropAction::Copy);
+                self->_pasteRequested(self->_pasteRequestedArg, *self, data); // last: it may destroy this
+                return;
+        }
         if (err.isOk()) {
                 // One line: line ends as spaces, none at the end.
                 char   buffer[LineEditModel::MaxBytes + 1];

@@ -563,7 +563,9 @@ Plan: [`input.md`](input.md).
     close buttons, moving a page, the row hidden; the client's tabs by default; step 1, the
     row's scrolling and parts in `TabRow`, built: §7; step 2, the widget and the classes, built:
     §8; step 3, guigallery's Tabs tab and guitest, built: §9), and the input line's taken keys and
-    cursor (`chatview.md` §10, built). Servers too (§37, 2026-11-17, the user's:
+    cursor (`chatview.md` §10, built), a list's menu, `ChatView.find` and `LineEdit.pasteLines`
+    for the client's step 5 (`gui.md` §4v, built; adding rows made linear: 2,000 in 0.3 s, not
+    11.7). Servers too (§37, 2026-11-17, the user's:
     "proper TLS server support in the kernel", for the VNC server's VeNCrypt): `BMDS_TLS_SERVER`
     and `BMDS_TLS_CLIENT_CERT` on `tls_ctl`, the board's own ECDSA certificate made on first use
     (`net/tls/server-keys`, `tls cert`), libtls's `tls_server`/`tls_accept_socket`, `progtest

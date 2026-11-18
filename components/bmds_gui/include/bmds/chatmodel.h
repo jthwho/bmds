@@ -122,6 +122,17 @@ namespace ChatText {
         /** @brief Returns the index of the link at byte @p offset of `text`, or -1. */
         int linkAt(const Parsed &line, uint32_t offset);
 
+        /** @brief `find()`'s answer when there is no match. */
+        constexpr uint32_t NoMatch = UINT32_MAX;
+
+        /**
+         * @brief Finds @p needle in @p text (a line's shown text), ASCII letters' case ignored:
+         *        the first match starting at or after @p from, or with @p backward the last one
+         *        starting before it (@p from past the end: the end).
+         * @return The match's first byte, or `NoMatch` (an empty @p needle matches nothing).
+         */
+        uint32_t find(StringView text, StringView needle, uint32_t from, bool backward);
+
         /**
          * @brief How text is measured: a run's style may change its font (bold, italic, monospace;
          *        only `FontFlags` may change a width). Widths, and every x and width `wrap()` and

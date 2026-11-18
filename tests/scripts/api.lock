@@ -4129,3 +4129,12 @@ string[]@ LineEdit::get_keys() const
 void LineEdit::onKeyPressed(StringIntCallback@)
 void LineEdit::set_cursor(int)
 void LineEdit::set_keys(const string[]&in)
+# 2026-11-17 (devplan/gui.md §4v): a list's menu, finding in a chat view, a paste of many lines given to the program.
+bool ChatView::find(const string&in, bool)
+bool LineEdit::get_pasteLines() const
+void DetailsView::onMenuRequested(IntIntIntCallback@)
+void IconView::onMenuRequested(IntIntIntCallback@)
+void ItemView::onMenuRequested(IntIntIntCallback@)
+void LineEdit::onPasteRequested(StringCallback@)
+void LineEdit::set_pasteLines(bool)
+void ListView::onMenuRequested(IntIntIntCallback@)

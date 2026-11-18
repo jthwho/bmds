@@ -403,3 +403,9 @@ event TreeView.menuRequested(String, Int, Int) on
 property LineEdit.cursor Int RW
 property LineEdit.keys List RW
 event LineEdit.keyPressed(Atom, Int) on
+
+# 2026-11-17 (devplan/gui.md §4v): a list's menu, finding in a chat view, a paste of many lines given to the program.
+event ItemView.menuRequested(Int, Int, Int) on
+method ChatView.find(String, Bool) -> Bool
+property LineEdit.pasteLines Bool RW
+event LineEdit.pasteRequested(String) on

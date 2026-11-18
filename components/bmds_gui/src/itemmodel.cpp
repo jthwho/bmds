@@ -12,9 +12,18 @@
 
 BMDS_NAMESPACE_BEGIN
 
+namespace {
+        // Room for @p needed, grown as an append grows a list: reserving only what one more row
+        // needs copied every row and every text kept, each add (2,000 rows: 11.7 s, gui.md §4v).
+        template <typename L> Error roomFor(L &list, size_t needed) {
+                if (needed <= list.capacity()) return Error::Ok;
+                return list.reserve(Detail::listGrownCapacity(list.capacity(), needed));
+        }
+} // namespace
+
 Error ListItemModel::store(StringView s, Text &out) {
         if (s.size() > UINT16_MAX) return Error::Invalid;
-        const Error err = _texts.reserve(_texts.size() + s.size());
+        const Error err = roomFor(_texts, _texts.size() + s.size());
         if (err.isError()) return err;
         out.at = static_cast<uint32_t>(_texts.size());
         out.length = static_cast<uint16_t>(s.size());
@@ -37,7 +46,7 @@ void ListItemModel::removeAt(size_t row) {
 
 Error ListItemModel::add(StringView name, const Icon *small, const Icon *large, Span<const StringView> columnTexts) {
         Row   r;
-        Error err = _rows.reserve(_rows.size() + 1);
+        Error err = roomFor(_rows, _rows.size() + 1);
         if (err.isOk()) err = store(name, r.text[0]);
         for (size_t c = 0; err.isOk() && c < columnTexts.size() && c + 1 < MaxColumns; ++c)
                 err = store(columnTexts[c], r.text[c + 1]);

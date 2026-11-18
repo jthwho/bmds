@@ -651,12 +651,33 @@ namespace {
                         }
                 return;
         }
+        // A paste it can't hold as a line (pasteLines): the program's, cut at a line's end past 64 KiB.
+        constexpr size_t MostPasted = 64u * 1024u;
+        void             fieldPasteRequested(void *arg, LineEdit &, StringView text) {
+                auto &o = *static_cast<GuiObject *>(arg);
+                if (text.size() > MostPasted) {
+                        size_t end = MostPasted;
+                        while (end > 0 && text[end - 1] != '\n') --end;
+                        text = text.left(end > 0 ? end : MostPasted);
+                }
+                const Value v = Value::string(text);
+                o.connection->emit(o, "pasteRequested", Args(&v, 1));
+                return;
+        }
+        GuiStatus set_LineEdit_pasteLines(GuiObject &o, const Value &v) {
+                field(o)->setPasteLines(v.number != 0);
+                return Ok;
+        }
+        Value get_LineEdit_pasteLines(GuiObject &o) {
+                return Value::boolean(field(o)->pasteLines());
+        }
         GuiStatus create_LineEdit(GuiObject &o, GuiObject *parent) {
                 const GuiStatus s = makeWidget<LineEdit>(o, parent);
                 if (s == Ok) {
                         field(o)->setAccepted(fieldAccepted, &o);
                         field(o)->setEdited(fieldEdited, &o);
                         field(o)->setKeyTaken(fieldKeyTaken, &o);
+                        field(o)->setPasteRequested(fieldPasteRequested, &o);
                 }
                 return s;
         }
@@ -1445,6 +1466,18 @@ namespace {
                 return;
         }
 
+        // A right click on a row (or none: -1), or the Menu key: where, in the window's client area.
+        void viewMenuAsked(void *arg, ItemView &view, int row, uint16_t screenX, uint16_t screenY) {
+                auto      &o = *static_cast<GuiObject *>(arg);
+                GuiWindow *w = view.window();
+                if (w == nullptr) return;
+                const Rect  s = w->screenRect();
+                const Value v[] = {Value::integer(row), Value::integer(int(screenX) - int(s.x)),
+                                   Value::integer(int(screenY) - int(s.y))};
+                o.connection->emit(o, "menuRequested", Args(v, 3));
+                return;
+        }
+
         template <typename T> GuiStatus makeView(GuiObject &o, GuiObject *parent) {
                 void *mem = Memory::alloc(MemSpace::Psram, sizeof(ListItemModel));
                 if (mem == nullptr) return NoMem;
@@ -1460,6 +1493,7 @@ namespace {
                 itemView(o)->setModel(model(o));
                 itemView(o)->setActivated(viewActivated, &o);
                 itemView(o)->setChanged(viewChanged, &o);
+                itemView(o)->setMenuAsked(viewMenuAsked, &o);
                 return Ok;
         }
 
@@ -2032,6 +2066,10 @@ namespace {
         }
         GuiStatus call_ChatView_copy(GuiObject &o, Args, Value &) {
                 chatView(o)->copy();
+                return Ok;
+        }
+        GuiStatus call_ChatView_find(GuiObject &o, Args args, Value &result) {
+                result = Value::boolean(chatView(o)->find(args[0].text, args[1].number != 0));
                 return Ok;
         }
         GuiStatus create_ChatView(GuiObject &o, GuiObject *parent) {

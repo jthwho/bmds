@@ -489,3 +489,15 @@ GUI_EVENT(TreeView, menuRequested, On, String, Int, Int)
 GUI_PROP(LineEdit, cursor, Int, RW)
 GUI_PROP(LineEdit, keys, List, RW)
 GUI_EVENT(LineEdit, keyPressed, On, Atom, Int)
+
+/* ---- 2026-11-17 (devplan/gui.md §4v, for bmds-apps' IRC client): a list's right click (or the
+ * Menu key) asks for a menu: menuRequested(row, x, y), the row under it (-1: none) selected
+ * unless it already was (a selection kept), (x, y) in the window's client area, as Menu.popup takes them. A chat view finds text: find(text,
+ * backward), from the selection (nothing selected: the first line, or the end backward), going
+ * round once; a match selected and scrolled into view; false if none. A line's pasteLines: a paste
+ * or drop it can't hold as one line (a line break inside, or longer than the room left) isn't
+ * inserted but told as pasteRequested(text), at most 64 KiB of it (cut at a line's end) */
+GUI_EVENT(ItemView, menuRequested, On, Int, Int, Int)
+GUI_METHOD(ChatView, find, Bool, String, Bool)
+GUI_PROP(LineEdit, pasteLines, Bool, RW)
+GUI_EVENT(LineEdit, pasteRequested, On, String)

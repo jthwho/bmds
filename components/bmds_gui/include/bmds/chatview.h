@@ -138,6 +138,17 @@ class ChatView : public ScrollArea {
                 /** @brief Puts the selection on the clipboard. */
                 void copy();
 
+                /**
+                 * @brief Finds @p text in the lines kept (`ChatText::find()`: the shown text, the
+                 *        gutter's too, letters' case ignored), from the selection: the next match
+                 *        after it, or with @p backward the one before it; nothing selected, from
+                 *        the first line (or the end, backward). Past the last line it goes on from
+                 *        the other end, once round. A match is selected and scrolled into view (no
+                 *        longer following the end, unless it is at the end).
+                 * @return True if found (false: the selection and the view as they were).
+                 */
+                bool find(StringView text, bool backward);
+
                 // ---- Told
 
                 /** @brief Has @p fn told of a link clicked. */

@@ -302,6 +302,24 @@ TEST_CASE("ChatText: a font change starts on the measure's column") {
         CHECK(pieces[1].length == 3); // 12 + 24 = 36; a fourth would reach 44
 }
 
+TEST_CASE("ChatText: finding text") {
+        const ChatText::Parsed p = parsed("10:41\t<Alice> \x02"
+                                          "ALICE\x02 said alice");
+        const StringView       t = p.text.view(); // "10:41<Alice> ALICE said alice": codes gone
+        CHECK(ChatText::find(t, "alice", 0, false) == 6);
+        CHECK(ChatText::find(t, "alice", 7, false) == 13); // at or after: past the first
+        CHECK(ChatText::find(t, "alice", 13, false) == 13);
+        CHECK(ChatText::find(t, "alice", 25, false) == ChatText::NoMatch);
+        CHECK(ChatText::find(t, "alice", 999, true) == 24); // past the end: from the end
+        CHECK(ChatText::find(t, "alice", 24, true) == 13);  // before, not at
+        CHECK(ChatText::find(t, "alice", 6, true) == ChatText::NoMatch);
+        CHECK(ChatText::find(t, "Said ", 0, false) == 19);
+        CHECK(ChatText::find(t, "", 0, false) == ChatText::NoMatch);
+        CHECK(ChatText::find("ab", "abc", 0, false) == ChatText::NoMatch);
+        CHECK(ChatText::find("ab", "ab", 2, true) == 0);
+        CHECK(ChatText::find("ab", "ab", 1, false) == ChatText::NoMatch);
+}
+
 TEST_CASE("ChatText: a point's byte") {
         const ChatText::Parsed p = parsed("ab\tcdef ghij");
         ChatText::Row          rows[8];

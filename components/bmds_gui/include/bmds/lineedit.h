@@ -101,6 +101,28 @@ class LineEdit : public Widget {
                         return;
                 }
 
+                /** @brief Told of a paste it didn't take (`setPasteLines()`): the text as pasted. */
+                using PasteRequested = void (*)(void *arg, LineEdit &edit, StringView text);
+
+                /**
+                 * @brief Has a paste (or a drop) it can't hold as one line given to
+                 *        `PasteRequested` instead of inserted: one with a line break inside (line
+                 *        breaks only at its end are dropped and it is inserted), or longer than the
+                 *        room left. Off by default (line breaks left out, the rest cut). A chat's
+                 *        input asks before sending many lines.
+                 */
+                void setPasteLines(bool on) { _pasteLines = on; }
+
+                /** @brief Returns true if pastes it can't hold go to `PasteRequested`. */
+                bool pasteLines() const { return _pasteLines; }
+
+                /** @brief Has @p fn told of the pastes it doesn't take (`setPasteLines()`). */
+                void setPasteRequested(PasteRequested fn, void *arg) {
+                        _pasteRequested = fn;
+                        _pasteRequestedArg = arg;
+                        return;
+                }
+
                 /** @brief Stops typing at @p bytes (at most `LineEditModel::MaxBytes`). */
                 void setMaxLength(size_t bytes) { _model.setMaxBytes(bytes); }
 
@@ -176,6 +198,7 @@ class LineEdit : public Widget {
         private:
                 static void pasted(void *arg, Error err, StringView type, StringView data);
                 static void dropRead(void *arg, Error err, StringView type, StringView data);
+                bool        handsOver(StringView &data, bool replacing) const; // a paste for its owner
 
                 // A line shown: its bytes [start, end) and where it is drawn from.
                 struct Line {
@@ -205,6 +228,9 @@ class LineEdit : public Widget {
                 KeyTaken            _keyTaken = nullptr;
                 void               *_keyTakenArg = nullptr;
                 uint8_t             _keysTaken = 0;
+                PasteRequested      _pasteRequested = nullptr;
+                void               *_pasteRequestedArg = nullptr;
+                bool                _pasteLines = false;
                 Done          _cancelled = nullptr;
                 void         *_cancelledArg = nullptr;
                 Done                _edited = nullptr;

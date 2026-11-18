@@ -296,6 +296,29 @@ namespace ChatText {
                 return -1;
         }
 
+        uint32_t find(StringView text, StringView needle, uint32_t from, bool backward) {
+                const size_t n = needle.size();
+                if (n == 0 || n > text.size()) return NoMatch;
+                const auto lower = [](char c) {
+                        return c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c;
+                };
+                const auto at = [&](size_t i) {
+                        for (size_t k = 0; k < n; ++k)
+                                if (lower(text[i + k]) != lower(needle[k])) return false;
+                        return true;
+                };
+                const size_t last = text.size() - n; // the last place a match can start
+                if (backward) {
+                        size_t i = from > last + 1 ? last + 1 : from;
+                        while (i-- > 0)
+                                if (at(i)) return uint32_t(i);
+                        return NoMatch;
+                }
+                for (size_t i = from; i <= last; ++i)
+                        if (at(i)) return uint32_t(i);
+                return NoMatch;
+        }
+
         namespace {
 
                 // A word's or a space's bytes measured once, run by run (at most `MaxParts` runs;

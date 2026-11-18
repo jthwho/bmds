@@ -16,11 +16,18 @@ namespace {
 
         constexpr size_t CompactAbove = 4096; // garbage bytes before compacting is worth it
 
+        // Room for @p needed, grown as an append grows a list (not only what is needed now: each
+        // name or folder added would copy all the names kept, as itemmodel.cpp's did).
+        template <typename L> Error roomFor(L &list, size_t needed) {
+                if (needed <= list.capacity()) return Error::Ok;
+                return list.reserve(Detail::listGrownCapacity(list.capacity(), needed));
+        }
+
 } // namespace
 
 Error TreeRows::store(StringView name, Row &row) {
         if (name.size() > UINT16_MAX) return Error::Invalid;
-        const Error err = _names.reserve(_names.size() + name.size());
+        const Error err = roomFor(_names, _names.size() + name.size());
         if (err.isError()) return err;
         row.nameAt = static_cast<uint32_t>(_names.size());
         row.nameLength = static_cast<uint16_t>(name.size());
@@ -31,7 +38,7 @@ Error TreeRows::store(StringView name, Row &row) {
 
 Error TreeRows::addRoot(StringView name, uintptr_t data) {
         Row   r;
-        Error err = _rows.reserve(_rows.size() + 1);
+        Error err = roomFor(_rows, _rows.size() + 1);
         if (err.isOk()) err = store(name, r);
         if (err.isError()) return err;
         r.data = data;
@@ -98,7 +105,7 @@ Error TreeRows::setChildren(size_t row, Span<const StringView> names) {
         // Room first for the rows and names: then nothing fails half way.
         List<Row> fresh(MemSpace::Psram);
         err = fresh.reserve(rows);
-        if (err.isOk()) err = _names.reserve(_names.size() + bytes);
+        if (err.isOk()) err = roomFor(_names, _names.size() + bytes);
         if (err.isError()) return err;
         // The rows of children gone, and their descendants, no longer name anything.
         for (size_t k = 0; k < old.size(); ++k) {

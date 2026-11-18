@@ -5,7 +5,8 @@ bmds-apps repository and is released after the next BMDS release, which brings T
 network.md §35, and this class). Approved as proposed by the user (2026-11-16), the name too.
 
 Status: **steps 1 to 3 built** (§7, §8, §9), and the input line's additions (§10); step 4 is
-the IRC client's (bmds-apps).
+the IRC client's (bmds-apps). Finding text (`ChatView.find`) and a line's pasted lines
+(`LineEdit.pasteLines`) came with the client's step 5: `gui.md` §4v.
 
 ## 1. Why
 

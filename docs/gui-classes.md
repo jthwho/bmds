@@ -190,6 +190,7 @@ Made by `Create`; also has the entries of [Widget](#widget).
 | `maxLength` | Int | written only |  |
 | `cursor` | Int | read, written |  |
 | `keys` | List | read, written |  |
+| `pasteLines` | Bool | read, written |  |
 
 | Method | Arguments | Result |
 |---|---|---|
@@ -200,6 +201,7 @@ Made by `Create`; also has the entries of [Widget](#widget).
 | `accepted` | String | on |
 | `edited` | String | off |
 | `keyPressed` | Atom, Int | on |
+| `pasteRequested` | String | on |
 
 ## CheckBox
 
@@ -403,6 +405,7 @@ Abstract; also has the entries of [Widget](#widget).
 |---|---|---|
 | `activated` | Int | on |
 | `currentChanged` | Int | on |
+| `menuRequested` | Int, Int, Int | on |
 
 ## ListView
 
@@ -827,6 +830,7 @@ Made by `Create`; also has the entries of [Widget](#widget).
 | `clearMarker` | none | none |
 | `scrollToEnd` | none | none |
 | `copy` | none | none |
+| `find` | String, Bool | Bool |
 
 | Event | Values | Sent |
 |---|---|---|

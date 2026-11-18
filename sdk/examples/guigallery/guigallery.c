@@ -10,15 +10,18 @@
  * status bar. Windows: its size shown as it changes, a smallest size, a busy pointer, an About box
  * (owned and modal, also on the window menu), and a close that asks first. Controls: a form of
  * check box, number field, slider (with a progress bar following it) and combo box. Layouts: a
- * splitter between a list view and an icon view. Views: the folders as a tree (children read as
- * a folder opens) and the chosen one's entries in a details view. Text: a code editor, its cursor and state shown.
- * Chat: a chat view fed lines on a timer (IRC's styles and colours, gutters, links), a marker
- * under what was read, the end, and a line typed in (Tab, Up and Down taken from it, shown); its
- * link clicks and scrolling back show in the status bar. Tabs: tabs for many conversations (devplan/tabs.md): more than fit, scrolled
- * and listed; news on a timer marks tabs not in view (a count in a badge, activity, every fourth
- * an alert); their close buttons and middle clicks close them, a right click opens a menu (to the
- * front, mark read, close), a new tab goes after the first, and the row can be hidden. Terminal: a shell
- * on the program's own pseudo-terminal, its output written to the widget, the typing sent back.
+ * splitter between a list view (a right click on it pops up the Dialogs tab's menu) and an icon
+ * view. Views: the folders as a tree (children read as a folder opens) and the chosen one's
+ * entries in a details view. Text: a code editor, its cursor and state shown. Chat: a chat view
+ * fed lines on a timer (IRC's styles and colours, gutters, links), a marker under what was read,
+ * the end, text found (Enter in its field: back, to older lines; Find on: newer), and a line
+ * typed in (Tab, Up and Down taken from it, shown; a paste of many lines given to the program,
+ * each line added); its link clicks and scrolling back show in the status bar. Tabs: tabs for
+ * many conversations (devplan/tabs.md): more than fit, scrolled and listed; news on a timer
+ * marks tabs not in view (a count in a badge, activity, every fourth an alert); their close
+ * buttons and middle clicks close them, a right click opens a menu (to the front, mark read,
+ * close), a new tab goes after the first, and the row can be hidden. Terminal: a shell on the
+ * program's own pseudo-terminal, its output written to the widget, the typing sent back.
  * Menus: File (Open and Save As through the file dialog, Quit), View (the status bar, a checked
  * item; the pointer, a submenu), Help (About), their shortcuts as keys. Dialogs: a message box, the colour dialog, a popup
  * menu, and a timer counting seconds. Images: a diamond the program draws, sent once (PutImage) and
@@ -59,7 +62,8 @@ typedef struct Gallery {
                 uint32_t    ask, answer, colorButton, colorDialog, popupButton, popup, popupItems[3];
                 uint32_t    fontButton, fontDialog, fontChooser;
                 uint32_t    timer, timerButton, ticks;
-                uint32_t    chat, chatTimer, chatStart, chatMark, chatEnd, chatEntry;
+                uint32_t    chat, chatTimer, chatStart, chatMark, chatEnd, chatEntry, chatFind, chatNext;
+                uint32_t    planets; // the Layouts tab's list
                 int         chatLines;
                 uint32_t    inner, innerNew, innerRow, innerNews, innerTimer, innerMenu, innerItems[3];
                 uint32_t    innerPages[64];  // the Tabs tab's pages (0: closed)
@@ -460,6 +464,43 @@ static int chatEvent(Gallery *g, const bmds_gui_event_t *e) {
                 bmds_status_bar_set_field(gui, g->status, 0, text);
                 return 1;
         }
+        if ((e->source == g->chatFind && bmds_gui_event_is(gui, e, BMDS_GUI_LINE_EDIT_ACCEPTED)) ||
+            e->source == g->chatNext) {
+                // Enter finds back (older lines), the button on (newer); the match selected.
+                bmds_gui_value_t text, found;
+                char             shown[96];
+                if (bmds_line_edit_get_text(gui, g->chatFind, &text) != 0) return 1;
+                char what[64];
+                snprintf(what, sizeof(what), "%.*s", (int)text.length, text.text);
+                const int ok = bmds_chat_view_find(gui, g->chat, what, e->source == g->chatFind, &found) == 0 &&
+                               found.number != 0;
+                snprintf(shown, sizeof(shown), "Find \"%s\": %s", what, ok ? "found, selected" : "not found");
+                bmds_status_bar_set_field(gui, g->status, 0, shown);
+                return 1;
+        }
+        if (e->source == g->chatEntry && bmds_gui_event_is(gui, e, BMDS_GUI_LINE_EDIT_PASTE_REQUESTED) &&
+            e->count == 1) {
+                // A paste of many lines, the program's: each a line of the chat, as a client would
+                // send them once the user agreed.
+                const char *t = e->values[0].text, *end = t + e->values[0].length;
+                int         n = 0;
+                while (t < end) {
+                        const char *nl = t;
+                        while (nl < end && *nl != '\n' && *nl != '\r') ++nl;
+                        if (nl > t) {
+                                char text[400];
+                                snprintf(text, sizeof(text), "\x02me\x02\t%.*s", (int)(nl - t), t);
+                                chatLine(g, text);
+                                ++n;
+                        }
+                        t = nl + 1;
+                }
+                char shown[96];
+                snprintf(shown, sizeof(shown), "Pasted %d lines (%u bytes), given to the program", n,
+                         (unsigned)e->values[0].length);
+                bmds_status_bar_set_field(gui, g->status, 0, shown);
+                return 1;
+        }
         if (e->source == g->chatEntry && bmds_gui_event_is(gui, e, BMDS_GUI_LINE_EDIT_ACCEPTED) && e->count == 1) {
                 char text[400];
                 snprintf(text, sizeof(text), "\x02me\x02\t%.*s", (int)e->values[0].length, e->values[0].text);
@@ -739,6 +780,14 @@ static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
                 bmds_menu_popup(gui, g->popup, 120, 160);
                 return 1;
         }
+        if (e->source == g->planets && bmds_gui_event_is(gui, e, BMDS_GUI_ITEM_VIEW_MENU_REQUESTED) && e->count == 3) {
+                // A right click on the list (or the Menu key): the row, and the popup where it was.
+                char shown[64];
+                snprintf(shown, sizeof(shown), "A menu asked on row %lld", (long long)e->values[0].number);
+                bmds_status_bar_set_field(gui, g->status, 0, shown);
+                bmds_menu_popup(gui, g->popup, (int32_t)e->values[1].number, (int32_t)e->values[2].number);
+                return 1;
+        }
         for (int i = 0; i < 3; ++i) {
                 if (e->source != g->popupItems[i]) continue;
                 bmds_gui_value_t text;
@@ -969,6 +1018,7 @@ int main(void) {
         bmds_splitter_set_min_first(gui, split, 60);
         bmds_splitter_set_min_second(gui, split, 60);
         const uint32_t           list = bmds_list_view_new(gui, split);
+        g.planets = list;
         static const char *const planets[] = {"Mercury", "Venus", "Earth", "Mars", "Jupiter", "Saturn"};
         bmds_item_view_set_items(gui, list, planets, 6);
         bmds_item_view_set_current(gui, list, 2);
@@ -1136,9 +1186,13 @@ int main(void) {
         bmds_button_set_text(gui, g.chatMark, "&Mark as read");
         g.chatEnd = bmds_button_new(gui, chatRow);
         bmds_button_set_text(gui, g.chatEnd, "To the &end");
+        g.chatFind = bmds_line_edit_new(gui, chatRow);
+        g.chatNext = bmds_button_new(gui, chatRow);
+        bmds_button_set_text(gui, g.chatNext, "Find &on");
         g.chatEntry = bmds_line_edit_new(gui, chatPage);
         static const char *const chatKeys[] = {"Tab", "Up", "Down"}; // shown, not moving the focus
         bmds_line_edit_set_keys(gui, g.chatEntry, chatKeys, 3);
+        bmds_line_edit_set_paste_lines(gui, g.chatEntry, 1);
         g.chatTimer = bmds_gui_new(gui, "Timer", 0);
         bmds_timer_set_interval(gui, g.chatTimer, 1500);
         for (int i = 0; i < 6; ++i) chatLine(&g, ChatSamples[i]);

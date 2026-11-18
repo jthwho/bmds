@@ -593,6 +593,57 @@ void ChatView::copy() {
         return;
 }
 
+bool ChatView::find(StringView text, bool backward) {
+        if (text.isEmpty() || _lines.count() == 0 || _laid == nullptr) return false;
+        // Where from: past the selection, or before it; nothing selected, an end.
+        const Pos lo = _selAnchor < _selCursor ? _selAnchor : _selCursor;
+        const Pos hi = _selAnchor < _selCursor ? _selCursor : _selAnchor;
+        uint64_t  line = 0;
+        uint32_t  from = 0;
+        if (hasSelection() && _lines.has(lo.line) && _lines.has(hi.line)) {
+                line = backward ? lo.line : hi.line;
+                from = backward ? lo.byte : hi.byte;
+        } else {
+                line = backward ? _lines.next() - 1 : _lines.first();
+                from = backward ? LineEnd : 0;
+        }
+        _laid->line = UINT64_MAX; // the scratch's parse is ours for now
+        uint64_t found = UINT64_MAX;
+        uint32_t at = ChatText::NoMatch;
+        // Every line once, and the first again (its other part: before or after where it began).
+        for (size_t k = 0; k <= _lines.count(); ++k) {
+                if (ChatText::parse(_lines.line(line), _laid->parsed).isError()) break;
+                const StringView shown = _laid->parsed.text.view();
+                const uint32_t   start = k == 0 ? from : (backward ? LineEnd : 0);
+                at = ChatText::find(shown, text, start, backward);
+                if (at != ChatText::NoMatch) {
+                        found = line;
+                        break;
+                }
+                if (backward)
+                        line = line == _lines.first() ? _lines.next() - 1 : line - 1;
+                else
+                        line = line + 1 == _lines.next() ? _lines.first() : line + 1;
+        }
+        _laid->line = UINT64_MAX;
+        if (found == UINT64_MAX) return false;
+        _selAnchor = Pos{found, at};
+        _selCursor = Pos{found, at + uint32_t(text.size())};
+        // In view: the line's rows, centred when any is out of it.
+        const uint64_t top = rowOfLine(found) * _rowHeight;
+        const uint64_t bottom = top + uint64_t(_lines.rows(found)) * _rowHeight;
+        const uint64_t y = uint64_t(scrollY());
+        const uint64_t h = viewport().height;
+        if (top < y || bottom > y + h) {
+                const uint64_t middle = (top + bottom) / 2;
+                internalScroll(scrollX(), int64_t(middle > h / 2 ? middle - h / 2 : 0));
+        }
+        noteAnchor();
+        setFollow(uint64_t(scrollY()) + h >= contentHeight());
+        selectionChanged();
+        return true;
+}
+
 Error ChatView::providePrimary(void *arg, StringView type, String &out) {
         (void)type;
         return static_cast<ChatView *>(arg)->selectedText(out);

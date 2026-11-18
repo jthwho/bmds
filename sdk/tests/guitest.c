@@ -12,8 +12,9 @@
  * timer, images (shown by widgets and outliving their objects while shown), a canvas's pixels,
  * a chat view's properties and methods (its events are the user's: guigallery's Chat tab), tabs'
  * badges, attention, close buttons and places for up to 256 pages and a tree's marks (their events
- * the user's too: guigallery's Tabs tab), a line edit's cursor and taken keys, and many objects
- * made and destroyed. Prints "guitest: ok", or each failure and exits 1.
+ * the user's too: guigallery's Tabs tab), a line edit's cursor and taken keys, finding in a chat
+ * view, a list's menu and a line's pasted lines described (their events the user's: guigallery's
+ * Chat and Lists tabs), and many objects made and destroyed. Prints "guitest: ok", or each failure and exits 1.
  */
 
 #include <bmds/guiclasses.h>
@@ -749,6 +750,56 @@ static void lineEditKeysTest(bmds_gui_t *gui, uint32_t window) {
 // to be, up to 256 (the next refused); each page's badge (cut on a character), attention, close
 // button and place (moving one, the current one followed); the row hidden; a tree's marks; none
 // of it told back (the events come from the user's clicks).
+// devplan/gui.md §4v: a chat view's find (from the selection, round once, case ignored), and
+// described: a list's menuRequested, a line's pasteLines and pasteRequested (the user's events).
+static void findAndMenusTest(bmds_gui_t *gui, uint32_t window) {
+        uint32_t parent = 0, creatable = 0;
+        int      found = 0;
+        CHECK(describe(gui, "ItemView", &parent, &creatable, 2, "menuRequested", BMDS_GUI_INT, &found) == 0 && found);
+        CHECK(describe(gui, "ChatView", &parent, &creatable, 1, "find", ~0u, &found) == 0 && found);
+        CHECK(describe(gui, "LineEdit", &parent, &creatable, 0, "pasteLines", BMDS_GUI_BOOL, &found) == 0 && found);
+        CHECK(describe(gui, "LineEdit", &parent, &creatable, 2, "pasteRequested", BMDS_GUI_STRING, &found) == 0 &&
+              found);
+
+        const uint32_t   edit = bmds_line_edit_new(gui, window);
+        bmds_gui_value_t v;
+        CHECK(bmds_line_edit_get_paste_lines(gui, edit, &v) == 0 && v.number == 0); // off by default
+        bmds_line_edit_set_paste_lines(gui, edit, 1);
+        CHECK(bmds_line_edit_get_paste_lines(gui, edit, &v) == 0 && v.number == 1);
+        bmds_gui_destroy(gui, edit);
+
+        const uint32_t           chat = bmds_chat_view_new(gui, window);
+        static const char *const lines[] = {"12:00 \x02nick\x02\tplain text",
+                                            "12:01 a\tone",
+                                            "12:02 longer nick\ttwo",
+                                            "a line without a gutter",
+                                            "",
+                                            "12:03 b\tafter the marker"};
+        bmds_chat_view_append_many(gui, chat, lines, 6);
+        // Nothing selected: forward from the first line; then on from the match.
+        CHECK(bmds_chat_view_find(gui, chat, "ONE", 0, &v) == 0 && v.number == 1);
+        CHECK(stringIs(gui, chat, "selectedText", "one"));
+        CHECK(bmds_chat_view_find(gui, chat, "the", 0, &v) == 0 && v.number == 1);
+        CHECK(stringIs(gui, chat, "selectedText", "the"));
+        // Backward from there; then round from the first line to the last.
+        CHECK(bmds_chat_view_find(gui, chat, "nick", 1, &v) == 0 && v.number == 1);
+        CHECK(stringIs(gui, chat, "selectedText", "nick"));
+        CHECK(bmds_chat_view_find(gui, chat, "plain", 1, &v) == 0 && v.number == 1);
+        CHECK(bmds_chat_view_find(gui, chat, "marker", 1, &v) == 0 && v.number == 1);
+        CHECK(stringIs(gui, chat, "selectedText", "marker"));
+        // None: false, the selection kept; an empty text finds nothing.
+        CHECK(bmds_chat_view_find(gui, chat, "absent", 0, &v) == 0 && v.number == 0);
+        CHECK(stringIs(gui, chat, "selectedText", "marker"));
+        CHECK(bmds_chat_view_find(gui, chat, "", 0, &v) == 0 && v.number == 0);
+        bmds_gui_destroy(gui, chat);
+        // A find may leave the end (scrolledBack, the view's as a user's scroll is); nothing else.
+        bmds_gui_event_t e;
+        while (nextEvent(gui, &e, 200) == 1)
+                CHECK(e.source == chat && bmds_gui_event_is(gui, &e, BMDS_GUI_CHAT_VIEW_SCROLLED_BACK));
+        EXPECT_NONE();
+        return;
+}
+
 static void tabsTest(bmds_gui_t *gui, uint32_t window) {
         uint32_t parent = 0, creatable = 0;
         int      found = 0;
@@ -1286,6 +1337,7 @@ int main(void) {
         chatViewTest(gui, window);
         tabsTest(gui, window);
         lineEditKeysTest(gui, window);
+        findAndMenusTest(gui, window);
         notificationTest(gui);
         trayTest(gui);
         servicesTest(gui);
