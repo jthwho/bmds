@@ -12,6 +12,7 @@
 #include <bmds/config.h>
 #include <bmds/error.h>
 #include <bmds/romimage.h>
+#include <bmds/rommanifest.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -22,9 +23,9 @@ BMDS_NAMESPACE_BEGIN
  * The partition is mapped through the flash cache and is the block device
  * `rom0`; its image is mounted at `/rom` for good, its files read where they
  * lie (`Vfs::map()`). `idf.py flash` writes the image the firmware was built
- * with; its content hash is compared with the firmware's at boot, and a
- * mismatch (one flashed from another build) is logged, the image mounted
- * anyway. A blank or damaged partition leaves no `/rom`, and the system runs
+ * with. The tree is the newest good version for this firmware (§12e); its
+ * system files are compared with the firmware's manifest at boot, and what
+ * differs is logged, the image mounted anyway. A blank or damaged partition leaves no `/rom`, and the system runs
  * on without it.
  *
  * @par Thread Safety
@@ -47,8 +48,23 @@ namespace RomDisk {
         /** @brief Returns the image mounted, or null (none). */
         const RomImage *image();
 
-        /** @brief Returns true if the image's content hash is the one the firmware was built with. */
+        /** @brief Returns true if the tree's system files are the firmware's manifest's. */
         bool matchesFirmware();
+
+        /** @brief Returns the tree booted compared with the manifest, counted (`manifest()`). */
+        RomManifest::Counts manifestCounts();
+
+        /** @brief Returns the system files the firmware was built with, sorted by path (§12f). */
+        Span<const RomManifestEntry> manifest();
+
+        /** @brief Returns this firmware's build id (its ELF's SHA-256), as a tree version names it. */
+        Span<const uint8_t> firmware();
+
+        /**
+         * @brief Returns the whole partition as mapped (empty: none): what is in flash
+         *        now, a tree written since boot included (the pending one, §12b).
+         */
+        ByteSpan mapped();
 
         /** @brief Returns the partition's size in bytes (0: no partition). */
         size_t partitionBytes();

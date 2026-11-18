@@ -33,6 +33,8 @@ set(BMDS_CORE_SRCS
         src/pngdecoder.cpp
         src/randompool.cpp
         src/romimage.cpp
+        src/rommanifest.cpp
+        src/romspace.cpp
         src/sha512.cpp
         src/signedcontainer.cpp
         src/sha1.cpp

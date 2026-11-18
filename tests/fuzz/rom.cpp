@@ -9,7 +9,9 @@
  * partition, its header's CRC and each tree version's made right first (so what is fuzzed is the
  * checks behind them, not the CRCs). What opens must keep every file inside the partition, list
  * every file exactly once from the root, find every file by its path, and be accepted again by
- * the writer (whose checks must be no stricter than open()'s). Seeds: tests/fuzz/make-rom-seeds.sh.
+ * the writer (whose checks must be no stricter than open()'s); its log walked to the end, its space
+ * laid out covering the partition once, and it compared with itself (no change). Seeds:
+ * tests/fuzz/make-rom-seeds.sh.
  */
 
 #include <cstdint>
@@ -18,6 +20,8 @@
 #include <vector>
 #include <bmds/pngdecoder.h>
 #include <bmds/romimage.h>
+#include <bmds/rommanifest.h>
+#include <bmds/romspace.h>
 
 using bmds::ByteSpan;
 using bmds::RomImage;
@@ -78,9 +82,31 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         }
         const auto root = image.find("/", noPath);
         if (root.error().isError() || walk(image, root.value(), 0) != image.count()) std::abort();
-        uint8_t hash[RomImage::HashBytes];
-        image.contentHash(hash);
         (void)image.newest(0, image.count());
+
+        // The log, sector by sector, to its end.
+        for (uint32_t at = image.logOffset(), steps = 0; at < image.logOffset() + image.logBytes(); ++steps) {
+                RomImage::LogRecord r;
+                const uint32_t      next = image.logRecord(at, r);
+                if (next <= at || steps > image.logBytes() / RomImage::SectorBytes) std::abort();
+                at = next;
+        }
+        // The space: the regions cover the partition once, in order.
+        bmds::RomSpace space;
+        if (space.build(image, &image).isOk()) {
+                uint64_t covered = 0;
+                for (size_t i = 0; i < space.regionCount(); ++i) {
+                        const bmds::RomSpace::Region &r = space.region(i);
+                        if (r.kind != bmds::RomSpace::Kind::File && r.offset != covered) std::abort();
+                        if (r.kind == bmds::RomSpace::Kind::File &&
+                            r.trees != (bmds::RomSpace::Booted | bmds::RomSpace::Pending))
+                                std::abort();
+                        const uint64_t end = uint64_t(r.offset) + r.bytes;
+                        if (end > covered) covered = end;
+                }
+                if (covered != b.size() || space.summary().freeNow != space.summary().freeAfterBoot) std::abort();
+        }
+        if (bmds::RomManifest::compareTrees(image, image, nullptr, nullptr) != 0) std::abort();
 
         // What open() took, the writer takes.
         std::vector<RomImage::NewEntry> entries;

@@ -1344,6 +1344,11 @@ void Vfs::setChangeHook(ChangeHook hook) {
         return;
 }
 
+void Vfs::setRomFirmware(Span<const uint8_t> buildId) {
+        RomVolume::setFirmware(buildId);
+        return;
+}
+
 Error Vfs::init() {
         const Error err = Fs::init();
         if (err.isOk()) Zones::installResolver(); // zone names in the kernel's zone (devplan/time.md §9)

@@ -607,8 +607,9 @@ pointer to them, so fragmentation is temporary.
 - **Two pending changes in a row** each write a version, so a power cut while writing the second
   leaves the first (two slots would lose both).
 - **At boot:** the newest version whose CRC holds and whose firmware requirement this firmware
-  meets; failing that the one booted last; failing that no `/rom` and a warning, as a blank
-  partition today.
+  meets (none named, or this one); failing that the newest good one of all, with a warning
+  (changed while building step 2 from "the one booted last", which would have needed a record
+  written at every boot); failing that no `/rom` and a warning, as a blank partition today.
 - **Writing a version** is the commit: the files it points at are written and read back first.
 
 ### 12f. Hashes, the firmware and `rom check`
@@ -727,9 +728,9 @@ forms:
 1. **Format 2, host-tested** (done, 2026-11-18, §12m): `RomImage` (reader, writer, checks),
    `mkrom.py`, `RomVolume` on the flat table (lookups, listings, links), times per file; a
    libFuzzer target.
-2. **The firmware on format 2:** the directory log at boot, the manifest, and `rom`'s viewing
-   forms (`info`, `ls`, `stat`, `map`, `log`, `diff`, `manifest`, `check`; §12h); the readers
-   checked as untrusted input (§12f). Flashed over the cable.
+2. **The firmware on format 2** (done, 2026-11-18, §12n): the directory log at boot, the
+   manifest, and `rom`'s viewing forms (`info`, `ls`, `stat`, `map`, `log`, `diff`, `manifest`,
+   `check`; §12h); the readers checked as untrusted input (§12f). Flashed by an update package.
 3. **Changes while running:** the allocator, `rom install`, `remove`, `discard`, pending trees,
    tested on the board across reboots and with resets during writes (as `/flash`'s were).
 4. **Compaction** (`rom compact`), with resets during it.
@@ -789,4 +790,61 @@ forms:
   `/rom/share/fonts`; and its programs: `dropbear` serving (`/rom/bin/dropbear`, a link), `scp`
   both ways (200 KB, identical), `sftp` listing `/rom/bin`, `dropbearkey`, `ssh -V`, `tlsclient`
   to example.com.
+
+### 12n. As built: step 2, the firmware on format 2 (2026-11-18)
+
+- **The tree at boot:** `RomImage::open(bytes, firmware)` prefers the versions for this firmware
+  (none named, or its build id: the app's ELF SHA-256), else the newest good of all. `RomDisk`
+  gives the VFS the build id (`Vfs::setRomFirmware()`) before mounting, so the volume and `rom`
+  choose alike; a tree for another firmware used anyway is a warning.
+- **The manifest** (`bmds/rommanifest.h`): `mkrom.py image --manifest-header` writes
+  `romfiles.h` (`RomManifestFiles`: path, size, flags, hash; sorted) in place of the content hash
+  (`RomImage::contentHash()` is gone). `RomManifest::compare()` walks the tree and the manifest
+  together: changed, replaced (the user's file at a system path), missing, extra, and the user's
+  own files counted. At boot: "the system's 78 files as built", or a warning with the counts.
+  `RomManifest::compareTrees()` (added, removed, replaced, moved) is `rom diff --pending`'s.
+- **The log read whole:** `RomImage::logRecord()` says what each sector of the log starts: a
+  version (good, or whole but wrong), a damaged start, an erased sector, or anything else.
+- **The space** (`bmds/romspace.h`, `RomSpace`): the regions in order (header, log, each file
+  with the trees using it, the free between), each sector's state (used now, used after the next
+  boot, how many files), and the totals: free now and after the next boot (whole sectors), the
+  largest run and run of 64 KB pages, holes, padding, overlaps (a file over another of its own
+  tree: two trees may share bytes under two names).
+- **`rom`** (`romcommand.cpp`), each form `Name: value` lines or a table with a header, `--raw`
+  for exact bytes and Unix times, options anywhere: `info` (the partition, the log, the tree and
+  the pending one, the space, the manifest's counts, the build running), `ls [-lR] [--pending]
+  [PATH]` (`-l`: owner, kind, size, alignment, offset in the partition and in flash, time, hash),
+  `stat PATH...` (every field: the link's target, the sectors and how many are shared, the
+  padding after it, the address it is mapped at, the whole hash, the manifest's verdict, its
+  state in the pending tree), `map [--sectors]` (every region; or runs of sectors alike, free
+  ones told erased or not), `log` (each version's place, sectors, sequence, time, files,
+  firmware, and booted, pending, superseded, passed over or refused), `diff [--manifest |
+  --pending]` (exit 1 if the system's files aren't the manifest's), `manifest`, `check [PATH...]`
+  (a directory checks what is under it).
+- **The readers as untrusted input** (§12f), checked one by one: fonts (`fontface_fuzz`) and the
+  FM bank (`fmsynth_fuzz`) were fuzzed already; the leap seconds too (`leapseconds_fuzz`).
+  **`romdata_fuzz`** (new) takes the icon pack (every name and pixel inside it), the zone bundle
+  (every entry found again, its rules) and the gamepad database: 1.2 million runs in 5 minutes,
+  nothing. `rom_fuzz` now also walks the log, lays the space out (covering the partition once)
+  and compares the tree with itself: 5.7 million runs, then 2 million after the fix below,
+  nothing. Programs are the loader's,
+  checked as before. **Not safe: the speech voices.** SVOX Pico parses its resource files with
+  little checking (`pico_loadResourceInPlace()`), and the kernel's speakers load them; a damaged
+  or hostile voice file could crash the kernel. This isn't new (voices come from the card too,
+  `speech/path`), and isn't fixed here: hardening Pico, or loading only voices whose hashes are
+  known (the manifest's for the ROM's), is the user's to choose.
+- **Found while building:** `RomSpace` merged a file's booted and pending copies by place and
+  size alone, so two files at one place could split them; it merges by path too now (a host test
+  of a rename sharing bytes).
+- **Size:** the firmware 3,327,104 → 3,348,288 bytes (+21 KB): `rom`'s forms 12.4 KB of code and
+  text, `RomDisk` 7.5 KB (the manifest 3.4 KB and its paths), `RomSpace` 3.2 KB, the comparisons
+  1.2 KB.
+- **On the board** (bmds0, by update package): "tree version 1, the system's 78 files as built"
+  at boot (22 ms after reset); every form run: `info` (and `--raw`), `ls` (`-l`, `-R`, `-lR`),
+  `stat` of a file, a link and a directory, `map` (157 regions), `map --sectors` (872 free sectors
+  still hold the format 1 ROM's bytes, 470 are erased: what step 3's allocator must erase before
+  writing), `log` (one version of 2 sectors, booted; 29 erased), `diff` (all as built, exit 0),
+  `diff --pending` and `ls --pending` (none), `manifest`, `check` (78 files, 4,740 KB in 1,386 ms;
+  a directory and a file: 12 files), and usage errors (exit 2). A pending tree and a tree for
+  another firmware can't be made on the board until step 3; the host tests cover them.
 

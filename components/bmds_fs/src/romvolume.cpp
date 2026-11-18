@@ -16,6 +16,8 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constinit RomVolume volumes[RomVolume::MaxVolumes];
+        constinit uint8_t   firmware[RomImage::HashBytes] = {};
+        constinit bool      firmwareSet = false;
 
         /**
          * An open file: its bytes in the image and a position. Lives in Psram until its
@@ -124,6 +126,12 @@ namespace {
 
 } // namespace
 
+void RomVolume::setFirmware(Span<const uint8_t> buildId) {
+        firmwareSet = buildId.size() == RomImage::HashBytes;
+        if (firmwareSet) std::memcpy(firmware, buildId.data(), RomImage::HashBytes);
+        return;
+}
+
 RomVolume *RomVolume::acquire() {
         for (RomVolume &v : volumes) {
                 if (v._inUse) continue;
@@ -135,7 +143,8 @@ RomVolume *RomVolume::acquire() {
 
 Error RomVolume::mount(BlockDevice &device) {
         if (_mounted) return Error::InvalidState;
-        Result<RomImage> opened = RomImage::open(device.mapped());
+        Result<RomImage> opened = RomImage::open(
+                device.mapped(), firmwareSet ? Span<const uint8_t>(firmware, sizeof(firmware)) : Span<const uint8_t>());
         if (opened.error().isError()) return opened.error();
         _image = opened.value();
         _device = &device;

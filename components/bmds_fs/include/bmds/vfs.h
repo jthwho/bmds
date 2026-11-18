@@ -206,6 +206,13 @@ namespace Vfs {
         Error init();
 
         /**
+         * @brief Sets the firmware build id (`RomImage::HashBytes` bytes) whose tree
+         *        a ROM mounted from now on prefers (`RomImage::open()`,
+         *        devplan/rom.md §12e). Boot stage, before the ROM is mounted.
+         */
+        void setRomFirmware(Span<const uint8_t> buildId);
+
+        /**
          * @brief Writes what the filesystems hold to their devices: the FAT
          *        metadata written back within a second (devplan/storage.md §3),
          *        and each device's own queue (`/flash`'s).

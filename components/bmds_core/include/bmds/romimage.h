@@ -127,6 +127,26 @@ class RomImage {
                                 Span<const uint8_t> firmware;     ///< The firmware build it needs (zeros: any).
                 };
 
+                /** @brief What a sector of the log holds (`logRecord()`). */
+                struct LogRecord {
+                                /** @brief What it is. */
+                                enum class Kind : uint8_t {
+                                        Version, ///< A version, whole and good.
+                                        Wrong,   ///< A version whole (its CRC) but with entries refused.
+                                        Damaged, ///< A version's start, not whole (cut short or damaged).
+                                        Erased,  ///< An erased sector (0xff), free for the next version.
+                                        Other,   ///< Anything else (a damaged version's later sectors).
+                                };
+
+                                Kind                kind = Kind::Other; ///< What it is.
+                                uint32_t            offset = 0;         ///< Where it starts in the partition.
+                                uint32_t            bytes = 0;          ///< A version's size, else a sector.
+                                uint32_t            sequence = 0;       ///< A version's sequence (as its header says).
+                                uint32_t            count = 0;          ///< A whole version's file count.
+                                Timestamp           written;            ///< A whole version's time.
+                                Span<const uint8_t> firmware;           ///< A whole version's firmware (zeros: any).
+                };
+
                 /** @brief One file of a tree version to write (`writeVersion()`). */
                 struct NewEntry {
                                 StringView          path;          ///< Its path from the root, no leading `/`.
@@ -176,10 +196,24 @@ class RomImage {
                 /**
                  * @brief Checks the partition @p bytes and finds its tree: the
                  *        newest version that is whole and good.
+                 *
+                 * With @p firmware (a build id, `HashBytes`), the newest among the
+                 * versions that need no firmware or that one, if any is good; else the
+                 * newest of all (an update's tree for a firmware that didn't make it
+                 * is passed over while an older one is there, §12e).
+                 *
                  * @return The image, `CorruptData` (not a ROM, damaged, or no good
                  *         version), or `NotSupported` (another format).
                  */
-                static Result<RomImage> open(ByteSpan bytes);
+                static Result<RomImage> open(ByteSpan bytes, Span<const uint8_t> firmware = {});
+
+                /**
+                 * @brief Reads what starts at sector @p at of the log (start with
+                 *        `logOffset()`): a version (good, or whole but wrong), the start
+                 *        of a damaged one, an erased sector, or anything else.
+                 * @return Where the next starts; `logOffset() + logBytes()` at the end.
+                 */
+                uint32_t logRecord(uint32_t at, LogRecord &record) const;
 
                 /** @brief Returns the number of files. */
                 uint32_t count() const { return _count; }
@@ -225,13 +259,6 @@ class RomImage {
                 uint64_t filesBytes() const;
 
                 /**
-                 * @brief Hashes what the tree holds (each file's path, flags, size
-                 *        and hash, in order; not where they are or their times): the
-                 *        same for two trees with the same files.
-                 */
-                void contentHash(uint8_t (&out)[HashBytes]) const;
-
-                /**
                  * @brief Hashes file @p index and compares it with its entry's.
                  * @return `Ok` or `CorruptData`.
                  */
@@ -251,6 +278,7 @@ class RomImage {
                 uint32_t   lowerBound(StringView key) const;
                 bool       isDirectory(StringView path) const;
                 Error      checkEntries() const;
+                void       useVersion(uint32_t at);
 
                 ByteSpan _partition;
                 uint32_t _logOffset = 0;

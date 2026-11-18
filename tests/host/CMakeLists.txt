@@ -274,7 +274,7 @@ if(Python3_Interpreter_FOUND)
                 set(BMDS_TEST_ROM_ZONES --file share/zoneinfo.bin=${CMAKE_BINARY_DIR}/zoneinfo.bin)
                 set(BMDS_TEST_ROM_ZONES_FILE ${CMAKE_BINARY_DIR}/zoneinfo.bin)
         endif()
-        add_custom_command(OUTPUT ${BMDS_ROM_OUT}/test.rom ${BMDS_ROM_OUT}/include/romhash.h
+        add_custom_command(OUTPUT ${BMDS_ROM_OUT}/test.rom ${BMDS_ROM_OUT}/include/romfiles.h
                 COMMAND ${Python3_EXECUTABLE} ${BMDS_MKROM} image ${BMDS_ROM_OUT}/test.rom
                         --dir =${CMAKE_CURRENT_LIST_DIR}/rom
                         --file images/grey.png=${CMAKE_CURRENT_LIST_DIR}/png/grey.png
@@ -282,7 +282,7 @@ if(Python3_Interpreter_FOUND)
                         ${BMDS_TEST_ROM_ZONES}
                         --link docs/hello-link=/rom/hello.txt
                         --align 4k=images/* --align 64k=a.txt
-                        --hash-header ${BMDS_ROM_OUT}/include/romhash.h
+                        --manifest-header ${BMDS_ROM_OUT}/include/romfiles.h
                 DEPENDS ${BMDS_MKROM} ${BMDS_TEST_ROM_FILES} ${CMAKE_CURRENT_LIST_DIR}/png/grey.png
                         ${BMDS_ROM_OUT}/bmds.icons ${BMDS_TEST_ROM_ZONES_FILE}
                 VERBATIM)

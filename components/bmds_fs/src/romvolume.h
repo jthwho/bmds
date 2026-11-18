@@ -36,6 +36,9 @@ class RomVolume final : public Volume {
                 RomVolume(const RomVolume &) = delete;
                 RomVolume &operator=(const RomVolume &) = delete;
 
+                /** @brief Sets the firmware build id whose tree a mount prefers (`Vfs::setRomFirmware()`). */
+                static void setFirmware(Span<const uint8_t> buildId);
+
                 /** @brief Takes a free volume; null if all are in use. */
                 static RomVolume *acquire();
 

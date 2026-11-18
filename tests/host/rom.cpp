@@ -33,7 +33,9 @@
 #include <bmds/pngdecoder.h>
 #include <bmds/romimage.h>
 #include <bmds/vfs.h>
-#include <romhash.h>
+#include <bmds/rommanifest.h>
+#include <bmds/romspace.h>
+#include <romfiles.h>
 
 using bmds::ByteSpan;
 using bmds::Error;
@@ -175,9 +177,12 @@ TEST_CASE("rom: mkrom's partition read: paths in order, directories implied, con
         auto [image, err] = RomImage::open(rom.span());
         REQUIRE(err.isOk());
         CHECK(image.verify().isOk());
-        uint8_t content[RomImage::HashBytes];
-        image.contentHash(content);
-        CHECK(std::memcmp(content, RomContentHash, sizeof(RomContentHash)) == 0);
+        // The manifest mkrom wrote: every file, as built.
+        const auto counts = bmds::RomManifest::compare(
+                image, bmds::Span<const bmds::RomManifestEntry>(RomManifestFiles, RomManifestCount), nullptr, nullptr);
+        CHECK(counts.matches());
+        CHECK(counts.good == image.count());
+        CHECK(RomManifestCount == image.count());
         CHECK(image.version().sequence == 1);
         CHECK(image.version().offset == FirstVersion);
         CHECK(image.version().written.seconds() > 0);
@@ -491,6 +496,293 @@ TEST_CASE("rom: the writer makes mkrom's header and tree version, and refuses wh
         CHECK(RomImage::writeVersion(all, 1, {}, bmds::Span<const uint8_t>(firmware, 5),
                                      WritableByteSpan(out.data(), out.size()))
                       .error() == Error::Invalid);
+}
+
+namespace {
+
+        // The test ROM's entries as the writer takes them.
+        std::vector<RomImage::NewEntry> newEntries(const RomImage &image) {
+                std::vector<RomImage::NewEntry> out;
+                for (uint32_t i = 0; i < image.count(); ++i) {
+                        const RomImage::Entry e = image.entry(i);
+                        out.push_back(
+                                {e.path, e.flags, e.alignLog2, e.offset, uint32_t(e.data.size()), e.modified, e.hash});
+                }
+                return out;
+        }
+
+        // @p entries written as a version with @p sequence at @p at (a sector of the log).
+        void writeAt(std::vector<uint8_t> &partition, uint32_t at, const std::vector<RomImage::NewEntry> &entries,
+                     uint32_t sequence, const uint8_t *firmware = nullptr) {
+                const bmds::Span<const RomImage::NewEntry> all(entries.data(), entries.size());
+                auto [n, err] = RomImage::writeVersion(
+                        all, sequence, bmds::Timestamp::fromSeconds(1800000000 + sequence),
+                        firmware != nullptr ? bmds::Span<const uint8_t>(firmware, RomImage::HashBytes)
+                                            : bmds::Span<const uint8_t>(),
+                        WritableByteSpan(partition.data() + at, partition.size() - at));
+                REQUIRE(err.isOk());
+                (void)n;
+        }
+
+        uint32_t sectorAfter(uint32_t at, size_t bytes) {
+                return at + uint32_t(bytes + RomImage::SectorBytes - 1) / RomImage::SectorBytes * RomImage::SectorBytes;
+        }
+
+        const bmds::Span<const bmds::RomManifestEntry> TestManifest(RomManifestFiles, RomManifestCount);
+
+} // namespace
+
+TEST_CASE("rom: a tree for this firmware is preferred; one for another is passed over while there is one") {
+        const Loaded rom(BMDS_TEST_ROM);
+        auto [image, err] = RomImage::open(rom.span());
+        REQUIRE(err.isOk());
+        std::vector<uint8_t> partition(rom.data, rom.data + rom.size);
+        const auto           entries = newEntries(image);
+        const uint32_t       second = sectorAfter(FirstVersion, image.version().bytes);
+        uint8_t              mine[RomImage::HashBytes], other[RomImage::HashBytes];
+        std::memset(mine, 0x11, sizeof(mine));
+        std::memset(other, 0x22, sizeof(other));
+        writeAt(partition, second, entries, 2, mine);
+        const ByteSpan bytes(partition.data(), partition.size());
+        CHECK(RomImage::open(bytes, bmds::Span<const uint8_t>(mine, 32)).value().version().sequence == 2);
+        CHECK(RomImage::open(bytes, bmds::Span<const uint8_t>(other, 32)).value().version().sequence == 1);
+        CHECK(RomImage::open(bytes).value().version().sequence == 2); // no firmware given: the newest
+        // Only versions for another firmware: the newest of them, rather than no ROM.
+        std::vector<uint8_t> onlyOther = partition;
+        writeAt(onlyOther, FirstVersion, entries, 1, other);
+        writeAt(onlyOther, second, entries, 2, other);
+        CHECK(RomImage::open(ByteSpan(onlyOther.data(), onlyOther.size()), bmds::Span<const uint8_t>(mine, 32))
+                      .value()
+                      .version()
+                      .sequence == 2);
+}
+
+TEST_CASE("rom: the log read sector by sector: versions, wrong, damaged, erased and other") {
+        const Loaded rom(BMDS_TEST_ROM);
+        auto [image, err] = RomImage::open(rom.span());
+        REQUIRE(err.isOk());
+        std::vector<uint8_t> partition(rom.data, rom.data + rom.size);
+        const auto           entries = newEntries(image);
+        const uint32_t       bytes = image.version().bytes;
+        const uint32_t       second = sectorAfter(FirstVersion, bytes);
+        const uint32_t       third = sectorAfter(second, bytes);
+        const uint32_t       fourth = sectorAfter(third, bytes);
+        writeAt(partition, second, entries, 2);
+        // The third whole but wrong (a file outside the partition), the fourth cut short.
+        writeAt(partition, third, entries, 3);
+        put32(partition.data() + third + RomImage::VersionHeaderBytes + 12, 0x7fffffff);
+        fixVersionCrc(partition, third);
+        writeAt(partition, fourth, entries, 4);
+        std::fill(partition.begin() + fourth + 100, partition.begin() + fourth + bytes, 0xff);
+        // Something in the sector after: neither erased nor a version.
+        const uint32_t junk = sectorAfter(fourth, 1);
+        partition[junk + 7] = 0x5a;
+
+        auto [now, nerr] = RomImage::open(ByteSpan(partition.data(), partition.size()));
+        REQUIRE(nerr.isOk());
+        CHECK(now.version().sequence == 2); // 3 is wrong, 4 isn't whole
+        using Kind = RomImage::LogRecord::Kind;
+        std::vector<std::pair<Kind, uint32_t>> seen;
+        uint32_t                               erased = 0;
+        for (uint32_t at = now.logOffset(); at < now.logOffset() + now.logBytes();) {
+                RomImage::LogRecord r;
+                const uint32_t      next = now.logRecord(at, r);
+                CHECK(next > at);
+                CHECK(r.offset == at);
+                if (r.kind == Kind::Erased) {
+                        ++erased;
+                } else {
+                        seen.push_back({r.kind, r.sequence});
+                }
+                if (r.kind == Kind::Version) CHECK(r.count == image.count());
+                at = next;
+        }
+        CHECK(seen ==
+              std::vector<std::pair<Kind, uint32_t>>{
+                      {Kind::Version, 1}, {Kind::Version, 2}, {Kind::Wrong, 3}, {Kind::Damaged, 4}, {Kind::Other, 0}});
+        CHECK(erased == now.logBytes() / RomImage::SectorBytes - 5);
+        // Outside the log, or not on a sector: the end.
+        RomImage::LogRecord r;
+        CHECK(now.logRecord(0, r) == now.logOffset() + now.logBytes());
+        CHECK(now.logRecord(now.logOffset() + 1, r) == now.logOffset() + now.logBytes());
+}
+
+TEST_CASE("rom: the system files compared with the manifest, and trees with each other") {
+        const Loaded rom(BMDS_TEST_ROM);
+        auto [image, err] = RomImage::open(rom.span());
+        REQUIRE(err.isOk());
+        std::vector<uint8_t> partition(rom.data, rom.data + rom.size);
+        auto                 entries = newEntries(image);
+        const uint32_t       second = sectorAfter(FirstVersion, image.version().bytes);
+        // B.txt changed (another file's bytes), a-b.txt the user's, a.txt gone, a user's file
+        // added, and hello.txt moved (same bytes, another place: the user's x.txt's).
+        uint8_t otherHash[RomImage::HashBytes];
+        std::memset(otherHash, 0x33, sizeof(otherHash));
+        auto find = [&](const char *path) -> RomImage::NewEntry & {
+                for (auto &e : entries)
+                        if (e.path == path) return e;
+                FAIL("no " << path);
+                return entries[0];
+        };
+        find("B.txt").hash = bmds::Span<const uint8_t>(otherHash, sizeof(otherHash));
+        find("a-b.txt").flags = RomImage::User;
+        const uint32_t helloAt = find("hello.txt").offset;
+        find("hello.txt").offset = find("docs.txt").offset;
+        entries.erase(entries.begin() + 2); // a.txt
+        RomImage::NewEntry mine = find("hello.txt");
+        mine.path = "x.txt";
+        mine.flags = RomImage::User;
+        mine.offset = helloAt;
+        entries.push_back(mine);
+        writeAt(partition, second, entries, 2);
+        auto [changed, cerr] = RomImage::open(ByteSpan(partition.data(), partition.size()));
+        REQUIRE(cerr.isOk());
+        REQUIRE(changed.version().sequence == 2);
+
+        std::vector<std::string> found;
+        const auto               counts = bmds::RomManifest::compare(
+                changed, TestManifest,
+                [](void *c, const bmds::RomManifest::Found &f) {
+                        static_cast<std::vector<std::string> *>(c)->push_back(
+                                std::string(bmds::RomManifest::text(f.what)) + " " +
+                                std::string(f.path.data(), f.path.size()));
+                },
+                &found);
+        CHECK(found == std::vector<std::string>{"changed B.txt", "replaced a-b.txt", "missing a.txt"});
+        CHECK(counts.changed == 1);
+        CHECK(counts.replaced == 1);
+        CHECK(counts.missing == 1);
+        CHECK(counts.extra == 0);
+        CHECK(counts.user == 1); // x.txt
+        CHECK(counts.good == image.count() - 3);
+        CHECK_FALSE(counts.matches());
+        // A system file the manifest doesn't list: extra (the manifest without its last).
+        const auto fewer = bmds::RomManifest::compare(
+                image, bmds::Span<const bmds::RomManifestEntry>(RomManifestFiles, RomManifestCount - 1), nullptr,
+                nullptr);
+        CHECK(fewer.extra == 1);
+        CHECK_FALSE(fewer.matches());
+
+        // The booted tree against the changed one.
+        found.clear();
+        const size_t n = bmds::RomManifest::compareTrees(
+                image, changed,
+                [](void *c, const bmds::RomManifest::Changed &ch) {
+                        static_cast<std::vector<std::string> *>(c)->push_back(
+                                std::string(bmds::RomManifest::text(ch.what)) + " " +
+                                std::string(ch.path.data(), ch.path.size()));
+                },
+                &found);
+        CHECK(found == std::vector<std::string>{"replaced B.txt", "replaced a-b.txt", "removed a.txt",
+                                                "moved hello.txt", "added x.txt"});
+        CHECK(n == 5);
+        CHECK(bmds::RomManifest::compareTrees(image, image, nullptr, nullptr) == 0);
+}
+
+TEST_CASE("rom: the partition's space: regions in order, sectors, what is free now and after the next boot") {
+        const Loaded rom(BMDS_TEST_ROM);
+        // In a partition larger than the image, as on the board: 256 KB more, on whole pages.
+        const size_t imageEnd = (rom.size + RomImage::PageBytes - 1) / RomImage::PageBytes * RomImage::PageBytes;
+        std::vector<uint8_t> partition(rom.data, rom.data + rom.size);
+        partition.resize(imageEnd + 256 * 1024, 0xff);
+        auto [image, err] = RomImage::open(ByteSpan(partition.data(), partition.size()));
+        REQUIRE(err.isOk());
+        {
+                bmds::RomSpace space;
+                REQUIRE(space.build(image, nullptr).isOk());
+                const auto &sum = space.summary();
+                CHECK(sum.partitionBytes == partition.size());
+                CHECK(sum.reservedBytes == image.dataOffset());
+                CHECK(sum.files == image.count());
+                CHECK(sum.overlaps == 0);
+                CHECK(sum.filesBytes == image.filesBytes());
+                CHECK(sum.freeNow == sum.freeAfterBoot); // nothing pending
+                CHECK(sum.freeNow % RomImage::SectorBytes == 0);
+                // The regions cover the partition once, in order.
+                uint64_t at = 0;
+                for (size_t i = 0; i < space.regionCount(); ++i) {
+                        CHECK(space.region(i).offset == at);
+                        at += space.region(i).bytes;
+                }
+                CHECK(at == partition.size());
+                CHECK(space.region(0).kind == bmds::RomSpace::Kind::Header);
+                CHECK(space.region(1).kind == bmds::RomSpace::Kind::Log);
+                CHECK(space.region(space.regionCount() - 1).kind == bmds::RomSpace::Kind::Free);
+                // a.txt on its own 64 KB page: the rest of the page free but not counted as a run of pages.
+                CHECK(sum.largestPagesNow > 0);
+                CHECK(sum.largestPagesNow % RomImage::PageBytes == 0);
+                CHECK(sum.largestNow >= sum.largestPagesNow);
+                CHECK(sum.holeBytes == sum.freeNow - sum.largestNow);
+                CHECK(sum.paddingBytes > 0); // small files share sectors
+                // Every free byte is a whole free sector or padding.
+                uint64_t free = 0;
+                for (size_t i = 0; i < space.regionCount(); ++i)
+                        if (space.region(i).kind == bmds::RomSpace::Kind::Free) free += space.region(i).bytes;
+                CHECK(free == sum.freeNow + sum.paddingBytes);
+                CHECK(space.sectorCount() == partition.size() / RomImage::SectorBytes);
+                CHECK(space.sectorFlags(0) == (bmds::RomSpace::UsedNow | bmds::RomSpace::UsedAfter));
+                CHECK(space.sectorFlags(space.sectorCount() - 1) == 0);
+        }
+        // A pending tree without a.txt (64 KB page) and with B.txt somewhere new: a.txt's page
+        // is free after the next boot, B.txt's new place used now.
+        auto           entries = newEntries(image);
+        const uint32_t second = sectorAfter(FirstVersion, image.version().bytes);
+        const uint32_t newPlace = uint32_t(imageEnd) + 64 * 1024;
+        for (auto &e : entries)
+                if (e.path == "B.txt") e.offset = newPlace;
+        entries.erase(entries.begin() + 2); // a.txt
+        writeAt(partition, second, entries, 2);
+        auto [pending, perr] = RomImage::open(ByteSpan(partition.data(), partition.size()));
+        REQUIRE(perr.isOk());
+        REQUIRE(pending.version().sequence == 2);
+        bmds::RomSpace space;
+        REQUIRE(space.build(image, &pending).isOk());
+        const auto &sum = space.summary();
+        CHECK(sum.freeAfterBoot > sum.freeNow);
+        CHECK(sum.freeAfterBoot - sum.freeNow >= RomImage::SectorBytes);
+        const uint32_t page = image.dataOffset() / RomImage::SectorBytes;
+        CHECK(space.sectorFlags(page) == bmds::RomSpace::UsedNow); // a.txt: booted only
+        CHECK(space.sectorFlags(newPlace / RomImage::SectorBytes) ==
+              (bmds::RomSpace::UsedNow | bmds::RomSpace::UsedAfter));
+        size_t both = 0, bootedOnly = 0, pendingOnly = 0;
+        for (size_t i = 0; i < space.regionCount(); ++i) {
+                const auto &r = space.region(i);
+                if (r.kind != bmds::RomSpace::Kind::File) continue;
+                both += r.trees == (bmds::RomSpace::Booted | bmds::RomSpace::Pending);
+                bootedOnly += r.trees == bmds::RomSpace::Booted;
+                pendingOnly += r.trees == bmds::RomSpace::Pending;
+        }
+        CHECK(bootedOnly == 2);  // a.txt, B.txt's old place
+        CHECK(pendingOnly == 1); // B.txt's new place
+        CHECK(both == image.count() - 2);
+
+        // Booted and pending sharing bytes under two names (a rename that kept them): no overlap.
+        {
+                auto renamed = newEntries(image);
+                for (auto &e : renamed)
+                        if (e.path == "hello.txt") e.path = "hello2.txt";
+                std::sort(renamed.begin(), renamed.end(),
+                          [](const RomImage::NewEntry &a, const RomImage::NewEntry &b) { return a.path < b.path; });
+                std::vector<uint8_t> p2 = partition;
+                writeAt(p2, second, renamed, 2);
+                auto [r, rerr] = RomImage::open(ByteSpan(p2.data(), p2.size()));
+                REQUIRE(rerr.isOk());
+                bmds::RomSpace s2;
+                REQUIRE(s2.build(image, &r).isOk());
+                CHECK(s2.summary().overlaps == 0);
+                CHECK(s2.summary().files == image.count() + 1); // hello.txt and hello2.txt, at one place
+                CHECK(s2.summary().freeNow == s2.summary().freeAfterBoot);
+        }
+
+        // Two files at one place: an overlap, said.
+        auto overlapping = newEntries(image);
+        overlapping[1].offset = overlapping[0].offset; // a-b.txt over B.txt (both at 64 bytes)
+        writeAt(partition, sectorAfter(second, image.version().bytes), overlapping, 3);
+        auto [bad, berr] = RomImage::open(ByteSpan(partition.data(), partition.size()));
+        REQUIRE(berr.isOk());
+        bmds::RomSpace o;
+        REQUIRE(o.build(bad, nullptr).isOk());
+        CHECK(o.summary().overlaps == 1);
 }
 
 TEST_CASE("rom: random damage to a whole tree version: refused or read, never past the partition") {

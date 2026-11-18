@@ -55,22 +55,24 @@ target_include_directories(${COMPONENT_LIB} PRIVATE src)
 # The ROM (devplan/rom.md §3c): the bmds icon theme made from rom/icons.list, the time zone
 # database from thirdparty/tzdata (with the host's zic: without it, the ROM has none, and says so
 # here), then the image (and rom/files/, when there is such a tree), refused if it outgrows its
-# partition; idf.py flash writes it. Its content hash becomes romhash.h, which RomDisk compares
-# with what it finds. The recovery firmware (devplan/update.md §4) builds no ROM: it may be what
-# is repaired, so its RomContentHash matches none.
+# partition; idf.py flash writes it. Its system files become romfiles.h (the manifest), which
+# RomDisk compares with what it finds (rom.md §12f). The recovery firmware (devplan/update.md §4)
+# builds no ROM: it may be what is repaired, so its manifest is empty.
 if(CONFIG_BMDS_RECOVERY AND NOT BOOTLOADER_BUILD)
-        set(BMDS_ROM_HASH ${CMAKE_CURRENT_BINARY_DIR}/romhash.h)
-        file(WRITE ${BMDS_ROM_HASH}.new "// Recovery: no ROM built with it (components/bmds_storage).\n"
-                                        "#pragma once\n#include <cstdint>\n\nnamespace {\n\n"
-                                        "        constexpr uint8_t RomContentHash[32] = {};\n\n} // namespace\n")
-        configure_file(${BMDS_ROM_HASH}.new ${BMDS_ROM_HASH} COPYONLY)
+        set(BMDS_ROM_MANIFEST ${CMAKE_CURRENT_BINARY_DIR}/romfiles.h)
+        file(WRITE ${BMDS_ROM_MANIFEST}.new "// Recovery: no ROM built with it (components/bmds_storage).\n"
+                                            "#pragma once\n#include <cstddef>\n#include <bmds/rommanifest.h>\n\n"
+                                            "namespace {\n\n        constexpr size_t RomManifestCount = 0;\n\n"
+                                            "        constexpr bmds::RomManifestEntry RomManifestFiles[] = {{\"\", 0, 0, {}}};"
+                                            "\n\n} // namespace\n")
+        configure_file(${BMDS_ROM_MANIFEST}.new ${BMDS_ROM_MANIFEST} COPYONLY)
         target_include_directories(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 elseif(NOT BOOTLOADER_BUILD)
         set(BMDS_ROM_DIR ${CMAKE_CURRENT_LIST_DIR}/../../rom)
         set(BMDS_MKROM ${CMAKE_CURRENT_LIST_DIR}/../../tools/mkrom.py)
         set(BMDS_ROM_OUT ${CMAKE_BINARY_DIR}/rom)
         set(BMDS_ROM_BIN ${BMDS_ROM_OUT}/rom.bin)
-        set(BMDS_ROM_HASH ${CMAKE_CURRENT_BINARY_DIR}/romhash.h)
+        set(BMDS_ROM_MANIFEST ${CMAKE_CURRENT_BINARY_DIR}/romfiles.h)
         partition_table_get_partition_info(BMDS_ROM_PARTITION_BYTES "--partition-name rom" "size")
         set(BMDS_ROM_TREE)
         set(BMDS_ROM_TREE_FILES)
@@ -234,21 +236,21 @@ elseif(NOT BOOTLOADER_BUILD)
                 list(APPEND BMDS_ROM_NOTICES --file share/licenses/${name}=${source})
                 list(APPEND BMDS_ROM_NOTICE_FILES ${source})
         endforeach()
-        add_custom_command(OUTPUT ${BMDS_ROM_BIN} ${BMDS_ROM_HASH}
+        add_custom_command(OUTPUT ${BMDS_ROM_BIN} ${BMDS_ROM_MANIFEST}
                            COMMAND ${BMDS_ROM_ENV} ${BMDS_STORAGE_PYTHON} ${BMDS_MKROM} image ${BMDS_ROM_BIN}
                                    --max-bytes ${BMDS_ROM_PARTITION_BYTES} ${BMDS_ROM_TREE}
                                    --file share/icons/bmds.icons=${BMDS_ROM_OUT}/bmds.icons
                                    --file share/icons/bmds.LICENSES=${BMDS_ROM_OUT}/bmds.LICENSES
                                    ${BMDS_ROM_ZONES} ${BMDS_ROM_LEAP} ${BMDS_ROM_SSH} ${BMDS_ROM_SPEECH}
                                    ${BMDS_ROM_PADS} ${BMDS_ROM_PATTERNS} ${BMDS_ROM_FONTS} ${BMDS_ROM_BANKS}
-                                   ${BMDS_ROM_NOTICES} --hash-header ${BMDS_ROM_HASH}
+                                   ${BMDS_ROM_NOTICES} --manifest-header ${BMDS_ROM_MANIFEST}
                            DEPENDS ${BMDS_MKROM} ${BMDS_ROM_OUT}/bmds.icons ${BMDS_ROM_OUT}/bmds.LICENSES
                                    ${BMDS_ROM_PACKED_PROGRAMS} ${BMDS_ROM_TREE_FILES} ${BMDS_ROM_ZONES_FILE} ${BMDS_ROM_LEAP_FILE}
                                    ${BMDS_ROM_SPEECH_FILES} ${BMDS_ROM_PADS_FILE} ${BMDS_ROM_PATTERN_FILES}
                                    ${BMDS_ROM_FONT_FILES} ${BMDS_ROM_PLEX}/LICENSE.txt ${BMDS_ROM_OPL}/dmxopl3.op2
                                    ${BMDS_ROM_OPL}/dmxopl3-LICENSE ${BMDS_ROM_NOTICE_FILES}
                            VERBATIM)
-        target_sources(${COMPONENT_LIB} PRIVATE ${BMDS_ROM_HASH})
+        target_sources(${COMPONENT_LIB} PRIVATE ${BMDS_ROM_MANIFEST})
         target_include_directories(${COMPONENT_LIB} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
         add_custom_target(bmds_rom_image ALL DEPENDS ${BMDS_ROM_BIN})
         add_dependencies(flash bmds_rom_image)

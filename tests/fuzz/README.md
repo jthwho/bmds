@@ -44,6 +44,10 @@ the host tests: they run for as long as one lets them.
   each tree version's made right first so the checks behind them are what is fuzzed; what opens
   keeps every file inside the partition, lists every file once from the root, finds each by its
   path, and is taken again by the writer. Seeds: `tests/fuzz/make-rom-seeds.sh DIR`.
+- **`romdata_fuzz`:** the ROM's data files the kernel reads in place (`devplan/rom.md` §12f),
+  the input's first byte picking the reader: the icon pack (every name and pixel inside it), the
+  zone bundle (every entry found again, its rules) and the gamepad database (a line found and
+  parsed). Seeds: `tests/fuzz/make-romdata-seeds.sh BUILD DIR` (from a firmware build).
 - **`soundfont_fuzz`:** SoundFonts (§22): load, play notes on every preset, the drums and across
   the keyboard with controllers and bends, render; every sample finite, no leak.
 
@@ -77,6 +81,12 @@ mkdir -p pkg-seeds && cp ../tests/host/pkg/* pkg-seeds/       # and manifest, st
 ```sh
 tests/fuzz/make-rom-seeds.sh rom-seeds                   # small partitions made by tools/mkrom.py
 ./rom_fuzz -max_len=131072 -max_total_time=300 -print_funcs=0 -artifact_prefix=./rom- rom-corpus rom-seeds
+```
+
+```sh
+tests/fuzz/make-romdata-seeds.sh ../build romdata-seeds  # the icon pack, the zones, the gamepads
+./romdata_fuzz -max_len=1000000 -max_total_time=300 -print_funcs=0 -rss_limit_mb=2048 \
+        -artifact_prefix=./romdata- romdata-corpus romdata-seeds
 ```
 
 ```sh

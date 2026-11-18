@@ -88,6 +88,16 @@ target_compile_options(rom_fuzz PRIVATE -fno-exceptions -fno-rtti)
 target_link_libraries(rom_fuzz PRIVATE bmds_core)
 target_link_options(rom_fuzz PRIVATE -fsanitize=fuzzer)
 
+# The ROM's data files read in place (devplan/rom.md §12f): the icon pack, the zone bundle, the
+# gamepad database, with bmds_input's pad mapping alone.
+set(INPUT ${BMDS_ROOT}/components/bmds_input)
+add_executable(romdata_fuzz romdata.cpp ${BMDS_ROOT}/tests/host/hostmemory.cpp ${INPUT}/src/padmapping.cpp
+                            ${INPUT}/src/padlayout.cpp ${INPUT}/src/hiddescriptor.cpp)
+target_include_directories(romdata_fuzz PRIVATE ${INPUT}/include)
+target_compile_options(romdata_fuzz PRIVATE -fno-exceptions -fno-rtti)
+target_link_libraries(romdata_fuzz PRIVATE bmds_core)
+target_link_options(romdata_fuzz PRIVATE -fsanitize=fuzzer)
+
 add_executable(updatepackage_fuzz updatepackage.cpp)
 target_compile_options(updatepackage_fuzz PRIVATE -fno-exceptions -fno-rtti)
 target_link_libraries(updatepackage_fuzz PRIVATE bmds_core)

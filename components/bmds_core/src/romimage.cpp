@@ -113,7 +113,7 @@ bool RomImage::looksLike(ByteSpan bytes) {
         return bytes.size() >= HeaderBytes && std::memcmp(bytes.data(), "BMRO", 4) == 0;
 }
 
-Result<RomImage> RomImage::open(ByteSpan bytes) {
+Result<RomImage> RomImage::open(ByteSpan bytes, Span<const uint8_t> firmware) {
         if (!looksLike(bytes)) return makeError<RomImage>(Error::CorruptData);
         const uint8_t *h = bytes.data();
         if (u16(h + 4) != Format) return makeError<RomImage>(Error::NotSupported);
@@ -130,40 +130,88 @@ Result<RomImage> RomImage::open(ByteSpan bytes) {
                 return makeError<RomImage>(Error::CorruptData);
         r._partition = bytes;
 
-        // The newest version that is whole (its CRC) and good (its entries): each sector may
+        // The newest version that is whole (its CRC) and good (its entries), among those for
+        // this firmware (none named, or @p firmware) if any is, else among all. Each sector may
         // start one; a good one's other sectors are its own. A newer one with bad entries (a
         // writer's bug, not a cut) leaves the next newest.
-        uint64_t below = uint64_t(UINT32_MAX) + 1;
-        for (;;) {
-                bool          found = false;
-                uint32_t      bestAt = 0;
-                VersionHeader best;
-                for (uint32_t at = r._logOffset; at < logEnd;) {
-                        VersionHeader v;
-                        if (!readVersion(h, at, static_cast<uint32_t>(logEnd), v)) {
-                                at += SectorBytes;
-                                continue;
+        const bool choose = firmware.size() == HashBytes;
+        for (int pass = choose ? 0 : 1; pass < 2; ++pass) {
+                uint64_t below = uint64_t(UINT32_MAX) + 1;
+                for (;;) {
+                        bool          found = false;
+                        uint32_t      bestAt = 0;
+                        VersionHeader best;
+                        for (uint32_t at = r._logOffset; at < logEnd;) {
+                                VersionHeader v;
+                                if (!readVersion(h, at, static_cast<uint32_t>(logEnd), v)) {
+                                        at += SectorBytes;
+                                        continue;
+                                }
+                                const uint8_t *needs = h + at + 40;
+                                const bool     fits = allZero(needs, HashBytes) ||
+                                                  (choose && std::memcmp(needs, firmware.data(), HashBytes) == 0);
+                                if ((pass == 1 || fits) && v.sequence < below &&
+                                    (!found || v.sequence > best.sequence)) {
+                                        found = true;
+                                        best = v;
+                                        bestAt = at;
+                                }
+                                at += (v.recordBytes + SectorBytes - 1) / SectorBytes * SectorBytes;
                         }
-                        if (v.sequence < below && (!found || v.sequence > best.sequence)) {
-                                found = true;
-                                best = v;
-                                bestAt = at;
-                        }
-                        at += (v.recordBytes + SectorBytes - 1) / SectorBytes * SectorBytes;
+                        if (!found) break;
+                        r.useVersion(bestAt);
+                        if (r.checkEntries().isOk()) return makeResult(r);
+                        below = best.sequence;
                 }
-                if (!found) return makeError<RomImage>(Error::CorruptData);
-                r._count = best.count;
-                r._entries = bestAt + VersionHeaderBytes;
-                r._paths = bestAt + best.pathsAt;
-                r._pathsBytes = best.pathsBytes;
-                r._version.offset = bestAt;
-                r._version.bytes = best.recordBytes;
-                r._version.sequence = best.sequence;
-                r._version.written = Timestamp::fromSeconds(i64(h + bestAt + 32));
-                r._version.firmware = bytes.mid(bestAt + 40, HashBytes);
-                if (r.checkEntries().isOk()) return makeResult(r);
-                below = best.sequence;
         }
+        return makeError<RomImage>(Error::CorruptData);
+}
+
+void RomImage::useVersion(uint32_t at) {
+        // Its header was read and its CRC checked (readVersion()).
+        const uint8_t *h = _partition.data() + at;
+        _count = u32(h + 16);
+        _entries = at + VersionHeaderBytes;
+        _paths = at + u32(h + 20);
+        _pathsBytes = u32(h + 24);
+        _version.offset = at;
+        _version.bytes = u32(h + 8);
+        _version.sequence = u32(h + 12);
+        _version.written = Timestamp::fromSeconds(i64(h + 32));
+        _version.firmware = _partition.mid(at + 40, HashBytes);
+        return;
+}
+
+uint32_t RomImage::logRecord(uint32_t at, LogRecord &record) const {
+        const uint32_t logEnd = _logOffset + _logBytes;
+        record = LogRecord();
+        if (_partition.isEmpty() || at < _logOffset || at >= logEnd || (at - _logOffset) % SectorBytes != 0)
+                return logEnd;
+        record.offset = at;
+        record.bytes = SectorBytes;
+        const uint8_t *p = _partition.data() + at;
+        VersionHeader  v;
+        if (readVersion(_partition.data(), at, logEnd, v)) {
+                RomImage tree = *this;
+                tree.useVersion(at);
+                record.kind = tree.checkEntries().isOk() ? LogRecord::Kind::Version : LogRecord::Kind::Wrong;
+                record.bytes = v.recordBytes;
+                record.sequence = v.sequence;
+                record.count = v.count;
+                record.written = tree._version.written;
+                record.firmware = tree._version.firmware;
+                return at + (v.recordBytes + SectorBytes - 1) / SectorBytes * SectorBytes;
+        }
+        if (std::memcmp(p, "BMRT", 4) == 0) {
+                // A version's start, but not whole: cut short, or damaged. What its header says.
+                record.kind = LogRecord::Kind::Damaged;
+                record.sequence = u32(p + 12);
+                return at + SectorBytes;
+        }
+        bool erased = true;
+        for (uint32_t i = 0; i < SectorBytes && erased; ++i) erased = p[i] == 0xff;
+        record.kind = erased ? LogRecord::Kind::Erased : LogRecord::Kind::Other;
+        return at + SectorBytes;
 }
 
 Error RomImage::checkEntries() const {
@@ -332,22 +380,6 @@ uint64_t RomImage::filesBytes() const {
         uint64_t total = 0;
         for (uint32_t i = 0; i < _count; ++i) total += u32(entryAt(i) + 12);
         return total;
-}
-
-void RomImage::contentHash(uint8_t (&out)[HashBytes]) const {
-        Blake2s h;
-        for (uint32_t i = 0; i < _count; ++i) {
-                const uint8_t   *e = entryAt(i);
-                const StringView path = pathOf(i);
-                const uint8_t    zero = 0;
-                h.update(path.data(), path.size());
-                h.update(&zero, 1);
-                h.update(e + 7, 1);  // flags
-                h.update(e + 12, 4); // size
-                h.update(e + 24, HashBytes);
-        }
-        h.final(out);
-        return;
 }
 
 Error RomImage::verifyFile(uint32_t index) const {
