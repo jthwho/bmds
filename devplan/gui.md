@@ -988,6 +988,19 @@ programs couldn't do. Appended for the same release as `ChatView` and the tabs:
   the program (3 lines, 58 bytes), one line with a newline pasted into the field as usual.
 - **ABI:** `classes.def`, `gui.lock` (4 lines), angel's `api.lock` (8).
 
+### 4w. A label's clicks (the IRC client's, 2026-11-17)
+
+The IRC client opens a channel's settings on a double click on its topic, as mIRC does (bmds-apps'
+irc.md §7h), and a `Label` took no clicks. Appended: **`Label.clicked(Int clicks)`**, off by
+default (a program listens for it: most labels are text and stay quiet), 1 for a left click, 2
+for a double click (`WindowManager::DoubleClickMs`, as `LineEdit`'s). Natively
+`Label::setClicked()`; the last press is kept once, not in each label (one pointer), so a label
+grows only by the callback and its argument (16 bytes). Tested: `guitest` describes it; the
+gallery's Dialogs tab answer label tells its own clicks (on the board: "Clicked once", then
+"Double-clicked"); the IRC client's topic opens Channel Central on a double click only.
+`classes.def`, `gui.lock` and angel's `api.lock` (a line each). A `Label` keeps at most 63 bytes
+of text (`MaxText`), so a long topic is cut in that bar.
+
 ## 5. Budget (estimates)
 
 - **Firmware:** the toolkit 10 to 15 KB, the panel 5 KB, the window manager's additions 4 KB, the

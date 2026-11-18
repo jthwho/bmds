@@ -569,16 +569,32 @@ class Label : public Widget {
                 /** @brief Draws its text on the highlight's color, or not (a setting a search found). */
                 void setHighlighted(bool highlighted);
 
+                /** @brief Told of a left click: @p clicks 1, or 2 for a double click. */
+                using Clicked = void (*)(void *arg, Label &label, uint8_t clicks);
+
+                /**
+                 * @brief Has @p fn told of clicks on it (a channel's topic: a double click opens its
+                 *        settings). None by default: a label is text.
+                 */
+                void setClicked(Clicked fn, void *arg) {
+                        _clicked = fn;
+                        _clickedArg = arg;
+                        return;
+                }
+
                 GuiSize  sizeHint() const override;
                 void     paint(Painter &painter) override;
                 uint32_t mnemonic() const override;
                 void     mnemonicActivated() override;
+                void     mousePressed(const WindowManager::MouseEvent &event) override;
 
         private:
                 Mnemonic::Stripped shown(char (&out)[MaxText + 1]) const; // the text as drawn
 
                 char         _text[MaxText + 1] = {};
                 Widget      *_buddy = nullptr;
+                Clicked      _clicked = nullptr;
+                void        *_clickedArg = nullptr;
                 uint16_t     _minWidth = 0;
                 Align        _align = Align::Left;
                 Bevel::Style _frame = Bevel::Style::Raised;

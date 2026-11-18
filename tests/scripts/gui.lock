@@ -409,3 +409,6 @@ event ItemView.menuRequested(Int, Int, Int) on
 method ChatView.find(String, Bool) -> Bool
 property LineEdit.pasteLines Bool RW
 event LineEdit.pasteRequested(String) on
+
+# 2026-11-17 (devplan/gui.md §4w): a label's clicks, for a program listening.
+event Label.clicked(Int) off

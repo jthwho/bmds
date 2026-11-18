@@ -4138,3 +4138,5 @@ void ItemView::onMenuRequested(IntIntIntCallback@)
 void LineEdit::onPasteRequested(StringCallback@)
 void LineEdit::set_pasteLines(bool)
 void ListView::onMenuRequested(IntIntIntCallback@)
+# 2026-11-17 (devplan/gui.md §4w): a label's clicks, for a program listening.
+void Label::onClicked(IntCallback@)

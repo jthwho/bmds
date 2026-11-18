@@ -760,6 +760,7 @@ static void findAndMenusTest(bmds_gui_t *gui, uint32_t window) {
         CHECK(describe(gui, "LineEdit", &parent, &creatable, 0, "pasteLines", BMDS_GUI_BOOL, &found) == 0 && found);
         CHECK(describe(gui, "LineEdit", &parent, &creatable, 2, "pasteRequested", BMDS_GUI_STRING, &found) == 0 &&
               found);
+        CHECK(describe(gui, "Label", &parent, &creatable, 2, "clicked", BMDS_GUI_INT, &found) == 0 && found); // §4w
 
         const uint32_t   edit = bmds_line_edit_new(gui, window);
         bmds_gui_value_t v;

@@ -501,3 +501,8 @@ GUI_EVENT(ItemView, menuRequested, On, Int, Int, Int)
 GUI_METHOD(ChatView, find, Bool, String, Bool)
 GUI_PROP(LineEdit, pasteLines, Bool, RW)
 GUI_EVENT(LineEdit, pasteRequested, On, String)
+
+/* ---- 2026-11-17 (devplan/gui.md §4w, for bmds-apps' IRC client): a label's clicks, told when the
+ * program listens (off by default: most labels are text): clicked(clicks), 1 for a left click, 2
+ * for a double click (a channel's topic opens its settings) */
+GUI_EVENT(Label, clicked, Off, Int)

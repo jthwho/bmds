@@ -13,6 +13,7 @@
 #include <bmds/bitmapfont.h>
 #include <bmds/guiwindow.h>
 #include <bmds/linelayout.h>
+#include <bmds/system.h>
 #include <bmds/systemfonts.h>
 #include <bmds/widget.h>
 
@@ -333,6 +334,20 @@ uint32_t Label::mnemonic() const {
 
 void Label::mnemonicActivated() {
         if (_buddy != nullptr) _buddy->setFocus();
+        return;
+}
+
+void Label::mousePressed(const WindowManager::MouseEvent &event) {
+        if (event.button != PointerEvent::Left || _clicked == nullptr) return;
+        // A double click: the same label again in time. One pointer, so one place keeps the last
+        // press (not each label: most never listen).
+        static const Label *last = nullptr;
+        static uint64_t     lastUs = 0;
+        const uint64_t      now = System::uptimeUs();
+        const bool          twice = last == this && now - lastUs <= uint64_t(WindowManager::DoubleClickMs) * 1000;
+        last = twice ? nullptr : this; // a third press starts again
+        lastUs = now;
+        _clicked(_clickedArg, *this, twice ? 2 : 1); // last: it may destroy this
         return;
 }
 

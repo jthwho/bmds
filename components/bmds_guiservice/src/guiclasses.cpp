@@ -531,8 +531,16 @@ namespace {
         Value get_Label_text(GuiObject &o) {
                 return Value::string(label(o)->text());
         }
+        void labelClicked(void *arg, Label &, uint8_t clicks) {
+                auto       &o = *static_cast<GuiObject *>(arg);
+                const Value v = Value::integer(clicks);
+                o.connection->emit(o, "clicked", Args(&v, 1));
+                return;
+        }
         GuiStatus create_Label(GuiObject &o, GuiObject *parent) {
-                return makeWidget<Label>(o, parent);
+                const GuiStatus s = makeWidget<Label>(o, parent);
+                if (s == Ok) label(o)->setClicked(labelClicked, &o); // told only to a program listening
+                return s;
         }
 
         // ---- Button

@@ -160,6 +160,10 @@ Made by `Create`; also has the entries of [Widget](#widget).
 | `align` | Atom | read, written | `left`, `center`, `right` |
 | `frame` | Atom | read, written | `none`, `field`, `status`, `sunken`, `raised` |
 
+| Event | Values | Sent |
+|---|---|---|
+| `clicked` | Int | off |
+
 ## Button
 
 Made by `Create`; also has the entries of [Widget](#widget).

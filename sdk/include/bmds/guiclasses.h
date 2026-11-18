@@ -1497,6 +1497,7 @@ static inline int bmds_line_edit_get_paste_lines(bmds_gui_t *gui, uint32_t id, b
         return bmds_gui_get_named(gui, id, "pasteLines", out);
 }
 #define BMDS_GUI_LINE_EDIT_PASTE_REQUESTED "pasteRequested" /**< LineEdit's event (String). */
+#define BMDS_GUI_LABEL_CLICKED "clicked" /**< Label's event (Int). */
 
 #ifdef __cplusplus
 }

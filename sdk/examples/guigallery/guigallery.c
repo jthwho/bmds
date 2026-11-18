@@ -23,8 +23,9 @@
  * close), a new tab goes after the first, and the row can be hidden. Terminal: a shell on the
  * program's own pseudo-terminal, its output written to the widget, the typing sent back.
  * Menus: File (Open and Save As through the file dialog, Quit), View (the status bar, a checked
- * item; the pointer, a submenu), Help (About), their shortcuts as keys. Dialogs: a message box, the colour dialog, a popup
- * menu, and a timer counting seconds. Images: a diamond the program draws, sent once (PutImage) and
+ * item; the pointer, a submenu), Help (About), their shortcuts as keys. Dialogs: a message box,
+ * the colour dialog, a popup menu, and a timer counting seconds; the answers' label tells its own
+ * clicks (a label's clicked, listened for). Images: a diamond the program draws, sent once (PutImage) and
  * shown on a tool button, a list's rows and in the icon view. Paint: a canvas the program draws
  * with the mouse, its picture kept here and only the changed rectangle sent (PutPixels); the
  * colour dialog's colour is the brush's. Clipboard: a field's text copied, or offered and answered
@@ -788,6 +789,10 @@ static int pageEvent(Gallery *g, const bmds_gui_event_t *e) {
                 bmds_menu_popup(gui, g->popup, (int32_t)e->values[1].number, (int32_t)e->values[2].number);
                 return 1;
         }
+        if (e->source == g->answer && bmds_gui_event_is(gui, e, BMDS_GUI_LABEL_CLICKED) && e->count == 1) {
+                bmds_label_set_text(gui, g->answer, e->values[0].number == 2 ? "Double-clicked" : "Clicked once");
+                return 1;
+        }
         for (int i = 0; i < 3; ++i) {
                 if (e->source != g->popupItems[i]) continue;
                 bmds_gui_value_t text;
@@ -1054,7 +1059,9 @@ int main(void) {
         g.fontChooser = bmds_font_button_new(gui, row1); // its name drawn in it; a click opens the dialog
         bmds_widget_set_font(gui, g.fontChooser, "IBM Plex Serif 16");
         g.answer = bmds_label_new(gui, dialogs);
-        bmds_label_set_text(gui, g.answer, "No answer yet");
+        bmds_label_set_text(gui, g.answer, "No answer yet (click or double-click here)");
+        const uint32_t labelClicked = bmds_gui_atom(gui, BMDS_GUI_LABEL_CLICKED);
+        bmds_gui_listen(gui, g.answer, &labelClicked, 1, 1);
         const uint32_t row2 = bmds_gui_new(gui, "Box", dialogs);
         bmds_box_set_direction(gui, row2, "across");
         g.timerButton = bmds_button_new(gui, row2);
