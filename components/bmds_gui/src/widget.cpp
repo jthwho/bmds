@@ -796,7 +796,9 @@ void BoxLayout::relayout() {
         for (Widget *c = firstChild(); c != nullptr && n < MaxItems; c = c->next()) {
                 if (!c->isVisible()) continue;
                 const GuiSize h = c->sizeHint();
-                items[n].hint = across ? h.width : h.height;
+                // Down: its height at the width it gets (wrapped text, a form's help), not at its
+                // hint's width, as a dialog asks.
+                items[n].hint = across ? h.width : r.width > 0 ? c->heightForWidth(r.width) : h.height;
                 items[n].most = across ? c->maximumWidth() : UINT16_MAX;
                 items[n].stretch = c->stretch();
                 widgets[n++] = c;

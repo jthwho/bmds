@@ -134,6 +134,20 @@ GuiSize ScrollView::sizeHint() const {
                        uint16_t(height > UINT16_MAX ? UINT16_MAX : height)};
 }
 
+uint16_t ScrollView::contentHeight(uint16_t width) const {
+        Widget      *list[MaxRows];
+        const size_t n = rows(list);
+        // All of it shown: no bar, so the rows are as wide as it less its margins (as relayout()
+        // measures them then; the bar's breadth off, a help line would wrap here and not there).
+        const uint32_t side = uint32_t(_margins[0]) + _margins[2];
+        const uint16_t at = width > side ? static_cast<uint16_t>(width - side) : 0;
+        uint32_t       height = uint32_t(_margins[1]) + _margins[3];
+        for (size_t i = 0; i < n; ++i)
+                height += (at > 0 ? list[i]->heightForWidth(at) : list[i]->sizeHint().height) +
+                          (i + 1 < n ? _spacing : 0);
+        return static_cast<uint16_t>(height > UINT16_MAX ? UINT16_MAX : height);
+}
+
 bool ScrollView::childClip(const Widget &child, Rect &clip) const {
         if (isBar(&child)) return false;
         clip = viewport();

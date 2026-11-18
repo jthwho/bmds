@@ -169,6 +169,9 @@ class FormLayout : public ScrollView {
                  */
                 FormRow *addRow(StringView label, StringView help = StringView());
 
+                /** @brief Returns its rows' height at @p width: help wraps as wide as it is laid out. */
+                uint16_t heightForWidth(uint16_t width) const override { return contentHeight(width); }
+
         protected:
                 void layingOut(uint16_t width) override;
 

@@ -78,6 +78,15 @@ class ScrollView : public ScrollArea {
                 /** @brief Returns the shown rows into @p out, in order. */
                 size_t rows(Widget *(&out)[MaxRows]) const;
 
+                /**
+                 * @brief Returns the height its rows take at its @p width (their heights at the
+                 *        width left them by the margins, no bar needed, and the spacing): all of
+                 *        them shown, unscrolled.
+                 *        A subclass whose height is its rows' (a form) answers `heightForWidth()`
+                 *        with it.
+                 */
+                uint16_t contentHeight(uint16_t width) const;
+
                 void resized() override;
                 void scrolled() override;
                 void paintContent(Painter &painter, const Rect &viewport) override;

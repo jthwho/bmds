@@ -775,7 +775,8 @@ class CheckBox : public Widget {
 
 /**
  * @brief Lays its children out in a row or a column (`LineLayout`): each its
- *        hint, stretching ones sharing the rest; the gaps in the face's color.
+ *        hint (in a column, its `heightForWidth()` at the column's width),
+ *        stretching ones sharing the rest; the gaps in the face's color.
  *
  * @par Thread Safety
  * As `Widget`.

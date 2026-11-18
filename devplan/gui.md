@@ -945,6 +945,16 @@ and editors the toolkit lacked. All are ordinary public widgets, tried in `widge
     match).
   - `ScrollView`'s hint asks its rows' heights at its real width once it has one. Before, a
     form holding wrapped help hinted as tall as its narrowest wrapping.
+- **A form in a column, sized at its width** (2026-11-17, the IRC client's Register dialog): a
+  form in a window's column (not a dialog's, which already asked) was given its hint's height,
+  wrapped help measured narrower than it is laid out, so the help counted a line too many and
+  a gap opened under the form. A vertical `BoxLayout` now asks each child's `heightForWidth()`
+  at the column's width (as `Dialog` does), and `FormLayout` answers with
+  `ScrollView::contentHeight()`: its rows' heights at its width less its margins, no bar (the
+  bar's breadth taken off too, as the hint does, still wrapped a 330-pixel help line in a
+  484-pixel form). Measured on the board with an angel script: 106 at 500 wide and 88 at 600,
+  now 88 at both. A window's column stays flush with its frame by default (bars at the edges): a
+  dialog of plain widgets sets `margin` and `spacing`, as the gallery's does.
 
 ## 5. Budget (estimates)
 
