@@ -87,6 +87,9 @@
  *   progtest speech [quiet] text to speech (speech.md §4): audio_speak's errors, a sentence's
  *                         samples, the info, NUL, markup, speed, odd reads, full writes, two fds;
  *                         bmds_say aloud unless quiet
+ *   progtest rommap PATH [write]  a /rom file aligned to a page mapped where it is (rom.md §6): its
+ *                         bytes, its tail 0, mprotect refused, 8 at once (copies past the
+ *                         protection entries), unmapped; with write, a store that must kill it
  *   progtest netfs        a filesystem this program serves (fs_serve, netfs.md step 2): a tree in
  *                         memory at /net/progtest; the bad configs, a big file's gathered writes and
  *                         reads ahead, times, renames, then files' checks through it; unmounted when
@@ -5698,6 +5701,86 @@ static int in_user_mode(void) {
 }
 
 /* umode: which mode programs run in, and that the cycle counter reads in it (mcounteren). */
+/* --- A /rom file mapped where it is (devplan/rom.md §6) --- */
+
+/* `progtest rommap PATH [write]`: PATH (a /rom file aligned to a page) mapped read-only; its bytes
+ * as read(), its last page's tail 0, the address a page's, mprotect(PROT_WRITE) refused, several
+ * mappings at once (in place while the program has protection entries to spare, then copies),
+ * each unmapped. With `write`, a store into the mapping: the program must die of it. */
+static int rommap_test(const char *path, int store) {
+        const int fd = open(path, O_RDONLY);
+        if (fd < 0) {
+                printf("rommap: %s: %s\n", path, strerror(errno));
+                return 1;
+        }
+        struct stat st;
+        if (fstat(fd, &st) != 0 || st.st_size <= 0) {
+                printf("rommap: fstat failed\n");
+                return 1;
+        }
+        const size_t   size = (size_t)st.st_size;
+        unsigned char *copy = malloc(size);
+        if (copy == NULL || pread(fd, copy, size, 0) != (ssize_t)size) {
+                printf("rommap: read failed\n");
+                return 1;
+        }
+        int   failed = 0;
+        void *maps[8];
+        int   inPlace = 0;
+        for (int i = 0; i < 8; ++i) {
+                maps[i] = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+                if (maps[i] == MAP_FAILED) {
+                        printf("rommap: mmap %d failed: %s\n", i, strerror(errno));
+                        return 1;
+                }
+                const unsigned char *m = maps[i];
+                /* Where it is: in the flash's mapping, not the program's own memory (a PSRAM copy). */
+                const int here = (uintptr_t)m < 0x48000000u;
+                inPlace += here;
+                if ((uintptr_t)m % 4096 != 0)
+                        failed |= printf("rommap: %d: not a page's address %p\n", i, (void *)m) > 0;
+                if (memcmp(m, copy, size) != 0) failed |= printf("rommap: %d: not the file's bytes\n", i) > 0;
+                for (size_t k = size; k < (size + 4095) / 4096 * 4096; ++k)
+                        if (m[k] != 0) {
+                                failed |= printf("rommap: %d: byte %u past the end isn't 0\n", i, (unsigned)k) > 0;
+                                break;
+                        }
+                if (here) {
+                        errno = 0;
+                        if (mprotect(maps[i], size, PROT_READ | PROT_WRITE) == 0 || errno != EACCES)
+                                failed |= printf("rommap: %d: mprotect(PROT_WRITE) allowed\n", i) > 0;
+                }
+                printf("rommap: %d at %p (%s)\n", i, (void *)m, here ? "in place" : "a copy");
+        }
+        if (store) {
+                printf("rommap: writing into it: this program should die now\n");
+                fflush(stdout);
+                ((volatile unsigned char *)maps[0])[0] = 0x55;
+                printf("rommap: the write went through (it shouldn't)\n");
+                return 1;
+        }
+        for (int i = 0; i < 8; ++i)
+                if (munmap(maps[i], size) != 0) failed |= printf("rommap: munmap %d failed\n", i) > 0;
+        /* After unmapping, in place again. */
+        void *again = mmap(NULL, size, PROT_READ, MAP_SHARED, fd, 0);
+        if (again == MAP_FAILED || memcmp(again, copy, size) != 0 || (inPlace > 0 && (uintptr_t)again >= 0x48000000u))
+                failed |= printf("rommap: a mapping after the others %s\n",
+                                 again == MAP_FAILED ? "failed" : "wasn't in place, or not the file's bytes") > 0;
+        if (again != MAP_FAILED) munmap(again, size);
+        /* A writable private mapping is a copy, written freely. */
+        unsigned char *w = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+        if (w == MAP_FAILED || (uintptr_t)w < 0x48000000u) {
+                failed |= printf("rommap: a writable mapping wasn't a copy\n") > 0;
+        } else {
+                w[0] ^= 0xff;
+                munmap(w, size);
+        }
+        close(fd);
+        free(copy);
+        printf("rommap: %d of 8 in place; %s\n", inPlace, failed ? "FAILED" : "good");
+        return failed;
+}
+
 static int umode_test(void) {
         uint32_t a, b;
         __asm__ volatile("rdcycle %0" : "=r"(a));
@@ -5981,7 +6064,8 @@ int main(int argc, char **argv) {
                         "threads|"
                         "threadspin|filetype|audio|decode|rt|midi|synth|speech|mididecode|hog|stats|tasks|"
                         "procs|"
-                        "system|notify|expand|image|fonts|net|netwatch|rtnet|tls|sched|ptp|netfs|faults|umode [arg]\n");
+                        "system|notify|expand|image|fonts|net|netwatch|rtnet|tls|sched|ptp|netfs|faults|umode|rommap "
+                        "[arg]\n");
                 return 2;
         }
         const char *what = argv[1];
@@ -5989,6 +6073,13 @@ int main(int argc, char **argv) {
         if (strcmp(what, "status") == 0) return atoi(arg);
         if (strcmp(what, "faults") == 0) return faults_test(argc, argv);
         if (strcmp(what, "umode") == 0) return umode_test();
+        if (strcmp(what, "rommap") == 0) {
+                if (argc < 3) {
+                        fprintf(stderr, "usage: progtest rommap PATH [write]\n");
+                        return 2;
+                }
+                return rommap_test(argv[2], argc > 3 && strcmp(argv[3], "write") == 0);
+        }
         if (strcmp(what, "audio") == 0) return audio();
         if (strcmp(what, "decode") == 0) return decode(arg);
         if (strcmp(what, "rt") == 0) return rt();

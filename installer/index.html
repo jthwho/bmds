@@ -180,7 +180,10 @@ port: pick the one named USB JTAG/serial debug unit.</p>
 <section class="box" data-step="install" hidden>
 <h2>3. Install</h2>
 <label class="choice"><input type="radio" name="mode" id="mode-reinstall" checked> Reinstall
-<small>Writes BMDS and keeps the board's settings and the files in /flash.</small></label>
+<small>Writes BMDS and keeps the board's settings and the files in /flash. The ROM (/rom) is written
+afresh: files you added to it with <code>rom install</code> are lost, so save them first (<code>rom export
+DIR</code>, then <code>rom import DIR</code> afterwards), or update on the board instead
+(<code>update fetch</code>, or the Updater), which keeps them.</small></label>
 <label class="choice"><input type="radio" name="mode" id="mode-fresh"> Fresh install
 <small>Erases the whole flash first: settings, /flash and anything else on it.</small></label>
 <p><button id="install">Install</button></p>

@@ -65,7 +65,9 @@ class RomFlash {
  *
  * Space: files aligned to 64 KB or more take whole pages from the top of the
  * partition down; the others of one change are packed together (each at its
- * alignment) into one run of free sectors, the lowest that fits.
+ * alignment) into one run of free sectors, the lowest that fits. A file
+ * aligned to 4 KB or more owns its last 4 KB page, 0 after its end, so a
+ * program may map it where it is (§6).
  *
  * @par Thread Safety
  * Not thread-safe: one editor, one task (the kernel serializes the ROM's).
@@ -181,14 +183,19 @@ class RomEditor {
                 Error discard(Report &report);
 
                 /**
-                 * @brief Fills the holes (§12d): from the top down, each file (all but those on
-                 *        64 KB pages) into the lowest run of free sectors below it that holds it.
-                 *        Files never move up; only what fills a hole moves.
+                 * @brief Compacts the files (§12d). By default fills the holes: each run of free
+                 *        sectors, from the bottom up, takes the files from the top down that fit it,
+                 *        packed at their alignments (all but files on 64 KB pages); files never
+                 *        move up, only what fills holes moves. @p full instead moves every file
+                 *        after the first hole together into the lowest run that holds them all:
+                 *        packed tight, but more moved (two boots in the main firmware if that run
+                 *        is above them).
                  * @param more Set if files moved: their old places free at the next boot (in
-                 *        recovery, at once), and another compaction may fill those.
-                 * @return `Ok` (`report.moved` 0: nothing to do), or the flash's error.
+                 *        recovery, at once), and another compaction may do more.
+                 * @return `Ok` (`report.moved` 0: nothing to do), `NoSpace` (full: no run holds
+                 *         them), or the flash's error.
                  */
-                Error compact(Report &report, bool &more);
+                Error compact(Report &report, bool &more, bool full = false);
 
                 /**
                  * @brief Merges an update's tree @p package (§12g): its system files written
@@ -222,7 +229,8 @@ class RomEditor {
                                 uint8_t            hash[RomImage::HashBytes] = {};
                 };
 
-                Error buildUsage();
+                Error           buildUsage();
+                static uint64_t taken(const RomImage::Entry &e);
                 bool  isFree(uint32_t sector) const { return sector < _usedCount && _used[sector] == 0; }
                 void  mark(uint64_t offset, uint64_t bytes);
                 Error allocate(List<Planned> &planned, bool dryRun);

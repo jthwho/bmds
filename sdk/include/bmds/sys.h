@@ -223,6 +223,8 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_TLS_CTL 135u      /**< `int32_t tls_ctl(int32_t fd, uint32_t op, void *arg)`: TLS on a TCP socket. */
 #define BMDS_SYS_GUI_SCREEN_CAPTURE                                                                                    \
         136u /**< `int32_t gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture)`. */
+#define BMDS_SYS_FILE_MAP 137u   /**< `int32_t file_map(int32_t fd, int64_t offset, uint32_t length, void **addr)`. */
+#define BMDS_SYS_FILE_UNMAP 138u /**< `int32_t file_unmap(void *addr)`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -2422,6 +2424,8 @@ typedef int32_t (*bmds_sys_syntax_find_fn)(const char *name, uint32_t length);
 typedef int32_t (*bmds_sys_syntax_scan_fn)(bmds_syntax_scan_t *scan);
 typedef int32_t (*bmds_sys_tls_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_gui_screen_capture_fn)(int32_t conn, bmds_screen_capture_t *capture);
+typedef int32_t (*bmds_sys_file_map_fn)(int32_t fd, int64_t offset, uint32_t length, void **addr);
+typedef int32_t (*bmds_sys_file_unmap_fn)(void *addr);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -3873,6 +3877,34 @@ static inline int32_t bmds_tls_ctl(int32_t fd, uint32_t op, void *arg) {
 static inline int32_t bmds_gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture) {
         if (!bmds_sys_has(BMDS_SYS_GUI_SCREEN_CAPTURE)) return -BMDS_ENOSYS;
         return ((bmds_sys_gui_screen_capture_fn)bmds_sys->slot[BMDS_SYS_GUI_SCREEN_CAPTURE])(conn, capture);
+}
+
+/**
+ * @brief Maps @p length bytes of open file @p fd from @p offset where they are, read-only, no copy
+ *        (slot 137, appended 2026-11-18, devplan/rom.md §6): a file in `/rom` stored as it is and
+ *        aligned to a page (`rom install --align 4k`), so its bytes are already at an address. The
+ *        address in @p addr is a page's; the bytes past the file's end in its last page read as 0.
+ *        Writing to it faults. `mmap()` with `PROT_READ` uses this first and copies the file
+ *        when it fails.
+ * @param offset A multiple of 4096 inside the file.
+ * @param length Within the file's last page.
+ * @return 0, or `-BMDS_EBADF`, `-BMDS_EACCES` (not open to read), `-BMDS_ENOTSUP` (a file that
+ *         isn't mapped like this: copy it instead; also when the program has no protection
+ *         entry to spare), `-BMDS_EINVAL`, `-BMDS_EFAULT`, `-BMDS_ENOSYS`.
+ */
+static inline int32_t bmds_file_map(int32_t fd, int64_t offset, uint32_t length, void **addr) {
+        if (!bmds_sys_has(BMDS_SYS_FILE_MAP)) return -BMDS_ENOSYS;
+        return ((bmds_sys_file_map_fn)bmds_sys->slot[BMDS_SYS_FILE_MAP])(fd, offset, length, addr);
+}
+
+/**
+ * @brief Ends a mapping `bmds_file_map()` made at @p addr (slot 138, appended 2026-11-18); the
+ *        program's end ends them all.
+ * @return 0, or `-BMDS_EINVAL` (not one), `-BMDS_ENOSYS`.
+ */
+static inline int32_t bmds_file_unmap(void *addr) {
+        if (!bmds_sys_has(BMDS_SYS_FILE_UNMAP)) return -BMDS_ENOSYS;
+        return ((bmds_sys_file_unmap_fn)bmds_sys->slot[BMDS_SYS_FILE_UNMAP])(addr);
 }
 
 /**

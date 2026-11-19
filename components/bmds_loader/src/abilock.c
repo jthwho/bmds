@@ -929,6 +929,8 @@ _Static_assert(BMDS_TLS_SERVER == 2 && BMDS_TLS_CLIENT_CERT == 4, "ABI: BMDS_TLS
 
 /* The screen's changes for a watching program (devplan/vnc.md §5c). */
 _Static_assert(BMDS_SYS_GUI_SCREEN_CAPTURE == 136, "ABI: slot GUI_SCREEN_CAPTURE");
+/* ROM files mapped where they are (devplan/rom.md §6, 2026-11-18). */
+_Static_assert(BMDS_SYS_FILE_MAP == 137 && BMDS_SYS_FILE_UNMAP == 138, "ABI: slots FILE_MAP, FILE_UNMAP");
 _Static_assert(BMDS_CAPTURE_ALL == 1 && BMDS_CAPTURE_ALIGN == 128, "ABI: BMDS_CAPTURE_*");
 #if UINTPTR_MAX == 0xffffffffu // (pointers inside)
 _Static_assert(

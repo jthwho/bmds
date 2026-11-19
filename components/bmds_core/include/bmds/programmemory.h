@@ -68,8 +68,29 @@ class ProgramMemory {
                 /** @brief True if @p bytes at @p p lie in one block of @p owner (a walk). */
                 virtual bool contains(const void *p, size_t bytes, uint32_t owner) = 0;
 
-                /** @brief Frees every block of @p owner. */
+                /** @brief Frees every block of @p owner (and ends its read-only mappings). */
                 virtual void freeOwner(uint32_t owner) = 0;
+
+                /**
+                 * @brief Lets @p owner's program read @p bytes at @p p, memory that isn't its own
+                 *        and doesn't change (a `/rom` file's, `devplan/rom.md` §6), until
+                 *        `unmapReadOnly()`. Both a page's multiple.
+                 * @return `Ok`, `Full` (no protection entry to spare: the caller copies instead),
+                 *         or `NotSupported` (this memory can't: the default).
+                 */
+                virtual Error mapReadOnly(const void *p, size_t bytes, uint32_t owner) {
+                        (void)p;
+                        (void)bytes;
+                        (void)owner;
+                        return Error::NotSupported;
+                }
+
+                /** @brief Ends @p owner's read-only mapping at @p p: true if it was one. */
+                virtual bool unmapReadOnly(const void *p, uint32_t owner) {
+                        (void)p;
+                        (void)owner;
+                        return false;
+                }
 
                 /**
                  * @brief How many bytes from @p p the program could read (or with @p write, write)

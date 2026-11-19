@@ -20,6 +20,7 @@ namespace {
         constexpr uint32_t Page = RomImage::PageBytes;
         constexpr uint32_t ChunkBytes = 4096;
         constexpr uint8_t  PageLog2 = 16;
+        constexpr uint8_t  SectorLog2 = 12;
 
         // A sector's users (RomEditor::_used).
         constexpr uint8_t UsedBooted = 0x01;
@@ -95,6 +96,15 @@ void RomEditor::mark(uint64_t offset, uint64_t bytes) {
         return;
 }
 
+// The bytes a file holds from its offset: its own, and a page-aligned file's whole pages (an MMU
+// mapping shows them: shared with nothing, §12d), a sector-aligned one's last sector (§6).
+uint64_t RomEditor::taken(const RomImage::Entry &e) {
+        if (e.data.isEmpty()) return 0;
+        if (e.alignLog2 >= PageLog2) return alignUp(e.data.size(), Page);
+        if (e.alignLog2 >= SectorLog2) return alignUp(e.data.size(), Sector);
+        return e.data.size();
+}
+
 Error RomEditor::buildUsage() {
         const uint32_t count = static_cast<uint32_t>(_flash.bytes().size() / Sector);
         if (count != _usedCount) {
@@ -107,13 +117,13 @@ Error RomEditor::buildUsage() {
         mark(0, _committed.dataOffset()); // the header and the log
         for (uint32_t i = 0; i < _committed.count(); ++i) {
                 const RomImage::Entry e = _committed.entry(i);
-                mark(e.offset, e.data.size());
+                mark(e.offset, taken(e));
         }
         if (_booted != nullptr) {
                 for (uint32_t i = 0; i < _booted->count(); ++i) {
                         const RomImage::Entry e = _booted->entry(i);
                         if (e.data.isEmpty()) continue;
-                        const uint64_t last = (uint64_t(e.offset) + e.data.size() - 1) / Sector;
+                        const uint64_t last = (uint64_t(e.offset) + taken(e) - 1) / Sector;
                         for (uint64_t s = e.offset / Sector; s <= last && s < _usedCount; ++s) _used[s] |= UsedBooted;
                 }
         }
@@ -132,6 +142,8 @@ Error RomEditor::allocate(List<Planned> &planned, bool dryRun) {
                         runBytes = alignUp(runBytes, uint64_t(1) << p.entry.alignLog2);
                         p.entry.offset = static_cast<uint32_t>(runBytes); // within the run, for now
                         runBytes += p.entry.size;
+                        // Aligned to a page: its last page its own (0 after it, writeFiles()).
+                        if (p.entry.alignLog2 >= SectorLog2) runBytes = alignUp(runBytes, Sector);
                         continue;
                 }
                 const uint64_t unit = uint64_t(1) << p.entry.alignLog2;
@@ -258,6 +270,13 @@ Error RomEditor::writeFiles(List<Planned> &planned, Report &report) {
                         tell(done, total);
                 }
                 h.final(p.hash);
+                // A page-aligned file's last page: 0 after its end, as a program's mapping of it
+                // reads (rom.md §6). Not part of its bytes or hash.
+                if (p.entry.alignLog2 >= SectorLog2 && at % Sector != 0) {
+                        std::memset(chunk.data, 0, Sector - at % Sector);
+                        err = _flash.write(static_cast<uint32_t>(at), ByteSpan(chunk.data, Sector - at % Sector));
+                        if (err.isError()) return err;
+                }
                 // Read back from the chip: the same bytes.
                 Blake2s back;
                 at = p.entry.offset;
@@ -364,6 +383,8 @@ void RomEditor::keep(List<Planned> &planned, uint32_t index) {
         p.entry.size = static_cast<uint32_t>(e.data.size());
         p.entry.modified = e.modified;
         p.entry.hash = e.hash;
+        p.entry.compression = e.compression;
+        p.entry.realSize = e.realSize;
         (void)planned.append(p);
         return;
 }
@@ -507,6 +528,8 @@ Error RomEditor::discard(Report &report) {
                 p.entry.size = static_cast<uint32_t>(e.data.size());
                 p.entry.modified = e.modified;
                 p.entry.hash = e.hash;
+                p.entry.compression = e.compression;
+                p.entry.realSize = e.realSize;
                 (void)planned.append(p);
         }
         uint8_t firmware[RomImage::HashBytes];
@@ -518,16 +541,14 @@ Error RomEditor::discard(Report &report) {
                       report);
 }
 
-Error RomEditor::compact(Report &report, bool &more) {
+Error RomEditor::compact(Report &report, bool &more, bool full) {
         report = Report();
         more = false;
         if (!_loaded) return Error::InvalidState;
         Error err = buildUsage();
         if (err.isError()) return err;
-        // From the top down, each file (but those on pages, and empty ones) into the lowest run of
-        // free sectors below it that holds it: holes filled, the free space gathered at the top,
-        // and only what fills a hole moved. Never up.
         const uint32_t count = _committed.count();
+        // The files that may move (not those on pages, not empty ones), from the top down.
         List<uint32_t> order;
         if (order.reserve(count).isError()) return Error::NoMem;
         for (uint32_t i = 0; i < count; ++i) {
@@ -540,32 +561,76 @@ Error RomEditor::compact(Report &report, bool &more) {
         List<MemorySource> sources;
         if (planned.reserve(count).isError() || sources.reserve(count).isError()) return Error::NoMem;
         for (uint32_t k = 0; k < count; ++k) keep(planned, k);
-        for (uint32_t index : order) {
-                const RomImage::Entry e = _committed.entry(index);
-                const uint64_t        need = alignUp(e.data.size(), Sector) / Sector;
-                const uint64_t        below = e.offset / Sector; // the sectors under its first
-                uint64_t              run = 0;
-                uint64_t              at = UINT64_MAX;
-                for (uint64_t s = _committed.dataOffset() / Sector; s < below; ++s) {
-                        run = isFree(static_cast<uint32_t>(s)) ? run + 1 : 0;
-                        if (run == need) {
-                                at = s + 1 - run;
-                                break;
-                        }
+        uint64_t lowestTo = UINT64_MAX;  // where the lowest moved file goes
+        uint64_t lowestFrom = UINT64_MAX; // where the lowest moved file was
+        bool     together = true;          // full: the movers are together already
+        if (full) {
+                // Every file after the first hole (from the files' start, no whole sector free
+                // between them), moved together into the lowest run that holds them all.
+                uint64_t end = _committed.dataOffset();
+                size_t   i = order.size();
+                for (; i > 0; --i) {
+                        const RomImage::Entry e = _committed.entry(order[i - 1]);
+                        if (alignUp(end, Sector) + Sector <= e.offset / Sector * Sector) break;
+                        end = std::max<uint64_t>(end, uint64_t(e.offset) + e.data.size());
                 }
-                if (at == UINT64_MAX) continue;
-                for (uint64_t s = at; s < at + need; ++s) _used[s] |= UsedNew;
-                (void)sources.append(MemorySource(e.data));
-                planned[index].source = &sources[sources.size() - 1];
-                planned[index].entry.offset = static_cast<uint32_t>(at * Sector);
+                uint64_t reached = 0;
+                for (; i > 0; --i) {
+                        const uint32_t        index = order[i - 1];
+                        const RomImage::Entry e = _committed.entry(index);
+                        if (reached != 0 && alignUp(reached, Sector) + Sector <= e.offset / Sector * Sector) together = false;
+                        reached = std::max<uint64_t>(reached, uint64_t(e.offset) + e.data.size());
+                        lowestFrom = std::min<uint64_t>(lowestFrom, e.offset);
+                        (void)sources.append(MemorySource(e.data));
+                        planned[index].source = &sources[sources.size() - 1];
+                }
+                if (sources.size() == 0) return Error::Ok; // packed already
+                err = allocate(planned, false);
+                if (err.isError()) return err;
+                for (const Planned &p : planned)
+                        if (p.source != nullptr) lowestTo = std::min<uint64_t>(lowestTo, p.entry.offset);
+                if (lowestTo > lowestFrom && together) return Error::Ok; // up, and together already: no better
+        } else {
+                // Each hole (a run of free sectors), from the bottom up, filled with the files from
+                // the top down that fit, packed at their alignments as a change's files are: only
+                // what fills holes moves, never up, and small files share sectors.
+                Block moved(MemSpace::Psram, count + 1);
+                if (moved.data == nullptr) return Error::NoMem;
+                std::memset(moved.data, 0, count);
+                for (uint32_t s = _committed.dataOffset() / Sector; s < _usedCount;) {
+                        if (!isFree(s)) {
+                                ++s;
+                                continue;
+                        }
+                        const uint64_t holeStart = uint64_t(s) * Sector;
+                        while (s < _usedCount && isFree(s)) ++s;
+                        const uint64_t holeEnd = uint64_t(s) * Sector;
+                        uint64_t       pos = holeStart;
+                        for (uint32_t index : order) {
+                                if (moved.data[index] != 0) continue;
+                                const RomImage::Entry e = _committed.entry(index);
+                                if (e.offset < holeEnd) continue; // not above this hole
+                                const uint64_t at = alignUp(pos, uint64_t(1) << e.alignLog2);
+                                uint64_t       taken = at + e.data.size();
+                                if (e.alignLog2 >= SectorLog2) taken = alignUp(taken, Sector); // its own page
+                                if (taken > holeEnd) continue;
+                                moved.data[index] = 1;
+                                (void)sources.append(MemorySource(e.data));
+                                planned[index].source = &sources[sources.size() - 1];
+                                planned[index].entry.offset = static_cast<uint32_t>(at);
+                                pos = taken;
+                        }
+                        for (uint64_t k = holeStart / Sector; k < alignUp(pos, Sector) / Sector; ++k) _used[k] |= UsedNew;
+                }
+                if (sources.size() == 0) return Error::Ok; // nothing above a hole fits it
         }
-        if (sources.size() == 0) return Error::Ok; // nothing below anything that holds it
         err = writeFiles(planned, report);
         report.moved = report.written;
         report.written = 0;
         report.bytesWritten = 0;
         if (err.isOk()) err = commit(planned, {}, report); // for any firmware, as the user's changes are
-        // Their old places free at the next boot (in recovery: at once), for the files above them.
+        // Their old places free at the next boot (in recovery: at once), for the files above them;
+        // a full compaction that went up packs down the next time.
         more = err.isOk();
         return err;
 }
@@ -610,6 +675,7 @@ Error RomEditor::plan(const RomImage &package, List<Planned> &planned, Displaced
                         // At one path in both: the same system file, where its alignment allows, stays.
                         const bool user = (have.flags & RomImage::User) != 0;
                         if (!user && have.data.size() == want.data.size() && have.flags == want.flags &&
+                            have.compression == want.compression && have.realSize == want.realSize &&
                             have.offset % (uint32_t(1) << want.alignLog2) == 0 &&
                             std::memcmp(have.hash.data(), want.hash.data(), RomImage::HashBytes) == 0) {
                                 keep(planned, c);
@@ -632,6 +698,8 @@ Error RomEditor::plan(const RomImage &package, List<Planned> &planned, Displaced
                 p.entry.size = static_cast<uint32_t>(want.data.size());
                 p.entry.modified = want.modified;
                 p.entry.hash = Span<const uint8_t>(NoHash, sizeof(NoHash));
+                p.entry.compression = want.compression; // its stored bytes are copied as they are
+                p.entry.realSize = want.realSize;
                 (void)planned.append(p);
                 ++k;
         }

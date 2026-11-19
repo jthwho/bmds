@@ -82,6 +82,8 @@ class RomVolume final : public Volume {
         private:
                 // Finds @p path: `Ok` and what it is, else `NotExist` (with @p noPath).
                 Result<RomImage::Node> find(StringView path, bool &noPath) const;
+                // True if entry @p index can be read (stored as it is).
+                bool isReadable(uint32_t index) const;
                 // Finds file @p path: its entry (`IsDir` for a directory).
                 Result<uint32_t> findFile(StringView path, bool &noPath) const;
 

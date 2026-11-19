@@ -154,6 +154,8 @@ int32_t bmds_k_syntax_find(const char *name, uint32_t length);
 int32_t bmds_k_syntax_scan(bmds_syntax_scan_t *scan);
 int32_t bmds_k_tls_ctl(int32_t fd, uint32_t op, void *arg);
 int32_t bmds_k_gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture);
+int32_t bmds_k_file_map(int32_t fd, int64_t offset, uint32_t length, void **addr);
+int32_t bmds_k_file_unmap(void *addr);
 int32_t bmds_k_audio_speak(const bmds_speak_config_t *config);
 int32_t bmds_k_audio_speak_info(int32_t fd, bmds_speak_info_t *info);
 
@@ -310,10 +312,12 @@ const struct bmds_k_table_t {
                 [BMDS_SYS_SYNTAX_SCAN] = (bmds_sys_fn_t)bmds_k_syntax_scan,
                 [BMDS_SYS_TLS_CTL] = (bmds_sys_fn_t)bmds_k_tls_ctl,
                 [BMDS_SYS_GUI_SCREEN_CAPTURE] = (bmds_sys_fn_t)bmds_k_gui_screen_capture,
+                [BMDS_SYS_FILE_MAP] = (bmds_sys_fn_t)bmds_k_file_map,
+                [BMDS_SYS_FILE_UNMAP] = (bmds_sys_fn_t)bmds_k_file_unmap,
         },
 };
 
-_Static_assert(SLOTS == BMDS_SYS_GUI_SCREEN_CAPTURE + 1, "every slot is in the table");
+_Static_assert(SLOTS == BMDS_SYS_FILE_UNMAP + 1, "every slot is in the table");
 _Static_assert(sizeof(bmds_k_table) == 16 + SLOTS * sizeof(bmds_sys_fn_t), "table layout");
 
 const bmds_sys_t *bmds_k_sys_table(void) {

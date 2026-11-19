@@ -216,7 +216,7 @@ Agreed 2026-10-04: the C library moves out of programs into a shared runtime lib
 | Signals | Delivered at system-call boundaries, so a handler never runs in the middle of a kernel call; a program stuck computing is still killed (step 5's second Ctrl-C). `SIGINT`, `SIGTERM`, `SIGPIPE`, `SIGCHLD`, `SIGWINCH`; `sigaction`, masks, `kill` between processes. Replaces the step 4 rule (`EINTR` until exit, status 130). |
 | `termios` | `ICANON`, `ECHO`, `ISIG`, `OPOST`/`ONLCR`, `VMIN`/`VTIME` over the terminal modes; echo becomes its own mode (today line input always echoes, raw input never does); window size through `ioctl(TIOCGWINSZ)`. |
 | `poll`/`select` | Needs readiness events from consoles and pipes: a kernel addition (wait on several streams), useful beyond programs. |
-| `mmap` | Anonymous memory, and private file mappings (copied in). No sharing between processes, no demand paging (§11). |
+| `mmap` | Anonymous memory, and private file mappings (copied in); a read-only mapping of a `/rom` file aligned to 4 KB is its bytes in flash, no copy (`bmds_file_map`, `rom.md` §12r). No sharing between processes, no demand paging (§11). |
 | Threads | Not at first; `pthread` later if wanted (per-thread `errno` and TLS then matter). |
 
 **Where the code comes from:** a spike compares two bases before committing to either.

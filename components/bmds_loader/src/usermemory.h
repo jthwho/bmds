@@ -157,6 +157,8 @@ class UserMemory final : public ProgramMemory {
                 bool     contains(const void *p, size_t bytes, uint32_t owner) override;
                 void     freeOwner(uint32_t owner) override;
                 size_t   accessible(const void *p, bool write) override;
+                Error    mapReadOnly(const void *p, size_t bytes, uint32_t owner) override;
+                bool     unmapReadOnly(const void *p, uint32_t owner) override;
                 bool     isAccessible(const void *p, size_t bytes, bool write) override {
                         return _space->allows(reinterpret_cast<uintptr_t>(p), bytes,
                                               write ? uint8_t(PmpSet::Read | PmpSet::Write) : uint8_t(PmpSet::Read));
@@ -167,6 +169,7 @@ class UserMemory final : public ProgramMemory {
                 static constexpr unsigned MaxLarge = 6;
                 static constexpr unsigned MaxInternal = 6;
                 static constexpr unsigned KeepFree = 2; // entries for the heap's growth
+                static constexpr unsigned MaxMapped = 4;  // read-only mappings (rom.md §6)
 
                 // A run of heap pages mapped at a range's page `page`.
                 struct Run {
@@ -203,6 +206,13 @@ class UserMemory final : public ProgramMemory {
                                 uint32_t deferred = 0;
                 };
 
+                // Read-only memory the program may read (a /rom file's): its own PMP region.
+                struct Mapped {
+                                uintptr_t base = 0;
+                                size_t    bytes = 0;
+                                uint32_t  owner = 0;
+                };
+
                 UserMemory() = default;
                 ~UserMemory();
 
@@ -235,6 +245,7 @@ class UserMemory final : public ProgramMemory {
                 unsigned              _rangeCount = 0;
                 Large                 _large[MaxLarge];
                 Internal              _internal[MaxInternal];
+                Mapped                _mapped[MaxMapped];
                 uint32_t              _imageBytes = 0;
                 uint32_t              _codeBytes = 0;
                 UserMemory           *_next = nullptr; // the list of them (reclaimHeadroom())

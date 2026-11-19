@@ -58,8 +58,18 @@ class RomImage {
                 /** @brief A tree version's header size. */
                 static constexpr size_t VersionHeaderBytes = 80;
 
-                /** @brief An entry's size. */
-                static constexpr size_t EntryBytes = 64;
+                /**
+                 * @brief An entry's size as this firmware writes it. A version says its own
+                 *        (`MinEntryBytes` or more): a shorter one's missing fields read as 0, a
+                 *        longer one's fields past these are ignored, so fields can be appended.
+                 */
+                static constexpr size_t EntryBytes = 72;
+
+                /** @brief The smallest entry a version may have (format 2's first, to 2026-11-18). */
+                static constexpr size_t MinEntryBytes = 64;
+
+                /** @brief The largest entry a version may have. */
+                static constexpr size_t MaxEntryBytes = 512;
 
                 /** @brief A file's hash size (BLAKE2s-256). */
                 static constexpr size_t HashBytes = 32;
@@ -79,6 +89,15 @@ class RomImage {
                 /** @brief No entry (`nextChild()`'s end). */
                 static constexpr uint32_t NoEntry = UINT32_MAX;
 
+                /**
+                 * @brief How a file's bytes are stored (`Entry::compression`). Only `None` is
+                 *        read now; a method this firmware doesn't know leaves the tree good and
+                 *        that file unreadable (`NotSupported`), so methods can be added.
+                 */
+                enum Compression : uint8_t {
+                        None = 0, ///< Stored as they are.
+                };
+
                 /** @brief An entry's flags. */
                 enum Flag : uint8_t {
                         System = 0x01, ///< FAT's System attribute (an emulated symbolic link, storage.md §4).
@@ -94,7 +113,12 @@ class RomImage {
                                 uint32_t            offset = 0;    ///< Where its bytes are in the partition.
                                 ByteSpan            data;          ///< Its bytes.
                                 Timestamp           modified;      ///< Its time.
-                                Span<const uint8_t> hash;          ///< Its bytes' BLAKE2s-256.
+                                Span<const uint8_t> hash;          ///< Its stored bytes' BLAKE2s-256.
+                                uint8_t             compression = None; ///< How `data` is stored.
+                                uint32_t            realSize = 0; ///< Compressed: its size when read; else 0.
+
+                                /** @brief Returns the file's size as read (`data`'s, unless compressed). */
+                                uint64_t size() const { return compression == None ? data.size() : realSize; }
                 };
 
                 /**
@@ -155,7 +179,9 @@ class RomImage {
                                 uint32_t            offset = 0;    ///< Where its bytes are in the partition.
                                 uint32_t            size = 0;      ///< Its size.
                                 Timestamp           modified;      ///< Its time (whole seconds are kept).
-                                Span<const uint8_t> hash;          ///< Its bytes' BLAKE2s-256 (`HashBytes`).
+                                Span<const uint8_t> hash;          ///< Its stored bytes' BLAKE2s-256 (`HashBytes`).
+                                uint8_t             compression = None; ///< How its bytes are stored.
+                                uint32_t            realSize = 0; ///< Compressed: its size when read; else 0.
                 };
 
                 /** @brief An empty image (nothing found in it). */
@@ -272,7 +298,7 @@ class RomImage {
 
         private:
                 const uint8_t *entryAt(uint32_t index) const {
-                        return _partition.data() + _entries + index * EntryBytes;
+                        return _partition.data() + _entries + index * _entryBytes;
                 }
                 StringView pathOf(uint32_t index) const;
                 uint32_t   lowerBound(StringView key) const;
@@ -288,6 +314,7 @@ class RomImage {
                 uint32_t _entries = 0;    // entry 0's offset in the partition
                 uint32_t _paths = 0;      // the paths' offset in the partition
                 uint32_t _pathsBytes = 0; // their size
+                uint32_t _entryBytes = EntryBytes; // the version's entries' size
                 Version  _version;
 };
 

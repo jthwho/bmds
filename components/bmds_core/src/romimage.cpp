@@ -82,6 +82,7 @@ namespace {
                         uint32_t count = 0;
                         uint32_t pathsAt = 0;
                         uint32_t pathsBytes = 0;
+                        uint32_t entryBytes = 0;
         };
 
         // The version starting at @p at (a sector of the log ending at @p logEnd), if its header
@@ -89,7 +90,10 @@ namespace {
         bool readVersion(const uint8_t *base, uint32_t at, uint32_t logEnd, VersionHeader &v) {
                 const uint8_t *h = base + at;
                 if (logEnd - at < RomImage::VersionHeaderBytes + 4 || std::memcmp(h, "BMRT", 4) != 0) return false;
-                if (u16(h + 4) != RomImage::VersionHeaderBytes || u16(h + 6) != RomImage::EntryBytes) return false;
+                v.entryBytes = u16(h + 6);
+                if (u16(h + 4) != RomImage::VersionHeaderBytes || v.entryBytes < RomImage::MinEntryBytes ||
+                    v.entryBytes > RomImage::MaxEntryBytes || v.entryBytes % 8 != 0)
+                        return false;
                 v.recordBytes = u32(h + 8);
                 v.sequence = u32(h + 12);
                 v.count = u32(h + 16);
@@ -100,8 +104,8 @@ namespace {
                     !allZero(h + 72, 8) || !isTime(i64(h + 32)))
                         return false;
                 const uint32_t body = v.recordBytes - 4; // the CRC's place
-                if (uint64_t(v.count) * RomImage::EntryBytes > body - RomImage::VersionHeaderBytes ||
-                    v.pathsAt < RomImage::VersionHeaderBytes + v.count * RomImage::EntryBytes || v.pathsAt > body ||
+                if (uint64_t(v.count) * v.entryBytes > body - RomImage::VersionHeaderBytes ||
+                    v.pathsAt < RomImage::VersionHeaderBytes + v.count * v.entryBytes || v.pathsAt > body ||
                     v.pathsBytes > body - v.pathsAt)
                         return false;
                 return Png::crc32(ByteSpan(h, body)) == u32(h + body);
@@ -171,6 +175,7 @@ void RomImage::useVersion(uint32_t at) {
         // Its header was read and its CRC checked (readVersion()).
         const uint8_t *h = _partition.data() + at;
         _count = u32(h + 16);
+        _entryBytes = u16(h + 6);
         _entries = at + VersionHeaderBytes;
         _paths = at + u32(h + 20);
         _pathsBytes = u32(h + 24);
@@ -225,8 +230,11 @@ Error RomImage::checkEntries() const {
                 const uint32_t offset = u32(e + 8);
                 const uint32_t size = u32(e + 12);
                 if (pathAt > _pathsBytes || pathLength > _pathsBytes - pathAt || (flags & ~KnownFlags) != 0 ||
-                    alignLog2 > MaxAlignLog2 || !allZero(e + 56, 8) || !isTime(i64(e + 16)))
+                    alignLog2 > MaxAlignLog2 || !allZero(e + 61, 3) || !isTime(i64(e + 16)) ||
+                    (_entryBytes >= 72 && !allZero(e + 64, 8))) // reserved where the entry has them
                         return Error::CorruptData;
+                // Stored as it is: no other size. (A method not known here is fine: §12c.)
+                if (e[60] == None && u32(e + 56) != 0) return Error::CorruptData;
                 if (offset < _dataOffset || offset > partitionBytes || size > partitionBytes - offset ||
                     offset % (uint32_t(1) << alignLog2) != 0)
                         return Error::CorruptData;
@@ -275,7 +283,9 @@ RomImage::Entry RomImage::entry(uint32_t index) const {
         e.offset = u32(p + 8);
         e.data = _partition.mid(e.offset, u32(p + 12));
         e.modified = Timestamp::fromSeconds(i64(p + 16));
-        e.hash = _partition.mid(_entries + index * EntryBytes + 24, HashBytes);
+        e.hash = _partition.mid(_entries + index * _entryBytes + 24, HashBytes);
+        e.compression = p[60];
+        e.realSize = u32(p + 56);
         return e;
 }
 
@@ -434,6 +444,7 @@ Result<size_t> RomImage::writeVersion(Span<const NewEntry> entries, uint32_t seq
         for (size_t i = 0; i < entries.size(); ++i) {
                 const NewEntry &e = entries[i];
                 if (!isPath(e.path) || (e.flags & ~KnownFlags) != 0 || e.alignLog2 > MaxAlignLog2 ||
+                    (e.compression == None && e.realSize != 0) ||
                     e.hash.size() != HashBytes || e.offset % (uint32_t(1) << e.alignLog2) != 0 ||
                     e.size > UINT32_MAX - e.offset)
                         return makeError<size_t>(Error::Invalid);
@@ -465,6 +476,8 @@ Result<size_t> RomImage::writeVersion(Span<const NewEntry> entries, uint32_t seq
                 put32(p + 12, e.size);
                 put64(p + 16, e.modified.seconds());
                 std::memcpy(p + 24, e.hash.data(), HashBytes);
+                put32(p + 56, e.realSize);
+                p[60] = e.compression;
                 std::memcpy(h + pathsAt + pathsBytes, e.path.data(), e.path.size());
                 pathsBytes += static_cast<uint32_t>(e.path.size());
         }

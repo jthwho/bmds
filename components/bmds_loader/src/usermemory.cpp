@@ -630,8 +630,40 @@ bool UserMemory::contains(const void *p, size_t bytes, uint32_t owner) {
         return _heap.contains(at, uint32_t(bytes), owner);
 }
 
+Error UserMemory::mapReadOnly(const void *p, size_t bytes, uint32_t owner) {
+        Mutex::Locker locker(_lock, WaitForever);
+        Mapped       *slot = nullptr;
+        for (Mapped &m : _mapped)
+                if (m.bytes == 0 && slot == nullptr) slot = &m;
+        if (slot == nullptr) return Error::Full;
+        const auto base = reinterpret_cast<uintptr_t>(p);
+        // What the heap's growth needs stays free: the program copies the file instead.
+        if (_space->freeEntries() < _space->entriesFor(base, bytes) + KeepFree) return Error::Full;
+        const Error err = _space->grant(base, bytes, uint8_t(PmpSet::Read), KeepFree);
+        if (err.isError()) return Error::Full;
+        *slot = Mapped{base, bytes, owner};
+        return Error::Ok;
+}
+
+bool UserMemory::unmapReadOnly(const void *p, uint32_t owner) {
+        Mutex::Locker locker(_lock, WaitForever);
+        for (Mapped &m : _mapped) {
+                if (m.bytes == 0 || m.base != reinterpret_cast<uintptr_t>(p) || m.owner != owner) continue;
+                // Revoked at once: the bytes don't change, so a call still reading them is fine.
+                _space->revoke(m.base);
+                m = Mapped();
+                return true;
+        }
+        return false;
+}
+
 void UserMemory::freeOwner(uint32_t owner) {
         Mutex::Locker locker(_lock, WaitForever);
+        for (Mapped &m : _mapped) {
+                if (m.bytes == 0 || m.owner != owner) continue;
+                _space->revoke(m.base);
+                m = Mapped();
+        }
         for (Internal &b : _internal)
                 if (b.block != nullptr && b.deferred == 0 && b.owner == owner) freeInternal(b);
         for (Large &l : _large)

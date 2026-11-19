@@ -283,6 +283,12 @@ async function install() {
         if (fresh && !confirm("A fresh install erases everything on the board's flash, settings and /flash included. Go ahead?")) {
                 return;
         }
+        // devplan/rom.md §12g: both write the ROM whole, so what rom install added to it goes.
+        if (!fresh && !confirm("Reinstall writes the ROM (/rom) afresh: files you added to it with rom install are lost "
+                               + "(save them first with rom export DIR, or update on the board instead, which keeps them). "
+                               + "Go ahead?")) {
+                return;
+        }
         $("install").disabled = true;
         log(fresh ? "Fresh install: the whole flash is erased first."
                   : "Reinstall: nvs and /flash are left as they are.");

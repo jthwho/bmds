@@ -286,6 +286,9 @@ ROM; the device may be reformatted. It comes before `mediaplayer.md` step 3.
   - **To check on the board first:** what a store to the flash window does (a fault the kernel
     turns into the program's crash, or silently nothing). With no memory protection between
     programs, a mapping can't be made unwritable otherwise.
+  - **Built 2026-11-18 (§12r):** `bmds_file_map` (slots 137, 138), each mapping a read-only PMP
+    region of the program's; a store faults and ends the program (exit 139 on the board). A
+    file is mappable when aligned to 4 KB or more: it owns its last page, 0 after its end.
 - **Later still, ideas only:** a SoundFont's samples played from flash instead of loaded into
   PSRAM (if the synth's reads are fast enough from there); programs run in place from `/rom`.
   The second isn't simple: flash and PSRAM are separate windows of the MMU, so an image's shared
@@ -750,8 +753,10 @@ forms:
 5. **Updates file by file** (done, 2026-11-18, §12p): the package's ROM section merged, recovery
    applying it,
    restoring the system's files; a user's file replaced and restored by an update on the board.
-6. **Then, each with its own plan:** programs' read-only `mmap()` (§6); files mapped through the
-   MMU at 64 KB; kernel extensions.
+6. **Then, each with its own plan:** programs' read-only `mmap()` (§6: done 2026-11-18, §12r);
+   files mapped through the MMU at 64 KB and kernel extensions (planned in `extensions.md`, its
+   decisions open: MMU mapping is needed only if extensions run in place, which it recommends
+   against).
 
 ### 12m. As built: step 1, format 2 (2026-11-18)
 
@@ -959,4 +964,53 @@ to sd. If there's a file the user changed, we'd back it up to SD before we repla
   (its bytes), wrote the system's back, kept `mine.txt`, said so in its result, and compacted
   (4 KB of holes to none). The same package again: "the same as rom", nothing backed up. The
   log wrapped round on the board too (versions back in its first sectors).
+
+### 12r. As built: compression's ground, mmap, export and import, notices (2026-11-18)
+
+The user's, after steps 3-5: step 6, and "lay the ground work" for compressed files with 8
+reserved bytes still after it, the installer's warning, `rom export`/`import`, notifications
+"if the notifications can be sent (i.e. the panel is running)".
+
+- **Entries are 72 bytes:** bytes 56-59 a compressed file's size as read (0 when stored as it
+  is), 60 its method (0: none; no others assigned yet), 61-63 0 (compression's), 64-71 eight
+  reserved, 0. A version says its entries' size and readers honour it: a shorter one (format 2's
+  first, 64 bytes) reads with the missing fields 0, a longer one's extra fields are ignored, so
+  fields can be appended. A method this firmware doesn't know leaves the tree good and that file
+  unreadable (`NotSupported` to open and map; its size as read in `stat`). The hash is of the
+  stored bytes. `rom stat` says how a file is stored.
+- **Found on the board:** the firmware there (64-byte entries only) called the new ROM image
+  damaged in an update's check, before the entry size was honoured. Fixed by that; the board was
+  brought across by a package of the firmware and recovery alone (its old ROM then read by the
+  new firmware), then the whole package. A firmware takes only ROM formats it reads.
+- **Programs' `mmap()`** (§6): `bmds_file_map(fd, offset, length, &addr)` and `bmds_file_unmap`
+  (slots 137, 138; `Stream::mapped()`, `ProgramMemory::mapReadOnly()` and its PMP region, read
+  only); the C library's `mmap(PROT_READ)` of a file tries it first and copies when it fails (not
+  a ROM file, not aligned to 4 KB, or no protection entry to spare: four mappings at most, two
+  entries kept for the heap); `munmap` ends it, `mprotect(PROT_WRITE)` on it is `EACCES`. Placement:
+  a file aligned to 4 KB or more owns its last 4 KB page, 0 after its end (`mkrom.py`, the
+  editor), so the mapping's tail reads 0 as on Linux; the kernel checks that before mapping. On
+  the board (`progtest rommap`): in place at the file's flash address, its bytes, its tail,
+  mprotect refused, 3-4 of 8 at once in place and the rest copies, a 64-byte-aligned file always
+  a copy, a store killing the program (exit 139).
+- **Pages kept whole** (found while reworking compaction): a file aligned to 64 KB had only the
+  sectors it covers counted used, so its last page's rest could be given to other files, which
+  an MMU mapping of it would show. The editor's usage and `RomSpace` count its whole pages (and a
+  4 KB-aligned file's last sector).
+- **Compaction packs:** a hole takes the files from the top down that fit it, packed at their
+  alignments, sharing sectors (the first hole filler gave each file a sector: after an update on
+  the board, 139 KB of padding among small files). `rom compact --full`: every file after the
+  first run of free sectors moved together (the first algorithm), for a thorough pass. Power cut
+  at every operation of both, host-tested.
+- **`rom export [-f] DIR`** (the user's files of the tree the next boot takes, at their paths,
+  and `DIR/rom-files.txt`: "ALIGN PATH" a line; DIR new or empty unless `-f`), **`rom import
+  DIR`** (every file under DIR, one change, alignments from the list if there): on the board, two
+  files out, removed, back in: the same bytes, the 4 KB alignment kept, still mapped in place.
+- **The notification:** every change posts "ROM changes pending" ("N files installed. They take
+  effect at the next restart."), one notification replaced as changes follow, only while the
+  panel serves notifications (`Notifications::hasServer()`); discard says nothing will change.
+- **The web installer's Reinstall** says it writes the ROM afresh (its text, and a confirmation):
+  `rom export` first, or update on the board instead.
+- **Kernel extensions and MMU mapping:** planned in `extensions.md`, decisions open.
+- **Size:** the firmware 3,376,016 bytes (+9 KB since steps 3-5 and the backups); recovery
+  1,236,352.
 

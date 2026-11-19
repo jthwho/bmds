@@ -60,6 +60,10 @@ namespace {
 
                         Error truncate(uint64_t) override { return Error::ReadOnly; }
 
+                        // Its bytes in the partition's mapping: they stay while it is mounted, which
+                        // the ROM is for good.
+                        ByteSpan mapped() const override { return stale() ? ByteSpan() : _data; }
+
                         void handleClosed(uint8_t) override {
                                 this->~RomFile();
                                 Memory::free(this);
@@ -199,7 +203,7 @@ Error RomVolume::describe(const RomImage::Node &node, StringView name, FileInfo 
         }
         const RomImage::Entry e = _image.entry(node.index);
         info.type = FileType::File;
-        info.size = e.data.size();
+        info.size = e.size(); // as read (a compressed file's own size)
         info.modified = e.modified;
         if ((e.flags & RomImage::System) != 0) info.attributes |= FileInfo::System;
         return Error::Ok;
@@ -209,6 +213,11 @@ Error RomVolume::stat(StringView path, FileInfo &info, bool &noPath) {
         const Result<RomImage::Node> found = find(path, noPath);
         if (found.error().isError()) return found.error();
         return describe(found.value(), lastPart(path), info);
+}
+
+// A file stored compressed: read once a decompressor exists (devplan/rom.md §12c).
+bool RomVolume::isReadable(uint32_t index) const {
+        return _image.entry(index).compression == RomImage::None;
 }
 
 Result<FileHandle::Ptr> RomVolume::open(StringView path, uint8_t flags, const FileIdentity &identity, bool &noPath,
@@ -222,6 +231,7 @@ Result<FileHandle::Ptr> RomVolume::open(StringView path, uint8_t flags, const Fi
                 return makeError<FileHandle::Ptr>(Error::ReadOnly);
         if ((flags & Vfs::Create) != 0 && (flags & Vfs::Exclusive) != 0)
                 return makeError<FileHandle::Ptr>(Error::Exists);
+        if (!isReadable(found.value())) return makeError<FileHandle::Ptr>(Error::NotSupported);
         const RomImage::Entry e = _image.entry(found.value());
         // A System file may be an emulated link (devplan/storage.md §4).
         if (link != nullptr) {
@@ -247,6 +257,7 @@ Result<Volume::Reader *> RomVolume::openReader(StringView path) {
         bool                   noPath = false;
         const Result<uint32_t> found = findFile(path, noPath);
         if (found.error().isError()) return makeError<Reader *>(found.error());
+        if (!isReadable(found.value())) return makeError<Reader *>(Error::NotSupported);
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(RomReader));
         if (mem == nullptr) return makeError<Reader *>(Error::NoMem);
         return makeResult<Reader *>(::new (mem) RomReader(_image.entry(found.value()).data));
@@ -321,6 +332,7 @@ void RomVolume::closeDirectory(Cursor *cursor) {
 Result<ByteSpan> RomVolume::map(StringView path, bool &noPath) {
         const Result<uint32_t> found = findFile(path, noPath);
         if (found.error().isError()) return makeError<ByteSpan>(found.error());
+        if (!isReadable(found.value())) return makeError<ByteSpan>(Error::NotSupported); // not its bytes as read
         return makeResult(_image.entry(found.value()).data);
 }
 

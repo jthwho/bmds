@@ -112,8 +112,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         std::vector<RomImage::NewEntry> entries;
         for (uint32_t i = 0; i < image.count(); ++i) {
                 const RomImage::Entry e = image.entry(i);
-                entries.push_back(
-                        {e.path, e.flags, e.alignLog2, e.offset, uint32_t(e.data.size()), e.modified, e.hash});
+                entries.push_back({e.path, e.flags, e.alignLog2, e.offset, uint32_t(e.data.size()), e.modified, e.hash,
+                                   e.compression, e.realSize});
         }
         const bmds::Span<const RomImage::NewEntry> all(entries.data(), entries.size());
         std::vector<uint8_t>                       out(RomImage::versionBytes(all));

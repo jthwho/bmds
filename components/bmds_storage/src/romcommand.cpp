@@ -22,6 +22,7 @@
 #include <bmds/command.h>
 #include <bmds/datetime.h>
 #include <bmds/flashwrites.h>
+#include <bmds/notifications.h>
 #include <bmds/romeditor.h>
 #include <bmds/semaphore.h>
 #include <bmds/waitlist.h>
@@ -30,6 +31,7 @@
 #include <bmds/romspace.h>
 #include <bmds/shell.h>
 #include <bmds/list.h>
+#include <bmds/memory.h>
 #include <bmds/string.h>
 #include <bmds/timezone.h>
 #include <bmds/vfs.h>
@@ -48,6 +50,8 @@ namespace {
                         bool              sectors = false;   // map --sectors
                         bool              removeAll = false; // remove -r
                         const char       *align = nullptr;   // install --align SIZE
+                        bool              force = false;     // export -f (into a folder with files)
+                        bool              fullCompact = false; // compact --full
                         Span<char *const> operands;
                         char             *given[64] = {}; // operands' storage
         };
@@ -395,7 +399,14 @@ namespace {
                         }
                         ctx.printf("Owner:       %s\n", ownerText(e.flags));
                         ctx.printf("Flags:       0x%02x\n", e.flags);
-                        ctx.printf("Size:        %llu bytes\n", static_cast<unsigned long long>(e.data.size()));
+                        ctx.printf("Size:        %llu bytes\n", static_cast<unsigned long long>(e.size()));
+                        if (e.compression == RomImage::None) {
+                                ctx.printf("Stored:      as it is\n");
+                        } else {
+                                ctx.printf("Stored:      %llu bytes, compressed (method %u: not read by this firmware)\n",
+                                           static_cast<unsigned long long>(e.data.size()),
+                                           static_cast<unsigned>(e.compression));
+                        }
                         ctx.printf("Alignment:   %u bytes\n", 1u << e.alignLog2);
                         ctx.printf("Offset:      0x%x in the partition\n", static_cast<unsigned>(e.offset));
                         ctx.printf("Flash:       0x%x\n", static_cast<unsigned>(flashAddress(e.offset)));
@@ -776,9 +787,15 @@ namespace {
                 return;
         }
 
+        void notifyPending(const char *what);
+
         void tellDone(CommandContext &ctx, const char *what, const RomEditor::Report &r) {
                 ctx.printf("rom: %s; tree version %u written: it takes effect at the next boot (rom diff --pending)\n",
                            what, static_cast<unsigned>(r.sequence));
+                char sentence[128];
+                std::snprintf(sentence, sizeof(sentence), "%s", what);
+                if (sentence[0] >= 'a' && sentence[0] <= 'z') sentence[0] = char(sentence[0] - 'a' + 'A');
+                notifyPending(sentence);
                 return;
         }
 
@@ -954,12 +971,14 @@ namespace {
                 } else {
                         ctx.printf("rom: the pending changes dropped (tree version %u: the booted tree's files)\n",
                                    static_cast<unsigned>(report.sequence));
+                        notifyPending("The changes were dropped: nothing changes");
                 }
                 return Shell::ExitSuccess;
         }
 
         struct CompactJob {
                         CommandContext      *ctx;
+                        bool                 full;
                         RomEditor::Report    report;
                         RomEditor::Shortfall shortfall;
                         bool                 more = false;
@@ -968,13 +987,13 @@ namespace {
         int compactFiles(CommandContext &ctx, const Options &o) {
                 if (!o.operands.isEmpty()) return ctx.usage();
                 if (!waitForFlash(ctx)) return Shell::ExitFailure;
-                CompactJob  job{&ctx, {}, {}, false};
+                CompactJob  job{&ctx, o.fullCompact, {}, {}, false};
                 const Error err = RomDisk::edit(
                         [](RomEditor &editor, void *c) {
                                 auto    &j = *static_cast<CompactJob *>(c);
                                 Progress p{j.ctx};
                                 editor.setProgress(tellProgress, &p);
-                                const Error e = editor.compact(j.report, j.more);
+                                const Error e = editor.compact(j.report, j.more, j.full);
                                 j.shortfall = editor.shortfall();
                                 return e;
                         },
@@ -989,10 +1008,258 @@ namespace {
                         return Shell::ExitSuccess;
                 }
                 char what[64];
-                std::snprintf(what, sizeof(what), "%u file%s moved together", static_cast<unsigned>(job.report.moved),
-                              job.report.moved == 1 ? "" : "s");
+                std::snprintf(what, sizeof(what), "%u file%s moved %s", static_cast<unsigned>(job.report.moved),
+                              job.report.moved == 1 ? "" : "s", o.fullCompact ? "together" : "into the holes below");
                 tellDone(ctx, what, job.report);
-                if (job.more) ctx.printf("rom: after that boot, rom compact again packs them down\n");
+                if (job.more) ctx.printf("rom: their old places free at that boot: rom compact then may do more\n");
+                return Shell::ExitSuccess;
+        }
+
+        // --- telling the desktop (§12b): changes take effect at the next boot ------------------
+
+        // One notification, updated as changes follow one another; only while the panel shows
+        // them (Notifications::hasServer()).
+        constinit uint32_t pendingNotification = 0;
+
+        void notifyPending(const char *what) {
+                if (!Notifications::hasServer()) return;
+                Notification n;
+                n.urgency = Notification::Urgency::Normal;
+                n.replaces = pendingNotification;
+                std::snprintf(n.app, sizeof(n.app), "ROM");
+                std::snprintf(n.icon, sizeof(n.icon), "system-reboot");
+                std::snprintf(n.title, sizeof(n.title), "ROM changes pending");
+                std::snprintf(n.body, sizeof(n.body), "%s. They take effect at the next restart.", what);
+                auto [id, err] = Notifications::post(n, 0, nullptr);
+                if (err.isError() && n.replaces != 0) { // the earlier one gone: a new one
+                        n.replaces = 0;
+                        auto [again, aerr] = Notifications::post(n, 0, nullptr);
+                        id = again;
+                        err = aerr;
+                }
+                if (err.isOk()) pendingNotification = id;
+                return;
+        }
+
+        // --- export, import: the user's files to and from a folder ----------------------------
+
+        // The list export writes beside the files: "ALIGN PATH" a line (import's alignments).
+        constexpr const char *ListName = "rom-files.txt";
+
+        Error writeAll(FileHandle &file, ByteSpan bytes, uint8_t *chunk, size_t chunkBytes) {
+                for (size_t at = 0; at < bytes.size();) {
+                        const size_t n = bytes.size() - at < chunkBytes ? bytes.size() - at : chunkBytes;
+                        std::memcpy(chunk, bytes.data() + at, n); // not flash's address to a driver
+                        auto [w, err] = file.write(ByteSpan(chunk, n), WaitForever);
+                        if (err.isError()) return err;
+                        if (w != n) return Error::IoError;
+                        at += n;
+                }
+                return Error::Ok;
+        }
+
+        Error makeDirs(StringView path, const Vfs::Context &context) {
+                for (size_t i = 1; i <= path.size(); ++i) {
+                        if (i < path.size() && path[i] != '/') continue;
+                        const Error made = Vfs::mkdir(path.left(i), context);
+                        if (made.isError() && made != Error::Exists) return made;
+                }
+                return Error::Ok;
+        }
+
+        // `rom export DIR`: the user's files (the tree the next boot takes) into DIR at their paths,
+        // and DIR/rom-files.txt; DIR new or empty (-f: written over).
+        int exportFiles(CommandContext &ctx, const Options &o) {
+                if (o.operands.size() != 1) return ctx.usage();
+                auto [tree, terr] = RomImage::open(RomDisk::mapped(), RomDisk::firmware());
+                if (terr.isError()) return noRom(ctx);
+                const StringView dir(o.operands[0]);
+                const Vfs::Context vctx = ctx.vfs();
+                if (!o.force) {
+                        auto [d, derr] = Vfs::openDirectory(dir, vctx);
+                        if (derr.isOk()) {
+                                auto [first, ferr] = d.next();
+                                (void)first;
+                                if (ferr.isOk()) {
+                                        ctx.eprintf("rom: %s isn't empty (rom export -f writes over it)\n", o.operands[0]);
+                                        return Shell::ExitFailure;
+                                }
+                        }
+                }
+                if (Error err = makeDirs(dir, vctx); err.isError()) return failed(ctx, err, "export", StringView());
+                String list;
+                uint32_t files = 0;
+                uint64_t bytes = 0;
+                auto *chunk = static_cast<uint8_t *>(Memory::alloc(MemSpace::Internal, 4096));
+                if (chunk == nullptr) return failed(ctx, Error::NoMem, "export", StringView());
+                Error err = Error::Ok;
+                for (uint32_t i = 0; i < tree.count() && err.isOk(); ++i) {
+                        const RomImage::Entry e = tree.entry(i);
+                        if ((e.flags & RomImage::User) == 0) continue;
+                        if (e.compression != RomImage::None) {
+                                ctx.eprintf("rom: export: /rom/%.*s is compressed: left out\n", int(e.path.size()),
+                                            e.path.data());
+                                continue;
+                        }
+                        String target;
+                        (void)target.appendf("%.*s/%.*s", int(dir.size()), dir.data(), int(e.path.size()), e.path.data());
+                        const size_t slash = target.view().lastIndexOf('/');
+                        err = makeDirs(target.view().left(slash), vctx);
+                        if (err.isError()) break;
+                        auto [file, oerr] = Vfs::open(target.view(), Vfs::Write | Vfs::Create | Vfs::Truncate, vctx);
+                        if (oerr.isError()) {
+                                err = oerr;
+                                break;
+                        }
+                        err = writeAll(*file, e.data, chunk, 4096);
+                        (void)list.appendf("%u %.*s\n", 1u << e.alignLog2, int(e.path.size()), e.path.data());
+                        ++files;
+                        bytes += e.data.size();
+                }
+                Memory::free(chunk);
+                if (err.isOk()) {
+                        String listPath;
+                        (void)listPath.appendf("%.*s/%s", int(dir.size()), dir.data(), ListName);
+                        auto [file, oerr] = Vfs::open(listPath.view(), Vfs::Write | Vfs::Create | Vfs::Truncate, vctx);
+                        err = oerr;
+                        if (err.isOk()) {
+                                auto [w, werr] = file->write(list.view(), WaitForever);
+                                err = werr.isOk() && w != list.size() ? Error(Error::IoError) : werr;
+                        }
+                }
+                if (err.isError()) return failed(ctx, err, "export", StringView());
+                char kb[32];
+                ctx.printf("rom: %u of the user's files (%s) exported to %s, and %s\n", static_cast<unsigned>(files),
+                           bytesText(kb, o, bytes), o.operands[0], ListName);
+                return Shell::ExitSuccess;
+        }
+
+        // A folder's files for import: each one's path under the folder and its source.
+        struct ImportFile {
+                        String     tree; // its path in the ROM
+                        String     source;
+                        uint64_t   size = 0;
+                        uint8_t    alignLog2 = 6;
+        };
+
+        Error collect(StringView dir, StringView under, const Vfs::Context &vctx, List<ImportFile> &out) {
+                auto [d, err] = Vfs::openDirectory(dir, vctx);
+                if (err.isError()) return err;
+                for (;;) {
+                        auto [info, nerr] = d.next();
+                        if (nerr == Error::EndOfFile) break;
+                        if (nerr.isError()) return nerr;
+                        const StringView name = info.name.view();
+                        if (name == "." || name == "..") continue;
+                        String source, tree;
+                        (void)source.appendf("%.*s/%.*s", int(dir.size()), dir.data(), int(name.size()), name.data());
+                        if (under.isEmpty()) {
+                                (void)tree.append(name);
+                        } else {
+                                (void)tree.appendf("%.*s/%.*s", int(under.size()), under.data(), int(name.size()),
+                                                   name.data());
+                        }
+                        if (info.isDirectory()) {
+                                const Error e = collect(source.view(), tree.view(), vctx, out);
+                                if (e.isError()) return e;
+                                continue;
+                        }
+                        if (under.isEmpty() && name == ListName) continue; // export's list, not a file
+                        ImportFile f;
+                        f.tree = std::move(tree);
+                        f.source = std::move(source);
+                        f.size = info.size;
+                        if (out.append(std::move(f)).isError()) return Error::NoMem;
+                }
+                return Error::Ok;
+        }
+
+        // `rom import DIR`: every file under DIR installed at its path under it, one change; the
+        // alignments from DIR/rom-files.txt if it is there (rom export's), else 64 bytes.
+        int importFiles(CommandContext &ctx, const Options &o) {
+                if (o.operands.size() != 1) return ctx.usage();
+                const StringView   dir(o.operands[0]);
+                const Vfs::Context vctx = ctx.vfs();
+                List<ImportFile>   found;
+                if (Error err = collect(dir, StringView(), vctx, found); err.isError())
+                        return failed(ctx, err, "import", StringView());
+                if (found.size() == 0) {
+                        ctx.eprintf("rom: import: no files in %s\n", o.operands[0]);
+                        return Shell::ExitFailure;
+                }
+                // Alignments from the list.
+                String listPath;
+                (void)listPath.appendf("%.*s/%s", int(dir.size()), dir.data(), ListName);
+                if (auto [file, lerr] = Vfs::open(listPath.view(), Vfs::Read, vctx); lerr.isOk()) {
+                        String text;
+                        char   buf[512];
+                        for (;;) {
+                                auto [n, rerr] = file->read(WritableByteSpan(reinterpret_cast<uint8_t *>(buf), sizeof(buf)),
+                                                            WaitForever);
+                                if (rerr.isError() || n == 0) break;
+                                (void)text.append(StringView(buf, n));
+                        }
+                        StringView rest = text.view();
+                        while (!rest.isEmpty()) {
+                                size_t           nl = rest.indexOf('\n');
+                                const StringView line = rest.left(nl == StringView::NPos ? rest.size() : nl);
+                                rest = nl == StringView::NPos ? StringView() : rest.mid(nl + 1);
+                                const size_t sp = line.indexOf(' ');
+                                if (sp == StringView::NPos) continue;
+                                unsigned long align = std::strtoul(String::fromView(line.left(sp)).value().cStr(), nullptr, 10);
+                                const StringView path = line.mid(sp + 1);
+                                for (ImportFile &f : found) {
+                                        if (f.tree.view() != path) continue;
+                                        uint8_t log2 = 0;
+                                        while (log2 < RomImage::MaxAlignLog2 && (1ul << log2) < align) ++log2;
+                                        f.alignLog2 = log2 < 6 ? 6 : log2;
+                                }
+                        }
+                }
+                List<FileSource>     files;
+                List<RomEditor::Add> adds;
+                if (files.reserve(found.size()).isError() || adds.reserve(found.size()).isError())
+                        return failed(ctx, Error::NoMem, "import", StringView());
+                const Timestamp now = Clock::now();
+                for (ImportFile &f : found) {
+                        auto [file, oerr] = Vfs::open(f.source.view(), Vfs::Read, vctx);
+                        if (oerr.isError()) {
+                                ctx.eprintf("rom: %s: %s\n", f.source.cStr(), CommandContext::errorText(oerr));
+                                return Shell::ExitFailure;
+                        }
+                        (void)files.append(FileSource(std::move(file), f.size));
+                }
+                for (size_t i = 0; i < found.size(); ++i) {
+                        RomEditor::Add a;
+                        a.path = found[i].tree.view();
+                        a.source = &files[i];
+                        a.alignLog2 = found[i].alignLog2;
+                        a.flags = RomImage::User;
+                        a.modified = now;
+                        (void)adds.append(a);
+                }
+                if (!waitForFlash(ctx)) return Shell::ExitFailure;
+                InstallJob  job{&ctx, Span<const RomEditor::Add>(adds.data(), adds.size()), {}, {}, {}};
+                const Error err = RomDisk::edit(
+                        [](RomEditor &editor, void *c) {
+                                auto    &j = *static_cast<InstallJob *>(c);
+                                Progress p{j.ctx};
+                                editor.setProgress(tellProgress, &p);
+                                const Error e = editor.install(j.adds, j.report);
+                                j.shortfall = editor.shortfall();
+                                (void)j.failedPath.assign(editor.failedPath());
+                                return e;
+                        },
+                        &job);
+                if (err == Error::NoSpace) {
+                        tellShortfall(ctx, job.shortfall);
+                        return Shell::ExitFailure;
+                }
+                if (err.isError()) return failed(ctx, err, "import", job.failedPath.view());
+                char what[96], kb[32];
+                std::snprintf(what, sizeof(what), "%u file%s imported (%s)", static_cast<unsigned>(job.report.written),
+                              job.report.written == 1 ? "" : "s", bytesText(kb, o, job.report.bytesWritten));
+                tellDone(ctx, what, job.report);
                 return Shell::ExitSuccess;
         }
 
@@ -1021,6 +1288,8 @@ namespace {
                                 o.manifest = true;
                         } else if (a == "--sectors") {
                                 o.sectors = true;
+                        } else if (a == "--full") {
+                                o.fullCompact = true;
                         } else if (a == "--align") {
                                 if (i + 1 >= args.size()) return ctx.usage();
                                 o.align = args[++i];
@@ -1032,6 +1301,8 @@ namespace {
                                                 o.recursive = true;
                                         } else if (a[k] == 'r') {
                                                 o.removeAll = true;
+                                        } else if (a[k] == 'f') {
+                                                o.force = true;
                                         } else {
                                                 return ctx.usage();
                                         }
@@ -1048,6 +1319,8 @@ namespace {
                 if (o.manifest && f != "diff") return ctx.usage();
                 if (o.sectors && f != "map") return ctx.usage();
                 if (o.removeAll && f != "remove") return ctx.usage();
+                if (o.force && f != "export") return ctx.usage();
+                if (o.fullCompact && f != "compact") return ctx.usage();
                 if (o.align != nullptr && f != "install") return ctx.usage();
                 if (f == "info") return o.operands.isEmpty() ? showInfo(ctx, o) : ctx.usage();
                 if (listing) return list(ctx, o);
@@ -1061,6 +1334,8 @@ namespace {
                 if (f == "remove") return removePaths(ctx, o);
                 if (f == "discard") return discardPending(ctx, o);
                 if (f == "compact") return compactFiles(ctx, o);
+                if (f == "export") return exportFiles(ctx, o);
+                if (f == "import") return importFiles(ctx, o);
                 return ctx.usage();
         }
 
@@ -1069,10 +1344,10 @@ namespace {
 BMDS_SHELL_COMMAND(rom, runRom,
                    "[info | ls [-lR] [--pending] [PATH] | stat PATH... | map [--sectors] | log | "
                    "diff [--manifest | --pending] | manifest | check [PATH...] | install [--align SIZE] SRC... DEST | "
-                   "remove [-r] PATH... | discard | compact] [--raw]",
+                   "remove [-r] PATH... | discard | compact [--full] | export [-f] DIR | import DIR] [--raw]",
                    "Show everything /rom holds (the files that come with the firmware): the partition, its "
                    "trees, each file, where each byte goes, the log of versions, what differs from the "
-                   "firmware or the pending tree; check the files' hashes; or change it (each change takes effect at "
-                   "the next boot)")
+                   "firmware or the pending tree; check the files' hashes; change it (each change takes effect at "
+                   "the next boot); or copy the user's files to a folder and back")
 
 BMDS_NAMESPACE_END

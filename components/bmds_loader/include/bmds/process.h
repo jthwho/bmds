@@ -235,6 +235,8 @@ class Process {
                 int32_t open(const char *path, uint32_t flags);
                 int32_t stat(const char *path, bmds_stat_t *info);
                 int32_t fstat(int32_t fd, bmds_stat_t *info);
+                int32_t fileMap(int32_t fd, int64_t offset, uint32_t length, void **addr);
+                int32_t fileUnmap(void *addr);
                 int32_t mkdir(const char *path);
                 int32_t rmdir(const char *path);
                 int32_t unlink(const char *path);

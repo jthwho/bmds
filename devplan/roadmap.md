@@ -602,6 +602,10 @@ Plan: [`input.md`](input.md).
     (2026-11-18): `RomEditor` (changes into free space, one tree version each, a cut at any point
     safe), `rom install|remove|discard|compact`, updates merged file by file in recovery (the
     system's files written back, the user's kept); recovery without MIDI and the network (§12p).
+    Then (2026-11-18, §12r): entries ready for compressed files, programs' read-only `mmap()` of
+    ROM files in place (slots 137-138), `rom export|import`, a notification of pending changes,
+    the installer's warning, packing compaction (`--full` too). Next: kernel extensions
+    (`extensions.md`, decisions open).
   - [x] `/cfg` on the card, `/boot` renamed `/flash` (`cfg.md`, the user's, 2026-10-14): the
     configuration on the card when there is one (no flash writes, so no audio stalls), else on
     `/flash`; no syncing; `/flash`'s writes held while audio plays. All three steps built and

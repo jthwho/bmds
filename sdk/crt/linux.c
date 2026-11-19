@@ -1170,7 +1170,8 @@ static long do_select(long n, fd_set *rd, fd_set *wr, fd_set *ex, const void *ti
 /*
  * Mappings, in whole pages as Linux gives them (musl's malloc keeps
  * metadata at the end of the last page). A file mapping is a copy (no
- * paging). A shared writable one keeps a descriptor of its own and is
+ * paging), but for a read-only one of a /rom file stored page-aligned,
+ * which is its bytes where they are (bmds_file_map, devplan/rom.md §6). A shared writable one keeps a descriptor of its own and is
  * written back (the parts that changed, up to the file's size then) at
  * msync, munmap, exec and exit: other programs see the changes from then
  * on, and a program killed by SIGKILL loses them. munmap frees a whole
@@ -1182,6 +1183,9 @@ typedef struct {
                 int64_t offset; /* in the file */
                 int32_t fd;     /* shared and writable: the mapping's own descriptor; else -1 */
 } mapping_t;
+
+/* mapping_t.fd of a mapping where the file is (bmds_file_map): not a copy, nothing to free. */
+#define MAPPED_IN_PLACE (-2)
 
 static mapping_t   *maps;
 static size_t       map_count, map_room;
@@ -1232,6 +1236,28 @@ static long map_room_for_one(void) {
 static long do_mmap(size_t len, long prot, long flags, long fd, long pgoff) {
         if (len == 0 || (flags & MAP_FIXED)) return -EINVAL;
         len = (len + 4095) & ~(size_t)4095;
+        /* Read-only, of a file the kernel can map where it is: no copy. Otherwise (any error) a
+         * copy, as before. */
+        if (!(flags & MAP_ANONYMOUS) && !(prot & PROT_WRITE)) {
+                void *at = NULL;
+                if (bmds_file_map((int32_t)fd, (int64_t)pgoff * 4096, (uint32_t)len, &at) == 0) {
+                        __lock(maps_lock);
+                        const long room = map_room_for_one();
+                        if (room == 0) {
+                                maps[map_count].addr = at;
+                                maps[map_count].len = len;
+                                maps[map_count].offset = (int64_t)pgoff * 4096;
+                                maps[map_count].fd = MAPPED_IN_PLACE;
+                                ++map_count;
+                        }
+                        __unlock(maps_lock);
+                        if (room < 0) {
+                                (void)bmds_file_unmap(at);
+                                return room;
+                        }
+                        return (long)at;
+                }
+        }
         void *p = bmds_mem_alloc((uint32_t)len, 4096, 0);
         if (p == NULL) return -ENOMEM;
         memset(p, 0, len);
@@ -1284,10 +1310,29 @@ static long do_munmap(void *addr, size_t len) {
         /* In whole pages, as Linux counts it: musl unmaps a zone file by its size. */
         len = (len + 4095) & ~(size_t)4095;
         if (!take_mapping(addr, len, &m)) return 0;
+        if (m.fd == MAPPED_IN_PLACE) {
+                (void)bmds_file_unmap(addr);
+                return 0;
+        }
         map_write_back(&m);
         if (m.fd >= 0) (void)bmds_close(m.fd);
         bmds_mem_free(addr);
         return 0;
+}
+
+/* Writable is refused for a mapping where the file is (Linux's EACCES for a read-only file); the
+ * rest is allowed as before (no protection changes without paging). */
+static long do_mprotect(void *addr, size_t len, long prot) {
+        if (!(prot & PROT_WRITE)) return 0;
+        const uint8_t *a = addr;
+        long           r = 0;
+        __lock(maps_lock);
+        for (size_t i = 0; i < map_count; ++i) {
+                const uint8_t *m = maps[i].addr;
+                if (maps[i].fd == MAPPED_IN_PLACE && a < m + maps[i].len && a + len > m) r = -EACCES;
+        }
+        __unlock(maps_lock);
+        return r;
 }
 
 static long do_msync(void *addr, size_t len) {
@@ -2254,7 +2299,7 @@ static long do_syscall(long n, long a, long b, long c, long d, long e, long f) {
                 case SYS_msync: return do_msync((void *)a, (size_t)b);
                 case SYS_brk: return 0; /* no brk: musl's malloc then maps */
                 case SYS_mremap: return -ENOMEM; /* musl falls back to copying */
-                case SYS_mprotect:
+                case SYS_mprotect: return do_mprotect((void *)a, (size_t)b, c);
                 case SYS_madvise:
                 case SYS_membarrier: return 0;
 

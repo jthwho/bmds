@@ -134,8 +134,15 @@ Error RomSpace::build(const RomImage &booted, const RomImage *pending) {
         for (size_t i = 0; i < _regionCount; ++i) {
                 const Region &r = _regions[i];
                 if (r.kind != Kind::File || r.bytes == 0) continue;
+                // A page-aligned file's whole pages are its (shared with nothing), a sector-aligned
+                // one's last sector (devplan/rom.md §12d, §6).
+                const RomImage::Entry e = r.image->entry(r.index);
+                const uint64_t unit = e.alignLog2 >= 16 ? RomImage::PageBytes
+                                      : e.alignLog2 >= 12 ? RomImage::SectorBytes
+                                                          : 1;
+                const uint64_t end = (uint64_t(r.offset) + r.bytes + unit - 1) / unit * unit;
                 const uint32_t first = r.offset / RomImage::SectorBytes;
-                const uint32_t last = static_cast<uint32_t>((uint64_t(r.offset) + r.bytes - 1) / RomImage::SectorBytes);
+                const uint32_t last = static_cast<uint32_t>((end - 1) / RomImage::SectorBytes);
                 for (uint32_t s = first; s <= last && s < _sectorCount; ++s) {
                         _sectors[s].flags |= UsedNow;
                         if ((r.trees & after) != 0) _sectors[s].flags |= UsedAfter;

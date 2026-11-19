@@ -236,6 +236,16 @@ TEST_CASE("rom: mkrom's partition read: paths in order, directories implied, con
         CHECK(png.offset % 4096 == 0);
         CHECK((png.data.data() - rom.data) % 4096 == 0);
         CHECK(text(png.data) == readHostFile(std::string(BMDS_ROOT_DIR) + "/tests/host/png/grey.png"));
+        // A page-aligned file owns its last page: 0 after its end, nothing else in it (rom.md §6).
+        {
+                const size_t end = png.offset + png.data.size();
+                for (size_t i = end; i < (end + 4095) / 4096 * 4096; ++i) CHECK(rom.data[i] == 0);
+                for (uint32_t i = 0; i < image.count(); ++i) {
+                        const RomImage::Entry o = image.entry(i);
+                        if (o.path == png.path || o.data.isEmpty()) continue;
+                        CHECK((o.offset >= (end + 4095) / 4096 * 4096 || o.offset + o.data.size() <= png.offset));
+                }
+        }
         const RomImage::Entry page = image.entry(entryOf(image, "/a.txt"));
         CHECK(page.alignLog2 == 16);
         CHECK(page.offset % RomImage::PageBytes == 0);
@@ -313,7 +323,9 @@ TEST_CASE("rom: damaged partitions are refused, never read past") {
         CHECK(refused([&](std::vector<uint8_t> &v) { put32(v.data() + entries + 8, 0); }));           // in the log
         CHECK(refused([&](std::vector<uint8_t> &v) { v[entries + 6] = 30; }));                        // an alignment
         CHECK(refused([&](std::vector<uint8_t> &v) { v[entries + 7] = 0x80; }));                      // a flag
-        CHECK(refused([&](std::vector<uint8_t> &v) { v[entries + 60] = 1; }));
+        CHECK(refused([&](std::vector<uint8_t> &v) { v[entries + 61] = 1; }));               // compression's reserved
+        CHECK(refused([&](std::vector<uint8_t> &v) { v[entries + 64] = 1; }));               // reserved
+        CHECK(refused([&](std::vector<uint8_t> &v) { put32(v.data() + entries + 56, 5); })); // a size, not compressed
         // A time no Timestamp holds (found by rom_fuzz: its nanoseconds overflowed).
         CHECK(refused([&](std::vector<uint8_t> &v) { put32(v.data() + entries + 20, 0x40000000); }));
         CHECK(refused([&](std::vector<uint8_t> &v) { put32(v.data() + FirstVersion + 36, 0x80000000); })); // reserved
@@ -811,6 +823,88 @@ TEST_CASE("rom: random damage to a whole tree version: refused or read, never pa
                 (void)damaged.find("/docs/deep/nested/leaf.txt", noPath);
         }
         CHECK(opened > 0); // some damage (a time, a hash, a size in bounds) still makes a good tree
+}
+
+TEST_CASE("rom: a version's entries are the size it says: older, shorter ones read, their missing fields 0") {
+        const Loaded         rom(BMDS_TEST_ROM);
+        std::vector<uint8_t> bytes(rom.data, rom.data + rom.size);
+        auto [image, err] = RomImage::open(ByteSpan(bytes.data(), bytes.size()));
+        REQUIRE(err.isOk());
+        // The same tree written with 64-byte entries (format 2's first), as sequence 2.
+        const uint32_t       count = image.count();
+        const uint32_t       pathsAt = get32(bytes.data() + FirstVersion + 20);
+        const uint32_t       pathsBytes = get32(bytes.data() + FirstVersion + 24);
+        std::vector<uint8_t> v(RomImage::VersionHeaderBytes);
+        std::memcpy(v.data(), bytes.data() + FirstVersion, RomImage::VersionHeaderBytes);
+        for (uint32_t i = 0; i < count; ++i) {
+                const uint8_t *e =
+                        bytes.data() + FirstVersion + RomImage::VersionHeaderBytes + i * RomImage::EntryBytes;
+                v.insert(v.end(), e, e + 64);
+        }
+        const uint32_t newPathsAt = uint32_t(v.size());
+        v.insert(v.end(), bytes.begin() + FirstVersion + pathsAt, bytes.begin() + FirstVersion + pathsAt + pathsBytes);
+        v.resize(v.size() + 4);
+        v[6] = 64;
+        v[7] = 0;
+        put32(v.data() + 8, uint32_t(v.size()));
+        put32(v.data() + 12, 2);
+        put32(v.data() + 20, newPathsAt);
+        const uint32_t second = FirstVersion + (image.version().bytes + 4095) / 4096 * 4096;
+        std::memcpy(bytes.data() + second, v.data(), v.size());
+        fixVersionCrc(bytes, second);
+        auto [old, oerr] = RomImage::open(ByteSpan(bytes.data(), bytes.size()));
+        REQUIRE(oerr.isOk());
+        CHECK(old.version().sequence == 2);
+        REQUIRE(old.count() == count);
+        CHECK(bmds::RomManifest::compareTrees(image, old, nullptr, nullptr) == 0);
+        CHECK(old.verify().isOk());
+        for (uint32_t i = 0; i < count; ++i) {
+                CHECK(old.entry(i).compression == RomImage::None);
+                CHECK(old.entry(i).realSize == 0);
+        }
+        // An entry size that isn't a format 2 one: refused (the first version stands).
+        v[6] = 60;
+        std::memcpy(bytes.data() + second, v.data(), v.size());
+        fixVersionCrc(bytes, second);
+        CHECK(RomImage::open(ByteSpan(bytes.data(), bytes.size())).value().version().sequence == 1);
+}
+
+TEST_CASE("rom: a compressed file (a method this firmware doesn't know) leaves the tree good, the file unread") {
+        REQUIRE(Vfs::init().isOk());
+        const Loaded         rom(BMDS_TEST_ROM);
+        std::vector<uint8_t> bytes(rom.data, rom.data + rom.size);
+        // hello.txt said to be compressed by method 7, 1000 bytes when read.
+        auto [image, err] = RomImage::open(ByteSpan(bytes.data(), bytes.size()));
+        REQUIRE(err.isOk());
+        const uint32_t at =
+                FirstVersion + RomImage::VersionHeaderBytes + entryOf(image, "/hello.txt") * RomImage::EntryBytes;
+        put32(bytes.data() + at + 56, 1000);
+        bytes[at + 60] = 7;
+        fixVersionCrc(bytes, FirstVersion);
+        auto [tree, terr] = RomImage::open(ByteSpan(bytes.data(), bytes.size()));
+        REQUIRE(terr.isOk());
+        const RomImage::Entry e = tree.entry(entryOf(tree, "/hello.txt"));
+        CHECK(e.compression == 7);
+        CHECK(e.size() == 1000);
+        CHECK(e.data.size() == 11);                                 // its stored bytes
+        CHECK(tree.verifyFile(entryOf(tree, "/hello.txt")).isOk()); // the hash is of what is stored
+
+        // Mounted: its size as read, but neither read nor mapped; the others as ever. (A copy
+        // aligned as a mapped partition is.)
+        const Loaded aligned(BMDS_TEST_ROM);
+        std::memcpy(aligned.data, bytes.data(), bytes.size());
+        bmds::MemoryBlockDevice device(aligned.span());
+        char                    name[bmds::BlockDevices::MaxName + 1];
+        REQUIRE(bmds::BlockDevices::addNumbered(device, "rom", name).isOk());
+        REQUIRE(Vfs::mount("/rom", device).isOk());
+        auto [info, serr] = Vfs::stat("/rom/hello.txt", Root);
+        REQUIRE(serr.isOk());
+        CHECK(info.size == 1000);
+        CHECK(Vfs::open("/rom/hello.txt", Vfs::Read, Root).error() == Error::NotSupported);
+        CHECK(Vfs::map("/rom/hello.txt", Root).error() == Error::NotSupported);
+        CHECK(readVfs("/rom/a.txt") == readHostFile(std::string(BMDS_ROOT_DIR) + "/tests/host/rom/a.txt"));
+        Vfs::eject(device);
+        bmds::BlockDevices::remove(device);
 }
 
 TEST_CASE("rom: mounted: read-only files, directories, a link, Vfs::map()") {

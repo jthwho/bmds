@@ -1326,6 +1326,45 @@ int32_t Process::fstat(int32_t fd, bmds_stat_t *info) {
         return copyOut(st, info);
 }
 
+// devplan/rom.md §6: a /rom file's bytes where they are, read-only. Only whole pages it owns: the
+// file starts on one, and what follows its end in its last page is 0 (as a mapping's tail is on
+// Linux; rom install --align 4k and mkrom.py make files so). Anything else: ENOTSUP, and the C
+// library copies the file instead.
+int32_t Process::fileMap(int32_t fd, int64_t offset, uint32_t length, void **addr) {
+        constexpr uint64_t Page = 4096;
+        const FileHandle::Ptr h = handleOf(fd);
+        if (!h) return -BMDS_EBADF;
+        if (!h->canRead()) return -BMDS_EACCES;
+        if (length == 0 || offset < 0) return -BMDS_EINVAL;
+        const ByteSpan bytes = h->stream().mapped();
+        const uint64_t size = bytes.size();
+        const uint64_t pages = (uint64_t(length) + Page - 1) / Page * Page;
+        if (bytes.isEmpty() || reinterpret_cast<uintptr_t>(bytes.data()) % Page != 0 || uint64_t(offset) % Page != 0 ||
+            uint64_t(offset) >= size || uint64_t(offset) + pages > (size + Page - 1) / Page * Page)
+                return -BMDS_ENOTSUP;
+        if (uint64_t(offset) + pages > size) {
+                const uint8_t *tail = bytes.data() + size;
+                for (uint64_t i = 0; i < uint64_t(offset) + pages - size; ++i)
+                        if (tail[i] != 0) return -BMDS_ENOTSUP;
+        }
+        const uint8_t *at = bytes.data() + offset;
+        if (_memory != nullptr) {
+                const Error err = _memory->mapReadOnly(at, size_t(pages), _memoryOwner);
+                if (err.isError()) return -BMDS_ENOTSUP;
+        }
+        if (!canWrite(addr, sizeof(*addr))) {
+                if (_memory != nullptr) (void)_memory->unmapReadOnly(at, _memoryOwner);
+                return -BMDS_EFAULT;
+        }
+        *addr = const_cast<uint8_t *>(at);
+        return 0;
+}
+
+int32_t Process::fileUnmap(void *addr) {
+        if (_memory == nullptr) return 0; // an M-mode program reads flash as it is
+        return _memory->unmapReadOnly(addr, _memoryOwner) ? 0 : -BMDS_EINVAL;
+}
+
 int32_t Process::mkdir(const char *path) {
         StringView p;
         if (int32_t r = this->path(path, p); r < 0) return r;

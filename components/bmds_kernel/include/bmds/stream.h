@@ -208,6 +208,13 @@ class Stream {
                 /** @brief Returns this as a PTP clock (`/dev/ptp0`), or null. */
                 virtual PtpClock *ptpClock() { return nullptr; }
 
+                /**
+                 * @brief Returns the stream's whole contents where they lie, if it has them at an
+                 *        address that stays (a `/rom` file's, in flash: `devplan/rom.md` §6), else
+                 *        empty (the default). What a program may map without a copy.
+                 */
+                virtual ByteSpan mapped() const { return ByteSpan(); }
+
                 /** @brief Writes @p text (see `write(ByteSpan, unsigned int)`). */
                 Result<size_t> write(StringView text, unsigned int timeoutMs) {
                         return write(ByteSpan(reinterpret_cast<const uint8_t *>(text.data()), text.size()), timeoutMs);

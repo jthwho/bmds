@@ -25,20 +25,23 @@
 #                     files' space starts (64 KB-aligned here), u32 flags (0), 36 bytes 0,
 #                     u32 CRC-32 of the header's first 60 bytes
 #   the log: tree versions, each starting on a 4 KB sector; the rest erased (0xff). A version:
-#     header, 80 bytes: "BMRT", u16 header size (80), u16 entry size (64), u32 the version's
+#     header, 80 bytes: "BMRT", u16 header size (80), u16 entry size (72), u32 the version's
 #                     size (all of it, its CRC included), u32 sequence (newer is larger),
 #                     u32 entry count, u32 the paths' offset (from the version's start),
 #                     u32 the paths' size, u32 flags (0), i64 when written (Unix seconds),
 #                     32 bytes the firmware build it needs (0: any), 8 bytes 0
-#     entries, 64 bytes, one a file, sorted by path (bytes): u32 path offset, u16 path length,
+#     entries, 72 bytes, one a file, sorted by path (bytes): u32 path offset, u16 path length,
 #                     u8 alignment (log2), u8 flags (1 System, 2 the user's), u32 offset in
-#                     the partition, u32 size, i64 time (Unix seconds), 32 bytes BLAKE2s-256
-#                     of its bytes, 8 bytes 0
+#                     the partition, u32 size (of the bytes stored), i64 time (Unix seconds),
+#                     32 bytes BLAKE2s-256 of the bytes stored, u32 its size as read if
+#                     compressed (else 0), u8 compression (0: none; a method not known
+#                     leaves that file unreadable, not the tree), 3 bytes 0, 8 bytes 0
 #     the paths (whole, from the root, no leading '/'; directories are implied), then
 #     u32 CRC-32 of the version before it.
 #   the files' bytes, each at its alignment (64 bytes unless --align says more); files
-#   aligned to 64 KB first, each taking whole 64 KB pages, then the rest. Unused bytes are
-#   0xff (erased flash).
+#   aligned to 64 KB first, each taking whole 64 KB pages, then the rest. A file aligned to
+#   4 KB or more owns its last 4 KB page, 0 after its end (a program may map it: rom.md §6).
+#   Other unused bytes are 0xff (erased flash).
 #   The manifest (--manifest-header): the system files as a C++ header (RomManifestFiles, of
 #   bmds::RomManifestEntry: path, size, flags, BLAKE2s-256), sorted by path, which the firmware
 #   compares with what the ROM holds (devplan/rom.md §12f).
@@ -67,7 +70,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 ROM_HEADER = 64
 VERSION_HEADER = 80
-ROM_ENTRY = 64
+ROM_ENTRY = 72
 SECTOR = 4096
 PAGE = 65536
 DATA_ALIGN = 64
@@ -184,6 +187,9 @@ def build_image(out, files, dirs, links, aligns, manifest_header, max_bytes, log
         offset = align(offset, alignment)
         place_at[path] = offset
         offset += len(data)
+        if alignment >= SECTOR:
+            # Its own last page, 0 after its end: what a program's mmap() may map (rom.md §6).
+            offset = align(offset, SECTOR)
         if alignment >= PAGE:
             offset = align(offset, PAGE)
     size = max(offset, data_offset)
@@ -200,8 +206,9 @@ def build_image(out, files, dirs, links, aligns, manifest_header, max_bytes, log
         data, flags, alignment = entries[path]
         encoded = path.encode()
         digest = hashlib.blake2s(data).digest()
-        table += struct.pack("<IHBBIIq32s8x", len(path_bytes), len(encoded), alignment.bit_length() - 1, flags,
-                             place_at[path], len(data), newest, digest)
+        # Stored as they are (compression 0, no other size): compressed files come later.
+        table += struct.pack("<IHBBIIq32sIB3x8x", len(path_bytes), len(encoded), alignment.bit_length() - 1, flags,
+                             place_at[path], len(data), newest, digest, 0, 0)
         path_bytes += encoded
         manifest.append((path, len(data), flags, digest))
     paths_at = VERSION_HEADER + len(table)
@@ -218,8 +225,11 @@ def build_image(out, files, dirs, links, aligns, manifest_header, max_bytes, log
     image[0:ROM_HEADER] = header + struct.pack("<I", zlib.crc32(header) & 0xFFFFFFFF)
     image[log_at:log_at + len(record)] = record
     for path in paths:
-        data = entries[path][0]
+        data, _, alignment = entries[path]
         image[place_at[path]:place_at[path] + len(data)] = data
+        if alignment >= SECTOR:
+            end = place_at[path] + len(data)
+            image[end:align(end, SECTOR)] = bytes(align(end, SECTOR) - end)
     write_if_changed(out, bytes(image))
     if manifest_header:
         write_if_changed(manifest_header, manifest_text(manifest))

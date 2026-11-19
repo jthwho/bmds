@@ -94,6 +94,16 @@ int32_t bmds_k_fstat(int32_t fd, bmds_stat_t *info) {
         return call->fstat(fd, info);
 }
 
+int32_t bmds_k_file_map(int32_t fd, int64_t offset, uint32_t length, void **addr) {
+        KernelCall call;
+        return call->fileMap(fd, offset, length, addr);
+}
+
+int32_t bmds_k_file_unmap(void *addr) {
+        KernelCall call;
+        return call->fileUnmap(addr);
+}
+
 int32_t bmds_k_mkdir(const char *path) {
         KernelCall call;
         return call->mkdir(path);
