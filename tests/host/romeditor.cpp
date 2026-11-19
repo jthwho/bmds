@@ -349,7 +349,8 @@ TEST_CASE("rom editor: a power cut at any operation leaves the old tree or the n
                 Discard,
                 Compact,
                 Apply,
-                CompactFull
+                CompactFull,
+                Repack
         };
         // An update's tree for Apply: B.txt changed, a.txt gone.
         SimFlash pkg = freshFlash();
@@ -362,8 +363,8 @@ TEST_CASE("rom editor: a power cut at any operation leaves the old tree or the n
                 REQUIRE(e.remove(bmds::Span<const StringView>(gone, 1), false, r).isOk());
         }
         const RomImage package = openTree(pkg);
-        for (Change change :
-             {Change::Install, Change::Remove, Change::Discard, Change::Compact, Change::Apply, Change::CompactFull}) {
+        for (Change change : {Change::Install, Change::Remove, Change::Discard, Change::Compact, Change::Apply,
+                              Change::CompactFull, Change::Repack}) {
                 CAPTURE(int(change));
                 // A starting point with something pending (and, for compaction, holes).
                 SimFlash base = freshFlash();
@@ -382,7 +383,7 @@ TEST_CASE("rom editor: a power cut at any operation leaves the old tree or the n
                 const RomImage committed = openTree(base);
                 const uint32_t oldSequence = committed.version().sequence;
                 auto           run = [&](SimFlash &f) -> Error {
-                        RomEditor e(f, change == Change::Apply ? nullptr : &booted, {});
+                        RomEditor e(f, change == Change::Apply || change == Change::Repack ? nullptr : &booted, {});
                         REQUIRE(e.load().isOk());
                         RomEditor::Report    r;
                         bool                 more = false;
@@ -397,13 +398,16 @@ TEST_CASE("rom editor: a power cut at any operation leaves the old tree or the n
                                 case Change::Compact: return e.compact(r, more);
                                 case Change::Apply: return e.apply(package, {}, nullptr, nullptr, r);
                                 case Change::CompactFull: return e.compact(r, more, true);
+                                case Change::Repack: return e.repack(r);
                         }
                         return Error::Invalid;
                 };
                 SimFlash counted = base;
                 REQUIRE(run(counted).isOk());
                 const RomImage done = openTree(counted);
-                REQUIRE(done.version().sequence == oldSequence + 1);
+                // One version a change; a repack writes one a round, each a whole tree.
+                const bool rounds = change == Change::Repack;
+                REQUIRE((rounds ? done.version().sequence > oldSequence : done.version().sequence == oldSequence + 1));
                 const long total = counted.ops - base.ops; // this change's alone
                 REQUIRE(total > 0);
                 for (long k = 1; k <= total; ++k) {
@@ -413,10 +417,25 @@ TEST_CASE("rom editor: a power cut at any operation leaves the old tree or the n
                         CHECK(run(f).isError());
                         const RomImage after = openTree(f);
                         const uint32_t seq = after.version().sequence;
-                        CHECK((seq == oldSequence || seq == oldSequence + 1));
+                        CHECK((seq == oldSequence || seq == oldSequence + 1 ||
+                               (rounds && seq <= done.version().sequence)));
                         CHECK(after.verify().isOk());
                         // (In recovery nothing is booted: what only it used may be written.)
-                        if (change != Change::Apply) CHECK(bootedBytes(f, booted) == bootedBytes(base, booted));
+                        if (change != Change::Apply && !rounds)
+                                CHECK(bootedBytes(f, booted) == bootedBytes(base, booted));
+                        if (rounds) {
+                                // Any round: the same files, only moved.
+                                size_t others = 0;
+                                bmds::RomManifest::compareTrees(
+                                        committed, after,
+                                        [](void *c, const bmds::RomManifest::Changed &ch) {
+                                                if (ch.what != bmds::RomManifest::Change::Moved)
+                                                        ++*static_cast<size_t *>(c);
+                                        },
+                                        &others);
+                                CHECK(others == 0);
+                                continue;
+                        }
                         const RomImage &expect = seq == oldSequence ? committed : done;
                         CHECK(bmds::RomManifest::compareTrees(expect, after, nullptr, nullptr) == 0);
                 }
@@ -541,6 +560,65 @@ TEST_CASE("rom editor: a page-aligned file's whole last page is its own; compact
         }
         CHECK(hi - lo < 2 * RomImage::SectorBytes); // packed: two sectors, not twenty
         CHECK(after.verify().isOk());
+        CHECK(f.badWrites == 0);
+}
+
+TEST_CASE("rom editor: repack, in recovery, leaves the files tight: no holes, padding only alignment's") {
+        // Fragmented as single installs and removals leave it: each small file its own sectors.
+        SimFlash f = freshFlash();
+        {
+                const RomImage booted = openTree(f);
+                RomEditor      e(f, &booted, {});
+                REQUIRE(e.load().isOk());
+                for (int i = 0; i < 24; ++i)
+                        REQUIRE(installOne(e, ("r/" + std::to_string(i)).c_str(), pattern(200 + 900 * (i % 5), i))
+                                        .isOk());
+                const StringView  gone[] = {"r/3", "r/7", "r/11", "r/12", "r/20"};
+                RomEditor::Report r;
+                REQUIRE(e.remove(bmds::Span<const StringView>(gone, 5), false, r).isOk());
+        }
+        const RomImage before = openTree(f);
+        bmds::RomSpace was;
+        REQUIRE(was.build(before, nullptr).isOk());
+        CHECK(was.summary().paddingBytes + was.summary().holeBytes > 40000);
+        // The main firmware may not: the booted tree can't move.
+        {
+                RomEditor e(f, &before, {});
+                REQUIRE(e.load().isOk());
+                RomEditor::Report r;
+                CHECK(e.repack(r) == Error::InvalidState);
+        }
+        RomEditor recovery(f, nullptr, {});
+        REQUIRE(recovery.load().isOk());
+        RomEditor::Report r;
+        REQUIRE(recovery.repack(r).isOk());
+        CHECK(r.moved > 0);
+        const RomImage after = openTree(f);
+        CHECK(after.verify().isOk());
+        // Only moves: every path still there with its bytes.
+        size_t others = 0;
+        bmds::RomManifest::compareTrees(
+                before, after,
+                [](void *c, const bmds::RomManifest::Changed &ch) {
+                        if (ch.what != bmds::RomManifest::Change::Moved) ++*static_cast<size_t *>(c);
+                },
+                &others);
+        CHECK(others == 0);
+        bmds::RomSpace now;
+        REQUIRE(now.build(after, nullptr).isOk());
+        CHECK(now.summary().holeBytes == 0);
+        // Padding: no more than each file's alignment, the page file's page, and a sector or two.
+        uint64_t slack = 2 * RomImage::SectorBytes;
+        for (uint32_t i = 0; i < after.count(); ++i) {
+                const RomImage::Entry e = after.entry(i);
+                slack += e.alignLog2 >= 16 ? RomImage::PageBytes : (uint64_t(1) << e.alignLog2);
+        }
+        CHECK(now.summary().paddingBytes <= slack);
+        CHECK(now.summary().paddingBytes < was.summary().paddingBytes);
+        // Packed already: nothing more to move.
+        RomEditor::Report again;
+        REQUIRE(recovery.repack(again).isOk());
+        CHECK(again.moved == 0);
         CHECK(f.badWrites == 0);
 }
 

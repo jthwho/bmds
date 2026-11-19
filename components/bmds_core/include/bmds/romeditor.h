@@ -198,6 +198,19 @@ class RomEditor {
                 Error compact(Report &report, bool &more, bool full = false);
 
                 /**
+                 * @brief Repacks the files tight from the files' space's start (recovery only: no
+                 *        booted tree), each at its alignment, those on 64 KB pages left where they
+                 *        are: no holes, no padding but alignment's. Copy first as every change
+                 *        is, committed in rounds (a file's old place is free in recovery once a
+                 *        version leaves it); a file that would overlap its own old place goes to
+                 *        free space first. Moves most of the ROM: for when compaction leaves
+                 *        too much padding (`rom repack`, §12s).
+                 * @return `Ok` (`report.moved`: files moved, some twice), `InvalidState` (a
+                 *         booted tree: not in the main firmware), `NoSpace`, or the flash's error.
+                 */
+                Error repack(Report &report);
+
+                /**
                  * @brief Merges an update's tree @p package (§12g): its system files written
                  *        where they differ, the system's files it lacks removed, the user's
                  *        kept unless the package's take their place; one version, for
@@ -231,6 +244,7 @@ class RomEditor {
 
                 Error           buildUsage();
                 static uint64_t taken(const RomImage::Entry &e);
+                bool            erasedAndUnused(uint64_t from, uint64_t to) const;
                 bool  isFree(uint32_t sector) const { return sector < _usedCount && _used[sector] == 0; }
                 void  mark(uint64_t offset, uint64_t bytes);
                 Error allocate(List<Planned> &planned, bool dryRun);

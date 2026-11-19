@@ -30,6 +30,8 @@
 #include <bmds/rommanifest.h>
 #include <bmds/romspace.h>
 #include <bmds/shell.h>
+#include <bmds/system.h>
+#include <bmds/thread.h>
 #include <bmds/list.h>
 #include <bmds/memory.h>
 #include <bmds/string.h>
@@ -1263,6 +1265,48 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // --- repack: in recovery (§12s) ----------------------------------------------------------
+
+        // `rom repack`: every file packed tight, by recovery (the booted tree can't move): the
+        // request left on /flash, then a restart into recovery, which comes back when it's done.
+        int repackFiles(CommandContext &ctx, const Options &o) {
+                if (!o.operands.isEmpty()) return ctx.usage();
+                Trees trees;
+                int   status = 0;
+                if (!load(ctx, trees, status)) return status;
+                RomSpace space;
+                if (space.build(trees.hasPending ? trees.pendingImage : *trees.booted, nullptr).isOk()) {
+                        char    a[32], b[32];
+                        Options human;
+                        ctx.printf("rom: %s of padding and %s of holes to gather; most of the ROM's %s moves\n",
+                                   bytesText(a, human, space.summary().paddingBytes),
+                                   bytesText(b, human, space.summary().holeBytes),
+                                   bytesText(a, human, space.summary().filesBytes));
+                }
+                Vfs::Context context;
+                const Error  made = Vfs::mkdir("/flash/update", context);
+                Error        err = made.isError() && made != Error::Exists ? made : Error(Error::Ok);
+                if (err.isOk()) {
+                        auto [file, oerr] =
+                                Vfs::open(RomDisk::RepackPath, Vfs::Write | Vfs::Create | Vfs::Truncate, context);
+                        err = oerr;
+                        if (err.isOk()) {
+                                auto [n, werr] = file->write(StringView("repack\n"), WaitForever);
+                                err = werr;
+                                (void)n;
+                        }
+                }
+                if (err.isOk()) err = Vfs::sync();
+                if (err.isOk()) err = System::setNextFirmware(System::Firmware::Recovery);
+                if (err.isError()) {
+                        (void)Vfs::remove(RomDisk::RepackPath, context);
+                        return failed(ctx, err, "repack", StringView());
+                }
+                ctx.printf("rom: restarting into recovery to repack the ROM; it restarts the system when done\n");
+                Thread::sleep(500); // the line out first
+                System::restart();
+        }
+
         // --- the command ----------------------------------------------------------------------
 
         int runRom(CommandContext &ctx) {
@@ -1336,6 +1380,7 @@ namespace {
                 if (f == "compact") return compactFiles(ctx, o);
                 if (f == "export") return exportFiles(ctx, o);
                 if (f == "import") return importFiles(ctx, o);
+                if (f == "repack") return repackFiles(ctx, o);
                 return ctx.usage();
         }
 
@@ -1344,7 +1389,7 @@ namespace {
 BMDS_SHELL_COMMAND(rom, runRom,
                    "[info | ls [-lR] [--pending] [PATH] | stat PATH... | map [--sectors] | log | "
                    "diff [--manifest | --pending] | manifest | check [PATH...] | install [--align SIZE] SRC... DEST | "
-                   "remove [-r] PATH... | discard | compact [--full] | export [-f] DIR | import DIR] [--raw]",
+                   "remove [-r] PATH... | discard | compact [--full] | repack | export [-f] DIR | import DIR] [--raw]",
                    "Show everything /rom holds (the files that come with the firmware): the partition, its "
                    "trees, each file, where each byte goes, the log of versions, what differs from the "
                    "firmware or the pending tree; check the files' hashes; change it (each change takes effect at "

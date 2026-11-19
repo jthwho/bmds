@@ -33,6 +33,7 @@
 #include <bmds/memory.h>
 #include <bmds/notificationlog.h>
 #include <bmds/notifications.h>
+#include <bmds/romdisk.h>
 #include <bmds/romeditor.h>
 #include <bmds/romimage.h>
 #include <bmds/rommanifest.h>
@@ -1009,6 +1010,69 @@ namespace {
         // Recovery's boot: the intent applied once the card is there, then the main firmware.
         constinit Thread intentThread;
 
+        // `rom repack`'s request (rom.md §12s): the ROM packed tight, here where nothing is mapped.
+        bool repackRequested() {
+                Vfs::Context context;
+                return Vfs::stat(RomDisk::RepackPath, context).isOk();
+        }
+
+        void repackProgress(void *, uint64_t done, uint64_t total) {
+                static uint64_t last = 0;
+                if (total < 256 * 1024 || done == last) return;
+                if (done * 4 / total != last * 4 / total)
+                        bmdsInfo("ROM: repacking: %u KB of a round's %u KB", unsigned(done / 1024),
+                                 unsigned(total / 1024));
+                last = done;
+                return;
+        }
+
+        // Runs the repack on an internal stack (flash writes), then removes the request: done or
+        // not, it isn't tried again by itself (a reset in the middle tries again: the request stays).
+        void repackRom() {
+                struct RepackJob {
+                                RomEditor::Report report;
+                                Error             err;
+                } job;
+                const Error ran = Thread::runOnInternalStack(
+                        "repack", JobStackBytes,
+                        [](void *arg) {
+                                auto        &j = *static_cast<RepackJob *>(arg);
+                                PartitionRom rom(partitionFor(uint32_t(SectionType::Rom)));
+                                RomEditor    editor(rom, nullptr, {});
+                                editor.setTime(Clock::now());
+                                editor.setProgress(repackProgress, nullptr);
+                                j.err = rom.isMapped() ? editor.load() : Error(Error::NoMedia);
+                                if (j.err.isOk()) j.err = editor.repack(j.report);
+                                return;
+                        },
+                        &job);
+                const Error err = ran.isError() ? ran : job.err;
+                if (err.isError()) {
+                        bmdsErr("ROM: repacking failed: %s (the ROM is whole: the tree before, or a round of it)",
+                                err.desc());
+                } else {
+                        bmdsInfo("ROM: repacked: %u files moved (%u KB), tree version %u",
+                                 static_cast<unsigned>(job.report.moved),
+                                 static_cast<unsigned>(job.report.bytesWritten / 1024),
+                                 static_cast<unsigned>(job.report.sequence));
+                }
+                Vfs::Context context;
+                (void)Vfs::remove(RomDisk::RepackPath, context);
+                (void)Vfs::sync();
+                return;
+        }
+
+        // Recovery started for a repack alone: do it, then the main firmware.
+        void repackMain(void *) {
+                repackRom();
+                if (System::setNextFirmware(System::Firmware::Main).isOk()) {
+                        bmdsInfo("ROM: restarting");
+                        Thread::sleep(RestartPauseMs);
+                        System::restart();
+                }
+                return;
+        }
+
         void intentMain(void *) {
                 auto [text, err] = readFile(Update::IntentPath);
                 const StringView t = text.view();
@@ -1058,6 +1122,8 @@ namespace {
                 const Error done = run(*job);
                 deleteJob(job);
                 Memory::free(r);
+                // A repack asked for too: after the update, before the restart.
+                if ((done.isOk() || done == Error::CorruptData) && repackRequested()) repackRom();
                 // Back to the main firmware when that was set (Ok, or CorruptData: failed, but the
                 // main firmware checks); otherwise (InvalidState) recovery stays, its shell open.
                 if (done.isOk() || done == Error::CorruptData) {
@@ -1312,6 +1378,13 @@ Error Update::init() {
                                 static constinit const Update::Report none{}; // no constructor runs
                                 o->finished(o->arg, none, why, false);
                         }
+                }
+                if (!pending && repackRequested()) {
+                        Thread::Config config;
+                        config.name = "repack";
+                        config.stackBytes = 6144;
+                        config.kernel = true;
+                        return intentThread.start(config, repackMain, nullptr);
                 }
                 if (!pending) return Error::Ok;
                 Thread::Config config;

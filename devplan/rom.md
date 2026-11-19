@@ -1014,3 +1014,32 @@ reserved bytes still after it, the installer's warning, `rom export`/`import`, n
 - **Size:** the firmware 3,376,016 bytes (+9 KB since steps 3-5 and the backups); recovery
   1,236,352.
 
+### 12s. As built: the repack, in recovery (2026-11-18)
+
+The user's ("add the recovery repack pass"), for the padding compaction can't gather (small
+files each alone in a sector, left by the first hole filler on the test board: 135 KB).
+
+- **`RomEditor::repack()`** (recovery only: a booted tree can't move): walks the files by place
+  from the files' space's start, a cursor at the packed end. A file already where packing puts it
+  stays; one whose place is free of the committed tree moves there (sharing sectors with the
+  round's other moved files); one held by a file moved earlier in the round ends the round
+  (committed: in recovery that file's old place is then free) and the walk starts again; one held
+  only by its own old place goes to free space first (as an install's), and down the next round.
+  Files on 64 KB pages stay where they are, the rest packing around them. Rounds are bounded by
+  twice the files.
+- **Into a sector a staying file holds,** without erasing it, when the rest of that sector is
+  erased (0xff) and no file of the tree lies there (content alone isn't enough: a file's bytes may
+  be 0xff): otherwise small files that each began a sector stayed, each blocking the next.
+- **Tests:** a test ROM fragmented by single installs and removals packed to no holes and
+  padding within alignment, the main firmware refused (`InvalidState`), a second repack moving
+  nothing; a power cut at every operation leaving some round's tree, whole, only moves from the
+  start; no byte written that wasn't erased.
+- **`rom repack`** (main firmware): says how much padding and how many holes it will gather,
+  leaves its request at `/flash/update/rom-repack` (`RomDisk::RepackPath`), and restarts into
+  recovery, which repacks at its boot (after an update, if one is pending too), removes the
+  request and starts the main firmware. A reset in the middle repacks again from where the last
+  round left it.
+- **On the board:** padding 135 KB to 7 KB, holes 24 KB to none, the largest free run all of the
+  free space (5,364 KB), in 15 rounds; `rom check` good, the system's 78 files as built.
+- **Recovery:** 1,240,272 bytes (201 KB free in `ota_1`).
+

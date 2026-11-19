@@ -136,6 +136,7 @@ rom install [--align SIZE] SRC... DEST    add or replace (DEST a directory with 
 rom remove [-r] PATH...                   remove (a directory's files with -r)
 rom discard                               drop the changes not yet booted
 rom compact [--full]                      gather the free space
+rom repack                                pack everything tight (restarts into recovery to do it)
 rom export [-f] DIR / rom import DIR      the user's files to a folder and back
 ```
 
@@ -149,7 +150,9 @@ rom export [-f] DIR / rom import DIR      the user's files to a folder and back
 - **Writing flash stalls everything reading it**, so changes wait while audio is playing.
 - **Space comes back after a reboot:** a removed or replaced file's place is free once the tree
   that held it is no longer the booted one. `rom compact` fills holes with files from the top
-  (`--full` repacks everything after the first hole).
+  (`--full` moves everything after the first hole together). `rom repack` packs every file tight,
+  padding too: it restarts into recovery, where nothing is mapped and files can move freely, and
+  comes back when it's done (a minute or two: it moves most of the ROM).
 - **The user owns every file they install**, including one that replaces a system file. A user's
   file can be replaced by an update (below), never by anything else.
 

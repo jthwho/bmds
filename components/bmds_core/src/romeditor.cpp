@@ -27,6 +27,7 @@ namespace {
         constexpr uint8_t UsedCommitted = 0x02; // the committed tree's, and the header and log
         constexpr uint8_t UsedNew = 0x04;       // this change's
         constexpr uint8_t ToErase = 0x08;       // this change erases it before writing
+        constexpr uint8_t NoErase = 0x10;       // written into its erased rest, never erased (repack)
 
         constexpr uint8_t NoHash[RomImage::HashBytes] = {};
 
@@ -222,7 +223,8 @@ Error RomEditor::writeFiles(List<Planned> &planned, Report &report) {
                 total += p.entry.size;
                 if (p.entry.size == 0) continue;
                 const uint64_t last = (uint64_t(p.entry.offset) + p.entry.size - 1) / Sector;
-                for (uint64_t s = p.entry.offset / Sector; s <= last && s < _usedCount; ++s) _used[s] |= ToErase;
+                for (uint64_t s = p.entry.offset / Sector; s <= last && s < _usedCount; ++s)
+                        if ((_used[s] & NoErase) == 0) _used[s] |= ToErase;
         }
         if (total == 0) {
                 for (Planned &p : planned)
@@ -633,6 +635,107 @@ Error RomEditor::compact(Report &report, bool &more, bool full) {
         // a full compaction that went up packs down the next time.
         more = err.isOk();
         return err;
+}
+
+// True if [@p from, @p to) (in one sector) is erased flash that no file of the committed tree
+// lies in: a file may be written there without erasing the sector (repack()).
+bool RomEditor::erasedAndUnused(uint64_t from, uint64_t to) const {
+        for (uint32_t i = 0; i < _committed.count(); ++i) {
+                const RomImage::Entry e = _committed.entry(i);
+                const uint64_t        end = uint64_t(e.offset) + taken(e);
+                if (e.offset < to && end > from && !e.data.isEmpty()) return false;
+        }
+        const ByteSpan bytes = _flash.bytes();
+        if (to > bytes.size()) return false;
+        for (uint64_t at = from; at < to; ++at)
+                if (bytes[at] != 0xff) return false;
+        return true;
+}
+
+Error RomEditor::repack(Report &report) {
+        report = Report();
+        if (!_loaded) return Error::InvalidState;
+        if (_booted != nullptr) return Error::InvalidState; // the booted tree can't move
+        // Every round moves a file down for good or out of its own way: bounded by twice the files.
+        for (uint32_t round = 0; round <= 2 * _committed.count() + 2; ++round) {
+                Error err = buildUsage();
+                if (err.isError()) return err;
+                const uint32_t count = _committed.count();
+                List<uint32_t> order;
+                if (order.reserve(count).isError()) return Error::NoMem;
+                for (uint32_t i = 0; i < count; ++i)
+                        if (!_committed.entry(i).data.isEmpty()) (void)order.append(i);
+                std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+                        return _committed.entry(a).offset < _committed.entry(b).offset;
+                });
+                List<Planned>      planned;
+                List<MemorySource> sources;
+                if (planned.reserve(count).isError() || sources.reserve(count).isError()) return Error::NoMem;
+                for (uint32_t k = 0; k < count; ++k) keep(planned, k);
+                uint64_t dst = _committed.dataOffset(); // packed below here
+                bool     moving = false;                // files placed this round
+                uint32_t outOfTheWay = UINT32_MAX;      // a file to move to free space first
+                for (uint32_t index : order) {
+                        const RomImage::Entry e = _committed.entry(index);
+                        const uint64_t        end = uint64_t(e.offset) + taken(e);
+                        if (e.alignLog2 >= PageLog2) { // on pages: stays, the rest packs around it
+                                dst = std::max<uint64_t>(dst, end);
+                                continue;
+                        }
+                        uint64_t at = alignUp(dst, uint64_t(1) << e.alignLog2);
+                        // In a sector a staying file holds: only into its rest, unerased, if that is
+                        // erased (0xff) and no file of the tree lies there; else the next sector.
+                        bool shared = false;
+                        if (at % Sector != 0 && (_used[at / Sector] & UsedCommitted) != 0) {
+                                shared =
+                                        (_used[at / Sector] & NoErase) != 0 || erasedAndUnused(at, alignUp(at, Sector));
+                                if (!shared) at = alignUp(at, Sector);
+                        }
+                        if (at >= e.offset) { // in place (or nothing to gain): stays
+                                dst = end;
+                                continue;
+                        }
+                        const uint64_t bytes = taken(e);
+                        bool           blocked = false;
+                        bool           byItself = true;
+                        for (uint64_t s = at / Sector; s <= (at + bytes - 1) / Sector; ++s) {
+                                if ((_used[s] & UsedCommitted) == 0 || (shared && s == at / Sector)) continue;
+                                blocked = true;
+                                if (s < e.offset / Sector || s > (end - 1) / Sector) byItself = false;
+                        }
+                        if (blocked) {
+                                // Held by files moved this round (free once it is committed), or by
+                                // itself: commit what there is, or move it out of its own way.
+                                if (!moving && byItself) outOfTheWay = index;
+                                if (moving || byItself) break;
+                                dst = end; // held by a file that stays: this one stays too
+                                continue;
+                        }
+                        (void)sources.append(MemorySource(e.data));
+                        planned[index].source = &sources[sources.size() - 1];
+                        planned[index].entry.offset = static_cast<uint32_t>(at);
+                        for (uint64_t s = at / Sector; s <= (at + bytes - 1) / Sector; ++s) _used[s] |= UsedNew;
+                        if (shared) _used[at / Sector] |= NoErase;
+                        dst = at + bytes;
+                        moving = true;
+                }
+                if (!moving && outOfTheWay == UINT32_MAX) return Error::Ok; // packed
+                if (!moving) {
+                        // Out of its own way: the lowest free run that holds it, as an install's.
+                        (void)sources.append(MemorySource(_committed.entry(outOfTheWay).data));
+                        planned[outOfTheWay].source = &sources[sources.size() - 1];
+                        err = allocate(planned, false);
+                        if (err.isError()) return err;
+                }
+                Report done;
+                err = writeFiles(planned, done);
+                if (err.isOk()) err = commit(planned, Span<const uint8_t>(), done);
+                if (err.isError()) return err;
+                report.moved += done.written;
+                report.bytesWritten += done.bytesWritten;
+                report.sequence = done.sequence;
+        }
+        return Error::Ok;
 }
 
 Error RomEditor::plan(const RomImage &package, List<Planned> &planned, Displaced displaced, void *context,

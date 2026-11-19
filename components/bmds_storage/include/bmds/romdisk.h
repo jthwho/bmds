@@ -37,6 +37,12 @@ namespace RomDisk {
         /** @brief Where it is mounted. */
         inline constexpr const char *Path = "/rom";
 
+        /**
+         * @brief Where `rom repack` leaves its request for recovery, which repacks the ROM at its
+         *        boot and removes it (devplan/rom.md §12s): beside the update's intent.
+         */
+        inline constexpr const char *RepackPath = "/flash/update/rom-repack";
+
         /** @brief The partition's label. */
         inline constexpr const char *PartitionLabel = "rom";
 
