@@ -638,8 +638,8 @@ pointer to them, so fragmentation is temporary.
 ### 12g. Updates, file by file
 
 The package's ROM section (`update.md` §2, type 2) is a format 2 image as `mkrom.py` makes it:
-its tree is the manifest, its files the bytes (as built, §12p: no new section type was needed;
-format 1 was never released).
+its tree is the manifest, its files the bytes (as built, §12p: no new section type was needed).
+**Format 1 was released** (0.1.0 to 0.3.1 all carry it; "never released" here was wrong): §12t.
 
 - **Applying it:**
   - A file whose hash matches already is skipped: most updates write little.
@@ -722,8 +722,8 @@ forms:
 ### 12j. ABI impact
 
 - **Kept once shipped:** `BMRO` format 2 (the partition, the tree version, the entry: version
-  fields to grow), the `rom` command's new forms, the update package's new ROM section type.
-  Format 1 and the old section type were never released (`update.md` §2).
+  fields to grow), the `rom` command's new forms. Format 1 was released (0.1.0 to 0.3.1) and is
+  still written whole when a package carries it (§12t): packages are the format's readers.
 - **Not frozen:** the allocator's choices (where files go), `RomImage`'s and `RomVolume`'s
   interfaces (kernel classes).
 - **None in the SDK** until programs' read-only `mmap()` (§6) or extensions use it.
@@ -1043,3 +1043,21 @@ files each alone in a sector, left by the first hole filler on the test board: 1
   free space (5,364 KB), in 15 rounds; `rom check` good, the system's 78 files as built.
 - **Recovery:** 1,240,272 bytes (201 KB free in `ota_1`).
 
+### 12t. Older packages: format 1 written whole (2026-11-19, found testing 0.4.0)
+
+Trying the 0.4.0 release, the firmware with format 2 refused the published 0.3.1 package: `update
+check` said "the ROM's image is damaged", as `RomImage::open()` of a format 1 section gives
+`NotSupported`. Format 1 had been taken as never released (it was: every release to 0.3.1), so a
+board on 0.4.0 couldn't go back to an older release by package (`update.md` §3's way out of a bad
+update), only by the web installer.
+
+- **The check** (`update.cpp`, `checkOtherRom()`): a ROM section of another format is written
+  whole, as the releases before format 2 wrote it; a damaged format 2 image is still refused.
+  Writing it whole loses the user's files in the ROM (`rom install`'s), which that firmware
+  couldn't read anyway: refused while there are any, saying to `rom export` and `rom remove` them.
+- **Recovery** (`writeRom()`): another format goes straight to the whole write; no merge, no
+  compaction after.
+- **On the board** (bmds0): a 0.3.1+07595f97 dev firmware to 0.4.0, then the published 0.3.1
+  package applied with `--force` (format 1 written, `/rom/bin/angel` back), then 0.4.0 again over
+  it, as a 0.3.1 user updates: the format 1 ROM written whole, the system's 78 files as built, `rom
+  check` good. With one `rom install`ed file pending, the 0.3.1 package was refused as above.

@@ -279,6 +279,23 @@ namespace {
                 return makeResult(bytes);
         }
 
+        // A package's ROM in another format (format 1, every release before 0.4.0's): written whole,
+        // as those releases wrote it, so a board can go back to one. That loses the user's files in
+        // the ROM (rom install's), which that firmware couldn't read: refused while there are any.
+        Result<bool> checkOtherRom(Job &job, const PartitionRom &rom) {
+                if (!rom.isMapped()) return makeResult(true);
+                auto [tree, terr] = RomImage::open(rom.bytes());
+                if (terr.isError()) return makeResult(true);
+                uint32_t user = 0;
+                for (uint32_t i = 0; i < tree.count(); ++i)
+                        if ((tree.entry(i).flags & RomImage::User) != 0) ++user;
+                if (user == 0) return makeResult(true);
+                bmdsWarn("Update: the package's ROM is an older format, written whole: %u of the user's files in it",
+                         static_cast<unsigned>(user));
+                return refuse(job, "its ROM would replace your files in /rom (rom export them to a folder, rom "
+                                   "remove them, then try again)");
+        }
+
         // How the package's ROM compares with the partition's tree: the same when its system files
         // are the package's and it is for this firmware or any; else it differs, and must fit
         // beside the user's files (refused otherwise, nothing written: §12i Q2).
@@ -286,10 +303,11 @@ namespace {
                 Update::Report               &r = *job.report;
                 const UpdatePackage::Section &s = r.package.sections[index];
                 auto [package, perr] = RomImage::open(ByteSpan(bytes, s.size));
-                if (perr.isError()) return refuse(job, "the ROM's image is damaged");
                 PartitionRom              rom(partitionFor(uint32_t(SectionType::Rom)));
                 const Span<const uint8_t> firmware = romFirmware(r);
                 r.flashed[index] = Update::Flashed::Differs;
+                if (perr == Error::NotSupported) return checkOtherRom(job, rom);
+                if (perr.isError()) return refuse(job, "the ROM's image is damaged");
                 if (!rom.isMapped()) return makeResult(true);
                 // An update builds on the newest tree, whatever firmware it is for: the user's last
                 // changes, or the last update's.
@@ -454,8 +472,10 @@ namespace {
                 if (rerr.isError()) return rerr;
                 auto [package, perr] = RomImage::open(ByteSpan(bytes, s.size));
                 Error err = perr.isError() ? Error(Error::CorruptData) : Error(Error::Ok);
-                bool  whole = false;
-                if (err.isOk()) {
+                // Another format (an older release's, checkOtherRom()): written whole.
+                bool whole = perr == Error::NotSupported;
+                if (whole) err = Error::Ok;
+                if (err.isOk() && !whole) {
                         PartitionRom              rom(partitionFor(uint32_t(SectionType::Rom)));
                         const Span<const uint8_t> firmware = romFirmware(*job.report);
                         const RomImage            installed = installedTree(rom);

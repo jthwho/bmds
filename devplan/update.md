@@ -644,4 +644,7 @@ as it is.
 Since (`rom.md` §12q): the user's ROM files an update replaces are copied to the card first
 (`update/rom-backup/VERSION/`, a `backup:` line in the result), and recovery compacts the ROM
 after the update.
+Since (`rom.md` §12t): a package whose ROM is another format (format 1: releases to 0.3.1) has it
+written whole, so a board can go back to an older release; refused while the ROM holds the user's
+files.
 

@@ -5,6 +5,68 @@ Each release has a section headed `## X.Y.Z` (the version in
 the update package, where the Updater shows it, and on the GitHub release; it refuses to make a
 release without one.
 
+## 0.4.0
+
+Update from 0.3.x with the Updater (or `update fetch`, then `update apply`): one step, as the
+bootloader hasn't changed. From 0.2.0, the two steps in 0.3.0's release notes still apply. Then
+run `pkg update` and `pkg upgrade`: AngelScript now comes from the card (the `angel` package), and
+the new BusyBox brings `wget https://`.
+
+**Scripts:** `angel` has moved out of `/rom`, so a script whose first line is `#!/rom/bin/angel`
+(as the examples were in 0.3.x) no longer starts. Change that line to `#!/bin/env angel`.
+
+- **TLS for programs.** Programs can make encrypted connections through the system, as clients
+  and as servers, with certificates checked against the system's roots. Their dates are checked
+  too, so an expired certificate is now refused everywhere, `pkg` included (before, one was
+  accepted). New in the SDK: `libtls` (`tls.h`, the familiar libtls calls) and `libbmdshttp`
+  (`bmds/httplib.h`, HTTP and HTTPS with redirects and ranges). AngelScript's `Http` fetches
+  `https://`, and `TlsSocket` and `Socket::startTls()` (for STARTTLS) are new. `tlsclient` (in
+  `/rom/bin`) connects and shows the server's certificate, as `openssl s_client` does. BusyBox's
+  `wget` fetches `https://` with certificates checked. For servers, the board makes its own key
+  and certificate on first use (`tls cert` shows it). Settings are under `net/tls/`.
+- **A ROM you can change.** `/rom` holds files you add: `rom install FILE... DEST`, `rom remove`,
+  `rom discard`. Changes take effect at the next boot, and a power cut leaves the ROM as it was
+  before or after a change, never half done. Updates now write only the system files that
+  changed, and keep yours. If an update replaces one of your files, it is first copied to
+  `/sd0/p0/rom-backup/VERSION/`. `rom compact` and `rom repack` gather free space, `rom export`
+  and `rom import` copy your files out and back, and `rom` shows everything about the ROM
+  (`info`, `ls -l`, `stat`, `map`, `log`, `diff`, `check`). A program that maps a 4 KB-aligned
+  `/rom` file read-only reads it in place from flash, using no RAM for it. The ROM's programs
+  are stored packed: 8.56 MB down to 4.86 MB. `docs/ROM.md` explains the ROM for developers.
+- **Going back to an older release** by update package works: `update apply --force` with
+  0.3.1's package, for instance. It's refused while `/rom` holds files you added, because the
+  older system rewrites the whole ROM; `rom export` them first.
+- **Sharing the screen, for programs.** A program can capture the screen (copied by DMA, with or
+  without the pointer), follow what changes, and send keys and pointer movements. It is the
+  ground for a VNC server, coming in the bmds-apps repository. The panel shows an icon while
+  the screen is shared, and `display/output` can turn HDMI off (`off`), or off only while it is
+  shared (`remote`). Windows that are dragged now move by copying rather than being redrawn.
+- **For programs' windows (the GUI toolkit):** `ChatView`, for chat-style text (mIRC's colours
+  and styles, clickable links, a "read up to here" marker, find, copying); tabs that scroll when
+  there are many, with badge counts, attention marks and close buttons, which trees can show
+  too; a line editor whose cursor can be read and set, which can hand Tab, Up and Down to the
+  program (for completion and history) and tell it about pasted lines; right-click menus on
+  lists; labels that report clicks; `Clipboard.changed`. The Widgets gallery (`guigallery`)
+  shows them all.
+- **The launcher** shows a submenu for each of freedesktop.org's main categories (Network,
+  Settings, Education and Science are new) once anything installed is in it. A desktop entry
+  with `X-BMDS-Terminal-Hold=true` keeps its terminal open after the program ends, saying how it
+  ended (`terminal --hold`).
+- **Reproducible builds:** the same commit builds the same bytes for the firmware, the ROM and
+  every package, on any machine, so the release's files can be checked by rebuilding them.
+- **Faster:** lists and trees fill in time proportional to their rows (2,000 rows took 11.7 s
+  and now take 0.3 s).
+- `head -3` works, as the short form of `head -n 3`.
+- **Fixed:**
+  - Some views left the two pixel columns at each side unpainted, showing the desktop through
+    them (the Updater's notes, for one) until something covered them.
+  - A form in a dialog left a gap below it, as tall as a line of its help text.
+  - A local network connection whose data wasn't being read could use up the network's
+    memory, after which new SSH logins hung.
+  - A non-blocking TCP send could stop making progress.
+  - Closing a multi-line text box (`TextEdit`) while its selection was the primary selection
+    could leave the clipboard pointing at freed memory.
+
 ## 0.3.1
 
 A fix release. Update from 0.3.0 with the Updater (or `update fetch`). From 0.2.0, the two steps
