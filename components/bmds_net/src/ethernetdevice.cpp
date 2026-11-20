@@ -16,6 +16,7 @@
  */
 
 #include <cstring>
+#include <utility>
 #include <driver/gpio.h>
 #include <esp_cache.h>
 #include <esp_intr_alloc.h>
@@ -38,6 +39,7 @@
 #include <bmds/clock.h>
 #include <bmds/deadline.h>
 #include <bmds/ethernetdevice.h>
+#include <bmds/io.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/netflow.h>
@@ -138,6 +140,32 @@ namespace {
 
         constinit StaticObject<EthernetDevice> devices[EthernetDevice::MaxDevices];
         constinit size_t                       deviceCount = 0;
+
+        // eth0's pads, the MAC and the PPS output, held for good: the device never stops
+        // (devplan/io.md §3.2).
+        constinit StaticObject<IoClaim> pins;
+
+        Error claimPins(const char *name) {
+                const BoardEthernet &e = board().ethernet;
+                const IoUse          uses[] = {
+                        {Io::pad(e.txEn), "RMII TX_EN"},     {Io::pad(e.txd0), "RMII TXD0"},
+                        {Io::pad(e.txd1), "RMII TXD1"},      {Io::pad(e.crsDv), "RMII CRS_DV"},
+                        {Io::pad(e.rxd0), "RMII RXD0"},      {Io::pad(e.rxd1), "RMII RXD1"},
+                        {Io::pad(e.refClk), "RMII REF_CLK"}, {Io::pad(e.mdc), "MDC"},
+                        {Io::pad(e.mdio), "MDIO"},           {Io::pad(e.phyReset.gpio), "PHY reset"},
+                        {Io::pad(e.ppsOut), "PPS out"},      {Io::instance(IoKind::Emac, 0), "the MAC"},
+                };
+                IoResource blocked = NoIoResource;
+                auto [claim, err] = Io::claim(name, uses, 0, &blocked);
+                if (err.isError()) {
+                        char why[96];
+                        (void)Io::busyText(blocked, why, sizeof(why));
+                        bmdsErr("%s: can't claim its pins: %s %s", name, err.desc(), why);
+                        return err;
+                }
+                pins.create(std::move(claim));
+                return Error::Ok;
+        }
 
         Error espError(esp_err_t err) {
                 switch (err) {
@@ -269,6 +297,7 @@ EthernetDevice::EthernetDevice(uint8_t number) : _number(number), _txSpace(1, 0)
 
 Error EthernetDevice::start() {
         const BoardEthernet &e = board().ethernet;
+        if (Error err = claimPins(name()); err.isError()) return err;
 
         // The descriptors and buffers, in one block: descriptors first (a line each), then the
         // receive pool and the transmit buffers, all in whole lines.

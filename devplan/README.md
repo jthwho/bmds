@@ -49,6 +49,7 @@ Design notes and implementation plans for BMDS subsystems. Write a plan here **b
 - [`guiprograms.md`](guiprograms.md) — GUI programs: the toolkit as a service programs reach through an X11-style protocol (local or remote, C and angel alike), and angel's bindings to the whole system (design).
 - [`games.md`](games.md) — surfaces for programs (windowed or full screen, Alt+Enter), the SDK's game library, Blocks, Doom, Solitaire.
 - [`vnc.md`](vnc.md) — remote desktop: the display's output off with the desktop running, screen capture by changed tiles, injected input, `image_encode` into memory; the VNC server in bmds-apps (planned).
+- [`io.md`](io.md) — I/O: every pin's wiring, owner, routing and level; claims by every driver; `/bin/io` and `io` for GPIO, muxing and UART/I²C/SPI ports on chosen pins; `/dev` nodes with Linux's ioctls (planned).
 
 ## Plan Document Template
 

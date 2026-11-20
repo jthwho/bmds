@@ -6,9 +6,11 @@
  * See LICENSE file in the project root folder for license information.
  */
 
+#include <cstdio>
 #include <driver/i2c_master.h>
 #include <bmds/board.h>
 #include <bmds/i2cbus.h>
+#include <bmds/io.h>
 #include <bmds/log.h>
 #include <bmds/staticobject.h>
 
@@ -64,6 +66,24 @@ Error I2cBus::init() {
         for (size_t i = 0; i < BoardI2cCount; ++i) {
                 const BoardI2cBus &b = board().i2c[i];
                 if (!b.isValid()) continue;
+                // Its pads and controller first (devplan/io.md §3.2): a board whose buses overlap
+                // another user's pins is a mistake to see at boot, not a bus that half works.
+                char owner[8];
+                std::snprintf(owner, sizeof(owner), "i2c%u", static_cast<unsigned>(i));
+                const IoUse uses[] = {
+                        {Io::pad(b.sda), "SDA"},
+                        {Io::pad(b.scl), "SCL"},
+                        {Io::instance(IoKind::I2c, b.port),
+                         i == static_cast<size_t>(BoardI2c::Main) ? "on-board devices" : "expansion bus"},
+                };
+                IoResource blocked = NoIoResource;
+                auto [claim, claimErr] = Io::claim(owner, uses, 0, &blocked);
+                if (claimErr.isError()) {
+                        char why[96];
+                        (void)Io::busyText(blocked, why, sizeof(why));
+                        bmdsErr("i2c%u: can't claim its pins: %s %s", static_cast<unsigned>(i), claimErr.desc(), why);
+                        return claimErr;
+                }
                 i2c_master_bus_config_t config = {};
                 config.i2c_port = static_cast<i2c_port_num_t>(b.port);
                 config.sda_io_num = static_cast<gpio_num_t>(b.sda);
@@ -77,7 +97,7 @@ Error I2cBus::init() {
                         bmdsErr("i2c%u: %s", static_cast<unsigned>(i), esp_err_to_name(err));
                         return Error::fromEspErr(err);
                 }
-                buses[i].create(i, handle, b.clockHz);
+                buses[i].create(i, handle, b.clockHz, std::move(claim));
         }
         return Error::Ok;
 }

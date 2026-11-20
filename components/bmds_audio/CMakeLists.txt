@@ -38,7 +38,7 @@ if(COMMAND idf_component_register)
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS ${BMDS_CODEC_INCLUDES}
                                REQUIRES bmds_core bmds_kernel bmds_board bmds_drivers bmds_fs bmds_sysconf
-                               PRIV_REQUIRES bmds_shell esp_driver_gpio esp_driver_i2s esp_hw_support esp_mm
+                               PRIV_REQUIRES bmds_io bmds_shell esp_driver_gpio esp_driver_i2s esp_hw_support esp_mm
                                              esp_timer
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})

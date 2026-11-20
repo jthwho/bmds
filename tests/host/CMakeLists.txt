@@ -38,6 +38,7 @@ add_subdirectory(${BMDS_ROOT}/components/bmds_gui ${CMAKE_BINARY_DIR}/bmds_gui)
 add_subdirectory(${BMDS_ROOT}/components/bmds_clipboard ${CMAKE_BINARY_DIR}/bmds_clipboard)
 add_subdirectory(${BMDS_ROOT}/components/bmds_sysconf ${CMAKE_BINARY_DIR}/bmds_sysconf)
 add_subdirectory(${BMDS_ROOT}/components/bmds_net ${CMAKE_BINARY_DIR}/bmds_net)
+add_subdirectory(${BMDS_ROOT}/components/bmds_io ${CMAKE_BINARY_DIR}/bmds_io)
 
 add_executable(bmds_host_tests
         main.cpp
@@ -48,6 +49,7 @@ add_executable(bmds_host_tests
         ${BMDS_ROOT}/sdk/bench/bench.c
         blockdevice.cpp
         bytering.cpp
+        io.cpp
         changetiles.cpp
         intervaltimers.cpp
         clipboard.cpp
@@ -299,7 +301,7 @@ endif()
 # libbmdsgui's transport is a given fd on the host (devplan/guiprograms.md §8).
 set_source_files_properties(${BMDS_ROOT}/sdk/gui/gui.c PROPERTIES COMPILE_DEFINITIONS BMDS_GUI_HOST)
 target_link_libraries(bmds_host_tests PRIVATE bmds_core bmds_bench bmds_kernel bmds_console bmds_shell bmds_pkg bmds_fs bmds_loader bmds_drivers bmds_audio bmds_midi bmds_synth bmds_fonts bmds_speech bmds_input bmds_ui bmds_gui bmds_clipboard
-        bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_settings bmds_panel bmds_imageview bmds_net bmds_lwip)
+        bmds_sysconf bmds_files bmds_mplayer bmds_sysmon bmds_settings bmds_panel bmds_imageview bmds_net bmds_lwip bmds_io)
 bmds_target_options(bmds_host_tests)
 
 # bmds-elfcheck: the loader's format check as a host tool (tools/elfcheck).
@@ -459,4 +461,14 @@ if(BASH_PROGRAM AND Python3_Interpreter_FOUND)
 endif()
 
 # The GUI classes' lock and their generated C wrappers (devplan/guiprograms.md §10).
+# The I/O table against ESP-IDF's headers (devplan/io.md §3.1), when ESP-IDF is here.
+if(DEFINED ENV{IDF_PATH})
+        set(BMDS_IDF_FOR_IOCHIP $ENV{IDF_PATH})
+else()
+        set(BMDS_IDF_FOR_IOCHIP $ENV{HOME}/esp/esp-idf)
+endif()
+if(EXISTS ${BMDS_IDF_FOR_IOCHIP}/components/soc/esp32p4/include/soc/gpio_sig_map.h)
+        add_test(NAME iochip_table COMMAND ${Python3_EXECUTABLE} ${BMDS_ROOT}/tools/gen-iochip.py
+                 --idf ${BMDS_IDF_FOR_IOCHIP} --check esp32p4 ${BMDS_ROOT}/components/bmds_io/chips/esp32p4/iochipdef.cpp)
+endif()
 add_test(NAME gui_lock COMMAND ${Python3_EXECUTABLE} ${BMDS_ROOT}/tests/scripts/guilock.py ${BMDS_ROOT})

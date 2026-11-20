@@ -10,11 +10,13 @@
 
 #include <climits>
 #include <cstdio>
+#include <utility>
 #include <driver/gpio.h>
 #include <esp_private/usb_phy.h>
 #include <tusb.h>
 #include <bmds/board.h>
 #include <bmds/input.h>
+#include <bmds/io.h>
 #include <bmds/log.h>
 #include <bmds/pads.h>
 #include <bmds/staticobject.h>
@@ -42,6 +44,10 @@ namespace {
         constexpr size_t   TaskStack = 4096;
 
         constinit StaticObject<UsbHost> hosts[UsbHost::MaxHosts];
+
+        // Each host's hub reset, held from its first start for good (devplan/io.md §3.2). The
+        // HS PHY's pads are dedicated: not GPIOs.
+        constinit StaticObject<IoClaim> pins[UsbHost::MaxHosts];
 
         // A host's counters (devplan/sysmon.md §6): names are an interface once shipped.
         constexpr Stat::Desc UsbStats[] = {
@@ -220,6 +226,20 @@ Error UsbHost::start() {
         if (_running) return Error::InvalidState;
         // The hub in reset until the controller is set up.
         const BoardUsbHost &board = bmds::board().usbHost;
+        if (!pins[_number].isCreated()) {
+                char owner[8];
+                std::snprintf(owner, sizeof(owner), "usb%u", static_cast<unsigned>(_number));
+                const IoUse uses[] = {{Io::pad(board.hubReset.gpio), "hub reset"}};
+                IoResource  blocked = NoIoResource;
+                auto [claim, err] = Io::claim(owner, uses, 0, &blocked);
+                if (err.isError()) {
+                        char why[96];
+                        (void)Io::busyText(blocked, why, sizeof(why));
+                        bmdsErr("%s: can't claim its pins: %s %s", owner, err.desc(), why);
+                        return err;
+                }
+                pins[_number].create(std::move(claim));
+        }
         if (board.hubReset.isValid()) {
                 gpio_config_t io = {};
                 io.pin_bit_mask = 1ull << board.hubReset.gpio;

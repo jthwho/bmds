@@ -621,6 +621,23 @@ until silicon v3; then test again.
   back to the plain GPIO output, so set the direction first and connect the signal after. With
   `CONFIG_HAL_GPIO_USE_ROM_IMPL`, `gpio_matrix_output()` leaves the output enable to the
   peripheral.
+- **Where the I/O facts come from** (`devplan/io.md` §3.1, 2026-11-20): `gpio_sig_map.h` names the
+  matrix's signals (input 0-255, output 0-255, `SIG_GPIO_OUT_IDX` 256 the plain GPIO output; a few
+  names say no direction, `DBG_CH0_CLK_IDX`, and `SIG_IN_FUNC250-255` are both); `io_mux_reg.h`
+  names each pad's IO_MUX functions (`FUNC_GPIOn_NAME`, function 1 the GPIO on every pad) and
+  also lists pads 55 and 56, which aren't GPIOs (`SOC_GPIO_PIN_COUNT` is 55). Its functions are
+  identical in `hw_ver1` (our v1.3) and `hw_ver3`. The analog functions, LP IOs (0-15), strapping
+  pins (34-38) and the USB-JTAG note come only from ESP-IDF's GPIO documentation table
+  (`docs/en/api-reference/peripherals/gpio/esp32p4.inc`, one per chip). ESP-IDF 6.1 no longer
+  states some counts in `soc_caps.h` (I2S, PCNT units): `tools/gen-iochip.py` names where its
+  numbers come from and checks the rest against `soc_caps.h`.
+- **Pads at reset** (`io` on bmds0, 2026-11-20): MCU_SEL is 0 on every pad, and function 0 is a
+  peripheral's on some: GPIO2, 4 and 5 (and 3 until the SD card's detect takes it) are JTAG's
+  `MTCK`, `MTMS`, `MTDO` (`MTDI`), and 37/38 UART0's (the ROM's console, pull-ups on). Elsewhere
+  function 0 is `GPIOn_0`, which drives nothing. The LP IO mux's registers (`LP_IOMUX.pad[n]`,
+  whether a pad belongs to the LP domain) are gated by `HP_SYS_CLKRST.soc_clk_ctrl3
+  .reg_iomux_apb_clk_en`, on from reset and never turned off by ESP-IDF; `LP_GPIO.clk_en` is the
+  LP GPIO's own clock, not that gate.
 - **The ETM makes hardware-timed edges:** a GPTimer's alarm event connected to a GPIO toggle task
   changes the pin at the match, with no interrupt in between.
 - **Opening the console's USB serial port with DTR and RTS set low first reset the chip**

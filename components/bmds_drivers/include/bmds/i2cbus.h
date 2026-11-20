@@ -10,8 +10,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <bmds/config.h>
 #include <bmds/error.h>
+#include <bmds/ioregistry.h>
 #include <bmds/mutex.h>
 #include <bmds/result.h>
 #include <bmds/span.h>
@@ -121,14 +123,15 @@ class I2cBus {
                 Error probe(uint8_t address, unsigned int timeoutMs);
 
         private:
-                I2cBus(size_t number, void *handle, uint32_t clockHz)
-                    : _number(number), _handle(handle), _clockHz(clockHz) {}
+                I2cBus(size_t number, void *handle, uint32_t clockHz, IoClaim &&claim)
+                    : _number(number), _handle(handle), _clockHz(clockHz), _claim(std::move(claim)) {}
                 template <typename T> friend class StaticObject;
 
                 size_t    _number;
                 void     *_handle; // the IDF bus
                 uint32_t  _clockHz;
-                Mutex     _lock; // the device table
+                IoClaim   _claim; // its pads and controller (devplan/io.md §3.2)
+                Mutex     _lock;  // the device table
                 I2cDevice _devices[MaxDevices];
                 size_t    _deviceCount = 0;
 };

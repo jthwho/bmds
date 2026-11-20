@@ -11,6 +11,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <utility>
 #include <driver/i2s_std.h>
 #include <esp_cache.h>
 #include <esp_clk_tree.h>
@@ -27,6 +28,7 @@
 #include <bmds/flashwrites.h>
 #include <bmds/i2cbus.h>
 #include <bmds/interrupt.h>
+#include <bmds/io.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/placement.h>
@@ -212,6 +214,32 @@ namespace {
         constinit StaticObject<Es8311>      codecs[AudioDevice::MaxDevices];
         constinit StaticObject<AudioDevice> devices[AudioDevice::MaxDevices];
 
+        // dsp0's pads, its I2S controller and the codec's power switch, held for good
+        // (devplan/io.md §3.2). makeChannel() uses I2S0.
+        constinit StaticObject<IoClaim> pins;
+
+        Error claimPins(const BoardAudio &a) {
+                const IoUse uses[] = {
+                        {Io::pad(a.mclk), "I2S MCLK"},
+                        {Io::pad(a.bclk), "I2S BCLK"},
+                        {Io::pad(a.ws), "I2S WS"},
+                        {Io::pad(a.dout), "I2S DOUT"},
+                        {Io::pad(a.din), "I2S DIN"},
+                        {Io::pad(a.powerOn.gpio), "codec power"},
+                        {Io::instance(IoKind::I2s, 0), "the codec's I2S"},
+                };
+                IoResource blocked = NoIoResource;
+                auto [claim, err] = Io::claim("dsp0", uses, 0, &blocked);
+                if (err.isError()) {
+                        char why[96];
+                        (void)Io::busyText(blocked, why, sizeof(why));
+                        bmdsErr("audio: dsp0 can't claim its pins: %s %s", err.desc(), why);
+                        return err;
+                }
+                pins.create(std::move(claim));
+                return Error::Ok;
+        }
+
         i2s_chan_handle_t handleOf(void *channel) {
                 return static_cast<i2s_chan_handle_t>(channel);
         }
@@ -252,6 +280,7 @@ Error AudioDevice::init() {
         if (a.codec != BoardAudioCodec::Es8311) return Error::Ok;
         I2cBus *bus = I2cBus::bus(static_cast<size_t>(a.i2c));
         if (bus == nullptr) return Error::NotExist;
+        if (Error err = claimPins(a); err.isError()) return err;
         codecs[0].create(*bus, a.i2cAddr, a.powerOn);
         devices[0].create(*codecs[0], static_cast<uint8_t>(0));
         AudioDevice &d = *devices[0];

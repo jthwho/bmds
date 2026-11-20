@@ -48,13 +48,47 @@ class Widget;
  * `WindowManager`'s public calls, as any program may.
  *
  * @par Thread Safety
- * `post()` and `quit()` from any thread; the rest from the loop's thread (or
- * before `exec()`).
+ * `post()`, `cancel()` and `quit()` from any thread; the rest from the loop's
+ * thread (or before `exec()`).
  */
 class GuiApplication {
         public:
                 /** @brief A call made on the loop's thread. */
                 using Callback = void (*)(void *arg);
+
+                /**
+                 * @brief A call `post(Pending &)` queues outside the event queue: its owner's storage,
+                 *        so it can't be lost to a full queue, and posted again before it runs it is
+                 *        still one call. For news that comes once and must arrive (an edge: its
+                 *        sender says nothing more until it is acted on), and for news that comes
+                 *        often (each frame) and needs acting on once.
+                 *
+                 * Its owner keeps it until it is cancelled (`cancel()`) or has run, and sets its
+                 * call before the first post.
+                 *
+                 * @par Thread Safety
+                 * Its application's lock-free side: `post()` from any thread.
+                 */
+                class Pending {
+                        public:
+                                Pending() = default;
+                                Pending(const Pending &) = delete;
+                                Pending &operator=(const Pending &) = delete;
+
+                                /** @brief Sets the call (not while it is posted). */
+                                void setCall(Callback fn, void *arg) {
+                                        _fn = fn;
+                                        _arg = arg;
+                                        return;
+                                }
+
+                        private:
+                                friend class GuiApplication;
+                                Callback _fn = nullptr;
+                                void    *_arg = nullptr;
+                                Pending *_next = nullptr; // the application's list (its queue's lock)
+                                bool     _queued = false; // in the list (its queue's lock)
+                };
 
                 /** @brief Windows at once (their slots grow as they are made; a slot is a byte). */
                 static constexpr size_t MaxWindows = 255;
@@ -114,6 +148,17 @@ class GuiApplication {
                  * @nonblocking
                  */
                 Error post(Callback fn, void *arg);
+
+                /**
+                 * @brief Calls @p call's function on the loop's thread, with the lock held, after
+                 *        the events queued; nothing more if it is posted already and hasn't run.
+                 *        It can't fail. A post while it runs calls it again after.
+                 * @nonblocking
+                 */
+                void post(Pending &call);
+
+                /** @brief Takes @p call back if it is posted and hasn't run (its owner going). @nonblocking */
+                void cancel(Pending &call);
 
                 /**
                  * @brief Restyles every window (`Widget::restyle()`): the fonts changed. On the
@@ -380,6 +425,9 @@ class GuiApplication {
                 size_t            _head = 0;
                 size_t            _count = 0;
                 bool              _overflowed = false; // a redraw of everything after
+                Pending          *_pendingHead = nullptr; // post(Pending &)'s, in order (_queueLock)
+                Pending          *_pendingTail = nullptr;
+                size_t            _pendingCount = 0;
                 Timer             _timers[MaxTimers];
                 List<Slot>        _slots; // by slot, grown as windows are made (never shrunk)
                 Callback          _watchFn = nullptr;

@@ -284,6 +284,18 @@ Plan: [`input.md`](input.md).
   logs done 2026-10-19 (§9): the history survives a reset with a panic's report written into it,
   and the next boot puts the unsaved lines in the files; `reboot panic` tests it. Next: a log tab
   in the System Monitor.
+- [ ] I/O (`io.md`, planned 2026-11-20, the user's request): every pad of the chip known in three
+  layers (the chip's IO_MUX functions and matrix signals generated from ESP-IDF's `soc` headers,
+  the board's wiring and connectors in `boarddef.h`, run-time claims by owner), every driver
+  claiming its pins; `/bin/io`, a window with the pins' owners, routing and live levels, GPIO and
+  muxing on free pins, UART/I²C/SPI ports on chosen pins with their `/dev` nodes and a tool each;
+  `io`, the command; `gpio_ctl`/`i2c_ctl`/`spi_ctl` for programs with Linux's ioctls translated.
+  Decided (§7): built in; Linux's names and ioctls; ports and pin setups are sysconf parameters;
+  System pins only with `--force`; the RMT (LTC) and DMA paths designed in. Step 1 built (§8,
+  2026-11-20): `bmds_io` (the P4's table generated from ESP-IDF, the registry, pad reads),
+  the board's pin and connector tables checked at compile time, claims by the I²C buses, the
+  SD card, audio, Ethernet and USB host, `io`; host-tested; checked on bmds0 against ESP-IDF's
+  own dump (`io dump`), all 55 pads alike. Next: step 2 (the window, read-only).
 
 ## Phase 6 — Graphics
 
@@ -638,7 +650,8 @@ Plan: [`input.md`](input.md).
   Software page, `pkg source add --trust`); step 4 (2026-11-15: `tools/mksdk`, the SDK tarball
   in releases, `bmds_add_package()` and `bmds_add_repository()`); step 5 (2026-11-15: `bmds-apps`
   with Minesweeper, its release script and workflow; a shown window's size settable); step 6
-  (2026-11-15: `jthwho/bmds-apps` on GitHub, v1 released, bmds-apps a default source).
+  (2026-11-15: `jthwho/bmds-apps` on GitHub, v1 released, bmds-apps a default source). bmds-apps v3
+  (2026-11-19): IRC and the VNC server, on BMDS 0.4.0.
 - [ ] Preso (`preso.md`, planned 2026-10-30 with the user): decks in Marp's Markdown, themes in
   INI files with retro ones built in, transitions, notes over SSH, the clicker and pad through
   Controls, live demos from a slide; an SDK program on the card. Revised 2026-11-03: AngelScript

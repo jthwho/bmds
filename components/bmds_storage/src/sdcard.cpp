@@ -8,6 +8,7 @@
 
 #include <cstring>
 #include <new>
+#include <utility>
 #include <driver/gpio.h>
 #include <driver/sdmmc_default_configs.h>
 #include <driver/sdmmc_host.h>
@@ -17,6 +18,7 @@
 #include <sd_pwr_ctrl_by_on_chip_ldo.h>
 #include <sdmmc_cmd.h>
 #include <bmds/board.h>
+#include <bmds/io.h>
 #include <bmds/log.h>
 #include <bmds/memory.h>
 #include <bmds/sdcard.h>
@@ -46,6 +48,34 @@ namespace {
         constexpr uint64_t SdhcMaxSectors = 32ull * 1024 * 1024 * 1024 / 512;
 
         constinit StaticObject<SdCard> slot;
+
+        // The slot's pads and host slot, held for good (devplan/io.md §3.2).
+        constinit StaticObject<IoClaim> pins;
+
+        Error claimPins() {
+                const BoardSdCard &sd = board().sdCard;
+                const IoUse        uses[] = {
+                        {Io::pad(sd.clk), "SD CLK"},
+                        {Io::pad(sd.cmd), "SD CMD"},
+                        {Io::pad(sd.d0), "SD D0"},
+                        {Io::pad(sd.d1), "SD D1"},
+                        {Io::pad(sd.d2), "SD D2"},
+                        {Io::pad(sd.d3), "SD D3"},
+                        {Io::pad(sd.cardDetect.gpio), "card detect"},
+                        {Io::pad(sd.powerOn.gpio), "card power"},
+                        {Io::instance(IoKind::Sdmmc, sd.slot), "the card slot"},
+                };
+                IoResource blocked = NoIoResource;
+                auto [claim, err] = Io::claim("sd0", uses, 0, &blocked);
+                if (err.isError()) {
+                        char why[96];
+                        (void)Io::busyText(blocked, why, sizeof(why));
+                        bmdsErr("SdCard: can't claim its pins: %s %s", err.desc(), why);
+                        return err;
+                }
+                pins.create(std::move(claim));
+                return Error();
+        }
 
         // The ESP-IDF card state (including its copy of the host
         // configuration), in PSRAM: only tasks touch it, under the lock.
@@ -202,6 +232,7 @@ Error SdCard::init() {
         }
         std::memset(card, 0, sizeof(*card));
         SdCard &c = slot.create(bounce);
+        if (Error err = claimPins(); err.isError()) return err;
 
         // The IO supply first: the card-detect pull-up hangs off it.
         if (sd.ioLdo != NoLdo) {

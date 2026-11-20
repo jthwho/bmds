@@ -23,6 +23,7 @@
 #include <bmds/filehandle.h>
 #include <bmds/i2cbus.h>
 #include <bmds/input.h>
+#include <bmds/io.h>
 #include <bmds/pads.h>
 #include <bmds/programcontrols.h>
 #include <bmds/loader.h>
@@ -94,6 +95,7 @@ namespace {
 
         constexpr bmds::Boot::Stage SystemStages[] = {
                 {"console", bmds::UsbSerialConsole::init},
+                {"io", bmds::Io::init}, // who holds each pin (devplan/io.md): before any driver claims
                 {"window",
                  bmds::PsramWindow::init}, // the PSRAM addresses after the heap's: large blocks, programs' pages
                 {"i2c", bmds::I2cBus::init},

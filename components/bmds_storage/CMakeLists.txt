@@ -25,7 +25,7 @@ idf_component_register(SRCS src/benchfs.cpp
                             src/tmpfs.cpp
                        INCLUDE_DIRS include
                        REQUIRES bmds_core bmds_kernel bmds_fs
-                       PRIV_REQUIRES app_update bmds_bench bmds_board bmds_shell bmds_sysconf esp_driver_gpio esp_driver_sdmmc esp_hw_support esp_system
+                       PRIV_REQUIRES app_update bmds_bench bmds_board bmds_io bmds_shell bmds_sysconf esp_driver_gpio esp_driver_sdmmc esp_hw_support esp_system
                                      esp_mm esp_partition esp_pm sdmmc
                        WHOLE_ARCHIVE)
 bmds_target_options(${COMPONENT_LIB})

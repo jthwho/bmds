@@ -4264,6 +4264,12 @@ namespace {
                         int16_t  watch = -1; // its ScreenWatch id (watch(true))
                         uint8_t *pointer = nullptr; // pointerShape()'s answer (PSRAM), kept until the next
                         size_t   pointerBytes = 0;
+                        // The watch's news to the loop: posts that can't be lost to a full queue (the
+                        // watch tells of changes once until a capture; a lost "changed" froze a VNC
+                        // viewer's picture for good), and one at a time however often it comes (the
+                        // starting pointer changes every frame).
+                        GuiApplication::Pending changedDue;
+                        GuiApplication::Pending pointerDue;
         };
         ScreenData &screenData(GuiObject &o) {
                 return *dataOf<ScreenData>(o);
@@ -4276,7 +4282,8 @@ namespace {
         }
         // ScreenWatch's notification, on the presenting task: the loop takes it.
         void screenNotify(void *arg) {
-                (void)static_cast<GuiObject *>(arg)->connection->application().post(screenDue, arg);
+                auto &o = *static_cast<GuiObject *>(arg);
+                o.connection->application().post(screenData(o).changedDue);
                 return;
         }
         // The pointer's picture changed (devplan/vnc.md §20): told on the loop.
@@ -4287,7 +4294,8 @@ namespace {
         }
         // ScreenWatch's, from the window manager's round: the loop takes it.
         void pointerNotify(void *arg) {
-                (void)static_cast<GuiObject *>(arg)->connection->application().post(pointerDue, arg);
+                auto &o = *static_cast<GuiObject *>(arg);
+                o.connection->application().post(screenData(o).pointerDue);
                 return;
         }
         void stopWatchingScreen(GuiObject &o) {
@@ -4419,7 +4427,10 @@ namespace {
         void disposeScreen(GuiObject &o) {
                 releaseInjected(o);
                 stopWatchingScreen(o);
-                o.connection->application().cancelPosts(&o);
+                GuiApplication &app = o.connection->application();
+                app.cancelPosts(&o);
+                app.cancel(screenData(o).changedDue);
+                app.cancel(screenData(o).pointerDue);
                 Memory::free(screenData(o).pointer);
                 freeData<ScreenData>(o);
                 return;
@@ -4430,7 +4441,10 @@ namespace {
                 // be typed by whoever reaches the GUI's port.
                 if (!o.connection->isLocal()) return BadAccess;
                 // Several (a VNC viewer each, devplan/vnc.md §18): watching ones are limited by watch().
-                if (makeData<ScreenData>(o) == nullptr) return NoMem;
+                ScreenData *d = makeData<ScreenData>(o);
+                if (d == nullptr) return NoMem;
+                d->changedDue.setCall(screenDue, &o);
+                d->pointerDue.setCall(pointerDue, &o);
                 o.dispose = disposeScreen;
                 return Ok;
         }

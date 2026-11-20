@@ -17,10 +17,46 @@
 #include <bmds/guiwindow.h>
 #include <bmds/interrupt.h>
 #include <bmds/memory.h>
+#include <bmds/staticobject.h>
+#include <bmds/stats.h>
 #include <bmds/system.h>
 #include <bmds/tooltip.h>
 
 BMDS_NAMESPACE_BEGIN
+
+namespace {
+
+        // Every application's, together: news lost to a full queue (`stats gui`).
+        constinit std::atomic<uint32_t> postsLost{0};
+        constinit std::atomic<uint32_t> eventsLost{0};
+
+        constexpr Stat::Desc GuiStats[] = {
+                {"posts_lost",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {Stat::Rule::Zero, Stat::Health::Warning},
+                 "",
+                 "Calls posted to an application whose queue was full (refused: its poster may have lost news)"},
+                {"events_lost",
+                 Stat::Unit::Count,
+                 Stat::Kind::Total,
+                 0,
+                 {Stat::Rule::Zero, Stat::Health::Warning},
+                 "",
+                 "Input and window events dropped by a full queue (the application redrawn)"},
+        };
+
+        void readGui(void *, Span<int64_t> v) {
+                v[0] = postsLost.load(std::memory_order_relaxed);
+                v[1] = eventsLost.load(std::memory_order_relaxed);
+                return;
+        }
+
+        constinit StaticObject<Stats::Group> counters;
+        constinit std::atomic<bool>          countersClaimed{false};
+
+} // namespace
 
 GuiApplication::~GuiApplication() {
         GuiStyle::unfollow(*this); // no restyle posted from here on
@@ -56,6 +92,11 @@ Error GuiApplication::connect(size_t display) {
         if (cerr.isError()) return cerr;
         _wm = wm;
         _client = client;
+        if (!countersClaimed.exchange(true, std::memory_order_acq_rel)) { // the first application's
+                counters.create(GuiStats, sizeof(GuiStats) / sizeof(GuiStats[0]), readGui, nullptr);
+                counters->setName("gui");
+                (void)Stats::add(*counters); // counters only: the GUI works without them
+        }
         if (Error ferr = GuiStyle::follow(*this); ferr.isError())
                 bmdsWarn("gui: an application won't restyle when the fonts change: %s", ferr.desc());
         return Error();
@@ -269,6 +310,7 @@ void GuiApplication::queue(const Event &event) {
                 }
                 if (_count == QueueSize) {
                         _overflowed = true;
+                        eventsLost.fetch_add(1, std::memory_order_relaxed);
                 } else {
                         _events[(_head + _count) % QueueSize] = event;
                         ++_count;
@@ -282,7 +324,10 @@ Error GuiApplication::post(Callback fn, void *arg) {
         if (fn == nullptr) return Error::Invalid;
         {
                 SpinLock::Locker lock(_queueLock);
-                if (_count == QueueSize) return Error::Full;
+                if (_count == QueueSize) {
+                        postsLost.fetch_add(1, std::memory_order_relaxed);
+                        return Error::Full;
+                }
                 Event &e = _events[(_head + _count) % QueueSize];
                 e = Event();
                 e.type = Event::Type::Post;
@@ -292,6 +337,41 @@ Error GuiApplication::post(Callback fn, void *arg) {
         }
         _wake.release();
         return Error();
+}
+
+void GuiApplication::post(Pending &call) {
+        {
+                SpinLock::Locker lock(_queueLock);
+                if (call._queued) return; // runs once for both
+                call._queued = true;
+                call._next = nullptr;
+                if (_pendingTail != nullptr) {
+                        _pendingTail->_next = &call;
+                } else {
+                        _pendingHead = &call;
+                }
+                _pendingTail = &call;
+                ++_pendingCount;
+        }
+        _wake.release();
+        return;
+}
+
+void GuiApplication::cancel(Pending &call) {
+        SpinLock::Locker lock(_queueLock);
+        if (!call._queued) return;
+        Pending *before = nullptr;
+        for (Pending *p = _pendingHead; p != nullptr && p != &call; p = p->_next) before = p;
+        if (before != nullptr) {
+                before->_next = call._next;
+        } else {
+                _pendingHead = call._next;
+        }
+        if (_pendingTail == &call) _pendingTail = before;
+        call._next = nullptr;
+        call._queued = false;
+        --_pendingCount;
+        return;
 }
 
 void GuiApplication::cancelPosts(void *arg) {
@@ -448,6 +528,30 @@ int GuiApplication::exec() {
                                 }
                                 dispatch(event);
                                 if (_quit.load(std::memory_order_acquire)) break;
+                        }
+                        // The pending calls, one at a time (one may cancel another); those posted
+                        // while they run wait for the next pass.
+                        size_t due = 0;
+                        {
+                                SpinLock::Locker q(_queueLock);
+                                due = _pendingCount;
+                        }
+                        for (; due > 0 && !_quit.load(std::memory_order_acquire); --due) {
+                                Callback fn = nullptr;
+                                void    *arg = nullptr;
+                                {
+                                        SpinLock::Locker q(_queueLock);
+                                        Pending         *p = _pendingHead;
+                                        if (p == nullptr) break;
+                                        _pendingHead = p->_next;
+                                        if (_pendingHead == nullptr) _pendingTail = nullptr;
+                                        p->_next = nullptr;
+                                        p->_queued = false; // a post from here on calls it again
+                                        --_pendingCount;
+                                        fn = p->_fn;
+                                        arg = p->_arg;
+                                }
+                                if (fn != nullptr) fn(arg);
                         }
                         if (_configChanged.exchange(false, std::memory_order_acq_rel)) runConfig();
                         runTimers();

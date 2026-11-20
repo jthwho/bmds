@@ -44,7 +44,7 @@ if(COMMAND idf_component_register)
                                     ${BMDS_INPUT_MIDI_SRCS}
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_console bmds_fs ${BMDS_INPUT_MIDI} bmds_sysconf bmds_shell bmds_tinyusb esp_driver_gpio esp_hw_support esp_system soc
+                               PRIV_REQUIRES bmds_board bmds_console bmds_fs bmds_io ${BMDS_INPUT_MIDI} bmds_sysconf bmds_shell bmds_tinyusb esp_driver_gpio esp_hw_support esp_system soc
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()

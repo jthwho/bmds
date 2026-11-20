@@ -33,7 +33,7 @@ if(COMMAND idf_component_register)
                                     src/scanout.cpp
                                     src/surface.cpp
                                INCLUDE_DIRS include
-                               REQUIRES bmds_core bmds_kernel
+                               REQUIRES bmds_core bmds_io bmds_kernel
                                PRIV_REQUIRES bmds_bench bmds_board bmds_shell bmds_sysconf esp_driver_i2c esp_driver_jpeg esp_hw_support esp_hal_lcd esp_mm esp_timer
                                              spi_flash
                                WHOLE_ARCHIVE)

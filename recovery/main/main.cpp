@@ -18,6 +18,7 @@
 #include <bmds/filehandle.h>
 #include <bmds/i2cbus.h>
 #include <bmds/input.h>
+#include <bmds/io.h>
 #include <bmds/logfiles.h>
 #include <bmds/shell.h>
 #include <bmds/storage.h>
@@ -69,6 +70,7 @@ namespace {
 
         constexpr bmds::Boot::Stage SystemStages[] = {
                 {"console", bmds::UsbSerialConsole::init},
+                {"io", bmds::Io::init},      // who holds each pin: before any driver claims
                 {"i2c", bmds::I2cBus::init}, // the display's bridge
                 {"vfs", bmds::Vfs::init},
                 {"flash", bmds::FlashDisk::init}, // /flash: the update's intent and result

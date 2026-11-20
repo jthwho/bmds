@@ -1,6 +1,6 @@
 # Hardware: Olimex ESP32-P4-PC
 
-The initial (and currently only) target board. All hardware facts used by code come from the board definition (`components/bmds_board/boards/olimex_esp32p4_pc/bmds/boarddef.h`). This document is the human-readable reference the board definition is built from. Update both together.
+The initial (and currently only) target board. All hardware facts used by code come from the board definition (`components/bmds_board/boards/olimex_esp32p4_pc/bmds/boarddef.h`). This document is the human-readable reference the board definition is built from. Update both together. The pin map below is also the definition's `BoardPins` table (every pad, Fixed, Device or Free; `devplan/io.md`), which a compile-time check holds to the drivers' own fields; `io` shows it on the board.
 
 > **Verification status.** Facts below come from the **Rev C** KiCad schematic, read as a full netlist export (the PDF has no usable text layer), and were cross-checked against Rev B. Every ESP32-P4 pin assignment is identical between the two revisions; the only difference is the core DC-DC part. Further sources: the BOM, the user manual (rev 2.0), and Olimex's production-test firmware (`SOFTWARE/ESP-IDF/p4_production_test`). Items marked **(unconfirmed)** still need checking on real hardware.
 
@@ -122,6 +122,19 @@ Every ESP32-P4 GPIO with a board function. Netlist names are given where they he
 | Pin | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
 |---|---|---|---|---|---|---|---|---|---|---|
 | Signal | 3.3V | GND | GPIO37 TX | GPIO38 RX | GPIO23 SCL | GPIO22 SDA | GPIO54 MISO | GPIO53 MOSI | GPIO4 SCK | GPIO5 CS |
+
+### EXT1 (2×10, not fitted)
+
+From the Rev C PCB netlist (`HN2x10` footprint, read 2026-11-20). The board definition's
+`BoardConnectors` carries the same table (`devplan/io.md`).
+
+| Pin | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Signal | 3.3V | 5V | GND | GPIO26 | EN (ESP_EN) | GPIO27 | GPIO2 (LED) | GPIO14 | GPIO15 | GPIO16 |
+
+| Pin | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Signal | GPIO17 | GPIO18 | GPIO19 | GPIO20 (BAT_SENSE) | GPIO32 (EXT_PWR_SEN) | GPIO33 | GPIO36 | GPIO46 | GPIO47 | GPIO48 |
 
 ## Gotchas
 

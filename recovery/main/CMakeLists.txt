@@ -1,5 +1,5 @@
 idf_component_register(SRCS "main.cpp" "recoveryscreen.cpp"
-                       PRIV_REQUIRES bmds_console bmds_kernel bmds_shell bmds_storage bmds_fs bmds_sysconf bmds_update bmds_drivers bmds_ui
+                       PRIV_REQUIRES bmds_console bmds_io bmds_kernel bmds_shell bmds_storage bmds_fs bmds_sysconf bmds_update bmds_drivers bmds_ui
                                      bmds_input
                                      esp_driver_i2c) # its settings are in ../sdkconfig.defaults
 

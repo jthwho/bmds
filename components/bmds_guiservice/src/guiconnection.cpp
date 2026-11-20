@@ -282,6 +282,8 @@ void GuiConnection::loopMain(void *arg) {
         void *mem = Memory::alloc(MemSpace::Psram, sizeof(GuiApplication));
         if (mem != nullptr) {
                 self->_app = ::new (mem) GuiApplication();
+                self->_drainDue.setCall(drainDue, self);
+                self->_endDue.setCall(endDue, self);
                 self->_app->setApplicationName(programName(self->_program.view()));
                 self->_app->setSession(self->_session); // its windows end its launch feedback
                 self->_shellAllowed = GuiServicePriv::shellAllowed(self->_program.view());
@@ -311,6 +313,8 @@ void GuiConnection::loopMain(void *arg) {
                         self->_notifier = nullptr;
                 }
                 self->_app->cancelPosts(self);
+                self->_app->cancel(self->_drainDue);
+                self->_app->cancel(self->_endDue);
                 self->_app->~GuiApplication();
                 Memory::free(self->_app);
         }
@@ -361,12 +365,11 @@ void GuiConnection::readerMain(void *arg) {
                         }
                         std::memmove(partial.data(), partial.data() + length, partial.size() - size_t(length));
                         partial.truncate(partial.size() - size_t(length));
-                        if (!self->_posted.exchange(true, std::memory_order_acq_rel))
-                                (void)self->_app->post(drainDue, self);
+                        self->_app->post(self->_drainDue); // one drain for whatever waits
                 }
                 if (bad) break;
         }
-        (void)self->_app->post(endDue, self);
+        self->_app->post(self->_endDue);
         return;
 }
 
@@ -388,7 +391,6 @@ void GuiConnection::stop() {
 
 // The requests waiting, run in order; then the answers written and the windows laid out.
 void GuiConnection::drain() {
-        _posted.store(false, std::memory_order_release);
         List<uint8_t> requests(MemSpace::Psram);
         {
                 Mutex::Locker locked(_lock, WaitForever);

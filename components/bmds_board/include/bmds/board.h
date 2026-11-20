@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <bmds/config.h>
 #include <bmds/memspace.h>
+#include <bmds/span.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -181,6 +182,38 @@ inline size_t noSerial(char *out, size_t size) {
         return 0;
 }
 
+/**
+ * @brief What a pad is to the board (`devplan/io.md` §3.1-§3.3).
+ */
+enum class BoardPinUse : uint8_t {
+        Fixed,  ///< Wired to something a change would break (a crystal, the USB console): changed only by force.
+        Device, ///< Wired to an on-board device, whose driver claims it while it runs.
+        Free,   ///< Brought out to a connector or unused on the board: the user's.
+};
+
+/** @brief A pad the board connects (`Board::pins`). */
+struct BoardPin {
+                GpioNum     gpio = NoGpio;           ///< The GPIO.
+                BoardPinUse use = BoardPinUse::Free; ///< What it is to the board.
+                const char *label = "";              ///< What it is wired to (`UEXT UART0 TX`), or "".
+                const char *note = "";               ///< On-board parts on it, jumpers, caveats; or "".
+};
+
+/** @brief A pin of a connector (`BoardConnector::pins`), in the connector's numbering from 1. */
+struct BoardConnectorPin {
+                GpioNum     gpio = NoGpio; ///< The GPIO on it, or `NoGpio` for a supply or another signal.
+                const char *label = "";    ///< For a pin without a GPIO: `3.3V`, `GND`, `EN`.
+};
+
+/** @brief A connector the board brings pads out to (`Board::connectors`). */
+struct BoardConnector {
+                const char                   *name = "";        ///< Its silkscreen name (`UEXT`).
+                const char                   *description = ""; ///< What it is, for people.
+                uint8_t                       columns = 1;      ///< Rows of pins: pin 1 first, across a row.
+                bool                          fitted = true;    ///< False for a footprint without the header.
+                Span<const BoardConnectorPin> pins;             ///< Pin 1 first.
+};
+
 /** @brief A complete board description. */
 struct Board {
                 const char   *name = "";                     ///< Human-readable board name.
@@ -200,6 +233,8 @@ struct Board {
                 BoardEthernet ethernet = {};         ///< Ethernet.
                 BoardAudio    audio = {};            ///< Audio.
                 BoardSerialReader serial = noSerial;     ///< Reads its serial number.
+                Span<const BoardPin>       pins; ///< Every pad the board connects, by GPIO (`devplan/io.md` §3.1).
+                Span<const BoardConnector> connectors;            ///< Where pads are brought out.
                 uint8_t           jpegCodecs = 0;        ///< JPEG codec blocks (`devplan/images.md` §3c): `jpeg0`...
 
                 /** @brief Returns the heap mapping for @p space. */
@@ -225,5 +260,82 @@ BMDS_NAMESPACE_BEGIN
 constexpr const Board &board() {
         return Detail::BoardDefinition;
 }
+
+namespace Detail {
+
+        // The board's pin table against the rest of its definition (devplan/io.md §3.1): checked
+        // at compile time, so the table the I/O view shows can't drift from what drivers use.
+
+        constexpr bool boardHasPin(const Board &b, GpioNum gpio) {
+                if (gpio == NoGpio) return true;
+                for (const BoardPin &p : b.pins)
+                        if (p.gpio == gpio) return true;
+                return false;
+        }
+
+        constexpr bool boardPinsSorted(const Board &b) {
+                for (size_t i = 0; i < b.pins.size(); ++i) {
+                        if (b.pins[i].gpio == NoGpio) return false;
+                        if (i > 0 && b.pins[i].gpio <= b.pins[i - 1].gpio) return false;
+                }
+                return true;
+        }
+
+        constexpr bool boardDevicePinsListed(const Board &b) {
+                const GpioNum used[] = {
+                        b.i2c[0].sda,
+                        b.i2c[0].scl,
+                        b.i2c[1].sda,
+                        b.i2c[1].scl,
+                        b.uart.tx,
+                        b.uart.rx,
+                        b.statusLed.gpio,
+                        b.userButton.gpio,
+                        b.sdCard.clk,
+                        b.sdCard.cmd,
+                        b.sdCard.d0,
+                        b.sdCard.d1,
+                        b.sdCard.d2,
+                        b.sdCard.d3,
+                        b.sdCard.cardDetect.gpio,
+                        b.sdCard.powerOn.gpio,
+                        b.display.reset.gpio,
+                        b.usbHost.hubReset.gpio,
+                        b.usbHost.vbusOn.gpio,
+                        b.ethernet.phyReset.gpio,
+                        b.ethernet.mdc,
+                        b.ethernet.mdio,
+                        b.ethernet.refClk,
+                        b.ethernet.txEn,
+                        b.ethernet.txd0,
+                        b.ethernet.txd1,
+                        b.ethernet.crsDv,
+                        b.ethernet.rxd0,
+                        b.ethernet.rxd1,
+                        b.ethernet.ppsOut,
+                        b.audio.mclk,
+                        b.audio.bclk,
+                        b.audio.ws,
+                        b.audio.dout,
+                        b.audio.din,
+                        b.audio.powerOn.gpio,
+                };
+                for (GpioNum g : used)
+                        if (!boardHasPin(b, g)) return false;
+                return true;
+        }
+
+        constexpr bool boardConnectorPinsListed(const Board &b) {
+                for (const BoardConnector &c : b.connectors)
+                        for (const BoardConnectorPin &p : c.pins)
+                                if (!boardHasPin(b, p.gpio)) return false;
+                return true;
+        }
+
+} // namespace Detail
+
+static_assert(Detail::boardPinsSorted(board()), "the board's pins must be listed once each, by GPIO number");
+static_assert(Detail::boardDevicePinsListed(board()), "a GPIO the board's devices use is missing from its pins");
+static_assert(Detail::boardConnectorPinsListed(board()), "a connector's GPIO is missing from the board's pins");
 
 BMDS_NAMESPACE_END

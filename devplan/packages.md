@@ -1009,3 +1009,19 @@ folder's own index was ever compared with its contents, never the list made here
   reboot.
 - **Better still:** `pkg index /sd0/p0/packages` writes the folder's own (unsigned) index, which
   a `file:` source takes as it is.
+
+## 29. The firmware as a package: `bmds (>= VERSION)` (planned 2026-11-19, for the next release)
+
+Found releasing bmds-apps v3: IRC and the VNC server need 0.4.0's calls (TLS sockets, screen
+capture), but 0.3.x and 0.4.0 are both ABI 1 and `pkg` was unchanged between them, so nothing stops
+a 0.3.x board installing them; they would fail at their first new call. The solver knows only the
+ABI (`pkgsystem.cpp`), and unknown manifest fields are skipped, so no field can fix boards already
+out. For now the apps' descriptions say "Needs BMDS 0.4.0 or newer".
+
+- **The plan (the user, 2026-11-19: "we'll fix in the next bmds release"):** the firmware stands in
+  the solver as an installed package `bmds` at its own version, so an app says `depends = bmds (>=
+  0.4.0)` with the existing syntax: no new field, no format change. `bmds` becomes a reserved
+  package name (an ABI note in `docs/ABI.md`); a package of that name is refused.
+- **Older firmware** finds no `bmds` and refuses the app ("bmds ... isn't installed or given"):
+  0.3.x refused outright, the wanted result. 0.4.0 too, until updated, so the apps take the
+  dependency only once that release is out, their notes saying to update first.

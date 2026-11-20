@@ -415,7 +415,10 @@ class GuiConnection {
                 List<uint8_t>        _pending{MemSpace::Psram}; // whole requests, as read
                 Semaphore            _room{1, 0};               // the loop took requests: the reader may read again
                 Semaphore            _started{1, 0};            // start() is done with _loop: the loop may run
-                std::atomic<bool>    _posted{false};
+                // The reader's news to the loop: posts a full queue can't lose (a lost drain left
+                // every request after it unanswered; a lost end, the loop running on).
+                GuiApplication::Pending _drainDue;
+                GuiApplication::Pending _endDue;
                 std::atomic<bool>    _stopping{false};
                 // ScreenShare objects' watches, a pair each (0 / -1: free): under the registry's lock.
                 uint32_t             _shareObjects[MaxScreenShares] = {};
