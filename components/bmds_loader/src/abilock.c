@@ -1105,3 +1105,34 @@ _Static_assert(offsetof(bmds_spi_transfer_t, count) == 4 && offsetof(bmds_spi_tr
                        sizeof(bmds_spi_transfer_t) == 16,
                "ABI: bmds_spi_transfer_t");
 #endif
+/* GPIO line requests: Linux's GPIO v2 line fd (devplan/io.md §12.1, 2026-11-20). */
+_Static_assert(BMDS_GPIO_LINE_REQUEST == 7 && BMDS_GPIO_LINE_CONFIG == 8 && BMDS_GPIO_LINE_GET_VALUES == 9 &&
+                       BMDS_GPIO_LINE_SET_VALUES == 10,
+               "ABI: gpio_ctl line ops");
+_Static_assert(BMDS_GPIO_LINE_EVENT_CLOCK_REALTIME == 0x800 && BMDS_GPIO_LINE_EVENT_CLOCK_HTE == 0x1000 &&
+                       BMDS_GPIO_LINES_MAX == 64 && BMDS_GPIO_LINE_ATTRS_MAX == 10 && BMDS_GPIO_LINE_ATTR_FLAGS == 1 &&
+                       BMDS_GPIO_LINE_ATTR_OUTPUT_VALUES == 2 && BMDS_GPIO_LINE_ATTR_DEBOUNCE == 3 &&
+                       BMDS_GPIO_LINE_EVENT_RISING == 1 && BMDS_GPIO_LINE_EVENT_FALLING == 2,
+               "ABI: line flags, attributes, events");
+_Static_assert(sizeof(bmds_gpio_line_attr_t) == 16 && offsetof(bmds_gpio_line_attr_t, value) == 8 &&
+                       sizeof(bmds_gpio_line_config_attr_t) == 24 && offsetof(bmds_gpio_line_config_attr_t, mask) == 16,
+               "ABI: bmds_gpio_line_attr_t, _config_attr_t (Linux's)");
+_Static_assert(offsetof(bmds_gpio_line_config_t, num_attrs) == 8 && offsetof(bmds_gpio_line_config_t, attrs) == 32 &&
+                       sizeof(bmds_gpio_line_config_t) == 272,
+               "ABI: bmds_gpio_line_config_t (Linux's gpio_v2_line_config)");
+_Static_assert(offsetof(bmds_gpio_line_request_t, num_lines) == 4 && offsetof(bmds_gpio_line_request_t, offsets) == 8 &&
+                       offsetof(bmds_gpio_line_request_t, consumer) == 264 &&
+                       offsetof(bmds_gpio_line_request_t, config) == 296 &&
+                       offsetof(bmds_gpio_line_request_t, event_buffer_size) == 568 &&
+                       offsetof(bmds_gpio_line_request_t, flags) == 572 &&
+                       offsetof(bmds_gpio_line_request_t, fd) == 576 && sizeof(bmds_gpio_line_request_t) == 584,
+               "ABI: bmds_gpio_line_request_t");
+_Static_assert(offsetof(bmds_gpio_line_set_config_t, config) == 8 && sizeof(bmds_gpio_line_set_config_t) == 280,
+               "ABI: bmds_gpio_line_set_config_t");
+_Static_assert(offsetof(bmds_gpio_line_values_t, bits) == 8 && offsetof(bmds_gpio_line_values_t, mask) == 16 &&
+                       sizeof(bmds_gpio_line_values_t) == 24,
+               "ABI: bmds_gpio_line_values_t");
+_Static_assert(offsetof(bmds_gpio_line_event_t, id) == 8 && offsetof(bmds_gpio_line_event_t, offset) == 12 &&
+                       offsetof(bmds_gpio_line_event_t, seqno) == 16 &&
+                       offsetof(bmds_gpio_line_event_t, line_seqno) == 20 && sizeof(bmds_gpio_line_event_t) == 48,
+               "ABI: bmds_gpio_line_event_t (Linux's gpio_v2_line_event)");

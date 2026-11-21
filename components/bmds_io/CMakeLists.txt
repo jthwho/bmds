@@ -15,6 +15,7 @@
 set(BMDS_IO_PURE_SRCS
         src/iochip.cpp
         src/iopad.cpp
+        src/ioline.cpp
         src/iopin.cpp
         src/ioport.cpp
         src/iosetup.cpp
@@ -32,6 +33,7 @@ if(COMMAND idf_component_register)
                                     ${BMDS_IO_CHIP}/iochipdef.cpp
                                     ${BMDS_IO_CHIP}/iochipops.cpp
                                     src/gpiochip.cpp
+                                    src/gpiolines.cpp
                                     src/io.cpp
                                     src/iogpio.cpp
                                     src/ioports.cpp

@@ -315,7 +315,9 @@ Plan: [`input.md`](input.md).
   the port's own), `spi_ctl` (slot 141), Linux's spidev, `io spi`, `sdk/examples/spidevtest`;
   checked on bmds0 in loopback. Step 4d built (§11.7): the I/O Manager's Ports tab in
   bmds-apps (each port's setup as fields, a terminal, an I²C scan and registers, SPI transfers).
-  Next: step 5's rest (`gpio_ctl`'s line requests; `dist/` recipes for libgpiod and i2c-tools).
+  Step 5a built (§12.2): programs' line requests, Linux's GPIO v2 line fd (values, config,
+  edge events read and polled), `gpio_ctl` ops 7-10, `sdk/examples/gpioline`; checked on bmds0.
+  Next: 5b (line info watched on the chip fd), then 5c (`dist/` recipes for libgpiod, i2c-tools).
 
 ## Phase 6 — Graphics
 

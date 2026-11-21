@@ -884,3 +884,80 @@ a tool each: a `Terminal` on `/dev/ttySN` (its fd in the program's `poll()`), an
 register reads and writes (`i2c_ctl`), SPI transfers (`spi_ctl`). Nothing changed in BMDS for
 it. Checked on bmds0 with the kernel's loopbacks. Step 4 is done; next, step 5's rest (§6:
 `gpio_ctl`'s line requests, `dist/` recipes for libgpiod's tools and `i2c-tools`).
+
+## 12. Step 5: programs' lines (design, 2026-11-20)
+
+In parts, each checked on the board before the next: **5a** line requests (a line fd: Linux's
+GPIO v2 `GPIO_V2_GET_LINE_IOCTL` and what it does), **5b** line info watched on the chip fd
+(`GPIO_V2_GET_LINEINFO_WATCH_IOCTL`, info-changed events), **5c** `dist/` recipes for libgpiod's
+tools and `i2c-tools`, which test both halves.
+
+### 12.1 5a: line requests
+
+- **A request** (`gpio_ctl` on the chip fd, `BMDS_GPIO_LINE_REQUEST`, op 7): up to 64 offsets,
+  a consumer name, a config, an event buffer size; it returns a new fd, close-on-exec as Linux's.
+  The config is Linux's `gpio_v2_line_config` exactly (flags for every line, then up to ten
+  attributes by mask: flags, output values, debounce), so `linux.c` copies it; the request wraps
+  it in a struct that starts with `size`. Checked as Linux checks it (`EINVAL`): input and
+  output not both; edges only with input; open drain or source only with output; one bias, and
+  only with a direction; no unknown flag; padding zero; offsets on the chip and each once.
+- **The claim:** every line is claimed for the consumer (`gpioset`, or the program's name when
+  none is given), owner kind User, role `line`, all or nothing: a line anybody holds (a driver,
+  `io/gpio`, a port, another program's request) is `EBUSY`, as Linux's used lines. No force from
+  programs: Linux has none, and the user forces through `io/gpio`. Each pad's registers are
+  saved and put back when the fd's last handle closes, so a program that ends (or dies) gives
+  its lines back as they were (§3.2).
+- **Settings per line**, from the config: direction (input, output, or as the pad is), drive
+  (push-pull, open drain, open source), bias (pull-up, pull-down, disabled, or as the pad is),
+  active low, edges, debounce, the event clock (monotonic, or `CLOCK_REALTIME`; HTE is
+  `EOPNOTSUPP`). The P4 has open drain, not open source: open source is emulated as Linux's
+  gpiolib does, driving high and letting go (an input) for low.
+- **The line fd** (`gpio_ctl` on it): `BMDS_GPIO_LINE_CONFIG` (op 8, the whole config again:
+  directions, edges and all may change), `BMDS_GPIO_LINE_GET_VALUES` (op 9) and
+  `BMDS_GPIO_LINE_SET_VALUES` (op 10) by bit mask over the request's lines, active low applied;
+  setting an input is `EPERM`. An output's value is what it was set to; an input's is read.
+- **Edges:** the pad's interrupt (ESP-IDF's GPIO ISR service, as `io/gpio`'s) writes a record
+  into the request's ring (the event buffer size, 16 per line by default as Linux, up to 1024,
+  in PSRAM) and wakes the fd's reader and pollers (`releaseFromIsr`, `notifyFromIsr`). Edges are
+  logical: active low turns a falling edge into a rising one, as Linux. A full ring drops its
+  oldest record, which the sequence numbers show, as Linux's. Debounce as `io/gpio`'s: an edge
+  less than the period after the last one taken is dropped.
+- **Reading the line fd** gives Linux's `gpio_v2_line_event` records (48 bytes: the time, rising
+  or falling, the offset, the request's and the line's sequence numbers): whole records, waiting
+  while there are none; `poll()` sees it readable; `O_NONBLOCK` as the SDK does it (a poll
+  first). The record is the ABI's `bmds_gpio_line_event_t`, so `linux.c`'s read passes it as is.
+- **Linux:** `linux/gpio.h` gains `gpio_v2_line_request`, `_config`, `_config_attribute`,
+  `_values`, `_event` and `GPIO_V2_GET_LINE_IOCTL`, `GPIO_V2_LINE_SET_CONFIG_IOCTL`,
+  `GPIO_V2_LINE_GET_VALUES_IOCTL`, `GPIO_V2_LINE_SET_VALUES_IOCTL`. The first interface's
+  handles and events (`GPIO_GET_LINEHANDLE_IOCTL`) aren't offered: libgpiod 2 uses v2 only.
+- **Pure and host-tested** (`bmds/ioline.h`): a config checked and turned into each line's
+  settings, Linux's rules; the kernel side (`gpiolines.cpp`) does the pads, the interrupt, the
+  ring.
+- **`io pin N`** shows a requested line's holder as any claim's (`gpiomon: line`).
+- **Checks on the board:** an SDK example on Linux's API only: outputs set and read back, and set
+  again through `SET_VALUES`; edges without wires, from an unwired input's pull flipped with
+  `SET_CONFIG` (the pad follows its pull); `EBUSY` on a system pad and on a line another program
+  holds; lines given back when the program ends, killed or not.
+
+### 12.2 As built: 5a (2026-11-20)
+
+- `bmds/ioline.h` (pure, host-tested: Linux's flag rules, attributes by mask, the refusals);
+  `bmds/gpiolines.h`, `gpiolines.cpp`: the request in one PSRAM block (the stream, its state, its
+  lines, its ring of 16-byte records, 16 a line by default), the claim, the pads saved and put
+  back, the interrupts, `read()` waiting on a semaphore the interrupt releases. Live requests sit
+  in 32 lock-free slots for a restart hook that puts their pads back (a 33rd at once is put back
+  only when closed). `Stream::gpioLines()`; `gpio_ctl` ops 7-10, their structs, ABI-locked;
+  `linux.c` and `linux/gpio.h`; `sdk/examples/gpioline`.
+- **A config change keeps a watching line's interrupt on:** stopped and started round the pad's
+  new setup, the edge the change itself made (a pull flipped on an unwired pad) fell between
+  them and was missed. Now only its type is set again.
+- **Not yet:** line info shows what the pad says (direction, drive, bias, the consumer), not a
+  request's active low, edges or debounce; those come with 5b, which tracks line changes anyway.
+  An empty consumer is `gpio` (the kernel has no process name to give).
+- **Size:** about 5.8 KB of code (the request 4.2, the rules 0.7, `gpio_ctl`'s part 0.9); 129
+  bytes of RAM (the slots); a request about 250 bytes of PSRAM plus 52 a line and 16 an event.
+- **Checked on bmds0** (EXT1's pads, no wires): outputs at 1 and 0 read back, flipped by
+  `SET_VALUES`; four pull flips on GPIO47 gave four edges, falling then rising, sequence numbers
+  1-4, times matching `uptime`; GPIO7 (`i2c0`) `EBUSY`; GPIO48 `EBUSY` while `gpioline hold`
+  had it, shown as `gpioline as line` in `io pin`, free again after, and after the holder was
+  killed.

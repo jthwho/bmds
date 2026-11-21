@@ -16,6 +16,7 @@
 #include <bmds/iopad.h>
 #include <bmds/iopin.h>
 #include <bmds/ioregistry.h>
+#include <bmds/ioline.h>
 #include <bmds/ioport.h>
 #include <bmds/iosetup.h>
 
@@ -705,5 +706,92 @@ TEST_CASE("IoSpiSetup: io/spiN's value") {
                 CHECK(p == other);
                 REQUIRE(other.parse(chip, "sck=4 mosi=53 cs=6", why).isOk());
                 CHECK_FALSE(p == other);
+        }
+}
+
+TEST_CASE("IoLine: a line request's config, Linux's rules") {
+        using bmds::IoLineConfig;
+        using bmds::IoLineSettings;
+        using C = IoLineConfig;
+        namespace L = bmds::IoLine;
+
+        SUBCASE("flags checked as Linux checks them") {
+                CHECK(L::checkFlags(0).isOk());
+                CHECK(L::checkFlags(C::Input | C::EdgeRising | C::EdgeFalling | C::PullUp).isOk());
+                CHECK(L::checkFlags(C::Output | C::OpenDrain | C::ActiveLow).isOk());
+                CHECK(L::checkFlags(C::Input | C::ClockRealtime).isOk());
+                CHECK(L::checkFlags(C::Used) == Error::Invalid);
+                CHECK(L::checkFlags(1ull << 20) == Error::Invalid);
+                CHECK(L::checkFlags(C::Input | C::Output) == Error::Invalid);
+                CHECK(L::checkFlags(C::EdgeRising) == Error::Invalid); // edges need input
+                CHECK(L::checkFlags(C::Output | C::EdgeRising) == Error::Invalid);
+                CHECK(L::checkFlags(C::Input | C::OpenDrain) == Error::Invalid); // a drive needs output
+                CHECK(L::checkFlags(C::Output | C::OpenDrain | C::OpenSource) == Error::Invalid);
+                CHECK(L::checkFlags(C::PullUp) == Error::Invalid); // a bias needs a direction
+                CHECK(L::checkFlags(C::Input | C::PullUp | C::PullDown) == Error::Invalid);
+                CHECK(L::checkFlags(C::Input | C::ClockRealtime | C::ClockHte) == Error::Invalid);
+                CHECK(L::checkFlags(C::Input | C::ClockHte) == Error::NotSupported);
+        }
+
+        SUBCASE("each line's settings: the config's, then the first attribute by mask") {
+                IoLineConfig c;
+                c.flags = C::Input | C::PullUp | C::EdgeFalling;
+                c.attrCount = 4;
+                c.attrs[0].id = C::AttrFlags;
+                c.attrs[0].value = C::Output | C::OpenDrain | C::ActiveLow;
+                c.attrs[0].mask = 0b0110;
+                c.attrs[1].id = C::AttrOutputValues;
+                c.attrs[1].value = 0b0100;
+                c.attrs[1].mask = 0b0110;
+                c.attrs[2].id = C::AttrFlags; // line 1 is the first attribute's already
+                c.attrs[2].value = C::Input;
+                c.attrs[2].mask = 0b0010;
+                c.attrs[3].id = C::AttrDebounce;
+                c.attrs[3].value = 5000;
+                c.attrs[3].mask = 0b1001;
+                IoLineSettings s[4];
+                REQUIRE(L::resolve(c, 4, s).isOk());
+                CHECK(s[0].direction == IoLineSettings::Direction::Input);
+                CHECK(s[0].bias == IoLineSettings::Bias::PullUp);
+                CHECK(s[0].edges == IoLineSettings::Falling);
+                CHECK(s[0].debounceUs == 5000);
+                CHECK(s[1].direction == IoLineSettings::Direction::Output);
+                CHECK(s[1].drive == IoLineSettings::Drive::OpenDrain);
+                CHECK(s[1].activeLow);
+                CHECK_FALSE(s[1].value);
+                CHECK(s[2].value);
+                CHECK(s[2].debounceUs == 0); // an output's debounce means nothing
+                CHECK(s[3].debounceUs == 5000);
+                CHECK(s[3].direction == IoLineSettings::Direction::Input);
+
+                IoLineConfig asIs;
+                REQUIRE(L::resolve(asIs, 1, s).isOk());
+                CHECK(s[0].direction == IoLineSettings::Direction::AsIs);
+                CHECK(s[0].bias == IoLineSettings::Bias::AsIs);
+        }
+
+        SUBCASE("refused") {
+                IoLineConfig   c;
+                IoLineSettings s[2];
+                CHECK(L::resolve(c, 0, s) == Error::Invalid);
+                CHECK(L::resolve(c, 65, s) == Error::Invalid);
+                c.attrCount = 11;
+                CHECK(L::resolve(c, 1, s) == Error::Invalid);
+                c.attrCount = 1;
+                c.attrs[0].id = 9;
+                CHECK(L::resolve(c, 1, s) == Error::Invalid);
+                c.attrs[0].id = C::AttrFlags;
+                c.attrs[0].value = C::Input | C::Output;
+                CHECK(L::resolve(c, 1, s) == Error::Invalid); // even for no line of the request
+                c.attrs[0].value = 0;
+                c.attrs[0].padding = 1;
+                CHECK(L::resolve(c, 1, s) == Error::Invalid);
+                c.attrs[0].padding = 0;
+                c.padding[2] = 1;
+                CHECK(L::resolve(c, 1, s) == Error::Invalid);
+                c.padding[2] = 0;
+                c.attrs[0].id = C::AttrDebounce;
+                c.attrs[0].value = 1000001;
+                CHECK(L::resolve(c, 1, s) == Error::Invalid);
         }
 }

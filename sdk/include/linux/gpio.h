@@ -10,11 +10,14 @@
  * (`bmds/sys.h`). Written for BMDS; the layouts and numbers are Linux's
  * (`include/uapi/linux/gpio.h`), which programs were built against.
  *
- * Supported: `GPIO_GET_CHIPINFO_IOCTL`, `GPIO_GET_LINEINFO_IOCTL` and
- * `GPIO_V2_GET_LINEINFO_IOCTL` (what `gpiodetect` and `gpioinfo` ask). Taking lines (line
- * requests, values, edge events) and watching line info fail with `EOPNOTSUPP` for now: they
- * come with GPIO and muxing (devplan/io.md §6, step 3). A line's name is the board's for it
- * (`GPIO14` where the board has none); its consumer is the driver or program holding it.
+ * Supported: `GPIO_GET_CHIPINFO_IOCTL`, `GPIO_GET_LINEINFO_IOCTL`, `GPIO_V2_GET_LINEINFO_IOCTL`;
+ * line requests (`GPIO_V2_GET_LINE_IOCTL`: a line fd, its lines claimed, `EBUSY` for a line
+ * anybody holds), and on the line fd `GPIO_V2_LINE_SET_CONFIG_IOCTL`,
+ * `GPIO_V2_LINE_GET_VALUES_IOCTL`, `GPIO_V2_LINE_SET_VALUES_IOCTL` and read() of
+ * `gpio_v2_line_event` records (devplan/io.md §12.1). Open source is emulated (driven high, let go
+ * for low); the HTE clock is `EOPNOTSUPP`. Watching line info and the first interface's line
+ * handles and events fail with `EOPNOTSUPP`. A line's name is the board's for it (`GPIO14` where
+ * the board has none); its consumer is the driver or program holding it.
  *
  * ABI: frozen. Append only.
  */
@@ -60,7 +63,7 @@ enum gpio_v2_line_flag {
         GPIO_V2_LINE_FLAG_EVENT_CLOCK_HTE = 1ULL << 12,
 };
 
-/** @brief Values of lines (`GPIO_V2_LINE_GET_VALUES_IOCTL`, for reference: not provided yet). */
+/** @brief Values of a request's lines by mask (`GPIO_V2_LINE_GET_VALUES_IOCTL`, `_SET_`). */
 struct gpio_v2_line_values {
                 uint64_t bits;
                 uint64_t mask;
@@ -95,6 +98,47 @@ struct gpio_v2_line_info {
                 uint32_t                      padding[4]; /**< Zero. */
 };
 
+/** @brief An attribute and the lines of a request it is for (a bit each). */
+struct gpio_v2_line_config_attribute {
+                struct gpio_v2_line_attribute attr;
+                uint64_t                      mask;
+};
+
+/** @brief A request's config: flags for every line, then attributes by mask. */
+struct gpio_v2_line_config {
+                uint64_t                             flags;
+                uint32_t                             num_attrs;
+                uint32_t                             padding[5]; /**< Zero. */
+                struct gpio_v2_line_config_attribute attrs[GPIO_V2_LINE_NUM_ATTRS_MAX];
+};
+
+/** @brief A line request (`GPIO_V2_GET_LINE_IOCTL` on the chip): `fd` is the line fd back. */
+struct gpio_v2_line_request {
+                uint32_t                   offsets[GPIO_V2_LINES_MAX];
+                char                       consumer[GPIO_MAX_NAME_SIZE];
+                struct gpio_v2_line_config config;
+                uint32_t                   num_lines;
+                uint32_t                   event_buffer_size;
+                uint32_t                   padding[5]; /**< Zero. */
+                int32_t                    fd;
+};
+
+/** @brief What an edge was (`gpio_v2_line_event::id`). */
+enum gpio_v2_line_event_id {
+        GPIO_V2_LINE_EVENT_RISING_EDGE = 1,
+        GPIO_V2_LINE_EVENT_FALLING_EDGE = 2,
+};
+
+/** @brief An edge, as a line fd's read() gives them. */
+struct gpio_v2_line_event {
+                uint64_t timestamp_ns;
+                uint32_t id;
+                uint32_t offset;
+                uint32_t seqno;
+                uint32_t line_seqno;
+                uint32_t padding[6];
+};
+
 /** @brief A line's flags in the first interface (`gpioline_info::flags`). */
 #define GPIOLINE_FLAG_KERNEL (1UL << 0)
 #define GPIOLINE_FLAG_IS_OUT (1UL << 1)
@@ -119,6 +163,10 @@ struct gpioline_info {
 #define GPIO_GET_CHIPINFO_IOCTL _IOR(GPIO_IOC_MAGIC, 0x01, struct gpiochip_info)
 #define GPIO_GET_LINEINFO_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x02, struct gpioline_info)
 #define GPIO_V2_GET_LINEINFO_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x05, struct gpio_v2_line_info)
+#define GPIO_V2_GET_LINE_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x07, struct gpio_v2_line_request)
+#define GPIO_V2_LINE_SET_CONFIG_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x0D, struct gpio_v2_line_config)
+#define GPIO_V2_LINE_GET_VALUES_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x0E, struct gpio_v2_line_values)
+#define GPIO_V2_LINE_SET_VALUES_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x0F, struct gpio_v2_line_values)
 
 #ifdef __cplusplus
 }

@@ -17,6 +17,7 @@
 #include <bmds/board.h>
 #include <bmds/errno.h>
 #include <bmds/gpiochip.h>
+#include <bmds/gpiolines.h>
 #include <bmds/io.h>
 #include <bmds/memory.h>
 #include <bmds/process.h>
@@ -269,10 +270,96 @@ namespace {
 
 } // namespace
 
+namespace {
+
+        static_assert(BMDS_GPIO_LINE_ATTRS_MAX == bmds::IoLineConfig::MaxAttrs &&
+                              BMDS_GPIO_LINES_MAX == bmds::IoLineConfig::MaxLines,
+                      "the ABI's limits are IoLineConfig's (Linux's)");
+        static_assert(sizeof(bmds_gpio_line_event_t) == sizeof(bmds::GpioLines::Event),
+                      "a line fd's records are the ABI's");
+
+        int32_t errnoOfLines(bmds::Error err) {
+                switch (err.code()) {
+                        case bmds::Error::Ok: return 0;
+                        case bmds::Error::Busy: return -BMDS_EBUSY;
+                        case bmds::Error::NotSupported: return -BMDS_ENOTSUP;
+                        case bmds::Error::PermissionDenied: return -BMDS_EPERM;
+                        case bmds::Error::NoMem: return -BMDS_ENOMEM;
+                        case bmds::Error::NotReady: return -BMDS_ENODEV;
+                        case bmds::Error::Invalid: return -BMDS_EINVAL;
+                        default: return -BMDS_EIO;
+                }
+        }
+
+        bmds::IoLineConfig configOf(const bmds_gpio_line_config_t &in) {
+                bmds::IoLineConfig c;
+                c.flags = in.flags;
+                c.attrCount = in.num_attrs;
+                for (size_t i = 0; i < 5; ++i) c.padding[i] = in.padding[i];
+                for (size_t i = 0; i < BMDS_GPIO_LINE_ATTRS_MAX; ++i) {
+                        c.attrs[i].id = in.attrs[i].attr.id;
+                        c.attrs[i].padding = in.attrs[i].attr.padding;
+                        c.attrs[i].value = in.attrs[i].attr.value;
+                        c.attrs[i].mask = in.attrs[i].mask;
+                }
+                return c;
+        }
+
+        int32_t lineRequest(KernelCall &call, bmds_gpio_line_request_t *arg) {
+                bmds_gpio_line_request_t r;
+                if (const int32_t e = copyIn(arg, r); e < 0) return e;
+                if (r.num_lines == 0 || r.num_lines > BMDS_GPIO_LINES_MAX || r.flags != 0 || r.reserved != 0)
+                        return -BMDS_EINVAL;
+                const size_t consumerLength = strnlen(r.consumer, sizeof(r.consumer));
+                auto [handle, err] = bmds::GpioLines::request(Span<const uint32_t>(r.offsets, r.num_lines),
+                                                              StringView(r.consumer, consumerLength),
+                                                              configOf(r.config), r.event_buffer_size);
+                if (err.isError()) return errnoOfLines(err);
+                const int32_t fd = call->addHandle(std::move(handle), BMDS_O_CLOEXEC);
+                if (fd < 0) return fd; // the handle went with it: the lines are given back
+                r.fd = fd;
+                if (const int32_t e = copyOut(r, arg); e < 0) return e;
+                return fd;
+        }
+
+        int32_t lineOp(bmds::GpioLines &lines, uint32_t op, void *arg) {
+                switch (op) {
+                        case BMDS_GPIO_LINE_CONFIG: {
+                                bmds_gpio_line_set_config_t c;
+                                if (const int32_t e = copyIn(static_cast<bmds_gpio_line_set_config_t *>(arg), c); e < 0)
+                                        return e;
+                                if (c.reserved != 0) return -BMDS_EINVAL;
+                                return errnoOfLines(lines.setConfig(configOf(c.config)));
+                        }
+                        case BMDS_GPIO_LINE_GET_VALUES:
+                        case BMDS_GPIO_LINE_SET_VALUES: {
+                                auto                   *out = static_cast<bmds_gpio_line_values_t *>(arg);
+                                bmds_gpio_line_values_t v;
+                                if (const int32_t e = copyIn(out, v); e < 0) return e;
+                                if (v.reserved != 0) return -BMDS_EINVAL;
+                                if (op == BMDS_GPIO_LINE_SET_VALUES)
+                                        return errnoOfLines(lines.setValues(v.mask, v.bits));
+                                uint64_t bits = 0;
+                                if (const bmds::Error err = lines.values(v.mask, bits); err.isError())
+                                        return errnoOfLines(err);
+                                v.bits = bits;
+                                return copyOut(v, out);
+                        }
+                        default: return -BMDS_EINVAL;
+                }
+        }
+
+} // namespace
+
 extern "C" int32_t bmds_k_gpio_ctl(int32_t fd, uint32_t op, void *arg) {
         KernelCall                  call;
         const bmds::FileHandle::Ptr handle = call->handle(fd);
         if (!handle) return -BMDS_EBADF;
+        // A line fd's operations.
+        if (bmds::GpioLines *lines = handle->stream().gpioLines()) {
+                if (arg == nullptr) return -BMDS_EFAULT;
+                return lineOp(*lines, op, arg);
+        }
         bmds::GpioChip *chip = handle->stream().gpioChip();
         if (chip == nullptr) return -BMDS_ENOTTY;
         if (!bmds::Io::isReady()) return -BMDS_ENODEV;
@@ -285,6 +372,7 @@ extern "C" int32_t bmds_k_gpio_ctl(int32_t fd, uint32_t op, void *arg) {
                 case BMDS_GPIO_CONNECTOR: return connector(static_cast<bmds_gpio_connector_t *>(arg));
                 case BMDS_GPIO_CONNECTOR_PIN: return connectorPin(static_cast<bmds_gpio_connector_pin_t *>(arg));
                 case BMDS_GPIO_EDGES: return edges(static_cast<bmds_gpio_edges_t *>(arg));
+                case BMDS_GPIO_LINE_REQUEST: return lineRequest(call, static_cast<bmds_gpio_line_request_t *>(arg));
                 default: return -BMDS_EINVAL;
         }
 }

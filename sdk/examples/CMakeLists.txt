@@ -30,6 +30,7 @@ bmds_add_program(beat SOURCES beat/beat.c DISPLAY)
 bmds_add_program(tlsclient SOURCES tlsclient/tlsclient.c)
 bmds_add_program(screencap SOURCES screencap/screencap.c)
 bmds_add_program(gpioinfo SOURCES gpioinfo/gpioinfo.c)
+bmds_add_program(gpioline SOURCES gpioline/gpioline.c)
 bmds_add_program(i2cread SOURCES i2cread/i2cread.c)
 bmds_add_program(spidevtest SOURCES spidevtest/spidevtest.c)
 

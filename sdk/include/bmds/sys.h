@@ -1680,6 +1680,12 @@ typedef struct bmds_ptp_offset_t {
 #define BMDS_GPIO_CONNECTOR_PIN 5u /**< `bmds_gpio_connector_pin_t *` (`connector`, `pin` set): one of its pins. */
 #define BMDS_GPIO_EDGES                                                                                                \
         6u /**< `bmds_gpio_edges_t *` (`offset`, `after` set): a watched pad's edges; returns how many (appended 2026-11-20). */
+/* Line requests (appended 2026-11-20, devplan/io.md §12.1): Linux's GPIO v2 line fd. */
+#define BMDS_GPIO_LINE_REQUEST                                                                                         \
+        7u /**< On the chip fd: `bmds_gpio_line_request_t *`; returns the line fd (also in `fd`). */
+#define BMDS_GPIO_LINE_CONFIG 8u      /**< On a line fd: `bmds_gpio_line_set_config_t *`: every line set up again. */
+#define BMDS_GPIO_LINE_GET_VALUES 9u  /**< On a line fd: `bmds_gpio_line_values_t *` (`mask` set): the lines' values. */
+#define BMDS_GPIO_LINE_SET_VALUES 10u /**< On a line fd: `bmds_gpio_line_values_t *`: outputs set. */
 
 /** @brief Room for a GPIO chip's or line's name (Linux's `GPIO_MAX_NAME_SIZE`), NUL included. */
 #define BMDS_GPIO_NAME_MAX 32u
@@ -1707,6 +1713,9 @@ typedef struct bmds_gpio_chip_info_t {
 #define BMDS_GPIO_LINE_BIAS_PULL_UP 0x100ull   /**< Pulled up. */
 #define BMDS_GPIO_LINE_BIAS_PULL_DOWN 0x200ull /**< Pulled down. */
 #define BMDS_GPIO_LINE_BIAS_DISABLED 0x400ull  /**< Neither pull. */
+#define BMDS_GPIO_LINE_EVENT_CLOCK_REALTIME                                                                            \
+        0x800ull /**< Edges stamped with CLOCK_REALTIME (a request's; appended 2026-11-20). */
+#define BMDS_GPIO_LINE_EVENT_CLOCK_HTE 0x1000ull /**< A hardware timestamp engine's (none: `-BMDS_ENOTSUP`). */
 
 /** @brief A line as Linux describes it (`BMDS_GPIO_LINE_INFO`; Linux's `gpio_v2_line_info`). */
 typedef struct bmds_gpio_line_info_t {
@@ -1836,6 +1845,88 @@ typedef struct bmds_gpio_connector_pin_t {
                 int32_t  gpio;      /**< The pad on it, or -1 (a supply or another signal). */
                 char     label[16]; /**< For a pin without a pad: `3.3V`, `GND`, `EN`; else "". */
 } bmds_gpio_connector_pin_t;
+
+/** @brief The most lines a request takes, and attributes a config has (Linux's). */
+#define BMDS_GPIO_LINES_MAX 64u
+#define BMDS_GPIO_LINE_ATTRS_MAX 10u
+
+/** @brief `bmds_gpio_line_attr_t::id` (Linux's `GPIO_V2_LINE_ATTR_ID_...`). */
+#define BMDS_GPIO_LINE_ATTR_FLAGS 1u         /**< `value`: `BMDS_GPIO_LINE_...` flags. */
+#define BMDS_GPIO_LINE_ATTR_OUTPUT_VALUES 2u /**< `value`: a bit per line of the request. */
+#define BMDS_GPIO_LINE_ATTR_DEBOUNCE 3u      /**< `value`: µs, up to 1,000,000. */
+
+/** @brief A line attribute: Linux's `gpio_v2_line_attribute`. */
+typedef struct bmds_gpio_line_attr_t {
+                uint32_t id;      /**< `BMDS_GPIO_LINE_ATTR_...`. */
+                uint32_t padding; /**< Zero. */
+                uint64_t value;   /**< Flags, output values or debounce µs. */
+} bmds_gpio_line_attr_t;
+
+/** @brief An attribute and the lines it is for: Linux's `gpio_v2_line_config_attribute`. */
+typedef struct bmds_gpio_line_config_attr_t {
+                bmds_gpio_line_attr_t attr;
+                uint64_t              mask; /**< A bit per line of the request. */
+} bmds_gpio_line_config_attr_t;
+
+/**
+ * @brief A request's config: Linux's `gpio_v2_line_config`, the same layout. A line's flags are
+ *        the first flags attribute whose mask has it, else `flags`; checked as Linux checks them.
+ */
+typedef struct bmds_gpio_line_config_t {
+                uint64_t                     flags;      /**< `BMDS_GPIO_LINE_...` but `USED`. */
+                uint32_t                     num_attrs;  /**< Attributes in `attrs`. */
+                uint32_t                     padding[5]; /**< Zero. */
+                bmds_gpio_line_config_attr_t attrs[BMDS_GPIO_LINE_ATTRS_MAX];
+} bmds_gpio_line_config_t;
+
+/**
+ * @brief A line request (`BMDS_GPIO_LINE_REQUEST` on the chip fd): its lines claimed for
+ *        `consumer` and set up, a line fd back. A line anybody holds is `-BMDS_EBUSY`.
+ */
+typedef struct bmds_gpio_line_request_t {
+                uint32_t                size;      /**< Set by the caller: `sizeof(bmds_gpio_line_request_t)`. */
+                uint32_t                num_lines; /**< Lines in `offsets`, 1 to `BMDS_GPIO_LINES_MAX`. */
+                uint32_t                offsets[BMDS_GPIO_LINES_MAX]; /**< The lines (GPIO numbers), each once. */
+                char                    consumer[BMDS_GPIO_NAME_MAX]; /**< Who holds them (`gpioset`), or "". */
+                bmds_gpio_line_config_t config;
+                uint32_t                event_buffer_size; /**< Edges kept (0: 16 a line), up to 1024. */
+                uint32_t                flags;             /**< Zero (the fd is close-on-exec, as Linux's). */
+                int32_t                 fd;                /**< Out: the line fd. */
+                uint32_t                reserved;          /**< Zero. */
+} bmds_gpio_line_request_t;
+
+/** @brief A line fd's config again (`BMDS_GPIO_LINE_CONFIG`). */
+typedef struct bmds_gpio_line_set_config_t {
+                uint32_t                size;     /**< Set by the caller: `sizeof(bmds_gpio_line_set_config_t)`. */
+                uint32_t                reserved; /**< Zero. */
+                bmds_gpio_line_config_t config;
+} bmds_gpio_line_set_config_t;
+
+/** @brief Lines' values by mask (`BMDS_GPIO_LINE_GET_VALUES`, `_SET_VALUES`), active low applied. */
+typedef struct bmds_gpio_line_values_t {
+                uint32_t size;     /**< Set by the caller: `sizeof(bmds_gpio_line_values_t)`. */
+                uint32_t reserved; /**< Zero. */
+                uint64_t bits;     /**< A bit per line of the request: its value. */
+                uint64_t mask;     /**< The lines asked for, or set. */
+} bmds_gpio_line_values_t;
+
+/** @brief `bmds_gpio_line_event_t::id`. */
+#define BMDS_GPIO_LINE_EVENT_RISING 1u
+#define BMDS_GPIO_LINE_EVENT_FALLING 2u
+
+/**
+ * @brief An edge, as a line fd's read gives them (whole records, waiting while there are none):
+ *        Linux's `gpio_v2_line_event`. A ring the program fell behind dropped its oldest: the
+ *        sequence numbers show it.
+ */
+typedef struct bmds_gpio_line_event_t {
+                uint64_t timestamp_ns; /**< CLOCK_MONOTONIC (or CLOCK_REALTIME, as the line's flags ask). */
+                uint32_t id;           /**< `BMDS_GPIO_LINE_EVENT_...`, active low applied. */
+                uint32_t offset;       /**< The line. */
+                uint32_t seqno;        /**< The request's, from 1. */
+                uint32_t line_seqno;   /**< The line's, from 1. */
+                uint32_t padding[6];   /**< Zero. */
+} bmds_gpio_line_event_t;
 
 /*
  * I²C (slot 140, appended 2026-11-20, devplan/io.md §11.3): `/dev/i2c-N`, the system's I²C buses,
@@ -4224,12 +4315,16 @@ static inline int32_t bmds_file_unmap(void *addr) {
 }
 
 /**
- * @brief Operates on GPIO chip fd @p fd (`/dev/gpiochip0`): `BMDS_GPIO_...` with @p arg as each
- *        says (slot 139, appended 2026-11-20, devplan/io.md §3.9). Reading changes nothing: no
- *        line is taken.
- * @return 0 (`BMDS_GPIO_PINS`, `BMDS_GPIO_EDGES`: how many), or `-BMDS_ENOTTY` (not a GPIO chip),
- *         `-BMDS_ENOENT` (`BMDS_GPIO_EDGES`: the pad isn't watched),
- *         `-BMDS_EBADF`, `-BMDS_EINVAL` (an op, a `size`, an offset or index past the end),
+ * @brief Operates on GPIO chip fd @p fd (`/dev/gpiochip0`), or on a line fd it gave
+ *        (`BMDS_GPIO_LINE_CONFIG`, `_GET_VALUES`, `_SET_VALUES`): `BMDS_GPIO_...` with @p arg as
+ *        each says (slot 139, appended 2026-11-20, devplan/io.md §3.9, §12.1). Reading changes
+ *        nothing: lines are taken only by `BMDS_GPIO_LINE_REQUEST`.
+ * @return 0 (`BMDS_GPIO_PINS`, `BMDS_GPIO_EDGES`: how many; `BMDS_GPIO_LINE_REQUEST`: the line
+ *         fd), or `-BMDS_ENOTTY` (not a GPIO chip or line fd),
+ *         `-BMDS_ENOENT` (`BMDS_GPIO_EDGES`: the pad isn't watched), `-BMDS_EBUSY` (a line
+ *         somebody holds), `-BMDS_EPERM` (setting a line that isn't an output), `-BMDS_ENOTSUP`
+ *         (the HTE clock), `-BMDS_EBADF`, `-BMDS_EINVAL` (an op, a `size`, an offset or index
+ *         past the end, a config Linux would refuse), `-BMDS_EMFILE`, `-BMDS_ENOMEM`,
  *         `-BMDS_EFAULT`, `-BMDS_ENOSYS`.
  */
 static inline int32_t bmds_gpio_ctl(int32_t fd, uint32_t op, void *arg) {

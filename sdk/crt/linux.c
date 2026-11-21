@@ -1055,9 +1055,47 @@ static long gpio_ioctl(long fd, unsigned long request, void *arg) {
                         }
                         return 0;
                 }
+                case GPIO_V2_GET_LINE_IOCTL: {
+                        /* The config is the ABI's layout; the request around it starts with size. */
+                        _Static_assert(sizeof(struct gpio_v2_line_config) == sizeof(bmds_gpio_line_config_t),
+                                       "gpio_v2_line_config is bmds_gpio_line_config_t");
+                        struct gpio_v2_line_request *in = arg;
+                        for (size_t i = 0; i < 5; i++)
+                                if (in->padding[i] != 0) return -EINVAL;
+                        if (in->num_lines == 0 || in->num_lines > GPIO_V2_LINES_MAX) return -EINVAL;
+                        bmds_gpio_line_request_t r;
+                        memset(&r, 0, sizeof(r));
+                        r.size = sizeof(r);
+                        r.num_lines = in->num_lines;
+                        memcpy(r.offsets, in->offsets, sizeof(uint32_t) * in->num_lines);
+                        memcpy(r.consumer, in->consumer, sizeof(r.consumer));
+                        memcpy(&r.config, &in->config, sizeof(r.config));
+                        r.event_buffer_size = in->event_buffer_size;
+                        const long got = gpio_ctl(fd, BMDS_GPIO_LINE_REQUEST, &r);
+                        if (got < 0) return got;
+                        in->fd = r.fd;
+                        return 0;
+                }
+                case GPIO_V2_LINE_SET_CONFIG_IOCTL: {
+                        bmds_gpio_line_set_config_t c;
+                        memset(&c, 0, sizeof(c));
+                        c.size = sizeof(c);
+                        memcpy(&c.config, arg, sizeof(c.config));
+                        return gpio_ctl(fd, BMDS_GPIO_LINE_CONFIG, &c);
+                }
+                case GPIO_V2_LINE_GET_VALUES_IOCTL:
+                case GPIO_V2_LINE_SET_VALUES_IOCTL: {
+                        struct gpio_v2_line_values *v = arg;
+                        bmds_gpio_line_values_t     b = {.size = sizeof(b), .bits = v->bits, .mask = v->mask};
+                        const int                   get = request == GPIO_V2_LINE_GET_VALUES_IOCTL;
+                        const long r = gpio_ctl(fd, get ? BMDS_GPIO_LINE_GET_VALUES : BMDS_GPIO_LINE_SET_VALUES, &b);
+                        if (r < 0) return r;
+                        if (get) v->bits = b.bits;
+                        return 0;
+                }
                 default: {
-                        /* Not a GPIO chip: ENOTTY; a chip's other requests (taking lines, watching):
-                           not provided yet (devplan/io.md §6, step 3). */
+                        /* Not a GPIO chip: ENOTTY; a chip's other requests (watching line info, the
+                           first interface's handles): not provided (devplan/io.md §12). */
                         bmds_gpio_chip_info_t c = {.size = sizeof(c)};
                         const long            r = gpio_ctl(fd, BMDS_GPIO_CHIP_INFO, &c);
                         return r < 0 ? r : -EOPNOTSUPP;
