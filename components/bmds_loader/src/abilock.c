@@ -1057,3 +1057,5 @@ _Static_assert(offsetof(bmds_gpio_edges_t, offset) == 4 && offsetof(bmds_gpio_ed
                        offsetof(bmds_gpio_edges_t, edges) == 28 && sizeof(bmds_gpio_edges_t) == 32,
                "ABI: bmds_gpio_edges_t");
 #endif
+/* A sysconf_set's refusal, in the check's words (devplan/io.md §10.7, 2026-11-20). */
+_Static_assert(BMDS_SYSCONF_FIELD_REFUSAL == 7, "ABI: BMDS_SYSCONF_FIELD_REFUSAL");

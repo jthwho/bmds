@@ -307,6 +307,13 @@ static inline int bmds_sys_has(uint32_t n) {
  * A kernel before it answers `-BMDS_EINVAL`.
  */
 #define BMDS_SYSCONF_FIELD_SECRET 6u
+/**
+ * Why this process's last `sysconf_set` of the parameter was refused, in the parameter's own words
+ * (`GPIO26 is a system pin: eth0 uses it as PPS out. ... add force to change it anyway.`), or ""
+ * (none refused, a set taken since, or a refusal with no words: the errno says it). Appended
+ * 2026-11-20 (devplan/io.md §10.7); a kernel before it answers `-BMDS_EINVAL`.
+ */
+#define BMDS_SYSCONF_FIELD_REFUSAL 7u
 
 /** @brief `sysconf_set` operations. */
 #define BMDS_SYSCONF_OP_SET 0u    /**< The current value becomes `value` (checked; not saved). */

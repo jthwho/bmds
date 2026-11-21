@@ -357,6 +357,10 @@ class Process {
                 std::atomic<ProgramControls *> _controls{nullptr};
                 Signals    _signals;
                 String     _cwd;
+                // The last refused sysconf_set and its check's reason (BMDS_SYSCONF_FIELD_REFUSAL);
+                // _pathLock's. In PSRAM only once one is refused.
+                uint16_t                       _refusedId = 0xffff;
+                String                         _refusal{MemSpace::Psram};
                 LineInput *_line = nullptr;
                 bool       _lineInput = true;
                 bool       _echo = true;

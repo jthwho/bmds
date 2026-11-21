@@ -652,3 +652,35 @@ Signal and function names are the chip's (`io signals`), matched without case.
   edge only; `rising` took rising edges only; 80 edges with nobody reading kept the last 64,
   16 counted lost; letting the pad go ended the watch. `-f` wasn't run on the board (it stops
   only when interrupted).
+
+### 10.7 3c: the I/O Manager writes `io/gpio` (design, 2026-11-20)
+
+- **The window** (bmds-apps' `ioman`, its `devplan/ioman.md`): the inspector gains an editor over
+  the chosen pin's `io/gpio` entry: its mode (not set up, in, out, open drain, off), level, pull,
+  edges and debounce, and a line for the rest of its words (`func=`, `out:`, `in:`); Apply,
+  Release (its entry taken out), Save (`io/gpio` saved). It writes the whole value through
+  `sysconf_set`, its own entry changed and the others kept, as `sysconf set` would. A pin held by
+  another owner asks first, in the kernel's words, and Change Anyway adds `force`. A watched pin's
+  last edges are drawn in the inspector as a strip and a list, read with `BMDS_GPIO_EDGES`.
+- **The reason reaches programs:** `sysconf_get`'s field `BMDS_SYSCONF_FIELD_REFUSAL` (appended)
+  gives the calling process's last refused `sysconf_set` of that parameter in its check's words.
+  The process keeps the last one (its id and the text, in PSRAM once one is refused); a set taken
+  since clears it.
+- **One way to set a thing** (`sysconf.md` §13): the window sets `io/gpio`, as `sysconf set` does;
+  nothing else changes a pin. `io pulse` stays the shell's: a pulse is an action, not a setting,
+  and the window's Toggle is the level changed in `io/gpio`.
+
+### 10.8 As built: 3c (2026-11-20)
+
+- `BMDS_SYSCONF_FIELD_REFUSAL` (appended, ABI-locked): `Process::sysconfSet()` keeps its last
+  refused set (the id, the check's words in PSRAM); `sysconfGet()` gives them for that id, ""
+  otherwise; a set taken since clears it (host-tested).
+- bmds-apps' `ioman`: the editor over the chosen pin's entry (Mode, Level, Pull, Edges, Debounce,
+  Other words; Apply, Release, Save), writing `io/gpio` whole with the others kept; a held pin's
+  refusal shown in a box in the kernel's words, Yes adding `force`; a watched pin's last 2 s as a
+  strip (`▔` high, `▁` low, 32 columns) and its last six edges at the top of the details.
+- **Checked on bmds0:** GPIO2 set up as an output from the window (`2=out,low`, its row green);
+  GPIO21 (usb0's hub reset) asked "GPIO21 is a system pin: usb0 uses it as hub reset. ...
+  Change GPIO21 anyway?", answered No (nothing changed); GPIO14 set up as
+  `od,high,pull-up,edges`, three pulses from `io pulse` listed (six edges) and drawn in the
+  strip; `io/gpio` put back to its default afterwards, nothing saved.

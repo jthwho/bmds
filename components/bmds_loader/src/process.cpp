@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstring>
 #include <new>
+#include <utility>
 #include <bmds/clock.h>
 #include <bmds/console.h>
 #include <bmds/deadline.h>
@@ -1173,8 +1174,12 @@ int32_t Process::sysconfFind(const char *key) {
 int32_t Process::sysconfGet(int32_t id, uint32_t field, char *out, uint32_t size) {
         SysConf::Id   which;
         SysConf::Info info;
-        if (field > BMDS_SYSCONF_FIELD_SECRET) return -BMDS_EINVAL;
+        if (field > BMDS_SYSCONF_FIELD_REFUSAL) return -BMDS_EINVAL;
         if (!idArg(id, which)) return -BMDS_ENOENT;
+        if (field == BMDS_SYSCONF_FIELD_REFUSAL) {
+                Mutex::Locker lock(_pathLock, WaitForever);
+                return copyText(_refusedId == uint16_t(which) ? _refusal.view() : StringView(), out, size);
+        }
         if (field == BMDS_SYSCONF_FIELD_SECRET) {
                 String value(MemSpace::Psram);
                 if (const Error err = SysConf::getSecret(SysConf::keyOf(which), value); err.isError())
@@ -1222,7 +1227,21 @@ int32_t Process::sysconfSet(int32_t id, uint32_t op, const char *value) {
                 case BMDS_SYSCONF_OP_SET: {
                         const int32_t n = textArg(value, BMDS_SYSCONF_VALUE_MAX, -BMDS_ERANGE);
                         if (n < 0) return n;
-                        return errnoFor(SysConf::set(which, StringView(value, size_t(n))));
+                        // The check's reason kept for the caller (BMDS_SYSCONF_FIELD_REFUSAL): the last
+                        // refused set of this process's.
+                        String      why(MemSpace::Psram);
+                        const Error err = SysConf::set(which, StringView(value, size_t(n)), &why);
+                        {
+                                Mutex::Locker lock(_pathLock, WaitForever);
+                                if (err.isError()) {
+                                        _refusedId = uint16_t(which);
+                                        _refusal = std::move(why);
+                                } else if (_refusedId == uint16_t(which)) {
+                                        _refusedId = 0xffff;
+                                        _refusal.clear();
+                                }
+                        }
+                        return errnoFor(err);
                 }
                 case BMDS_SYSCONF_OP_SETDEF: return errnoFor(SysConf::setDefault(which));
                 case BMDS_SYSCONF_OP_REVERT: return errnoFor(SysConf::revert(which));

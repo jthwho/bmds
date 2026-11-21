@@ -304,8 +304,10 @@ Plan: [`input.md`](input.md).
   (GPIO, IO_MUX functions, matrix signals; `force` borrows a held pin, its registers saved and
   put back), the refusal's reason in `sysconf set`, `io pulse`; checked on bmds0. Step 3b built
   (§10.6): edges with timestamps on `io/gpio`'s inputs (`edges`, `rising`, `falling`,
-  `debounce=`), `io edges`, `gpio_ctl`'s `BMDS_GPIO_EDGES`; checked on bmds0. Next: 3c (the
-  window writing `io/gpio`).
+  `debounce=`), `io edges`, `gpio_ctl`'s `BMDS_GPIO_EDGES`; checked on bmds0. Step 3c built
+  (§10.8): `ioman` sets pins up through `io/gpio`, asks before forcing in the kernel's words
+  (`BMDS_SYSCONF_FIELD_REFUSAL`), and draws a watched pin's edges; checked on bmds0. Next: step 4
+  (ports: UART, I²C, SPI on chosen pins).
 
 ## Phase 6 — Graphics
 

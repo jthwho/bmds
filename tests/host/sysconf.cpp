@@ -732,7 +732,18 @@ TEST_CASE("SysConf: a secret is never shown; the password, hashed, in /etc/shado
         CHECK(std::string(text) == hash.cStr());
         CHECK(p.sysconfGet(id, BMDS_SYSCONF_FIELD_VALUE, text, sizeof(text)) == 5);
         CHECK(std::string(text) == "(set)");
-        CHECK(p.sysconfGet(id, BMDS_SYSCONF_FIELD_SECRET + 1, text, sizeof(text)) == -BMDS_EINVAL);
+        CHECK(p.sysconfGet(id, BMDS_SYSCONF_FIELD_REFUSAL + 1, text, sizeof(text)) == -BMDS_EINVAL); // the last + 1
+        // A refused set's reason, in its check's words (BMDS_SYSCONF_FIELD_REFUSAL): this process's last, for
+        // that parameter only; a set taken since clears it.
+        const int32_t even = p.sysconfFind("wm/even");
+        REQUIRE(even >= 0);
+        CHECK(p.sysconfGet(even, BMDS_SYSCONF_FIELD_REFUSAL, text, sizeof(text)) == 0);
+        CHECK(p.sysconfSet(even, BMDS_SYSCONF_OP_SET, "5") == -BMDS_EINVAL);
+        CHECK(p.sysconfGet(even, BMDS_SYSCONF_FIELD_REFUSAL, text, sizeof(text)) == 22);
+        CHECK(std::string(text) == "an even number, please");
+        CHECK(p.sysconfGet(id, BMDS_SYSCONF_FIELD_REFUSAL, text, sizeof(text)) == 0); // another parameter's: none
+        CHECK(p.sysconfSet(even, BMDS_SYSCONF_OP_SET, "6") == 0);
+        CHECK(p.sysconfGet(even, BMDS_SYSCONF_FIELD_REFUSAL, text, sizeof(text)) == 0);
         // Cleared.
         REQUIRE(Password::set("").isOk());
         CHECK_FALSE(Password::isSet());
