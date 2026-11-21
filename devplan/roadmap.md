@@ -317,7 +317,9 @@ Plan: [`input.md`](input.md).
   bmds-apps (each port's setup as fields, a terminal, an I²C scan and registers, SPI transfers).
   Step 5a built (§12.2): programs' line requests, Linux's GPIO v2 line fd (values, config,
   edge events read and polled), `gpio_ctl` ops 7-10, `sdk/examples/gpioline`; checked on bmds0.
-  Next: 5b (line info watched on the chip fd), then 5c (`dist/` recipes for libgpiod, i2c-tools).
+  Step 5b built (§12.4): line info watched on the chip fd (requested, reconfigured, released,
+  one event per change), a request's settings in line info; checked on bmds0. Next: 5c
+  (`dist/` recipes for libgpiod's tools and i2c-tools).
 
 ## Phase 6 — Graphics
 

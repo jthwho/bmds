@@ -16,6 +16,7 @@
 #include <new>
 #include <driver/gpio.h>
 #include <bmds/clock.h>
+#include <bmds/gpiochip.h>
 #include <bmds/deadline.h>
 #include <bmds/gpiolines.h>
 #include <bmds/interrupt.h>
@@ -25,6 +26,7 @@
 #include <bmds/memory.h>
 #include <bmds/mutex.h>
 #include <bmds/semaphore.h>
+#include <bmds/spinlock.h>
 #include <bmds/system.h>
 #include <bmds/waitlist.h>
 
@@ -176,6 +178,39 @@ namespace {
 
         // The live requests, for the restart hook (a restart leaves IO_MUX and the matrix as they
         // are: devplan/io.md §10.4).
+        // What each held pad's request asked, for line info (a spinlock: a copy's moment). In
+        // PSRAM, made by the first request and kept: 1 KB nobody pays for until a program asks.
+        constexpr size_t                        MaxPads = 64;
+        constinit SpinLock                      publishedLock;
+        constinit std::atomic<IoLineSettings *> published{nullptr};
+        constinit uint64_t                      publishedMask = 0;
+
+        bool makePublished() {
+                if (published.load() != nullptr) return true;
+                void *mem = Memory::alloc(MemSpace::Psram, sizeof(IoLineSettings) * MaxPads);
+                if (mem == nullptr) return false;
+                auto *table = static_cast<IoLineSettings *>(mem);
+                for (size_t i = 0; i < MaxPads; ++i) ::new (&table[i]) IoLineSettings();
+                IoLineSettings *none = nullptr;
+                if (!published.compare_exchange_strong(none, table)) Memory::free(mem); // another made it first
+                return true;
+        }
+
+        void publish(unsigned pad, const IoLineSettings &s) {
+                if (pad >= MaxPads || published.load() == nullptr) return;
+                SpinLock::Locker lock(publishedLock);
+                published.load()[pad] = s;
+                publishedMask |= 1ull << pad;
+                return;
+        }
+
+        void unpublish(unsigned pad) {
+                if (pad >= MaxPads) return;
+                SpinLock::Locker lock(publishedLock);
+                publishedMask &= ~(1ull << pad);
+                return;
+        }
+
         // Lock-free: a slot is taken and given back by compare-and-swap.
         constinit std::atomic<GpioLines *> live[32] = {};
         constinit std::atomic<bool>        hooked{false};
@@ -201,6 +236,14 @@ namespace {
         }
 
 } // namespace
+
+bool GpioLines::settingsOf(unsigned pad, IoLineSettings &out) {
+        if (pad >= MaxPads) return false;
+        SpinLock::Locker lock(publishedLock);
+        if ((publishedMask & (1ull << pad)) == 0) return false;
+        out = published.load()[pad];
+        return true;
+}
 
 void GpioLines::putBack() {
         for (size_t i = _count; i-- > 0;) IoChipOps::restorePad(_lines[i].pad, _lines[i].saved);
@@ -232,6 +275,7 @@ Result<FileHandle::Ptr> GpioLines::request(Span<const uint32_t> offsets, StringV
         IoLineSettings settings[IoLineConfig::MaxLines];
         if (const Error err = IoLine::resolve(config, n, settings); err.isError())
                 return makeError<FileHandle::Ptr>(err);
+        if (!makePublished()) return makeError<FileHandle::Ptr>(Error::NoMem);
         uint32_t capacity = eventBufferSize == 0 ? uint32_t(n) * EventsPerLine : eventBufferSize;
         if (capacity > MaxEvents) capacity = MaxEvents;
         if (capacity < 2) capacity = 2;
@@ -256,6 +300,8 @@ Result<FileHandle::Ptr> GpioLines::request(Span<const uint32_t> offsets, StringV
                 Memory::free(mem);
         };
 
+        // Watchers are told once, when the lines are claimed, set up and published.
+        const GpioChip::Change change;
         // The pads, all or none, for the consumer (a program's name when it gave none).
         IoUse uses[IoLineConfig::MaxLines];
         for (size_t i = 0; i < n; ++i) uses[i] = IoUse{IoResource(offsets[i]), "line"};
@@ -281,6 +327,7 @@ Result<FileHandle::Ptr> GpioLines::request(Span<const uint32_t> offsets, StringV
                 l.settings = settings[i];
                 IoChipOps::savePad(l.pad, l.saved);
                 setUp(l);
+                publish(l.pad, l.settings);
                 if (l.settings.edges != IoLineSettings::NoEdges && startInterrupt(l).isError())
                         bmdsWarn("io: %s: GPIO%u's edges not watched: its interrupt can't be set", owner,
                                  unsigned(l.pad));
@@ -290,6 +337,7 @@ Result<FileHandle::Ptr> GpioLines::request(Span<const uint32_t> offsets, StringV
         if (herr.isError()) {
                 for (size_t i = n; i-- > 0;) {
                         stopInterrupt(self->_lines[i]);
+                        unpublish(self->_lines[i].pad);
                         IoChipOps::restorePad(self->_lines[i].pad, self->_lines[i].saved);
                 }
                 self->_state->claim.reset();
@@ -302,7 +350,8 @@ Result<FileHandle::Ptr> GpioLines::request(Span<const uint32_t> offsets, StringV
 Error GpioLines::setConfig(const IoLineConfig &config) {
         IoLineSettings settings[IoLineConfig::MaxLines];
         if (const Error err = IoLine::resolve(config, _count, settings); err.isError()) return err;
-        Mutex::Locker lock(_state->lock, WaitForever);
+        const GpioChip::Change change; // before the lock: told after it
+        Mutex::Locker          lock(_state->lock, WaitForever);
         for (size_t i = 0; i < _count; ++i) {
                 Line &l = _lines[i];
                 // A line that keeps watching keeps its interrupt through the change: an edge the
@@ -311,6 +360,7 @@ Error GpioLines::setConfig(const IoLineConfig &config) {
                 if (!watch) stopInterrupt(l);
                 l.settings = settings[i];
                 setUp(l);
+                publish(l.pad, l.settings);
                 if (watch && l.interrupt)
                         (void)gpio_set_intr_type(gpio_num_t(l.pad), interruptType(l.settings));
                 else if (watch && startInterrupt(l).isError())
@@ -405,13 +455,18 @@ WaitList *GpioLines::readinessWaiters() {
 
 void GpioLines::handleClosed(uint8_t mode) {
         (void)mode;
-        // Its last handle: the interrupts stopped, the pads as they were, the claim ended.
+        // Its last handle: the interrupts stopped, the pads as they were, the claim ended; watchers
+        // told once, at the end of this block.
         removeLive(this);
-        for (size_t i = _count; i-- > 0;) {
-                stopInterrupt(_lines[i]);
-                IoChipOps::restorePad(_lines[i].pad, _lines[i].saved);
+        {
+                const GpioChip::Change change;
+                for (size_t i = _count; i-- > 0;) {
+                        stopInterrupt(_lines[i]);
+                        unpublish(_lines[i].pad);
+                        IoChipOps::restorePad(_lines[i].pad, _lines[i].saved);
+                }
+                _state->claim.reset();
         }
-        _state->claim.reset();
         const uint32_t capacity = _state->capacity;
         for (uint32_t i = 0; i < capacity; ++i) _state->ring[i].~EdgeRecord();
         for (size_t i = 0; i < _count; ++i) _lines[i].~Line();

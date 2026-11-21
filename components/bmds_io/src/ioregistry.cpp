@@ -92,6 +92,7 @@ IoBoardUse IoRegistry::boardUse(IoResource pad) const {
 Result<IoClaim> IoRegistry::claim(StringView owner, IoOwnerKind kind, Span<const IoUse> uses, unsigned flags,
                                   IoResource *blocked) {
         if (owner.isEmpty()) return makeError<IoClaim>(Error::Invalid);
+        const Told    told{*this}; // after the lock
         Mutex::Locker lock(_lock, WaitForever);
         uint8_t       index = NoOwner;
         for (size_t i = 0; i < MaxOwners; ++i) {
@@ -116,6 +117,7 @@ Result<IoClaim> IoRegistry::claim(StringView owner, IoOwnerKind kind, Span<const
 }
 
 Error IoRegistry::add(uint8_t owner, Span<const IoUse> uses, unsigned flags, IoResource *blocked) {
+        const Told    told{*this}; // after the lock
         Mutex::Locker lock(_lock, WaitForever);
         return addLocked(owner, uses, flags, blocked);
 }
@@ -181,6 +183,7 @@ void IoRegistry::releaseSlotLocked(uint8_t owner, Slot &slot) {
 
 Error IoRegistry::release(uint8_t owner, IoResource resource) {
         if (resource >= _resourceCount) return Error::NotExist;
+        const Told    told{*this}; // after the lock
         Mutex::Locker lock(_lock, WaitForever);
         Slot         &s = _slots[resource];
         if (s.owner != owner && s.lender != owner) return Error::NotExist;
@@ -190,6 +193,7 @@ Error IoRegistry::release(uint8_t owner, IoResource resource) {
 }
 
 void IoRegistry::releaseAll(uint8_t owner) {
+        const Told    told{*this}; // after the lock
         Mutex::Locker lock(_lock, WaitForever);
         for (size_t i = 0; i < _resourceCount; ++i) releaseSlotLocked(owner, _slots[i]);
         ++_generation;
@@ -197,6 +201,7 @@ void IoRegistry::releaseAll(uint8_t owner) {
 }
 
 void IoRegistry::endOwner(uint8_t owner) {
+        const Told    told{*this}; // after the lock
         Mutex::Locker lock(_lock, WaitForever);
         for (size_t i = 0; i < _resourceCount; ++i) releaseSlotLocked(owner, _slots[i]);
         _owners[owner] = Owner();

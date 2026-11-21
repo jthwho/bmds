@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <bmds/board.h>
+#include <bmds/gpiochip.h>
 #include <bmds/io.h>
 #include <bmds/iosetup.h>
 #include <bmds/log.h>
@@ -50,6 +51,8 @@ namespace Io {
                 }
                 IoRegistry *r = theRegistry.create(chip);
                 if (r == nullptr) return Error::NoMem;
+                // Watchers of lines told of every claim and release (devplan/io.md §12.3).
+                r->setChangeHook([](void *) { GpioChip::linesChanged(); }, nullptr);
                 for (const BoardPin &p : board().pins) {
                         if (r->setBoardUse(pad(p.gpio), boardUse(p.use)).isError())
                                 bmdsWarn("io: the board lists GPIO%d, which the %s hasn't", p.gpio, chip.name);

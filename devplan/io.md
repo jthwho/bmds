@@ -961,3 +961,54 @@ tools and `i2c-tools`, which test both halves.
   1-4, times matching `uptime`; GPIO7 (`i2c0`) `EBUSY`; GPIO48 `EBUSY` while `gpioline hold`
   had it, shown as `gpioline as line` in `io pin`, free again after, and after the holder was
   killed.
+
+### 12.3 5b: line info watched (design, 2026-11-20)
+
+- **A chip fd of its own per open** (Linux keeps watches per file): `/dev/gpiochip0`'s open makes
+  a `GpioChip` in PSRAM, freed with its last handle, as `/dev/i2c-N`'s clients.
+- **`BMDS_GPIO_LINE_WATCH`** (op 11): a line's info, as `BMDS_GPIO_LINE_INFO`, and its changes
+  told from then on; `BMDS_GPIO_LINE_UNWATCH` (op 12). Watching one twice, or unwatching one not
+  watched, is `EBUSY`, as Linux. Reading the chip fd gives Linux's `gpio_v2_line_info_changed`
+  records (288 bytes: the line's info as Linux lays it out, the time, requested, released or
+  reconfigured), waiting while there are none; `poll()` sees it. 32 waiting at most, as Linux's
+  queue; more are dropped.
+- **What changes a line:** the registry calls a hook after each claim, release and ending owner,
+  its lock let go (a host-tested addition); a holder that changes its pads without a new claim
+  (`io/gpio` reapplied, a port's settings, a request's `SET_CONFIG`) says so. Each watching fd
+  then compares its lines' info with what it last saw (a hash of the flags, consumer and
+  debounce) and queues what moved: free to held is *requested*, held to free *released*,
+  anything else *reconfigured*, with the info as it is then.
+- **One change, one event:** a request claims its pads, then sets them up and publishes its
+  settings; told at the claim, a watcher would see *requested* with the old setup, then
+  *reconfigured*. Changes are batched (`GpioChip::Change`, a counter): a request, its config,
+  its close, `io/gpio`'s apply, a port's start and stop each report once, at the end. Changes
+  elsewhere during a batch are reported at its end.
+- **A request's settings in line info:** each pad a request holds publishes its settings
+  (direction, drive, bias asked, active low, edges, debounce, the clock) in a small table under
+  a spinlock, and line info (`LINE_INFO`, `LINE_WATCH`, the events) reports them as Linux does;
+  a pad without them reports what the pad does, as before.
+- **Linux:** `GPIO_V2_GET_LINEINFO_WATCH_IOCTL`, `GPIO_GET_LINEINFO_UNWATCH_IOCTL`,
+  `gpio_v2_line_info_changed`; the first interface's watch isn't offered (libgpiod 2 uses v2).
+- **Checks:** `gpioline watch N` (Linux's API only) beside another program's request of N, its
+  `SET_CONFIG`, its end; `io/gpio` taking and letting go of N; a request's active low and edges
+  in `gpioinfo`.
+
+### 12.4 As built: 5b (2026-11-20)
+
+- `IoRegistry::setChangeHook()` (host-tested: called after claims, failed claims, releases and
+  ended owners, its lock let go, so the hook may read the registry). `GpioChip` per open, its
+  watches made at the first (`Watch`: the mask, a hash per line, 32 queued changes, in PSRAM);
+  `GpioChip::lineInfo()` (moved from `gpio_ctl`, now with a request's settings) and
+  `linesChanged()`; `Change` batches in a request, its config and its close, `io/gpio`'s and
+  the ports' watchers (each made before their lock: telling reads the pads, which asks
+  `io/gpio` for edge info under its lock). The requests' settings table lives in PSRAM, made by
+  the first request (it was 1 KB of internal RAM held for nothing). `gpio_ctl` ops 11 and 12,
+  `bmds_gpio_line_info_changed_t` (Linux's), ABI-locked; `linux.c`, `linux/gpio.h`;
+  `gpioline watch`.
+- **Size:** about 3 KB more code (the chip 3.5, less what moved from `gpio_ctl`); 141 + 184
+  bytes of RAM (the slots, the watchers' list); a watching fd 2.8 KB of PSRAM.
+- **Checked on bmds0:** `gpioline watch 47` while another program requested 47 with edges and a
+  pull-up, flipped its pull twice and closed it, then `io/gpio` took and let go of it: one event
+  each, *requested* (`used input rising falling pull-up`, consumer `gpioline`), *reconfigured*
+  twice (the pull), *released*, *requested* by `io` as an output, *released*; unwatching twice
+  `EBUSY`; `gpioinfo` (a chip per open) as before.

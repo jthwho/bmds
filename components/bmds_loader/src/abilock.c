@@ -1136,3 +1136,16 @@ _Static_assert(offsetof(bmds_gpio_line_event_t, id) == 8 && offsetof(bmds_gpio_l
                        offsetof(bmds_gpio_line_event_t, seqno) == 16 &&
                        offsetof(bmds_gpio_line_event_t, line_seqno) == 20 && sizeof(bmds_gpio_line_event_t) == 48,
                "ABI: bmds_gpio_line_event_t (Linux's gpio_v2_line_event)");
+/* GPIO line info watched (devplan/io.md §12.3, 2026-11-20). */
+_Static_assert(BMDS_GPIO_LINE_WATCH == 11 && BMDS_GPIO_LINE_UNWATCH == 12 && BMDS_GPIO_LINE_CHANGED_REQUESTED == 1 &&
+                       BMDS_GPIO_LINE_CHANGED_RELEASED == 2 && BMDS_GPIO_LINE_CHANGED_CONFIG == 3,
+               "ABI: gpio_ctl watch ops, change types");
+_Static_assert(offsetof(bmds_gpio_line_unwatch_t, offset) == 4 && sizeof(bmds_gpio_line_unwatch_t) == 8,
+               "ABI: bmds_gpio_line_unwatch_t");
+_Static_assert(offsetof(bmds_gpio_line_info_v2_t, offset) == 64 && offsetof(bmds_gpio_line_info_v2_t, flags) == 72 &&
+                       offsetof(bmds_gpio_line_info_v2_t, attrs) == 80 && sizeof(bmds_gpio_line_info_v2_t) == 256,
+               "ABI: bmds_gpio_line_info_v2_t (Linux's gpio_v2_line_info)");
+_Static_assert(offsetof(bmds_gpio_line_info_changed_t, timestamp_ns) == 256 &&
+                       offsetof(bmds_gpio_line_info_changed_t, event_type) == 264 &&
+                       sizeof(bmds_gpio_line_info_changed_t) == 288,
+               "ABI: bmds_gpio_line_info_changed_t (Linux's gpio_v2_line_info_changed)");

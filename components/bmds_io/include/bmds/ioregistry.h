@@ -227,8 +227,30 @@ class IoRegistry {
                  */
                 uint32_t generation() const { return _generation; }
 
+                /** @brief What `setChangeHook()` takes. */
+                using ChangeHook = void (*)(void *arg);
+
+                /**
+                 * @brief Has @p hook called after every claim, release and ended owner (a failed
+                 *        claim too), the registry's lock let go: it may read the registry. Set once,
+                 *        before claims are taken (devplan/io.md §12.3).
+                 */
+                void setChangeHook(ChangeHook hook, void *arg) {
+                        _hook = hook;
+                        _hookArg = arg;
+                        return;
+                }
+
         private:
                 friend class IoClaim;
+
+                // Calls the hook when it goes: made before a method's lock, so it goes after it.
+                struct Told {
+                                const IoRegistry &registry;
+                                ~Told() {
+                                        if (registry._hook != nullptr) registry._hook(registry._hookArg);
+                                }
+                };
 
                 static constexpr uint8_t NoOwner = 0xff;
 
@@ -258,6 +280,8 @@ class IoRegistry {
                 size_t        _resourceCount = 0;
                 mutable Mutex _lock;
                 uint32_t      _generation = 0;
+                ChangeHook    _hook = nullptr;
+                void         *_hookArg = nullptr;
                 Owner         _owners[MaxOwners];
                 Slot          _slots[MaxResources];
 };

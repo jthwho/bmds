@@ -18,6 +18,7 @@
 #include <driver/gpio.h>
 #include <esp_err.h>
 #include <bmds/detail/platform.h>
+#include <bmds/gpiochip.h>
 #include <bmds/io.h>
 #include <bmds/iosetup.h>
 #include <bmds/log.h>
@@ -298,7 +299,8 @@ namespace {
 
         void changed(void *arg) {
                 (void)arg;
-                Mutex::Locker lock(state->lock, WaitForever);
+                const GpioChip::Change change; // line watchers told once, after the lock
+                Mutex::Locker          lock(state->lock, WaitForever);
                 SysConf::Id   id;
                 while (state->watcher.next(id)) {}
                 (void)state->watcher.overflowed();

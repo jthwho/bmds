@@ -84,10 +84,6 @@ namespace {
         }
 
         // One pad's row, read alone.
-        bool readRow(uint32_t offset, IoPinRow &out) {
-                return bmds::Io::readPins(offset, Span<IoPinRow>(&out, 1)) == 1;
-        }
-
         int32_t chipInfo(bmds::GpioChip &chip, bmds_gpio_chip_info_t *arg) {
                 bmds_gpio_chip_info_t c;
                 if (const int32_t r = copyIn(arg, c); r < 0) return r;
@@ -102,33 +98,52 @@ namespace {
                 return copyOut(c, arg);
         }
 
+        // A line's info into the ABI's record (Linux's words: `GpioChip::lineInfo()`).
+        void fillLineInfo(const bmds::GpioChip::LineInfo &in, bmds_gpio_line_info_t &l) {
+                static_assert(BMDS_GPIO_LINE_USED == bmds::IoLineConfig::Used &&
+                                      BMDS_GPIO_LINE_BIAS_DISABLED == bmds::IoLineConfig::BiasDisabled &&
+                                      BMDS_GPIO_LINE_EVENT_CLOCK_REALTIME == bmds::IoLineConfig::ClockRealtime,
+                              "the line flags are Linux's, in the kernel and the ABI");
+                l.flags = in.flags;
+                l.debounce_us = in.debounceUs;
+                l.reserved = 0;
+                copyText(StringView(in.name), l.name, sizeof(l.name));
+                copyText(StringView(in.consumer), l.consumer, sizeof(l.consumer));
+                return;
+        }
+
         int32_t lineInfo(bmds_gpio_line_info_t *arg) {
                 bmds_gpio_line_info_t l;
                 if (const int32_t r = copyIn(arg, l); r < 0) return r;
-                if (l.offset >= bmds::ioChip().padCount()) return -BMDS_EINVAL;
-                IoPinRow row;
-                if (!readRow(l.offset, row)) return -BMDS_EINVAL;
-                const bmds::IoPadState &s = row.state;
-                uint64_t                f = 0;
-                if (row.resourceClass != IoClass::Free) f |= BMDS_GPIO_LINE_USED;
-                // Linux's line is one or the other: an output reads back too.
-                if (s.outputEnabled)
-                        f |= BMDS_GPIO_LINE_OUTPUT;
-                else if (s.inputEnabled)
-                        f |= BMDS_GPIO_LINE_INPUT;
-                if (s.openDrain) f |= BMDS_GPIO_LINE_OPEN_DRAIN;
-                if (s.pullUp) f |= BMDS_GPIO_LINE_BIAS_PULL_UP;
-                if (s.pullDown) f |= BMDS_GPIO_LINE_BIAS_PULL_DOWN;
-                if (!s.pullUp && !s.pullDown) f |= BMDS_GPIO_LINE_BIAS_DISABLED;
-                l.flags = f;
-                l.debounce_us = 0;
-                l.reserved = 0;
-                // Linux's line names are the board's (its device tree's gpio-line-names).
-                const bmds::IoPinBoard board = bmds::Io::boardOf(l.offset);
-                copyText(board.label[0] != '\0' ? StringView(board.label) : StringView(row.name), l.name,
-                         sizeof(l.name));
-                copyText(row.owner, l.consumer, sizeof(l.consumer));
+                bmds::GpioChip::LineInfo info;
+                if (bmds::GpioChip::lineInfo(l.offset, info).isError()) return -BMDS_EINVAL;
+                fillLineInfo(info, l);
                 return copyOut(l, arg);
+        }
+
+        int32_t lineWatch(bmds::GpioChip &chip, bmds_gpio_line_info_t *arg) {
+                bmds_gpio_line_info_t l;
+                if (const int32_t r = copyIn(arg, l); r < 0) return r;
+                bmds::GpioChip::LineInfo info;
+                switch (chip.watch(l.offset, info).code()) {
+                        case bmds::Error::Ok: break;
+                        case bmds::Error::Busy: return -BMDS_EBUSY;
+                        case bmds::Error::NoMem: return -BMDS_ENOMEM;
+                        case bmds::Error::Full: return -BMDS_ENOSPC;
+                        default: return -BMDS_EINVAL;
+                }
+                fillLineInfo(info, l);
+                return copyOut(l, arg);
+        }
+
+        int32_t lineUnwatch(bmds::GpioChip &chip, bmds_gpio_line_unwatch_t *arg) {
+                bmds_gpio_line_unwatch_t u;
+                if (const int32_t r = copyIn(arg, u); r < 0) return r;
+                switch (chip.unwatch(u.offset).code()) {
+                        case bmds::Error::Ok: return 0;
+                        case bmds::Error::Busy: return -BMDS_EBUSY;
+                        default: return -BMDS_EINVAL;
+                }
         }
 
         int32_t pins(bmds_gpio_pins_t *arg) {
@@ -373,6 +388,8 @@ extern "C" int32_t bmds_k_gpio_ctl(int32_t fd, uint32_t op, void *arg) {
                 case BMDS_GPIO_CONNECTOR_PIN: return connectorPin(static_cast<bmds_gpio_connector_pin_t *>(arg));
                 case BMDS_GPIO_EDGES: return edges(static_cast<bmds_gpio_edges_t *>(arg));
                 case BMDS_GPIO_LINE_REQUEST: return lineRequest(call, static_cast<bmds_gpio_line_request_t *>(arg));
+                case BMDS_GPIO_LINE_WATCH: return lineWatch(*chip, static_cast<bmds_gpio_line_info_t *>(arg));
+                case BMDS_GPIO_LINE_UNWATCH: return lineUnwatch(*chip, static_cast<bmds_gpio_line_unwatch_t *>(arg));
                 default: return -BMDS_EINVAL;
         }
 }

@@ -15,8 +15,9 @@
  * anybody holds), and on the line fd `GPIO_V2_LINE_SET_CONFIG_IOCTL`,
  * `GPIO_V2_LINE_GET_VALUES_IOCTL`, `GPIO_V2_LINE_SET_VALUES_IOCTL` and read() of
  * `gpio_v2_line_event` records (devplan/io.md §12.1). Open source is emulated (driven high, let go
- * for low); the HTE clock is `EOPNOTSUPP`. Watching line info and the first interface's line
- * handles and events fail with `EOPNOTSUPP`. A line's name is the board's for it (`GPIO14` where
+ * for low); the HTE clock is `EOPNOTSUPP`. Line info watched (`GPIO_V2_GET_LINEINFO_WATCH_IOCTL`,
+ * `GPIO_GET_LINEINFO_UNWATCH_IOCTL`, read() of `gpio_v2_line_info_changed` records: §12.3). The
+ * first interface's line handles, events and watch fail with `EOPNOTSUPP`. A line's name is the board's for it (`GPIO14` where
  * the board has none); its consumer is the driver or program holding it.
  *
  * ABI: frozen. Append only.
@@ -139,6 +140,21 @@ struct gpio_v2_line_event {
                 uint32_t padding[6];
 };
 
+/** @brief What changed on a watched line (`gpio_v2_line_info_changed::event_type`). */
+enum gpio_v2_line_changed_type {
+        GPIO_V2_LINE_CHANGED_REQUESTED = 1,
+        GPIO_V2_LINE_CHANGED_RELEASED = 2,
+        GPIO_V2_LINE_CHANGED_CONFIG = 3,
+};
+
+/** @brief A watched line's change, as the chip fd's read() gives them. */
+struct gpio_v2_line_info_changed {
+                struct gpio_v2_line_info info;
+                uint64_t                 timestamp_ns;
+                uint32_t                 event_type;
+                uint32_t                 padding[5];
+};
+
 /** @brief A line's flags in the first interface (`gpioline_info::flags`). */
 #define GPIOLINE_FLAG_KERNEL (1UL << 0)
 #define GPIOLINE_FLAG_IS_OUT (1UL << 1)
@@ -163,7 +179,9 @@ struct gpioline_info {
 #define GPIO_GET_CHIPINFO_IOCTL _IOR(GPIO_IOC_MAGIC, 0x01, struct gpiochip_info)
 #define GPIO_GET_LINEINFO_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x02, struct gpioline_info)
 #define GPIO_V2_GET_LINEINFO_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x05, struct gpio_v2_line_info)
+#define GPIO_V2_GET_LINEINFO_WATCH_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x06, struct gpio_v2_line_info)
 #define GPIO_V2_GET_LINE_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x07, struct gpio_v2_line_request)
+#define GPIO_GET_LINEINFO_UNWATCH_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x0C, uint32_t)
 #define GPIO_V2_LINE_SET_CONFIG_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x0D, struct gpio_v2_line_config)
 #define GPIO_V2_LINE_GET_VALUES_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x0E, struct gpio_v2_line_values)
 #define GPIO_V2_LINE_SET_VALUES_IOCTL _IOWR(GPIO_IOC_MAGIC, 0x0F, struct gpio_v2_line_values)

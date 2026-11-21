@@ -1032,7 +1032,15 @@ static long gpio_ioctl(long fd, unsigned long request, void *arg) {
                         gpio_name(out->consumer, l.consumer);
                         return 0;
                 }
+                case GPIO_GET_LINEINFO_UNWATCH_IOCTL: {
+                        bmds_gpio_line_unwatch_t u = {.size = sizeof(u), .offset = *(const uint32_t *)arg};
+                        return gpio_ctl(fd, BMDS_GPIO_LINE_UNWATCH, &u);
+                }
+                case GPIO_V2_GET_LINEINFO_WATCH_IOCTL:
                 case GPIO_V2_GET_LINEINFO_IOCTL: {
+                        _Static_assert(sizeof(struct gpio_v2_line_info_changed) ==
+                                               sizeof(bmds_gpio_line_info_changed_t),
+                                       "a watched chip's records pass through as they are");
                         struct gpio_v2_line_info *out = arg;
                         /* As Linux: everything but the offset zero. */
                         const uint32_t offset = out->offset;
@@ -1043,7 +1051,10 @@ static long gpio_ioctl(long fd, unsigned long request, void *arg) {
                         out->offset = offset;
                         if (!clean) return -EINVAL;
                         bmds_gpio_line_info_t l = {.size = sizeof(l), .offset = offset};
-                        const long            r = gpio_ctl(fd, BMDS_GPIO_LINE_INFO, &l);
+                        const long            r = gpio_ctl(fd,
+                                                request == GPIO_V2_GET_LINEINFO_WATCH_IOCTL ? BMDS_GPIO_LINE_WATCH
+                                                                                                       : BMDS_GPIO_LINE_INFO,
+                                                           &l);
                         if (r < 0) return r;
                         gpio_name(out->name, l.name);
                         gpio_name(out->consumer, l.consumer);
@@ -1094,8 +1105,8 @@ static long gpio_ioctl(long fd, unsigned long request, void *arg) {
                         return 0;
                 }
                 default: {
-                        /* Not a GPIO chip: ENOTTY; a chip's other requests (watching line info, the
-                           first interface's handles): not provided (devplan/io.md §12). */
+                        /* Not a GPIO chip: ENOTTY; a chip's other requests (the first interface's
+                           handles, events and watch): not provided (devplan/io.md §12). */
                         bmds_gpio_chip_info_t c = {.size = sizeof(c)};
                         const long            r = gpio_ctl(fd, BMDS_GPIO_CHIP_INFO, &c);
                         return r < 0 ? r : -EOPNOTSUPP;

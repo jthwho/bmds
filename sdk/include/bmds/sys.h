@@ -1686,6 +1686,10 @@ typedef struct bmds_ptp_offset_t {
 #define BMDS_GPIO_LINE_CONFIG 8u      /**< On a line fd: `bmds_gpio_line_set_config_t *`: every line set up again. */
 #define BMDS_GPIO_LINE_GET_VALUES 9u  /**< On a line fd: `bmds_gpio_line_values_t *` (`mask` set): the lines' values. */
 #define BMDS_GPIO_LINE_SET_VALUES 10u /**< On a line fd: `bmds_gpio_line_values_t *`: outputs set. */
+/* Line info watched (appended 2026-11-20, devplan/io.md §12.3): reading the chip fd gives `bmds_gpio_line_info_changed_t`s. */
+#define BMDS_GPIO_LINE_WATCH                                                                                           \
+        11u /**< On the chip fd: `bmds_gpio_line_info_t *` (`offset` set): as `LINE_INFO`, then its changes told. */
+#define BMDS_GPIO_LINE_UNWATCH 12u /**< On the chip fd: `bmds_gpio_line_unwatch_t *`: its changes no longer told. */
 
 /** @brief Room for a GPIO chip's or line's name (Linux's `GPIO_MAX_NAME_SIZE`), NUL included. */
 #define BMDS_GPIO_NAME_MAX 32u
@@ -1909,6 +1913,39 @@ typedef struct bmds_gpio_line_values_t {
                 uint64_t bits;     /**< A bit per line of the request: its value. */
                 uint64_t mask;     /**< The lines asked for, or set. */
 } bmds_gpio_line_values_t;
+
+/** @brief A line no longer watched (`BMDS_GPIO_LINE_UNWATCH`). */
+typedef struct bmds_gpio_line_unwatch_t {
+                uint32_t size;   /**< Set by the caller: `sizeof(bmds_gpio_line_unwatch_t)`. */
+                uint32_t offset; /**< The line. */
+} bmds_gpio_line_unwatch_t;
+
+/** @brief A line as Linux lays it out (`gpio_v2_line_info`), inside a change record. */
+typedef struct bmds_gpio_line_info_v2_t {
+                char                  name[BMDS_GPIO_NAME_MAX];     /**< The board's name for it. */
+                char                  consumer[BMDS_GPIO_NAME_MAX]; /**< Who holds it, or "". */
+                uint32_t              offset;                       /**< The line. */
+                uint32_t              num_attrs;                    /**< Attributes in `attrs` (a debounce). */
+                uint64_t              flags;                        /**< `BMDS_GPIO_LINE_...`. */
+                bmds_gpio_line_attr_t attrs[BMDS_GPIO_LINE_ATTRS_MAX];
+                uint32_t              padding[4]; /**< Zero. */
+} bmds_gpio_line_info_v2_t;
+
+/** @brief `bmds_gpio_line_info_changed_t::event_type`. */
+#define BMDS_GPIO_LINE_CHANGED_REQUESTED 1u /**< Free, now held. */
+#define BMDS_GPIO_LINE_CHANGED_RELEASED 2u  /**< Held, now free. */
+#define BMDS_GPIO_LINE_CHANGED_CONFIG 3u    /**< Anything else: its holder, direction, bias, edges... */
+
+/**
+ * @brief A watched line's change, as reading the chip fd gives them (whole records, waiting while
+ *        there are none; 32 kept at most, more dropped): Linux's `gpio_v2_line_info_changed`.
+ */
+typedef struct bmds_gpio_line_info_changed_t {
+                bmds_gpio_line_info_v2_t info;         /**< The line then. */
+                uint64_t                 timestamp_ns; /**< CLOCK_MONOTONIC. */
+                uint32_t                 event_type;   /**< `BMDS_GPIO_LINE_CHANGED_...`. */
+                uint32_t                 padding[5];   /**< Zero. */
+} bmds_gpio_line_info_changed_t;
 
 /** @brief `bmds_gpio_line_event_t::id`. */
 #define BMDS_GPIO_LINE_EVENT_RISING 1u

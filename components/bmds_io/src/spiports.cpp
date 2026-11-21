@@ -18,6 +18,7 @@
 #include <driver/spi_master.h>
 #include <esp_private/spi_common_internal.h>
 #include <esp_rom_sys.h>
+#include <bmds/gpiochip.h>
 #include <bmds/io.h>
 #include <bmds/ioport.h>
 #include <bmds/iosetup.h>
@@ -357,7 +358,8 @@ namespace SpiPorts {
 
         // Applies io/spiN's value now.
         void apply(Port &p) {
-                Mutex::Locker lock(p.lock, WaitForever);
+                const GpioChip::Change change; // line watchers told once, after the lock
+                Mutex::Locker          lock(p.lock, WaitForever);
                 String        value(MemSpace::Psram);
                 if (SysConf::get(p.id, value).isError()) return;
                 if (value.isEmpty()) {

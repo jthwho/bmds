@@ -124,6 +124,37 @@ TEST_CASE("IoChip: the ESP32-P4's table") {
         }
 }
 
+TEST_CASE("IoRegistry: the change hook, after the lock") {
+        IoRegistry registry(bmds::ioChip());
+        struct Seen {
+                        IoRegistry *registry = nullptr;
+                        int         calls = 0;
+                        IoClass     classOf14 = IoClass::Free; // read inside the hook: the lock is let go
+        } seen;
+        seen.registry = &registry;
+        registry.setChangeHook(
+                [](void *arg) {
+                        auto *s = static_cast<Seen *>(arg);
+                        ++s->calls;
+                        s->classOf14 = s->registry->resourceClass(14);
+                },
+                &seen);
+        const IoUse line[] = {{14, "line"}};
+        {
+                auto [claim, err] = registry.claim("gpioset", IoOwnerKind::User, line, 0, nullptr);
+                REQUIRE(err.isOk());
+                CHECK(seen.calls == 1);
+                CHECK(seen.classOf14 == IoClass::User);
+                auto [again, busy] = registry.claim("other", IoOwnerKind::User, line, 0, nullptr);
+                CHECK(busy == Error::Busy);
+                CHECK(seen.calls == 2); // a failed claim is told too
+                CHECK(claim.release(14).isOk());
+                CHECK(seen.calls == 3);
+                CHECK(seen.classOf14 == IoClass::Free);
+        }
+        CHECK(seen.calls == 4); // the claim's end: its owner ended
+}
+
 TEST_CASE("IoRegistry: claims") {
         IoRegistry registry(bmds::ioChip());
         CHECK(registry.setBoardUse(0, IoBoardUse::Fixed).isOk());

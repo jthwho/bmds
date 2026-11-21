@@ -92,6 +92,13 @@ class GpioLines final : public Stream {
                 /** @brief Its pads as they were before it (a restart's hook; nothing else changes). @nonblocking */
                 void putBack();
 
+                /**
+                 * @brief The settings a request asked for pad @p pad, if a request holds it (what
+                 *        line info reports for it: devplan/io.md §12.3).
+                 * @nonblocking A spinlock's moment.
+                 */
+                static bool settingsOf(unsigned pad, IoLineSettings &out);
+
                 Result<size_t> read(WritableByteSpan buf, unsigned int timeoutMs) override;
                 Result<size_t> write(ByteSpan, unsigned int) override { return makeError<size_t>(Error::NotSupported); }
                 uint8_t        readiness() override;

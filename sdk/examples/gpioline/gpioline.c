@@ -14,6 +14,8 @@
  *   gpioline bias N [COUNT]  N as an input watching both edges, its pull flipped COUNT times
  *                            (SET_CONFIG): an unwired pad follows its pull, so its edges come
  *                            without wires; each edge read is printed
+ *   gpioline watch N MS      N's info watched for MS ms (GPIO_V2_GET_LINEINFO_WATCH_IOCTL): its
+ *                            info, then each change read from the chip fd
  */
 
 #include <errno.h>
@@ -50,6 +52,29 @@ static int request(int chip, const unsigned *offsets, unsigned count, uint64_t f
         return r.fd;
 }
 
+/* A line's flags in words. */
+static void printFlags(uint64_t f) {
+        static const struct {
+                        uint64_t    flag;
+                        const char *word;
+        } words[] = {
+                {GPIO_V2_LINE_FLAG_USED, "used"},
+                {GPIO_V2_LINE_FLAG_INPUT, "input"},
+                {GPIO_V2_LINE_FLAG_OUTPUT, "output"},
+                {GPIO_V2_LINE_FLAG_ACTIVE_LOW, "active-low"},
+                {GPIO_V2_LINE_FLAG_EDGE_RISING, "rising"},
+                {GPIO_V2_LINE_FLAG_EDGE_FALLING, "falling"},
+                {GPIO_V2_LINE_FLAG_OPEN_DRAIN, "open-drain"},
+                {GPIO_V2_LINE_FLAG_OPEN_SOURCE, "open-source"},
+                {GPIO_V2_LINE_FLAG_BIAS_PULL_UP, "pull-up"},
+                {GPIO_V2_LINE_FLAG_BIAS_PULL_DOWN, "pull-down"},
+                {GPIO_V2_LINE_FLAG_BIAS_DISABLED, "bias-disabled"},
+        };
+        for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i++)
+                if (f & words[i].flag) printf(" %s", words[i].word);
+        return;
+}
+
 static void sleepMs(long ms) {
         struct timespec t = {ms / 1000, (ms % 1000) * 1000000L};
         nanosleep(&t, NULL);
@@ -57,7 +82,7 @@ static void sleepMs(long ms) {
 
 int main(int argc, char **argv) {
         if (argc < 3) {
-                fprintf(stderr, "usage: gpioline get N... | set N=V... | hold N MS | bias N [COUNT]\n");
+                fprintf(stderr, "usage: gpioline get N... | set N=V... | hold N MS | bias N [COUNT] | watch N MS\n");
                 return 2;
         }
         const int chip = open("/dev/gpiochip0", O_RDWR | O_CLOEXEC);
@@ -131,6 +156,43 @@ int main(int argc, char **argv) {
                 }
                 printf("%d edges for %d flips\n", seen, flips);
                 close(fd);
+        } else if (strcmp(verb, "watch") == 0 && argc == 4) {
+                struct gpio_v2_line_info info;
+                memset(&info, 0, sizeof(info));
+                info.offset = (uint32_t)atoi(argv[2]);
+                if (ioctl(chip, GPIO_V2_GET_LINEINFO_WATCH_IOCTL, &info) < 0)
+                        return fail("GPIO_V2_GET_LINEINFO_WATCH_IOCTL");
+                printf("GPIO%u \"%s\" consumer \"%s\":", info.offset, info.name, info.consumer);
+                printFlags(info.flags);
+                printf("\n");
+                fflush(stdout);
+                struct timespec start, now;
+                clock_gettime(CLOCK_MONOTONIC, &start);
+                const long ms = atol(argv[3]);
+                for (;;) {
+                        clock_gettime(CLOCK_MONOTONIC, &now);
+                        const long left =
+                                ms - ((now.tv_sec - start.tv_sec) * 1000 + (now.tv_nsec - start.tv_nsec) / 1000000);
+                        if (left <= 0) break;
+                        struct pollfd p = {chip, POLLIN, 0};
+                        if (poll(&p, 1, (int)left) <= 0) continue;
+                        struct gpio_v2_line_info_changed c;
+                        if (read(chip, &c, sizeof(c)) != (ssize_t)sizeof(c)) return fail("read");
+                        static const char *const types[] = {"?", "requested", "released", "reconfigured"};
+                        printf("%s GPIO%u consumer \"%s\":", c.event_type <= 3 ? types[c.event_type] : "?",
+                               c.info.offset, c.info.consumer);
+                        printFlags(c.info.flags);
+                        for (uint32_t a = 0; a < c.info.num_attrs; a++)
+                                if (c.info.attrs[a].id == GPIO_V2_LINE_ATTR_ID_DEBOUNCE)
+                                        printf(" debounce=%uus", c.info.attrs[a].debounce_period_us);
+                        printf("\n");
+                        fflush(stdout);
+                }
+                const uint32_t offset = info.offset;
+                if (ioctl(chip, GPIO_GET_LINEINFO_UNWATCH_IOCTL, &offset) < 0)
+                        return fail("GPIO_GET_LINEINFO_UNWATCH_IOCTL");
+                if (ioctl(chip, GPIO_GET_LINEINFO_UNWATCH_IOCTL, &offset) == 0 || errno != EBUSY)
+                        return fail("unwatching twice should be EBUSY");
         } else {
                 fprintf(stderr, "gpioline: no such verb '%s'\n", verb);
                 return 2;
