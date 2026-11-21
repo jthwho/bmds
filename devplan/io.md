@@ -874,3 +874,13 @@ Both GP-SPIs are free on this board (`io resources`), so SPI is a port on chosen
   gone, the pads and `spi2`, `spi3` free again. 3-wire writes and reads run (nothing on the wire
   to answer). Not checked: a real device, and Linux's word order for 16 and 32 bits (a loopback
   swaps both ways).
+
+### 11.7 As built: 4d, the I/O Manager's Ports tab (2026-11-20)
+
+In bmds-apps (its `devplan/ioman.md` §4): the ports listed (`io/uartN`, `io/spiN`, the system's
+I²C buses) with their device and state, following sysconf's `io/` watch; a port's value as
+fields, set, stopped and saved through sysconf, a held pin asked about in the kernel's words;
+a tool each: a `Terminal` on `/dev/ttySN` (its fd in the program's `poll()`), an I²C scan and
+register reads and writes (`i2c_ctl`), SPI transfers (`spi_ctl`). Nothing changed in BMDS for
+it. Checked on bmds0 with the kernel's loopbacks. Step 4 is done; next, step 5's rest (§6:
+`gpio_ctl`'s line requests, `dist/` recipes for libgpiod's tools and `i2c-tools`).

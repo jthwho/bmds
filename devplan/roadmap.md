@@ -313,7 +313,9 @@ Plan: [`input.md`](input.md).
   Linux's i2c-dev and SMBus, `i2c scan|read|write`, `sdk/examples/i2cread`; checked on bmds0.
   Step 4c built (§11.6): SPI ports, `io/spi2`, `io/spi3` → `/dev/spidevB.C` (chip selects of
   the port's own), `spi_ctl` (slot 141), Linux's spidev, `io spi`, `sdk/examples/spidevtest`;
-  checked on bmds0 in loopback. Next: 4d (the I/O Manager's Ports tab).
+  checked on bmds0 in loopback. Step 4d built (§11.7): the I/O Manager's Ports tab in
+  bmds-apps (each port's setup as fields, a terminal, an I²C scan and registers, SPI transfers).
+  Next: step 5's rest (`gpio_ctl`'s line requests; `dist/` recipes for libgpiod and i2c-tools).
 
 ## Phase 6 — Graphics
 
