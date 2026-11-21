@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <bmds/board.h>
 #include <bmds/io.h>
+#include <bmds/iosetup.h>
 #include <bmds/log.h>
 #include <bmds/psramobject.h>
 
@@ -168,6 +169,8 @@ namespace Io {
                         uint16_t     inputs[IoMaxPadInputs];
                         const size_t k = ioPadInputs(Span<const int16_t>(sources, inputCount), p, inputs);
                         ioPinRow(chip, p, s, Span<const uint16_t>(inputs, k), h, boardOf(p), out[n]);
+                        EdgeInfo e;
+                        out[n].watched = edgeInfo(p, e).isOk();
                 }
                 return n;
         }
@@ -186,6 +189,18 @@ namespace Io {
                 uint16_t     inputs[IoMaxPadInputs];
                 const size_t k = ioPadInputs(Span<const int16_t>(sources, inputCount), pad, inputs);
                 ioPinDetail(chip, pad, s, Span<const uint16_t>(inputs, k), h, boardOf(pad), out);
+                EdgeInfo e;
+                if (edgeInfo(pad, e).isOk()) {
+                        const char *ways = e.edges == IoPinSetup::Rising    ? "rising"
+                                           : e.edges == IoPinSetup::Falling ? "falling"
+                                                                            : "both";
+                        char       *line = out.text[size_t(IoPinField::Edges)];
+                        if (e.debounceUs != 0)
+                                std::snprintf(line, IoPinDetail::TextBytes, "%s, debounce %u us, %u seen", ways,
+                                              unsigned(e.debounceUs), unsigned(e.seen));
+                        else
+                                std::snprintf(line, IoPinDetail::TextBytes, "%s, %u seen", ways, unsigned(e.seen));
+                }
                 return Error::Ok;
         }
 

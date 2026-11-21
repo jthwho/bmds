@@ -58,7 +58,8 @@ namespace {
 bool IoPinSetup::operator==(const IoPinSetup &other) const {
         if (pad != other.pad || mode != other.mode || high != other.high || pullUp != other.pullUp ||
             pullDown != other.pullDown || force != other.force || drive != other.drive || function != other.function ||
-            outSignal != other.outSignal || inputCount != other.inputCount)
+            outSignal != other.outSignal || inputCount != other.inputCount || edges != other.edges ||
+            debounceUs != other.debounceUs)
                 return false;
         for (size_t i = 0; i < inputCount; ++i)
                 if (inputs[i] != other.inputs[i]) return false;
@@ -109,6 +110,26 @@ Error IoGpioSetup::parse(const IoChip &chip, StringView text, char (&why)[Reason
                                 p.pullDown = true;
                         } else if (word == "force") {
                                 p.force = true;
+                        } else if (word == "edges") {
+                                p.edges = IoPinSetup::Rising | IoPinSetup::Falling;
+                        } else if (word == "rising") {
+                                p.edges |= IoPinSetup::Rising;
+                        } else if (word == "falling") {
+                                p.edges |= IoPinSetup::Falling;
+                        } else if (word.startsWith("debounce=")) {
+                                const StringView v = word.mid(9);
+                                // Up to seven digits (number() takes four).
+                                uint32_t us = 0;
+                                bool     ok = !v.isEmpty() && v.size() <= 7;
+                                for (size_t k = 0; ok && k < v.size(); ++k) {
+                                        ok = v[k] >= '0' && v[k] <= '9';
+                                        us = us * 10 + uint32_t(v[k] - '0');
+                                }
+                                if (!ok || us > IoPinSetup::MaxDebounceUs)
+                                        return refuse(why, Error::Invalid,
+                                                      "%s: debounce is 0 to 1000000 us, not '%.*s'", name,
+                                                      int(v.size()), v.data());
+                                p.debounceUs = us;
                         } else if (word.startsWith("drive=")) {
                                 unsigned d = 0;
                                 if (!number(word.mid(6), d) || d > 3)
@@ -163,6 +184,10 @@ Error IoGpioSetup::parse(const IoChip &chip, StringView text, char (&why)[Reason
                         return refuse(why, Error::Invalid, "%s: an IO_MUX function or a matrix output, not both", name);
                 if (p.outSignal != IoPinSetup::NoSignal && !p.isOutput())
                         return refuse(why, Error::Invalid, "%s: a matrix output needs out or od", name);
+                if (p.edges != IoPinSetup::NoEdges && !p.readsInput())
+                        return refuse(why, Error::Invalid, "%s: edges need its input on (in, od, in:SIGNAL)", name);
+                if (p.debounceUs != 0 && p.edges == IoPinSetup::NoEdges)
+                        return refuse(why, Error::Invalid, "%s: debounce is for edges (edges, rising, falling)", name);
                 ++_count;
         }
         return Error::Ok;

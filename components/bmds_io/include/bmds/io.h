@@ -131,6 +131,38 @@ namespace Io {
          */
         Error startSetups();
 
+        /** @brief An edge seen on a pad `io/gpio` watches (devplan/io.md §10.5). */
+        struct Edge {
+                        int64_t  timeNs = 0;     ///< When, ns since boot (`Clock::monotonicNs()`'s).
+                        uint32_t seq = 0;        ///< Its number on the pad, from 1.
+                        bool     rising = false; ///< Rising (else falling).
+                        bool     level = false;  ///< The level read just after it.
+        };
+
+        /** @brief How a pad's edges are watched. */
+        struct EdgeInfo {
+                        uint8_t  edges = 0;      ///< `IoPinSetup::Edge` bits.
+                        uint32_t debounceUs = 0; ///< `debounce=`.
+                        uint32_t seen = 0;       ///< Edges taken since it was set up.
+        };
+
+        /**
+         * @brief How pad @p pad's edges are watched.
+         * @return `Ok`, or `NotExist` (not watched).
+         * @blocking Briefly, for io/gpio's lock.
+         */
+        Error edgeInfo(unsigned pad, EdgeInfo &out);
+
+        /**
+         * @brief Pad @p pad's edges after number @p after (0: all the ring has), into @p out, the
+         *        oldest first.
+         * @param[out] next The number to ask after next time (the last given, else @p after).
+         * @param[out] lost Edges gone before they were read (overwritten in the ring).
+         * @return How many; or `NotExist` (not watched).
+         * @blocking Briefly, for io/gpio's lock.
+         */
+        Result<size_t> readEdges(unsigned pad, uint32_t after, Span<Edge> out, uint32_t &next, uint32_t &lost);
+
         /** @brief The longest pulse `pulse()` gives, ms. */
         inline constexpr unsigned MaxPulseMs = 10000;
 

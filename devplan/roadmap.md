@@ -302,8 +302,10 @@ Plan: [`input.md`](input.md).
   the connectors), ABI-locked, `sdk/examples/gpioinfo`; `io` and `gpio_ctl` answer from the same
   `bmds/iopin.h`; host-tested; checked on bmds0. Step 3a built (§10, 2026-11-20): `io/gpio`
   (GPIO, IO_MUX functions, matrix signals; `force` borrows a held pin, its registers saved and
-  put back), the refusal's reason in `sysconf set`, `io pulse`; checked on bmds0. Next: 3b
-  (edges with timestamps), 3c (the window writing `io/gpio`).
+  put back), the refusal's reason in `sysconf set`, `io pulse`; checked on bmds0. Step 3b built
+  (§10.6): edges with timestamps on `io/gpio`'s inputs (`edges`, `rising`, `falling`,
+  `debounce=`), `io edges`, `gpio_ctl`'s `BMDS_GPIO_EDGES`; checked on bmds0. Next: 3c (the
+  window writing `io/gpio`).
 
 ## Phase 6 — Graphics
 

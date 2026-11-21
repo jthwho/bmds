@@ -33,6 +33,16 @@ struct IoPinSetup {
                 /** @brief No matrix output signal: the plain GPIO's. */
                 static constexpr uint16_t NoSignal = 0xffff;
 
+                /** @brief The edges watched (devplan/io.md §10.5): bits. */
+                enum Edge : uint8_t {
+                        NoEdges = 0,
+                        Rising = 1u << 0,  ///< `rising` (`edges`: both).
+                        Falling = 1u << 1, ///< `falling` (`edges`: both).
+                };
+
+                /** @brief The longest `debounce=`, µs. */
+                static constexpr uint32_t MaxDebounceUs = 1000000;
+
                 /** @brief Its direction. */
                 enum class Mode : uint8_t {
                         Input,     ///< `in`: GPIO input (the default).
@@ -52,9 +62,20 @@ struct IoPinSetup {
                 uint16_t outSignal = NoSignal;   ///< `out:SIGNAL`, or `NoSignal`.
                 uint16_t inputs[MaxInputs] = {}; ///< `in:SIGNAL`s.
                 uint8_t  inputCount = 0;         ///< How many.
+                uint8_t  edges = NoEdges;        ///< `edges`, `rising`, `falling`: `Edge` bits.
+                uint32_t debounceUs = 0;         ///< `debounce=US`: an edge this soon after the last is dropped.
 
                 /** @brief True if it drives the pad (out, od, or an IO_MUX function's own choice). */
                 bool isOutput() const { return mode == Mode::Output || mode == Mode::OpenDrain; }
+
+                /**
+                 * @brief True if its input is on: `in`, `od`, an input signal, an IO_MUX function
+                 *        (`IoChipOps::configurePad()`'s rule).
+                 */
+                bool readsInput() const {
+                        return inputCount > 0 ||
+                               (mode != Mode::Off && (mode == Mode::Input || mode == Mode::OpenDrain || function >= 0));
+                }
 
                 /** @brief True if @p other sets the pad up the same way (`force` included). */
                 bool operator==(const IoPinSetup &other) const;

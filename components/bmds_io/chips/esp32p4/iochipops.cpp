@@ -144,6 +144,10 @@ namespace IoChipOps {
                 return;
         }
 
+        bool level(unsigned pad) {
+                return gpio_ll_get_level(&GPIO, pad) != 0;
+        }
+
         void setLevel(unsigned pad, bool high) {
                 gpio_ll_set_level(&GPIO, pad, high);
                 return;

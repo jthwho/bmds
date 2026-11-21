@@ -67,6 +67,9 @@ namespace IoChipOps {
         /** @brief Sets an output's latch. @nonblocking */
         void setLevel(unsigned pad, bool high);
 
+        /** @brief The level read at pad @p pad. @isrsafe */
+        bool level(unsigned pad);
+
         /** @brief Input signal @p signal's selector word (to put back with `setInputWord()`). @nonblocking */
         uint32_t inputWord(unsigned signal);
 

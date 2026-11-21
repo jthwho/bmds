@@ -17,10 +17,12 @@
 #include <cstring>
 #include <new>
 #include <driver/gpio.h>
+#include <bmds/clock.h>
 #include <bmds/command.h>
 #include <bmds/io.h>
 #include <bmds/memory.h>
 #include <bmds/shell.h>
+#include <bmds/thread.h>
 
 BMDS_NAMESPACE_BEGIN
 
@@ -102,10 +104,8 @@ namespace {
                         ctx.printf("%s\n", d->name);
                         for (size_t f = 0; f < IoPinFieldCount; ++f) {
                                 const auto field = static_cast<IoPinField>(f);
-                                // Note and Forced are shown only when there is one.
-                                if ((field == IoPinField::Note || field == IoPinField::Forced) &&
-                                    d->at(field)[0] == '\0')
-                                        continue;
+                                // Note, Forced and Edges are shown only when there is one.
+                                if (ioPinFieldIsOptional(field) && d->at(field)[0] == '\0') continue;
                                 char label[16];
                                 std::snprintf(label, sizeof(label), "%s:", ioPinFieldName(field));
                                 ctx.printf("  %-10s %s\n", label, d->at(field));
@@ -216,6 +216,45 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // A pad's edges (devplan/io.md §10.5): what its ring has, the time before now and the way;
+        // with @p follow, each as it comes until interrupted.
+        int showEdges(CommandContext &ctx, unsigned pad, bool follow) {
+                Io::EdgeInfo info;
+                if (Io::edgeInfo(pad, info).isError()) {
+                        ctx.eprintf("io: GPIO%u's edges aren't watched: add edges (or rising, falling) to its io/gpio "
+                                    "entry\n",
+                                    pad);
+                        return Shell::ExitFailure;
+                }
+                constexpr size_t Batch = 16;
+                Io::Edge         edges[Batch];
+                uint32_t         after = 0;
+                const int64_t    start = Clock::monotonicNs();
+                for (;;) {
+                        uint32_t next = 0, lost = 0;
+                        auto [n, err] = Io::readEdges(pad, after, edges, next, lost);
+                        if (err.isError()) {
+                                ctx.eprintf("io: GPIO%u isn't watched any more\n", pad);
+                                return Shell::ExitFailure;
+                        }
+                        if (lost != 0) ctx.printf("  (%u lost)\n", unsigned(lost));
+                        const int64_t now = Clock::monotonicNs();
+                        for (size_t i = 0; i < n; ++i) {
+                                // Following: the time since it began; else: how long ago.
+                                const int64_t t = follow ? edges[i].timeNs - start : edges[i].timeNs - now;
+                                ctx.printf("%6u %+12.6f s  %s\n", unsigned(edges[i].seq), double(t) / 1e9,
+                                           edges[i].rising ? "rising" : "falling");
+                        }
+                        after = next;
+                        if (n == Batch) continue; // more waiting
+                        if (!follow) break;
+                        if (ctx.isInterrupted()) return Shell::ExitInterrupted;
+                        Thread::sleep(20);
+                }
+                if (after == 0) ctx.printf("no edges yet\n");
+                return Shell::ExitSuccess;
+        }
+
         int runIo(CommandContext &ctx) {
                 const Args args = ctx.args();
                 if (!Io::isReady()) {
@@ -247,6 +286,13 @@ namespace {
                         }
                         ctx.printf("%c\n", level);
                         return Shell::ExitSuccess;
+                }
+                if (verb == "edges" && (args.size() == 3 || (args.size() == 4 && std::strcmp(args[3], "-f") == 0))) {
+                        if (!parsePad(args[2], pad)) {
+                                ctx.eprintf("io: no pin '%s'\n", args[2]);
+                                return Shell::ExitFailure;
+                        }
+                        return showEdges(ctx, pad, args.size() == 4);
                 }
                 if (verb == "pulse" && args.size() >= 3 && args.size() <= 5) {
                         // io pulse N [MS] [--force]
@@ -298,7 +344,8 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(io, runIo, "[pin N | get N | pulse N [MS] [--force] | resources | signals [GROUP] | dump [N]]",
+BMDS_SHELL_COMMAND(io, runIo,
+                   "[pin N | get N | edges N [-f] | pulse N [MS] [--force] | resources | signals [GROUP] | dump [N]]",
                    "Show the chip's pins: wiring, holder, routing, level (devplan/io.md)")
 
 BMDS_NAMESPACE_END

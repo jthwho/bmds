@@ -542,6 +542,30 @@ TEST_CASE("IoGpioSetup: io/gpio's value") {
                 CHECK(setup.count() == 0); // a refused value leaves nothing
         }
 
+        SUBCASE("edges: which way, debounce, only with the input on") {
+                REQUIRE(setup.parse(chip, "14=in,edges,debounce=2000 15=in,rising 16=od,falling 17=in:UART1_RXD,edges",
+                                    why)
+                                .isOk());
+                CHECK(setup.find(14)->edges == (IoPinSetup::Rising | IoPinSetup::Falling));
+                CHECK(setup.find(14)->debounceUs == 2000);
+                CHECK(setup.find(15)->edges == IoPinSetup::Rising);
+                CHECK(setup.find(16)->edges == IoPinSetup::Falling);
+                CHECK(setup.find(17)->edges != 0);
+                CHECK(setup.find(17)->readsInput());
+                CHECK(setup.parse(chip, "14=in,rising,falling", why).isOk());
+                CHECK(setup.find(14)->edges == (IoPinSetup::Rising | IoPinSetup::Falling));
+                CHECK(setup.parse(chip, "14=out,edges", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "GPIO14: edges need its input on (in, od, in:SIGNAL)") == 0);
+                CHECK(setup.parse(chip, "14=off,edges", why) == Error::Invalid);
+                CHECK(setup.parse(chip, "14=in,debounce=10", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "GPIO14: debounce is for edges (edges, rising, falling)") == 0);
+                CHECK(setup.parse(chip, "14=in,edges,debounce=1000001", why) == Error::Invalid);
+                CHECK(setup.parse(chip, "14=in,edges,debounce=1000000", why).isOk());
+                IoGpioSetup other;
+                REQUIRE(other.parse(chip, "14=in,edges,debounce=999999", why).isOk());
+                CHECK_FALSE(*setup.find(14) == *other.find(14));
+        }
+
         SUBCASE("two setups compared, force included") {
                 IoGpioSetup other;
                 REQUIRE(setup.parse(chip, "14=out,high 15=in:UART1_RXD", why).isOk());

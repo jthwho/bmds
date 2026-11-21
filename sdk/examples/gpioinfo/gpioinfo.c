@@ -8,11 +8,13 @@
  * gpioinfo: every line of /dev/gpiochip0, as libgpiod's gpioinfo prints it, through Linux's
  * GPIO character device (linux/gpio.h, the SDK's ioctl() on gpio_ctl). With -b, BMDS's own
  * words for each pad instead (gpio_ctl's BMDS_GPIO_PINS): class, holder, use, route, level.
+ * With -e N, the edges of pad N, watched by io/gpio (`14=in,edges`): BMDS_GPIO_EDGES.
  */
 
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -47,10 +49,32 @@ static int bmdsPins(int fd, unsigned lines) {
         return 0;
 }
 
+static int bmdsEdges(int fd, unsigned pad) {
+        static bmds_gpio_edge_t edges[64];
+        bmds_gpio_edges_t       e = {.size = sizeof(e),
+                                     .offset = pad,
+                                     .after = 0,
+                                     .count = 64,
+                                     .edge_size = sizeof(edges[0]),
+                                     .edges = edges};
+        const int32_t           n = bmds_gpio_ctl(fd, BMDS_GPIO_EDGES, &e);
+        if (n < 0) {
+                fprintf(stderr, "gpioinfo: GPIO%u: %s\n", pad,
+                        n == -BMDS_ENOENT ? "its edges aren't watched (io/gpio: edges)" : strerror((int)-n));
+                return 1;
+        }
+        for (int32_t i = 0; i < n; i++)
+                printf("%6u %14.6f s %s\n", (unsigned)edges[i].seq, (double)edges[i].time_ns / 1e9,
+                       edges[i].rising ? "rising" : "falling");
+        printf("%d edges, %u lost, next after %u\n", (int)n, (unsigned)e.lost, (unsigned)e.next);
+        return 0;
+}
+
 int main(int argc, char **argv) {
-        const int bmds = argc > 1 && strcmp(argv[1], "-b") == 0;
-        if (argc > 2 || (argc == 2 && !bmds)) {
-                fprintf(stderr, "usage: gpioinfo [-b]\n");
+        const int bmds = argc == 2 && strcmp(argv[1], "-b") == 0;
+        const int edges = argc == 3 && strcmp(argv[1], "-e") == 0;
+        if (argc > 1 && !bmds && !edges) {
+                fprintf(stderr, "usage: gpioinfo [-b | -e PAD]\n");
                 return 2;
         }
         const int fd = open("/dev/gpiochip0", O_RDONLY);
@@ -66,8 +90,8 @@ int main(int argc, char **argv) {
                 return 1;
         }
         int status = 0;
-        if (bmds) {
-                status = bmdsPins(fd, chip.lines);
+        if (bmds || edges) {
+                status = bmds ? bmdsPins(fd, chip.lines) : bmdsEdges(fd, (unsigned)atoi(argv[2]));
                 close(fd);
                 return status;
         }

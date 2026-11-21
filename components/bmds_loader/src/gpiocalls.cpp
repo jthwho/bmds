@@ -60,6 +60,7 @@ namespace {
                 if (s.lpIo) f |= BMDS_GPIO_PIN_LP_IO;
                 if (r.strapping) f |= BMDS_GPIO_PIN_STRAPPING;
                 if (r.forced) f |= BMDS_GPIO_PIN_FORCED;
+                if (r.watched) f |= BMDS_GPIO_PIN_EDGES;
                 return f;
         }
 
@@ -177,10 +178,8 @@ namespace {
                 if (err.isOk()) {
                         for (size_t f = 0; f < bmds::IoPinFieldCount && count < want; ++f) {
                                 const auto field = static_cast<IoPinField>(f);
-                                // Note and Forced are given only when there is one (as `io pin`).
-                                if ((field == IoPinField::Note || field == IoPinField::Forced) &&
-                                    d->at(field)[0] == '\0')
-                                        continue;
+                                // Note, Forced and Edges are given only when there is one (as `io pin`).
+                                if (bmds::ioPinFieldIsOptional(field) && d->at(field)[0] == '\0') continue;
                                 bmds_gpio_detail_line_t line{};
                                 copyText(bmds::ioPinFieldName(field), line.label, sizeof(line.label));
                                 copyText(d->at(field), line.text, sizeof(line.text));
@@ -220,6 +219,54 @@ namespace {
                 return copyOut(p, arg);
         }
 
+        int32_t edges(bmds_gpio_edges_t *arg) {
+                bmds_gpio_edges_t e;
+                if (const int32_t r = copyIn(arg, e); r < 0) return r;
+                if (e.size < sizeof(bmds_gpio_edges_t) || e.edge_size < sizeof(int64_t) || e.edge_size > MaxPinSize)
+                        return -BMDS_EINVAL;
+                if (e.offset >= bmds::ioChip().padCount()) return -BMDS_EINVAL;
+                // A batch at a time on the stack (16 × 16 bytes), into the caller's array.
+                constexpr size_t Batch = 16;
+                bmds::Io::Edge   got[Batch];
+                const size_t     keep = e.edge_size < sizeof(bmds_gpio_edge_t) ? e.edge_size : sizeof(bmds_gpio_edge_t);
+                auto            *out = reinterpret_cast<uint8_t *>(e.edges);
+                if (e.count > 0 && !bmds::detail::canWrite(e.edges, size_t(e.count) * e.edge_size)) return -BMDS_EFAULT;
+                uint32_t after = e.after, lostAll = 0;
+                size_t   total = 0;
+                while (total < e.count) {
+                        const size_t room = e.count - total < Batch ? e.count - total : Batch;
+                        uint32_t     next = after, lost = 0;
+                        auto [n, err] =
+                                bmds::Io::readEdges(e.offset, after, Span<bmds::Io::Edge>(got, room), next, lost);
+                        if (err.isError()) return -BMDS_ENOENT;
+                        lostAll += lost;
+                        for (size_t i = 0; i < n; ++i) {
+                                bmds_gpio_edge_t edge{};
+                                edge.time_ns = got[i].timeNs;
+                                edge.seq = got[i].seq;
+                                edge.rising = got[i].rising ? 1 : 0;
+                                edge.level = got[i].level ? 1 : 0;
+                                uint8_t *at = out + (total + i) * e.edge_size;
+                                std::memcpy(at, &edge, keep);
+                                if (e.edge_size > keep) std::memset(at + keep, 0, e.edge_size - keep);
+                        }
+                        total += n;
+                        after = next;
+                        if (n < room) break; // none newer
+                }
+                if (e.count == 0) {
+                        // Room for none: whether the pad is watched, and where its numbers are.
+                        uint32_t next = after, lost = 0;
+                        auto [n, err] = bmds::Io::readEdges(e.offset, after, Span<bmds::Io::Edge>(), next, lost);
+                        (void)n;
+                        if (err.isError()) return -BMDS_ENOENT;
+                }
+                e.next = after;
+                e.lost = lostAll;
+                if (const int32_t r = copyOut(e, arg); r < 0) return r;
+                return int32_t(total);
+        }
+
 } // namespace
 
 extern "C" int32_t bmds_k_gpio_ctl(int32_t fd, uint32_t op, void *arg) {
@@ -237,6 +284,7 @@ extern "C" int32_t bmds_k_gpio_ctl(int32_t fd, uint32_t op, void *arg) {
                 case BMDS_GPIO_PIN_DETAIL: return pinDetail(static_cast<bmds_gpio_pin_detail_t *>(arg));
                 case BMDS_GPIO_CONNECTOR: return connector(static_cast<bmds_gpio_connector_t *>(arg));
                 case BMDS_GPIO_CONNECTOR_PIN: return connectorPin(static_cast<bmds_gpio_connector_pin_t *>(arg));
+                case BMDS_GPIO_EDGES: return edges(static_cast<bmds_gpio_edges_t *>(arg));
                 default: return -BMDS_EINVAL;
         }
 }

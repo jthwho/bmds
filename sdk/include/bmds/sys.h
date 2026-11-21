@@ -1669,6 +1669,8 @@ typedef struct bmds_ptp_offset_t {
 #define BMDS_GPIO_PIN_DETAIL 3u    /**< `bmds_gpio_pin_detail_t *` (`offset` set): one pad, every detail. */
 #define BMDS_GPIO_CONNECTOR 4u     /**< `bmds_gpio_connector_t *` (`index` set): a connector of the board's. */
 #define BMDS_GPIO_CONNECTOR_PIN 5u /**< `bmds_gpio_connector_pin_t *` (`connector`, `pin` set): one of its pins. */
+#define BMDS_GPIO_EDGES                                                                                                \
+        6u /**< `bmds_gpio_edges_t *` (`offset`, `after` set): a watched pad's edges; returns how many (appended 2026-11-20). */
 
 /** @brief Room for a GPIO chip's or line's name (Linux's `GPIO_MAX_NAME_SIZE`), NUL included. */
 #define BMDS_GPIO_NAME_MAX 32u
@@ -1725,6 +1727,8 @@ typedef struct bmds_gpio_line_info_t {
 #define BMDS_GPIO_PIN_LP_IO 0x40u     /**< The LP IO domain has it (its level is the LP core's). */
 #define BMDS_GPIO_PIN_STRAPPING 0x80u /**< A strapping pin: read at reset. */
 #define BMDS_GPIO_PIN_FORCED 0x100u   /**< Taken with force from its holder (devplan/io.md §3.3). */
+#define BMDS_GPIO_PIN_EDGES                                                                                            \
+        0x200u /**< Its edges are watched (`io/gpio`): `BMDS_GPIO_EDGES` reads them (appended 2026-11-20). */
 
 /**
  * @brief One pad's state, as a table of every pad shows it (`BMDS_GPIO_PINS`): its numbers and
@@ -1774,6 +1778,31 @@ typedef struct bmds_gpio_pin_detail_t {
                 uint32_t                reserved; /**< Zero. */
                 bmds_gpio_detail_line_t lines[BMDS_GPIO_DETAIL_MAX]; /**< In the order shown. */
 } bmds_gpio_pin_detail_t;
+
+/** @brief One edge of a watched pad (`BMDS_GPIO_EDGES`). */
+typedef struct bmds_gpio_edge_t {
+                int64_t  time_ns;  /**< When: ns since boot (`CLOCK_MONOTONIC`'s). */
+                uint32_t seq;      /**< Its number on the pad: 1 the first since its watch began. */
+                uint8_t  rising;   /**< 1 rising, 0 falling. */
+                uint8_t  level;    /**< The level read just after it. */
+                uint16_t reserved; /**< Zero. */
+} bmds_gpio_edge_t;
+
+/**
+ * @brief A watched pad's edges (`BMDS_GPIO_EDGES`, appended 2026-11-20): those numbered after
+ *        `after`, the oldest first, as many as `count` has room for; the ring keeps 64, so a
+ *        reader falling further behind is told how many it lost.
+ */
+typedef struct bmds_gpio_edges_t {
+                uint32_t          size;      /**< Set by the caller: `sizeof(bmds_gpio_edges_t)`. */
+                uint32_t          offset;    /**< Set by the caller: the pad. */
+                uint32_t          after;     /**< Set by the caller: the last number seen (0: all kept). */
+                uint32_t          count;     /**< Room in `edges`. */
+                uint32_t          next;      /**< Out: the number to give as `after` next time. */
+                uint32_t          lost;      /**< Out: edges gone before they were read. */
+                uint32_t          edge_size; /**< `sizeof(bmds_gpio_edge_t)` as the caller has it. */
+                bmds_gpio_edge_t *edges;     /**< Where they go. */
+} bmds_gpio_edges_t;
 
 /** @brief `bmds_gpio_connector_t::flags`. */
 #define BMDS_GPIO_CONNECTOR_FITTED 0x1u /**< The header is fitted (else a footprint only). */
@@ -4058,7 +4087,8 @@ static inline int32_t bmds_file_unmap(void *addr) {
  * @brief Operates on GPIO chip fd @p fd (`/dev/gpiochip0`): `BMDS_GPIO_...` with @p arg as each
  *        says (slot 139, appended 2026-11-20, devplan/io.md §3.9). Reading changes nothing: no
  *        line is taken.
- * @return 0 (`BMDS_GPIO_PINS`: the pads read), or `-BMDS_ENOTTY` (not a GPIO chip),
+ * @return 0 (`BMDS_GPIO_PINS`, `BMDS_GPIO_EDGES`: how many), or `-BMDS_ENOTTY` (not a GPIO chip),
+ *         `-BMDS_ENOENT` (`BMDS_GPIO_EDGES`: the pad isn't watched),
  *         `-BMDS_EBADF`, `-BMDS_EINVAL` (an op, a `size`, an offset or index past the end),
  *         `-BMDS_EFAULT`, `-BMDS_ENOSYS`.
  */

@@ -11,9 +11,13 @@
  */
 
 #include <cstdio>
+#include <atomic>
 #include <cstring>
 #include <new>
 #include <utility>
+#include <driver/gpio.h>
+#include <esp_err.h>
+#include <bmds/detail/platform.h>
 #include <bmds/io.h>
 #include <bmds/iosetup.h>
 #include <bmds/log.h>
@@ -39,12 +43,62 @@ namespace {
                      "'force' takes a pin from its holder (devplan/io.md)",
                      0, 0, nullptr, Io::checkSetups);
 
+        // ---- Edges (devplan/io.md §10.5)
+
+        constexpr size_t RingSize = 64;  // records a watched pad keeps
+        constexpr size_t MaxWatched = 8; // pads watched at once
+
+        struct EdgeRecord {
+                        std::atomic<uint32_t> seq{0}; // last written: 0 while the rest is written
+                        int64_t               timeNs = 0;
+                        bool                  rising = false;
+                        bool                  level = false;
+        };
+
+        // One pad's edges: written by its interrupt only; read under the lock by tasks.
+        struct EdgeRing {
+                        std::atomic<uint32_t> written{0}; // the last record's number
+                        uint32_t              base = 0;   // `written` when this pad's watch began
+                        int64_t               lastUs = 0; // the last edge taken (debounce)
+                        uint32_t              debounceUs = 0;
+                        uint8_t               pad = 0;
+                        uint8_t               edges = 0;
+                        bool                  inUse = false;
+                        EdgeRecord            records[RingSize];
+        };
+
+        // A pad's interrupt (ESP-IDF's GPIO ISR service, not an IRAM one): the level and the time
+        // into its ring.
+        void edgeIsr(void *arg) {
+                auto *const    r = static_cast<EdgeRing *>(arg);
+                const int64_t  us = Detail::monotonicUs();
+                const uint32_t n = r->written.load(std::memory_order_relaxed);
+                if (r->debounceUs != 0 && n != r->base && us - r->lastUs < int64_t(r->debounceUs)) return;
+                r->lastUs = us;
+                const bool level = IoChipOps::level(r->pad);
+                // One way only: that way (the level may already have moved on); both: the level says.
+                const bool     rising = r->edges == IoPinSetup::Rising    ? true
+                                        : r->edges == IoPinSetup::Falling ? false
+                                                                          : level;
+                const uint32_t seq = n + 1;
+                EdgeRecord    &e = r->records[seq % RingSize];
+                e.seq.store(0, std::memory_order_relaxed);
+                std::atomic_thread_fence(std::memory_order_release);
+                e.timeNs = us * 1000;
+                e.rising = rising;
+                e.level = level;
+                e.seq.store(seq, std::memory_order_release);
+                r->written.store(seq, std::memory_order_release);
+                return;
+        }
+
         // A pad as applied: its setup, and what it was before (put back when it is let go).
         struct Applied {
                         IoPinSetup       setup;
                         IoChipOps::Saved saved;
                         uint32_t         inputWords[IoPinSetup::MaxInputs] = {}; // the input signals' old selectors
                         char             lender[IoHolder::NameBytes] = {};       // forced from, or ""
+                        EdgeRing        *ring = nullptr;                         // its edges, if watched
         };
 
         struct State {
@@ -53,7 +107,8 @@ namespace {
                         IoClaim          claim; // the owner `io`
                         Applied          pins[IoGpioSetup::MaxPins];
                         size_t           count = 0;
-                        IoGpioSetup      wanted; // the value being applied (the lock's)
+                        IoGpioSetup      wanted;                 // the value being applied (the lock's)
+                        EdgeRing        *rings[MaxWatched] = {}; // made when first wanted, kept
         };
 
         constinit PsramObject<State> state;
@@ -131,10 +186,64 @@ namespace {
                 return;
         }
 
+        // Starts watching pad @p a's edges. The lock held.
+        void watch(Applied &a) {
+                const IoPinSetup &s = a.setup;
+                EdgeRing         *r = nullptr;
+                for (EdgeRing *&slot : state->rings) {
+                        if (slot == nullptr) {
+                                void *mem = Memory::alloc(MemSpace::Psram, sizeof(EdgeRing));
+                                if (mem == nullptr) break;
+                                slot = ::new (mem) EdgeRing();
+                        }
+                        if (!slot->inUse) {
+                                r = slot;
+                                break;
+                        }
+                }
+                if (r == nullptr) {
+                        bmdsWarn("io: io/gpio: GPIO%u's edges not watched: %u pads at most", unsigned(s.pad),
+                                 unsigned(MaxWatched));
+                        return;
+                }
+                r->inUse = true;
+                r->pad = s.pad;
+                r->edges = s.edges;
+                r->debounceUs = s.debounceUs;
+                r->base = r->written.load(std::memory_order_relaxed); // the numbers go on from there
+                r->lastUs = 0;
+                const gpio_int_type_t type = s.edges == IoPinSetup::Rising    ? GPIO_INTR_POSEDGE
+                                             : s.edges == IoPinSetup::Falling ? GPIO_INTR_NEGEDGE
+                                                                              : GPIO_INTR_ANYEDGE;
+                const gpio_num_t      gpio = gpio_num_t(s.pad);
+                if (gpio_set_intr_type(gpio, type) != ESP_OK || gpio_isr_handler_add(gpio, edgeIsr, r) != ESP_OK ||
+                    gpio_intr_enable(gpio) != ESP_OK) {
+                        bmdsWarn("io: io/gpio: GPIO%u's edges not watched: its interrupt can't be set",
+                                 unsigned(s.pad));
+                        (void)gpio_isr_handler_remove(gpio);
+                        r->inUse = false;
+                        return;
+                }
+                a.ring = r;
+                return;
+        }
+
+        // Stops watching pad @p a's edges. The lock held.
+        void unwatch(Applied &a) {
+                if (a.ring == nullptr) return;
+                const gpio_num_t gpio = gpio_num_t(a.setup.pad);
+                (void)gpio_intr_disable(gpio);
+                (void)gpio_isr_handler_remove(gpio);
+                a.ring->inUse = false;
+                a.ring = nullptr;
+                return;
+        }
+
         // Lets pad @p a go: its input signals' old sources, its registers, then the claim (a lender
         // holds it again). The lock held.
         void letGo(Applied &a) {
                 const IoPinSetup &s = a.setup;
+                unwatch(a);
                 for (size_t i = s.inputCount; i-- > 0;) IoChipOps::setInputWord(s.inputs[i], a.inputWords[i]);
                 IoChipOps::restorePad(s.pad, a.saved);
                 (void)state->claim.release(IoResource(s.pad));
@@ -150,6 +259,7 @@ namespace {
                         a.inputWords[i] = IoChipOps::inputWord(s.inputs[i]);
                         IoChipOps::routeInput(s.inputs[i], s.pad);
                 }
+                if (s.edges != IoPinSetup::NoEdges) watch(a);
                 return;
         }
 
@@ -278,6 +388,10 @@ namespace Io {
                         registry().claim(StringView(Owner), IoOwnerKind::User, Span<const IoUse>(), 0, nullptr);
                 if (err.isError()) return err;
                 s->claim = std::move(claim);
+                // The GPIO interrupt service, for edges (the SD card's detect installs it too).
+                const esp_err_t isr = gpio_install_isr_service(0);
+                if (isr != ESP_OK && isr != ESP_ERR_INVALID_STATE)
+                        bmdsWarn("io: no GPIO interrupt service (%s): no edges", esp_err_to_name(isr));
                 if (System::addRestartHook(letGoAtShutdown).isError())
                         bmdsWarn("io: no restart hook: io/gpio's pins will stay set up across a restart");
                 {
@@ -336,6 +450,61 @@ namespace Io {
                 IoChipOps::restorePad(pad, saved);
                 claim.reset();
                 return Error::Ok;
+        }
+
+        Error edgeInfo(unsigned pad, EdgeInfo &out) {
+                out = EdgeInfo();
+                if (!state.isCreated()) return Error::NotExist;
+                Mutex::Locker lock(state->lock, WaitForever);
+                for (size_t i = 0; i < state->count; ++i) {
+                        const Applied &a = state->pins[i];
+                        if (a.setup.pad != pad || a.ring == nullptr) continue;
+                        out.edges = a.ring->edges;
+                        out.debounceUs = a.ring->debounceUs;
+                        out.seen = a.ring->written.load(std::memory_order_acquire) - a.ring->base;
+                        return Error::Ok;
+                }
+                return Error::NotExist;
+        }
+
+        Result<size_t> readEdges(unsigned pad, uint32_t after, Span<Edge> out, uint32_t &next, uint32_t &lost) {
+                next = after;
+                lost = 0;
+                if (!state.isCreated()) return makeError<size_t>(Error::NotExist);
+                Mutex::Locker   lock(state->lock, WaitForever);
+                const EdgeRing *r = nullptr;
+                for (size_t i = 0; i < state->count && r == nullptr; ++i)
+                        if (state->pins[i].setup.pad == pad) r = state->pins[i].ring;
+                if (r == nullptr) return makeError<size_t>(Error::NotExist);
+                // Numbers are this watch's: 1 is the first edge since it was set up.
+                const uint32_t written = r->written.load(std::memory_order_acquire) - r->base;
+                uint32_t       from = after + 1;
+                if (after > written) from = 1; // a number from an earlier watch: from the start
+                if (written >= RingSize && from + RingSize <= written) {
+                        lost += written - RingSize + 1 - from; // overwritten before they were read
+                        from = written - RingSize + 1;
+                }
+                size_t n = 0;
+                for (uint32_t seq = from; seq <= written && n < out.size(); ++seq) {
+                        const uint32_t    abs = seq + r->base;
+                        const EdgeRecord &e = r->records[abs % RingSize];
+                        Edge              edge;
+                        if (e.seq.load(std::memory_order_acquire) == abs) {
+                                edge.timeNs = e.timeNs;
+                                edge.rising = e.rising;
+                                edge.level = e.level;
+                                std::atomic_thread_fence(std::memory_order_acquire);
+                        }
+                        next = seq;
+                        // Written again while it was copied (or before): lost, not shown wrong.
+                        if (e.seq.load(std::memory_order_relaxed) != abs) {
+                                ++lost;
+                                continue;
+                        }
+                        edge.seq = seq;
+                        out[n++] = edge;
+                }
+                return makeResult(n);
         }
 
 } // namespace Io

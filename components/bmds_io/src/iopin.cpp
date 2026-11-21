@@ -152,6 +152,7 @@ void ioPinDetail(const IoChip &chip, unsigned pad, const IoPadState &state, Span
         Line(line(IoPinField::Pull)).add("%s", ioPullText(state));
         Line(line(IoPinField::Drive)).add("%u", static_cast<unsigned>(state.drive));
         Line(line(IoPinField::LpIo)).add("%s", state.lpIo ? "yes" : "no");
+        line(IoPinField::Edges)[0] = '\0'; // the system's to fill (Io::readPin()): io/gpio's edges
         return;
 }
 
@@ -171,6 +172,7 @@ const char *ioPinFieldName(IoPinField field) {
                 case IoPinField::Pull: return "Pull";
                 case IoPinField::Drive: return "Drive";
                 case IoPinField::LpIo: return "LP IO";
+                case IoPinField::Edges: return "Edges";
         }
         return "?";
 }

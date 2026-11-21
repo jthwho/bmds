@@ -51,6 +51,7 @@ struct IoPinRow {
                 IoPadState  state;                  ///< What its registers say.
                 bool        strapping = false;      ///< A strapping pin (the chip's).
                 bool        forced = false;         ///< Taken with force from its holder.
+                bool        watched = false;        ///< Its edges are watched (`io/gpio`; `Io::readPins()` says).
 };
 
 /** @brief A line of a pad's details (`IoPinDetail`), in the order shown. */
@@ -69,10 +70,11 @@ enum class IoPinField : uint8_t {
         Pull,      ///< `ioPullText()`.
         Drive,     ///< Drive strength, 0-3.
         LpIo,      ///< Whether the LP IO domain has it.
+        Edges,     ///< The edges watched and seen (`io/gpio`'s; empty: not shown).
 };
 
 /** @brief The number of `IoPinField`s. */
-inline constexpr size_t IoPinFieldCount = 14;
+inline constexpr size_t IoPinFieldCount = 15;
 
 /**
  * @brief Everything about one pad, as lines of text by `IoPinField`.
@@ -128,5 +130,10 @@ void ioPinDetail(const IoChip &chip, unsigned pad, const IoPadState &state, Span
 
 /** @brief The field's name (`Board`, `Functions`, `LP IO`). */
 const char *ioPinFieldName(IoPinField field);
+
+/** @brief True for a field shown only when it says something (`Note`, `Forced`, `Edges`). */
+constexpr bool ioPinFieldIsOptional(IoPinField field) {
+        return field == IoPinField::Note || field == IoPinField::Forced || field == IoPinField::Edges;
+}
 
 BMDS_NAMESPACE_END

@@ -1045,3 +1045,15 @@ _Static_assert(offsetof(bmds_gpio_pins_t, first) == 4 && offsetof(bmds_gpio_pins
                        sizeof(bmds_gpio_pins_t) == 24,
                "ABI: bmds_gpio_pins_t");
 #endif
+/* A watched pad's edges (devplan/io.md §10.5, 2026-11-20). */
+_Static_assert(BMDS_GPIO_EDGES == 6 && BMDS_GPIO_PIN_EDGES == 0x200, "ABI: BMDS_GPIO_EDGES, BMDS_GPIO_PIN_EDGES");
+_Static_assert(offsetof(bmds_gpio_edge_t, seq) == 8 && offsetof(bmds_gpio_edge_t, rising) == 12 &&
+                       offsetof(bmds_gpio_edge_t, level) == 13 && sizeof(bmds_gpio_edge_t) == 16,
+               "ABI: bmds_gpio_edge_t");
+#if UINTPTR_MAX == 0xffffffffu // (a pointer inside)
+_Static_assert(offsetof(bmds_gpio_edges_t, offset) == 4 && offsetof(bmds_gpio_edges_t, after) == 8 &&
+                       offsetof(bmds_gpio_edges_t, count) == 12 && offsetof(bmds_gpio_edges_t, next) == 16 &&
+                       offsetof(bmds_gpio_edges_t, lost) == 20 && offsetof(bmds_gpio_edges_t, edge_size) == 24 &&
+                       offsetof(bmds_gpio_edges_t, edges) == 28 && sizeof(bmds_gpio_edges_t) == 32,
+               "ABI: bmds_gpio_edges_t");
+#endif

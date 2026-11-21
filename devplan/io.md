@@ -609,3 +609,46 @@ Signal and function names are the chip's (`io signals`), matched without case.
   update goes through) now puts every pad `io/gpio` has back first. Not ESP-IDF's shutdown
   handlers: there are five (`SHUTDOWN_HANDLERS_NO`), all taken, and registering failed. A panic
   runs no hooks: after one, the pads stay as they were until power-on.
+
+### 10.5 3b: edges with timestamps (design, 2026-11-20)
+
+- **Words in `io/gpio`:** `edges` (both ways), `rising`, `falling`; `debounce=US` (0 to
+  1,000,000): an edge less than `US` after the last one taken is dropped, so a bouncing contact
+  gives one (the level read at the next refresh is the truth either way). Only on a pad whose
+  input is on (`in`, `od`, `in:SIGNAL`, an IO_MUX function); `out` and `off` refuse them.
+- **The interrupt:** ESP-IDF's per-pad GPIO interrupt service (installed already by the SD card's
+  detect; installed here if not), its type set to the edges asked. The handler reads the level
+  and `Detail::monotonicUs()` (IRAM, ISR-safe) and writes one record into the pad's ring. The
+  service isn't an IRAM one, so an edge during a flash write waits for it and is stamped late;
+  noted, and good enough for buttons and signals a person watches.
+- **The ring:** 64 records of 16 bytes (time in ns since boot, a sequence number, rising, the
+  level), in PSRAM, one per watched pad from a pool of 8 (8 KB at most, none until asked). One
+  writer (the interrupt); readers copy what is newer than the sequence they last saw, and a record
+  overwritten while it was copied is counted lost, not shown wrong (its sequence is checked
+  after the copy). Lost records (more than 64 between reads) are counted too.
+- **Readers:**
+  - `gpio_ctl`'s `BMDS_GPIO_EDGES` (appended): a pad's records after a sequence, how many were
+    lost, the sequence to ask from next; `-BMDS_ENOENT` for a pad not watched. The pin record's
+    flags gain `BMDS_GPIO_PIN_EDGES`. A program polls it (the I/O Manager's strip, 3c); waiting
+    on an fd comes with line requests (step 5), as Linux's line events.
+  - `io edges N [-f]`: the pad's recent edges, the time before now and the way; `-f` follows them
+    until interrupted.
+  - `io pin N`: an `Edges` line (`both, debounce 2000 µs, 14 seen, 0 lost`) for a watched pad.
+
+### 10.6 As built: 3b (2026-11-20)
+
+- `IoPinSetup::edges`, `debounceUs`, `readsInput()`; the words `edges`, `rising`, `falling`,
+  `debounce=US`, refused on a pad whose input is off (host-tested).
+- `iogpio.cpp`: a pool of 8 rings (`EdgeRing`, 64 records of 16 bytes, PSRAM, made when first
+  wanted and kept), `edgeIsr()` on ESP-IDF's GPIO ISR service (installed by `iogpio` if the SD
+  card hasn't), `Io::edgeInfo()`, `Io::readEdges()`; a pad's watch begins with its setup and ends
+  with it (the interrupt off and its handler removed before the pad is restored).
+- `io edges N [-f]`, `io pin`'s `Edges` line (`IoPinField::Edges`, appended, shown only when
+  watched: `ioPinFieldIsOptional()`), the pin record's `BMDS_GPIO_PIN_EDGES`, `gpio_ctl`'s
+  `BMDS_GPIO_EDGES` (appended, ABI-locked), `gpioinfo -e N`.
+- **Checked on bmds0** with GPIO14 as `od,high,pull-up` (its own pulses are its edges):
+  three 50 ms pulses gave six edges, alternating, 50 ms apart, the same through `io edges` and
+  `gpioinfo -e` (times since boot as `uptime` says); `debounce=20000` took a 5 ms pulse's falling
+  edge only; `rising` took rising edges only; 80 edges with nobody reading kept the last 64,
+  16 counted lost; letting the pad go ended the watch. `-f` wasn't run on the board (it stops
+  only when interrupted).
