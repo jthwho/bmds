@@ -91,9 +91,10 @@ struct UartStash {
 namespace {
 
         constexpr unsigned MaxPorts = SOC_UART_NUM;
-        // A pause's input kept: 25 ms at the port's baud (ESP-IDF gives the cache back at least every
-        // 20 ms of an erase: CONFIG_SPI_FLASH_ERASE_YIELD_DURATION_MS); by DMA, the ring keeps it.
-        constexpr uint32_t StashMs = 25;
+        // A pause's input kept: 50 ms at the port's baud, a sector erase's typical pause (45 ms on
+        // this flash, 400 at most: the cache stays off through one; ESP-IDF's yield comes only
+        // between sectors). By DMA, the ring keeps it.
+        constexpr uint32_t StashMs = 50;
         constexpr uint32_t MinStash = 256;
         constexpr uint32_t MaxStash = 8192;
 
@@ -204,7 +205,7 @@ Error UartConsole::start(const IoUartSetup &line) {
         uart_ll_clr_intsts_mask(hw, UART_LL_INTR_MASK);
         // Whatever was waiting from before: gone with the port.
         (void)_rx.discardTo(_rx.writePosition());
-        // The stash: 25 ms of input at this baud (a byte is ten symbols at most), in internal RAM.
+        // The stash: 50 ms of input at this baud (a byte is ten symbols at most), in internal RAM.
         const uint32_t fifoBaud = line.baud < FifoMaxBaud ? line.baud : FifoMaxBaud;
         uint32_t       stashBytes = fifoBaud / 10 * StashMs / 1000;
         stashBytes = stashBytes < MinStash ? MinStash : stashBytes > MaxStash ? MaxStash : stashBytes;

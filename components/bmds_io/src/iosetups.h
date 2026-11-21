@@ -48,6 +48,9 @@ namespace IoSetups {
         /** @brief The PWM channels (`io/pwm0` .. `io/pwm7`, `/dev/pwmchip0`: devplan/io.md §15.1); `startPorts()` calls it. */
         Error startPwmPorts();
 
+        /** @brief The pulse counters (`io/pcnt0` .. `io/pcnt3`, `/dev/counter0`: devplan/io.md §15.3); `startPorts()` calls it. */
+        Error startPcntPorts();
+
 } // namespace IoSetups
 
 BMDS_NAMESPACE_END

@@ -1042,3 +1042,62 @@ TEST_CASE("LedcTiming: Linux's rounding onto LEDC") {
                 CHECK_FALSE(a.sharesTimer(c));
         }
 }
+
+TEST_CASE("IoPcntSetup: io/pcntN's value") {
+        using bmds::IoPcntSetup;
+        using F = IoPcntSetup::Function;
+        using A = IoPcntSetup::Action;
+        const IoChip &chip = bmds::ioChip();
+        IoPcntSetup   c;
+        char          why[IoPcntSetup::ReasonBytes];
+
+        SUBCASE("the defaults, and every word") {
+                REQUIRE(c.parse(chip, "a=46", why).isOk());
+                CHECK(c.a == 46);
+                CHECK(c.b == -1);
+                CHECK(c.function == F::Increase);
+                CHECK(c.action == A::Rising);
+                CHECK(c.filterNs == 0);
+                REQUIRE(c.parse(chip, "a=46 function=decrease action=both filter=1.5us pull-up force", why).isOk());
+                CHECK(c.function == F::Decrease);
+                CHECK(c.action == A::Both);
+                CHECK(c.filterNs == 1500);
+                CHECK(c.pullUp);
+                CHECK(c.force);
+                REQUIRE(c.parse(chip, "a=GPIO46 b=47 function=quadrature-x4 monitor", why).isOk());
+                CHECK(c.function == F::QuadratureX4);
+                CHECK(c.readsB());
+                CHECK(c.monitor);
+                REQUIRE(c.parse(chip, "a=46 b=47 function=pulse-direction pull-down", why).isOk());
+                CHECK(c.function == F::PulseDirection);
+                for (int f = 0; f <= int(F::QuadratureX4); ++f) CHECK(std::strlen(IoPcntSetup::functionName(F(f))) > 0);
+                CHECK(std::strcmp(IoPcntSetup::functionName(F::QuadratureX2B), "quadrature-x2-b") == 0);
+        }
+
+        SUBCASE("refusals, in words") {
+                CHECK(c.parse(chip, "b=47", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "a counter needs a=") == 0);
+                CHECK(c.parse(chip, "a=46 function=quadrature-x2-a", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "quadrature-x2-a needs b=") == 0);
+                CHECK(c.parse(chip, "a=46 b=47", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "increase reads only a=") == 0);
+                CHECK(c.parse(chip, "a=46 b=46 function=quadrature-x4", why) == Error::Invalid);
+                CHECK(c.parse(chip, "a=46 b=47 function=quadrature-x4 action=both", why) == Error::Invalid);
+                CHECK(c.parse(chip, "a=46 function=quadrature-x8", why) == Error::Invalid);
+                CHECK(c.parse(chip, "a=46 action=up", why) == Error::Invalid);
+                CHECK(c.parse(chip, "a=46 filter=11us", why) == Error::Invalid);
+                CHECK(c.parse(chip, "a=46 pull-up pull-down", why) == Error::Invalid);
+                CHECK(c.parse(chip, "a=46 monitor force", why) == Error::Invalid);
+                CHECK(c.parse(chip, "a=46 ceiling=100", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "'ceiling=100' isn't a word a counter knows") == 0);
+        }
+
+        SUBCASE("equality") {
+                IoPcntSetup x, y;
+                REQUIRE(x.parse(chip, "a=46 b=47 function=quadrature-x4", why).isOk());
+                REQUIRE(y.parse(chip, "function=quadrature-x4 b=47 a=46", why).isOk());
+                CHECK(x == y);
+                REQUIRE(y.parse(chip, "function=quadrature-x2-a b=47 a=46", why).isOk());
+                CHECK_FALSE(x == y);
+        }
+}

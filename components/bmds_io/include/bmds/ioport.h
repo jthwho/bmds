@@ -5,8 +5,8 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * A port's setup, `io/uartN`'s, `io/spiN`'s, `io/rmtN`'s and `io/pwmN`'s values (devplan/io.md
- * §11.1, §11.5, §13.1, §15.1): parsed and checked against the chip.
+ * A port's setup, `io/uartN`'s, `io/spiN`'s, `io/rmtN`'s, `io/pwmN`'s and `io/pcntN`'s values
+ * (devplan/io.md §11.1, §11.5, §13.1, §15.1, §15.3): parsed and checked against the chip.
  * Pure, host-tested; `Io` checks the holders and runs the port.
  */
 
@@ -193,6 +193,66 @@ struct IoPwmSetup {
 
                 /** @brief True if @p other sets the channel up the same way. */
                 bool operator==(const IoPwmSetup &other) const;
+};
+
+/**
+ * @brief A pulse counter's setup: `a=46 b=47 function=quadrature-x4` (devplan/io.md §15.3).
+ *
+ * @par Thread Safety
+ * A plain value.
+ */
+struct IoPcntSetup {
+                /** @brief Room for `parse()`'s reason, NUL included. */
+                static constexpr size_t ReasonBytes = IoUartSetup::ReasonBytes;
+
+                static constexpr uint32_t MaxFilterNs = 10000; ///< `filter=`'s longest (1023 APB cycles bound it too).
+
+                /** @brief How the signals count: Linux's `enum counter_function`, in its order. */
+                enum class Function : uint8_t {
+                        Increase,       ///< A's edges (`action=`) count up.
+                        Decrease,       ///< A's edges count down.
+                        PulseDirection, ///< A's rising edges, up while B is high, down while low.
+                        QuadratureX1A,  ///< A's rising edges, the direction from B.
+                        QuadratureX1B,  ///< B's rising edges, the direction from A.
+                        QuadratureX2A,  ///< A's both edges.
+                        QuadratureX2B,  ///< B's both edges.
+                        QuadratureX4,   ///< Every edge of both.
+                };
+
+                /** @brief Which of A's edges count for `increase` and `decrease`: Linux's synapse actions. */
+                enum class Action : uint8_t {
+                        None,
+                        Rising,
+                        Falling,
+                        Both
+                };
+
+                int8_t   a = -1;                        ///< `a=`: signal A's pad.
+                int8_t   b = -1;                        ///< `b=`: signal B's pad, or -1.
+                Function function = Function::Increase; ///< `function=`.
+                Action   action = Action::Rising;       ///< `action=`: `increase` and `decrease` only.
+                uint32_t filterNs = 0;                  ///< `filter=`: shorter pulses ignored, ns (0: none).
+                bool     pullUp = false;                ///< `pull-up` on the pads.
+                bool     pullDown = false;              ///< `pull-down`.
+                bool     monitor = false;               ///< `monitor`: pads read, not taken.
+                bool     force = false;                 ///< `force`: its pins taken from their holders.
+
+                /**
+                 * @brief Parses @p text for @p chip: words known, pads that exist, `b=` exactly when
+                 *        the function reads B, `action=` only for `increase` and `decrease`.
+                 * @param[out] why Why it is refused, for people, or "".
+                 * @return `Ok`, or `Invalid`.
+                 */
+                Error parse(const IoChip &chip, StringView text, char (&why)[ReasonBytes]);
+
+                /** @brief True if the function reads signal B. */
+                bool readsB() const { return function != Function::Increase && function != Function::Decrease; }
+
+                /** @brief Linux's name for @p f (`quadrature-x4`). */
+                static const char *functionName(Function f);
+
+                /** @brief True if @p other sets the counter up the same way. */
+                bool operator==(const IoPcntSetup &other) const;
 };
 
 BMDS_NAMESPACE_END

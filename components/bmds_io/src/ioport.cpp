@@ -464,4 +464,85 @@ Error IoPwmSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonB
         return Error::Ok;
 }
 
+namespace {
+
+        constexpr const char *FunctionNames[] = {"increase",        "decrease",        "pulse-direction",
+                                                 "quadrature-x1-a", "quadrature-x1-b", "quadrature-x2-a",
+                                                 "quadrature-x2-b", "quadrature-x4"};
+
+} // namespace
+
+const char *IoPcntSetup::functionName(Function f) {
+        return FunctionNames[size_t(f)];
+}
+
+bool IoPcntSetup::operator==(const IoPcntSetup &o) const {
+        return a == o.a && b == o.b && function == o.function && action == o.action && filterNs == o.filterNs &&
+               pullUp == o.pullUp && pullDown == o.pullDown && monitor == o.monitor && force == o.force;
+}
+
+Error IoPcntSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonBytes]) {
+        why[0] = '\0';
+        *this = IoPcntSetup();
+        bool actionGiven = false;
+        while (!text.isEmpty()) {
+                StringView word = take(text, ' ');
+                if (word.isEmpty()) continue;
+                const size_t     eq = word.indexOf('=');
+                const StringView key = eq == StringView::NPos ? word : word.left(eq);
+                const StringView value = eq == StringView::NPos ? StringView() : word.mid(eq + 1);
+                if (key == "a" || key == "b") {
+                        if (!pad(chip, value, key == "a" ? a : b))
+                                return refuse(why, Error::Invalid, "%.*s: '%.*s' isn't a pin of the chip's",
+                                              int(key.size()), key.data(), int(value.size()), value.data());
+                } else if (key == "function") {
+                        size_t f = 0;
+                        while (f < sizeof(FunctionNames) / sizeof(FunctionNames[0]) && value != FunctionNames[f]) ++f;
+                        if (f == sizeof(FunctionNames) / sizeof(FunctionNames[0]))
+                                return refuse(why, Error::Invalid,
+                                              "function is increase, decrease, pulse-direction or quadrature-x1-a, "
+                                              "-x1-b, -x2-a, -x2-b, -x4, not '%.*s'",
+                                              int(value.size()), value.data());
+                        function = Function(f);
+                } else if (key == "action") {
+                        if (value == "rising")
+                                action = Action::Rising;
+                        else if (value == "falling")
+                                action = Action::Falling;
+                        else if (value == "both")
+                                action = Action::Both;
+                        else
+                                return refuse(why, Error::Invalid, "action is rising, falling or both, not '%.*s'",
+                                              int(value.size()), value.data());
+                        actionGiven = true;
+                } else if (key == "filter") {
+                        uint64_t ns = 0;
+                        if (!timeOf(value, MaxFilterNs, ns))
+                                return refuse(why, Error::Invalid, "filter is a time up to 10us, not '%.*s'",
+                                              int(value.size()), value.data());
+                        filterNs = uint32_t(ns);
+                } else if (word == "pull-up") {
+                        pullUp = true;
+                } else if (word == "pull-down") {
+                        pullDown = true;
+                } else if (word == "monitor") {
+                        monitor = true;
+                } else if (word == "force") {
+                        force = true;
+                } else {
+                        return refuse(why, Error::Invalid, "'%.*s' isn't a word a counter knows", int(word.size()),
+                                      word.data());
+                }
+        }
+        if (a < 0) return refuse(why, Error::Invalid, "a counter needs a=");
+        if (readsB() && b < 0) return refuse(why, Error::Invalid, "%s needs b=", functionName(function));
+        if (!readsB() && b >= 0) return refuse(why, Error::Invalid, "%s reads only a=", functionName(function));
+        if (a == b) return refuse(why, Error::Invalid, "GPIO%d is given twice", int(a));
+        if (actionGiven && readsB()) return refuse(why, Error::Invalid, "action= is increase's and decrease's");
+        if (pullUp && pullDown) return refuse(why, Error::Invalid, "pull-up or pull-down, not both");
+        if (monitor && (force || pullUp || pullDown))
+                return refuse(why, Error::Invalid, "monitor takes nothing: no force, no pulls");
+        return Error::Ok;
+}
+
 BMDS_NAMESPACE_END

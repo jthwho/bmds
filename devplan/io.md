@@ -1256,8 +1256,8 @@ In parts: **7a** SPI by GDMA, **7b** UART through UHCI above a measured baud.
 - **The interrupt made cache-safe:** allocated in IRAM. On entry it asks `FlashCache` (moved from
   the drivers to the kernel, so `bmds_io` can use it) whether the cache may be touched: if so, it
   runs as before, first moving what a pause left into the ring. If not, it only drains the FIFO
-  into a stash in internal RAM (a port's: 25 ms of input at its baud, 256 B to 2.5 KB: ESP-IDF gives
-  the cache back at least every 20 ms of an erase) and masks the transmit interrupt (its ring is in
+  into a stash in internal RAM (a port's: 50 ms of input at its baud, 256 B to 5 KB: a sector erase
+  holds the cache off some 45 ms, 400 at most; corrected in 8b, §15.4, from 25 ms) and masks the transmit interrupt (its ring is in
   PSRAM), and marks the port deferred. `FlashCache` gains hooks called at the end of every flash
   operation (`addAfterHook()`, `waitHooks()` for a port that stops); a UART's raises its transmit
   interrupt if a port deferred, so the work runs at once; an interrupt that defers after the hook
@@ -1350,3 +1350,62 @@ strip, a second chip, each when asked for.
   deletes it).
 - Not built: ioman's Ports tab doesn't show PWM channels (nor RMT ports yet); LEDC's hardware
   fades and gamma curves (Linux's API has none).
+
+### 15.3 8b: PCNT as Linux's counters (design)
+
+- **Linux's API:** `/dev/counter0`, the counter character device: one open at a time (`EBUSY`, as
+  Linux's), `COUNTER_ADD_WATCH_IOCTL` (a count's value, or nothing, watched for an event),
+  `COUNTER_ENABLE_EVENTS_IOCTL` (the watches added since take effect) and `DISABLE`; `read()`
+  gives `struct counter_event` records (a monotonic timestamp, the watched value, the watch),
+  `poll()` waits for them. Linux keeps the rest in sysfs (a count's value, its preset, function,
+  edges); here the setting carries the configuration and `counterdev_ctl` (slot 144) the rest:
+  `BMDS_COUNTERDEV_READ` (a count and its time, taken together: a frequency from two reads),
+  `BMDS_COUNTERDEV_PRESET`, `BMDS_COUNTERDEV_THRESHOLD` (where `COUNTER_EVENT_THRESHOLD` fires; Linux's
+  drivers have it as an extension), `BMDS_COUNTERDEV_INFO`. The SDK's `linux/counter.h` is Linux's;
+  `linux.c` translates the three ioctls; the events read as they are.
+- **Settings:** `io/pcnt0` .. `io/pcnt3`, a count each: `a=46 b=47 function=quadrature-x4` (Linux's
+  functions: `increase`, `decrease` (with `action=rising|falling|both`), `pulse-direction` (A's
+  rising edges, B high counting up), `quadrature-x1-a`, `-x1-b`, `-x2-a`, `-x2-b`, `-x4`),
+  `filter=` (pulses shorter are ignored: the hardware's glitch filter, up to 1023 APB cycles),
+  `monitor` (pads read, not taken: another owner drives them), `force`. A change restarts the
+  count at 0.
+- **The count:** 64-bit, signed (Linux's `u64` with it as two's complement: a count gone below 0
+  reads as 2^64 less). The hardware's 16 bits run between ±32767; at a limit it resets to 0 and
+  its interrupt adds the limit to the count's base, so a count is the base plus the hardware's
+  (a limit pending in the interrupt's status added, as ESP-IDF does). Counts lost only if over
+  32767 come in one interrupt's delay.
+- **The threshold:** the hardware compares its own 16 bits; the interrupt arms threshold 0 with
+  the threshold less the base whenever that is inside the window (re-armed at every limit), so the
+  event fires on the count itself, every time it reaches it.
+- **Our own interrupt** on the LL layer (one for the four units, internal RAM, cache-safe as the
+  UART's: during a flash write it only notes the limits; events then wait for the end), no ESP-IDF
+  driver: its watch points can't be moved from its interrupt.
+- **Checked by LEDC:** two PWM channels on one timer, the second a quarter period later, are a
+  quadrature signal whose rate and direction are known; a count with `monitor` on their pins.
+
+### 15.4 As built: 8b (2026-11-21)
+
+- `IoPcntSetup` (`ioport.h`, host-tested), `CounterChip` (`counterchip.h`: one open, its watches
+  and a queue of 64 events), `pcntports.cpp` (PCNT on its LL layer), `counterdev_ctl`
+  (`countercalls.cpp`, slot 144; the `BMDS_COUNTER_` names were the stats counters', so the
+  device's are `BMDS_COUNTERDEV_`), `linux/counter.h`, `linux.c`'s three ioctls,
+  `sdk/examples/counter` (`info`, `read` with rates, `preset`, `watch`).
+- **The interrupt is cache-safe** (IRAM, its state in internal RAM, the registers read and written
+  inline): the first version wasn't, and a forced flash write lost whole 32767-count windows at
+  1 MHz (a window wraps every 33 ms; a sector erase holds the cache off ~45 ms), none at 300 kHz.
+  Now, during a pause, it still takes the limits and re-arms the threshold; a threshold's hits keep
+  their times and go to the queue from `FlashCache`'s after-hook (whose contract now says what is
+  true: it runs in the flash operation's task with everything given back, so ordinary code).
+- **Checked** on bmds0 with LEDC making the signals (two channels a quarter period apart):
+  every function at 1 kHz, its rate and sign (x4 ±4000/s, x2 2000, x1 and pulse-direction ±1000,
+  `decrease` rising and both); 1 MHz and a 4 MHz x4 count exact to the µs of the reads, quiet and
+  through forced flash writes; threshold events at 1500 (1 kHz), on the window's limits (32767,
+  65534: fired once each after a fix, the zero event a limit's reset raises too being ignored),
+  beyond it (1,000,000, -50,000 counting down, 3,000,000 through a flash write), and on a count
+  swinging back and forth (twice every 100 ms, at the preset itself and beside it); an event's
+  timestamp within a few µs of the count (read back 91 µs later: 98 counts on at 1 MHz); a second
+  open `EBUSY`, a count not set up `ENODEV`.
+- **Found:** the UART stash of 7b was sized on a wrong 20 ms (ESP-IDF's erase yield comes only
+  between sectors); it is 50 ms now. A loopback test couldn't show it.
+- Not built: the index (`COUNTER_EVENT_INDEX`: the clear signal raises no event of its own here),
+  `ceiling` and overflow events (a 64-bit count doesn't wrap), the direction-change event.

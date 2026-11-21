@@ -911,10 +911,16 @@ until silicon v3; then test again.
   goes by UHCI's DMA (`uartconsole.cpp`, `devplan/io.md` §14.3). Measure with the FIFO's fill
   on entry: bytes past the threshold times a byte's time.
 - **A flash write loses a UART's input unless its interrupt is cache-safe:** the FIFO (128 bytes:
-  11 ms at 115200) can't wait out a cache-off window, and 2 to 5% was lost at every baud. Those
-  windows last at most some 20 ms (`CONFIG_SPI_FLASH_ERASE_YIELD_DURATION_MS`): an IRAM interrupt
-  draining into internal RAM covers them, but the reader can't run for longer (about 85 ms at
-  1 Mbaud), so the receive ring needs that much too (64 KB, PSRAM).
+  11 ms at 115200) can't wait out a cache-off window, and 2 to 5% was lost at every baud. An IRAM
+  interrupt draining into internal RAM covers them, but the reader can't run for longer (about
+  85 ms at 1 Mbaud), so the receive ring needs that much too (64 KB, PSRAM).
+- **A sector erase holds the cache off for all of it:** 45 ms typically on this W25Q128, 400 at
+  most. Without auto-suspend the flash can't be read while it erases, and ESP-IDF's
+  `CONFIG_SPI_FLASH_ERASE_YIELD_DURATION_MS` (20 ms) only yields *between* sectors. Measured by a
+  pulse counter's interrupt (not then cache-safe): at 1 MHz its 32767-count window wraps every
+  33 ms, and during a forced write whole windows went missing; at 300 kHz (109 ms) none did. A
+  loopback test can't show it (the sender pauses too). Size anything that waits out a pause for
+  45 ms at least, and make interrupts that must keep up cache-safe (`devplan/io.md` §15.4).
 - **UHCI receive as an endless ring:** ESP-IDF's GDMA, receiving, goes on after a descriptor
   closed by UHCI's idle EOF into the next, and gives each back with its owner bit cleared and its
   length written; a circular list of descriptors with owner checking on never needs re-arming.

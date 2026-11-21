@@ -42,6 +42,7 @@ if(COMMAND idf_component_register)
                                     src/spiports.cpp
                                     src/rmtports.cpp
                                     src/pwmports.cpp
+                                    src/pcntports.cpp
                                     src/uartconsole.cpp
                                     src/iocommand.cpp
                                INCLUDE_DIRS include

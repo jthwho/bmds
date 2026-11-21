@@ -71,17 +71,18 @@ namespace FlashCache {
                 return;
         }
 
-        /** @brief What `addAfterHook()` takes: IRAM code, its argument in internal RAM. */
+        /** @brief What `addAfterHook()` takes. */
         using AfterHook = void (*)(void *arg);
 
         /** @brief Hooks a pause can leave work for, at most. */
         constexpr unsigned MaxAfterHooks = 8;
 
         /**
-         * @brief Calls @p hook with @p arg at the end of every flash operation, the cache back (an
-         *        interrupt that found the flash busy deferred work: the hook raises it again).
-         *        @p hook is IRAM code and @p arg in internal RAM; it runs in the flash operation's
-         *        task, and must only write registers and internal RAM. Set once, at start.
+         * @brief Calls @p hook with @p arg at the end of every flash operation (an interrupt that
+         *        found the flash busy deferred work: the hook delivers it, or raises the interrupt
+         *        again). It runs in the flash operation's task once ESP-IDF has given back the
+         *        cache, the other core, non-IRAM interrupts and the scheduler: ordinary code, brief,
+         *        never blocking (it may take a spinlock). Set once, at start.
          * @return `Ok`, or `Full` (`MaxAfterHooks`).
          * @blocking
          */

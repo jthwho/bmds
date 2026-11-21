@@ -39,6 +39,7 @@
 #include <linux/i2c-dev.h>
 #include <linux/spi/spidev.h>
 #include <linux/pwm.h>
+#include <linux/counter.h>
 #include <linux/ptp_clock.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -1354,6 +1355,29 @@ static long pwm_ioctl(long fd, unsigned long request, void *arg) {
         return r;
 }
 
+/* /dev/counter0's requests (linux/counter.h) on counterdev_ctl. */
+static long counter_ioctl(long fd, unsigned long request, void *arg) {
+        bmds_counterdev_watch_t w = {.size = sizeof(w)};
+        switch (request) {
+                case COUNTER_ADD_WATCH_IOCTL: {
+                        if (arg == NULL) return -EFAULT;
+                        const struct counter_watch *cw = arg;
+                        w.type = cw->component.type;
+                        w.scope = cw->component.scope;
+                        w.parent = cw->component.parent;
+                        w.id = cw->component.id;
+                        w.event = cw->event;
+                        w.channel = cw->channel;
+                        return (long)bmds_counterdev_ctl((int32_t)fd, BMDS_COUNTERDEV_ADD_WATCH, &w);
+                }
+                case COUNTER_ENABLE_EVENTS_IOCTL:
+                        return (long)bmds_counterdev_ctl((int32_t)fd, BMDS_COUNTERDEV_ENABLE_EVENTS, &w);
+                case COUNTER_DISABLE_EVENTS_IOCTL:
+                        return (long)bmds_counterdev_ctl((int32_t)fd, BMDS_COUNTERDEV_DISABLE_EVENTS, &w);
+                default: return -ENOTTY;
+        }
+}
+
 static long do_ioctl(long fd, unsigned long request, void *arg) {
         /* OSS: /dev/dsp's 'P' requests and /dev/mixer's 'M' (oss.c). */
         const unsigned long type = request >> 8 & 0xff;
@@ -1368,6 +1392,7 @@ static long do_ioctl(long fd, unsigned long request, void *arg) {
         if (type == GPIO_IOC_MAGIC) return gpio_ioctl(fd, request, arg);
         if (type == SPI_IOC_MAGIC) return spi_ioctl(fd, request, arg);
         if (type == 0x75) return pwm_ioctl(fd, request, arg); /* linux/pwm.h's */
+        if (type == 0x3E) return counter_ioctl(fd, request, arg); /* linux/counter.h's */
         if ((request >= I2C_RETRIES && request <= I2C_PEC) || request == I2C_SMBUS) return i2c_ioctl(fd, request, arg);
         switch (request) {
                 case TCGETS: return tc_get(fd, arg);

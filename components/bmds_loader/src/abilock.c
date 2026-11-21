@@ -1183,3 +1183,29 @@ _Static_assert(offsetof(bmds_pwm_info_t, npwm) == 8 && offsetof(bmds_pwm_info_t,
                        offsetof(bmds_pwm_info_t, bits) == 24 && offsetof(bmds_pwm_info_t, source_hz) == 28 &&
                        sizeof(bmds_pwm_info_t) == 32,
                "ABI: bmds_pwm_info_t");
+/* Counters: /dev/counter0 (devplan/io.md §15.3, 2026-11-21). */
+_Static_assert(BMDS_SYS_COUNTERDEV_CTL == 144, "ABI: slot COUNTER_CTL");
+_Static_assert(BMDS_COUNTERDEV_ADD_WATCH == 0 && BMDS_COUNTERDEV_ENABLE_EVENTS == 1 &&
+                       BMDS_COUNTERDEV_DISABLE_EVENTS == 2 && BMDS_COUNTERDEV_READ == 3 &&
+                       BMDS_COUNTERDEV_PRESET == 4 && BMDS_COUNTERDEV_THRESHOLD == 5 && BMDS_COUNTERDEV_INFO == 6 &&
+                       BMDS_COUNTERDEV_COMPONENT_NONE == 0 && BMDS_COUNTERDEV_COMPONENT_COUNT == 2 &&
+                       BMDS_COUNTERDEV_SCOPE_DEVICE == 0 && BMDS_COUNTERDEV_SCOPE_COUNT == 2 &&
+                       BMDS_COUNTERDEV_EVENT_THRESHOLD == 3 && BMDS_COUNTERDEV_ARMED == 1 &&
+                       BMDS_COUNTERDEV_CONFIGURED == 1 && BMDS_COUNTERDEV_MONITOR == 2 &&
+                       BMDS_COUNTERDEV_HAS_THRESHOLD == 4,
+               "ABI: counterdev_ctl ops, Linux's numbers, flags");
+_Static_assert(offsetof(bmds_counterdev_watch_t, type) == 4 && offsetof(bmds_counterdev_watch_t, event) == 8 &&
+                       sizeof(bmds_counterdev_watch_t) == 12,
+               "ABI: bmds_counterdev_watch_t");
+_Static_assert(offsetof(bmds_counterdev_event_t, value) == 8 && offsetof(bmds_counterdev_event_t, type) == 16 &&
+                       offsetof(bmds_counterdev_event_t, event) == 20 &&
+                       offsetof(bmds_counterdev_event_t, status) == 22 && sizeof(bmds_counterdev_event_t) == 24,
+               "ABI: bmds_counterdev_event_t (Linux's counter_event)");
+_Static_assert(offsetof(bmds_counterdev_count_t, value) == 8 && offsetof(bmds_counterdev_count_t, time_ns) == 16 &&
+                       offsetof(bmds_counterdev_count_t, flags) == 24 && sizeof(bmds_counterdev_count_t) == 32,
+               "ABI: bmds_counterdev_count_t");
+_Static_assert(offsetof(bmds_counterdev_info_t, function) == 16 && offsetof(bmds_counterdev_info_t, pin_a) == 20 &&
+                       offsetof(bmds_counterdev_info_t, filter_ns) == 28 &&
+                       offsetof(bmds_counterdev_info_t, threshold) == 32 &&
+                       offsetof(bmds_counterdev_info_t, events_lost) == 40 && sizeof(bmds_counterdev_info_t) == 48,
+               "ABI: bmds_counterdev_info_t");

@@ -230,6 +230,8 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_SPI_CTL 141u    /**< `int32_t spi_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/spidevB.C`. */
 #define BMDS_SYS_RMT_CTL 142u    /**< `int32_t rmt_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/rmtN`. */
 #define BMDS_SYS_PWM_CTL 143u    /**< `int32_t pwm_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/pwmchipN`. */
+#define BMDS_SYS_COUNTERDEV_CTL                                                                                        \
+        144u /**< `int32_t counterdev_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/counterN`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -2210,6 +2212,92 @@ typedef struct bmds_pwm_info_t {
 } bmds_pwm_info_t;
 
 /*
+ * Counters (slot 144, appended 2026-11-21, devplan/io.md §15.3): `/dev/counter0`, the pulse
+ * counters (`io/pcntN` sets each up), as Linux's counter character device: open by one file at a
+ * time (`-BMDS_EBUSY`), watches added then enabled, and `read()` giving `bmds_counterdev_event_t`
+ * records (Linux's `struct counter_event`) as the watched events happen, `poll()` waiting for
+ * them. What Linux keeps in sysfs is here as ops: a count's value and time, its preset, its
+ * threshold. A count is 64-bit and signed (Linux's `u64` as two's complement). `linux/counter.h`'s
+ * requests are the first three.
+ */
+#define BMDS_COUNTERDEV_ADD_WATCH 0u /**< `bmds_counterdev_watch_t *`: a watch, in effect from the next enable. */
+#define BMDS_COUNTERDEV_ENABLE_EVENTS                                                                                  \
+        1u /**< `bmds_counterdev_watch_t *` (`size` only): the watches added take effect. */
+#define BMDS_COUNTERDEV_DISABLE_EVENTS                                                                                 \
+        2u                        /**< `bmds_counterdev_watch_t *` (`size` only): no events, the watches gone. */
+#define BMDS_COUNTERDEV_READ 3u   /**< `bmds_counterdev_count_t *` (`count` in): its value and when. */
+#define BMDS_COUNTERDEV_PRESET 4u /**< `bmds_counterdev_count_t *`: the count set to `value`. */
+#define BMDS_COUNTERDEV_THRESHOLD                                                                                      \
+        5u /**< `bmds_counterdev_count_t *`: its threshold `value` (`BMDS_COUNTERDEV_ARMED`), or none. */
+#define BMDS_COUNTERDEV_INFO 6u /**< `bmds_counterdev_info_t *` (`count` in): the count and the device. */
+
+/** @brief Watch and event components and events: Linux's numbers (`linux/counter.h`). */
+#define BMDS_COUNTERDEV_COMPONENT_NONE 0u /**< Nothing: the event alone (`value` 0). */
+#define BMDS_COUNTERDEV_COMPONENT_COUNT                                                                                \
+        2u /**< A count's value (`scope` COUNT, `parent` the count, which may be another than the event's). */
+#define BMDS_COUNTERDEV_SCOPE_DEVICE 0u
+#define BMDS_COUNTERDEV_SCOPE_COUNT 2u
+#define BMDS_COUNTERDEV_EVENT_THRESHOLD 3u /**< Count `channel` reached its threshold. */
+
+/** @brief `bmds_counterdev_count_t::flags`. */
+#define BMDS_COUNTERDEV_ARMED 0x1u /**< `BMDS_COUNTERDEV_THRESHOLD`: set it (else none); `READ`, `INFO`: one is set. */
+
+/** @brief `bmds_counterdev_info_t::flags`. */
+#define BMDS_COUNTERDEV_CONFIGURED 0x1u /**< `io/pcntN` sets it up and it counts (else its ops are `-BMDS_ENODEV`). */
+#define BMDS_COUNTERDEV_MONITOR 0x2u    /**< It reads pads another owner drives. */
+#define BMDS_COUNTERDEV_HAS_THRESHOLD 0x4u /**< A threshold is set (`threshold`). */
+
+/** @brief A watch (Linux's `struct counter_watch`, behind a `size`). */
+typedef struct bmds_counterdev_watch_t {
+                uint32_t size;        /**< Set by the caller: `sizeof(bmds_counterdev_watch_t)`. */
+                uint8_t  type;        /**< `BMDS_COUNTER_COMPONENT_...`. */
+                uint8_t  scope;       /**< `BMDS_COUNTER_SCOPE_...`. */
+                uint8_t  parent;      /**< The count, for a count's component. */
+                uint8_t  id;          /**< Zero. */
+                uint8_t  event;       /**< `BMDS_COUNTER_EVENT_...`. */
+                uint8_t  channel;     /**< Where the event happens: the count (Linux's, for a count's events). */
+                uint8_t  reserved[2]; /**< Zero. */
+} bmds_counterdev_watch_t;
+
+/** @brief An event as `read()` gives it: Linux's `struct counter_event`, byte for byte. */
+typedef struct bmds_counterdev_event_t {
+                uint64_t timestamp; /**< When (monotonic ns, from the interrupt). */
+                uint64_t value;     /**< The watched component's value then (a count: two's complement). */
+                uint8_t  type;      /**< The watch: its component's type, */
+                uint8_t  scope;     /**< scope, */
+                uint8_t  parent;    /**< parent, */
+                uint8_t  id;        /**< id, */
+                uint8_t  event;     /**< event, */
+                uint8_t  channel;   /**< and channel. */
+                uint8_t  status;    /**< 0, or an errno reading the value failed with. */
+                uint8_t  reserved;  /**< Zero. */
+} bmds_counterdev_event_t;
+
+/** @brief A count's value (`READ`, `PRESET`, `THRESHOLD`). */
+typedef struct bmds_counterdev_count_t {
+                uint32_t size;     /**< Set by the caller: `sizeof(bmds_counterdev_count_t)`. */
+                uint32_t count;    /**< The count: N of `io/pcntN`. */
+                int64_t  value;    /**< The value (read, preset, or the threshold). */
+                int64_t  time_ns;  /**< `READ`: when it was taken (monotonic). */
+                uint32_t flags;    /**< `BMDS_COUNTERDEV_ARMED`. */
+                uint32_t reserved; /**< Zero. */
+} bmds_counterdev_count_t;
+
+/** @brief A count and the device (`BMDS_COUNTERDEV_INFO`). */
+typedef struct bmds_counterdev_info_t {
+                uint32_t size;        /**< Set by the caller: `sizeof(bmds_counterdev_info_t)`. */
+                uint32_t count;       /**< The count asked about (set by the caller). */
+                uint32_t ncounts;     /**< The device's counts. */
+                uint32_t flags;       /**< `BMDS_COUNTER_...`. */
+                uint32_t function;    /**< Linux's `enum counter_function`. */
+                int32_t  pin_a;       /**< Signal A's pin, or -1. */
+                int32_t  pin_b;       /**< Signal B's pin, or -1. */
+                uint32_t filter_ns;   /**< Pulses shorter are ignored (0: no filter). */
+                int64_t  threshold;   /**< Its threshold, when `BMDS_COUNTERDEV_HAS_THRESHOLD`. */
+                uint64_t events_lost; /**< Events dropped: more waited than the queue holds. */
+} bmds_counterdev_info_t;
+
+/*
  * Surfaces (slots 117-121, appended 2026-10-14, devplan/games.md §11): a picture a program draws
  * with the CPU into its own buffers and presents, in a window or full screen (the user's setting
  * per application, the program's suggestion its default, Alt+Enter between them); its events read
@@ -2987,6 +3075,7 @@ typedef int32_t (*bmds_sys_i2c_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_spi_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_rmt_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_pwm_ctl_fn)(int32_t fd, uint32_t op, void *arg);
+typedef int32_t (*bmds_sys_counterdev_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -4535,6 +4624,18 @@ static inline int32_t bmds_rmt_ctl(int32_t fd, uint32_t op, void *arg) {
 static inline int32_t bmds_pwm_ctl(int32_t fd, uint32_t op, void *arg) {
         if (!bmds_sys_has(BMDS_SYS_PWM_CTL)) return -BMDS_ENOSYS;
         return ((bmds_sys_pwm_ctl_fn)bmds_sys->slot[BMDS_SYS_PWM_CTL])(fd, op, arg);
+}
+
+/**
+ * @brief Operates on counter file @p fd (`/dev/counter0`): `BMDS_COUNTER_...` with @p arg as each
+ *        says (slot 144, appended 2026-11-21, devplan/io.md §15.3).
+ * @return 0, or `-BMDS_ENOTTY` (not a counter device), `-BMDS_EBADF`, `-BMDS_EINVAL` (an op, a
+ *         `size`, a count, a watch the device can't give), `-BMDS_ENODEV` (a count not set up),
+ *         `-BMDS_ENOMEM` (too many watches), `-BMDS_EFAULT`, `-BMDS_ENOSYS`.
+ */
+static inline int32_t bmds_counterdev_ctl(int32_t fd, uint32_t op, void *arg) {
+        if (!bmds_sys_has(BMDS_SYS_COUNTERDEV_CTL)) return -BMDS_ENOSYS;
+        return ((bmds_sys_counterdev_ctl_fn)bmds_sys->slot[BMDS_SYS_COUNTERDEV_CTL])(fd, op, arg);
 }
 
 /**
