@@ -16,8 +16,16 @@
 #include <new>
 #include <utility>
 #include <driver/spi_master.h>
+#include <esp_cache.h>
+#include <esp_clk_tree.h>
+#include <esp_intr_alloc.h>
+#include <esp_private/esp_clk_tree_common.h>
+#include <esp_private/gdma.h>
+#include <esp_private/periph_ctrl.h>
 #include <esp_private/spi_common_internal.h>
 #include <esp_rom_sys.h>
+#include <hal/spi_hal.h>
+#include <hal/spi_ll.h>
 #include <bmds/gpiochip.h>
 #include <bmds/io.h>
 #include <bmds/ioport.h>
@@ -26,6 +34,7 @@
 #include <bmds/memory.h>
 #include <bmds/mutex.h>
 #include <bmds/psramobject.h>
+#include <bmds/semaphore.h>
 #include <bmds/spidevice.h>
 #include <bmds/string.h>
 #include <bmds/sysconf.h>
@@ -43,9 +52,12 @@ namespace SpiPorts {
         constexpr unsigned FirstBus = 2; // the P4's GP-SPIs: io/spi2, io/spi3
         constexpr unsigned PortCount = 2;
         constexpr size_t   MaxDevices = IoSpiSetup::MaxCs;
-        constexpr size_t   Piece = 64;        // a transaction's bytes: the controller's buffer (DMA off)
-        constexpr size_t   MaxInputs = 24;    // the controller's input signals, saved
-        constexpr uint32_t SpinBelowUs = 100; // delay_usecs: spun below, slept from
+        constexpr size_t   Piece = 64;            // a transaction's bytes: the controller's buffer (DMA off)
+        constexpr size_t   DmaPiece = 4096;       // a DMA transaction's bytes: the bounce buffers (internal RAM)
+        constexpr size_t   CacheLine = 64;        // the L1 cache's line: a DMA buffer's sync is whole lines
+        constexpr uint32_t SrcFreqMax = 80000000; // what the controller takes from its clock source (ESP-IDF's)
+        constexpr size_t   MaxInputs = 24;        // the controller's input signals, saved
+        constexpr uint32_t SpinBelowUs = 100;     // delay_usecs: spun below, slept from
 
         constexpr const char *CsRoles[MaxDevices] = {"CS0", "CS1", "CS2", "CS3", "CS4", "CS5"};
 
@@ -78,6 +90,20 @@ namespace SpiPorts {
                         SysConf::Id id = SysConf::NoId;
                         alignas(4) uint8_t tx[Piece] = {};
                         alignas(4) uint8_t rx[Piece] = {};
+
+                        // DMA (`dma`, devplan/io.md §14.1): ESP-IDF's bus (pins, the two GDMA channels,
+                        // their descriptors) with no ESP-IDF device on it; the transactions run here
+                        // on spi_hal, as ESP-IDF's own SPI slave does, from bounce buffers of our own
+                        // whose cache lines are synced whole whatever a piece's length.
+                        spi_hal_context_t    hal = {};
+                        intr_handle_t        intr = nullptr;
+                        Semaphore            dmaDone{1, 0};
+                        uint8_t             *dtx = nullptr;
+                        uint8_t             *drx = nullptr;
+                        spi_hal_dev_config_t halDev = {};
+                        const SpiDevice     *applied = nullptr; // the device halDev is for, as applied
+                        uint32_t             appliedMode = 0;
+                        uint32_t             appliedHz = 0;
 
                         spi_host_device_t host() const { return spi_host_device_t(bus - 1); } // SPI2_HOST is 1
 
@@ -136,6 +162,15 @@ namespace SpiPorts {
                         // were, the claim. The lock held.
                         void stop() {
                                 if (!running) return;
+                                if (setup.dma) {
+                                        if (intr != nullptr) esp_intr_free(intr);
+                                        intr = nullptr;
+                                        spi_hal_deinit(&hal);
+                                        Memory::free(dtx);
+                                        Memory::free(drx);
+                                        dtx = drx = nullptr;
+                                        applied = nullptr;
+                                }
                                 for (size_t i = 0; i < deviceCount; ++i) {
                                         SpiDevice *d = devices[i];
                                         if (d->_handle != nullptr)
@@ -163,8 +198,11 @@ namespace SpiPorts {
                                 return;
                         }
 
-                        void start(const IoSpiSetup &s);
-                        void addFiles();
+                        void  start(const IoSpiSetup &s);
+                        void  addFiles();
+                        Error startDma();
+                        Error prepareDma(SpiDevice &d, uint32_t mode, uint32_t hz);
+                        Error dmaPiece(const uint8_t *from, uint8_t *to, size_t n, bool readOnly, unsigned timeoutMs);
         };
 
         struct State {
@@ -173,6 +211,194 @@ namespace SpiPorts {
         };
 
         constinit PsramObject<State> state;
+
+        // ---- DMA (devplan/io.md §14.1)
+
+        // A transaction done: the waiting task woken (its interrupt stays off till the next).
+        void dmaIsr(void *arg) {
+                Port &p = *static_cast<Port *>(arg);
+                spi_ll_clear_int_stat(p.hal.hw);
+                p.dmaDone.releaseFromIsr();
+                return;
+        }
+
+        // The divider before the controller: even, at least 2, as ESP-IDF's master picks it.
+        uint32_t preDivFor(uint32_t srcHz, uint32_t hz) {
+                uint32_t minDiv = ((srcHz / SrcFreqMax) + 1) & ~1u;
+                if (minDiv < 2) minDiv = 2;
+                const uint32_t total = srcHz / hz;
+                for (uint32_t d = minDiv; d <= total && d <= SPI_LL_SRC_PRE_DIV_MAX; d += 2)
+                        if (total % d == 0 && total / d <= SPI_LL_PERIPH_CLK_DIV_MAX) return d;
+                return minDiv;
+        }
+
+        Error Port::startDma() {
+                const size_t bytes = DmaPiece;
+                dtx = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, bytes, CacheLine));
+                drx = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, bytes, CacheLine));
+                if (dtx == nullptr || drx == nullptr) return Error::NoMem;
+                // The transaction-done interrupt, off till the stale status spi_hal_init() sets is
+                // cleared.
+                if (esp_intr_alloc(spicommon_irqsource_for_host(host()), ESP_INTR_FLAG_INTRDISABLED, dmaIsr, this,
+                                   &intr) != ESP_OK)
+                        return Error::IoError;
+                spi_hal_init(&hal, uint32_t(host()));
+                spi_hal_config_io_default_level(&hal, false);
+                spi_ll_clear_int_stat(hal.hw);
+                (void)dmaDone.tryAcquire();
+                esp_intr_enable(intr);
+                applied = nullptr;
+                return Error::Ok;
+        }
+
+        // Device @p d's timing and mode on the controller, for @p mode at @p hz (as ESP-IDF's master
+        // computes and applies them), when not already. The lock held.
+        Error Port::prepareDma(SpiDevice &d, uint32_t mode, uint32_t hz) {
+                if (applied == &d && appliedMode == mode && appliedHz == hz) return Error::Ok;
+                const spi_clock_source_t src = SPI_CLK_SRC_DEFAULT;
+                uint32_t                 srcHz = 0;
+                if (esp_clk_tree_enable_src(soc_module_clk_t(src), true) != ESP_OK ||
+                    esp_clk_tree_src_get_freq_hz(soc_module_clk_t(src), ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED,
+                                                 &srcHz) != ESP_OK)
+                        return Error::IoError;
+                const uint32_t         preDiv = preDivFor(srcHz, hz);
+                const bool             halfDuplex = (mode & SpiDevice::ThreeWire) != 0;
+                const spi_bus_attr_t  *attr = spi_bus_get_attr(host());
+                const bool             matrix = attr == nullptr || !(attr->flags & SPICOMMON_BUSFLAG_IOMUX_PINS);
+                spi_hal_timing_param_t tp = {};
+                tp.half_duplex = halfDuplex;
+                tp.no_compensate = 0;
+                tp.clk_src_hz = srcHz / preDiv;
+                tp.expected_freq = int(hz);
+                tp.duty_cycle = 128;
+                tp.input_delay_ns = 0;
+                tp.use_gpio = matrix;
+                spi_hal_dev_config_t dev = {};
+                if (spi_hal_cal_clock_conf(&tp, &dev.timing_conf) != ESP_OK) {
+                        // Full duplex reads only so fast through the matrix: lowered to the limit.
+                        tp.expected_freq = spi_get_freq_limit(matrix, 0);
+                        if (spi_hal_cal_clock_conf(&tp, &dev.timing_conf) != ESP_OK) return Error::Invalid;
+                }
+                dev.timing_conf.clock_source = src;
+                dev.timing_conf.source_pre_div = preDiv;
+                dev.timing_conf.source_real_freq = srcHz / preDiv;
+                dev.mode = int(mode & (SpiDevice::Cpol | SpiDevice::Cpha));
+                dev.cs_setup = 0;
+                dev.cs_hold = 1;
+                dev.cs_pin_id = -1; // no hardware chip select: the port's own (§11.5)
+                dev.sio = halfDuplex;
+                dev.half_duplex = halfDuplex;
+                dev.tx_lsbfirst = (mode & SpiDevice::LsbFirst) != 0;
+                dev.rx_lsbfirst = dev.tx_lsbfirst;
+                halDev = dev;
+                spi_hal_setup_device(&hal, &halDev);
+                PERIPH_RCC_ATOMIC() {
+                        spi_ll_clk_source_pre_div(hal.hw, uint8_t(preDiv / 2), 2);
+                        spi_ll_set_clk_source(hal.hw, src);
+                }
+                applied = &d;
+                appliedMode = mode;
+                appliedHz = hz;
+                d._actualHz = uint32_t(halDev.timing_conf.real_freq);
+                return Error::Ok;
+        }
+
+        // One piece of a transfer (up to DmaPiece bytes) through the bounce buffers. The lock held,
+        // the device prepared, its chip select on.
+        Error Port::dmaPiece(const uint8_t *from, uint8_t *to, size_t n, bool readOnly, unsigned timeoutMs) {
+                if (n <= Piece) {
+                        // Up to the controller's buffer: by the CPU, as without DMA. A message of a few
+                        // bytes costs half the time this way (devplan/io.md §14.2): no cache syncs, no
+                        // descriptors, no DMA started.
+                        spi_hal_trans_config_t f = {};
+                        f.line_mode.data_lines = 1;
+                        f.line_mode.addr_lines = 1;
+                        f.line_mode.cmd_lines = 1;
+                        if (!readOnly) {
+                                if (from == nullptr)
+                                        std::memset(tx, 0, n);
+                                else
+                                        std::memcpy(tx, from, n);
+                                f.send_buffer = tx;
+                                f.tx_bitlen = int(n * 8);
+                        }
+                        if (to != nullptr) {
+                                f.rcv_buffer = rx;
+                                f.rx_bitlen = int(n * 8);
+                        }
+                        spi_hal_setup_trans(&hal, &halDev, &f);
+                        spi_ll_dma_tx_enable(hal.hw, false);
+                        spi_ll_dma_rx_enable(hal.hw, false);
+                        spi_hal_push_tx_buffer(&hal, &f);
+                        spi_hal_enable_data_line(hal.hw, (!halDev.half_duplex && to != nullptr) || !readOnly,
+                                                 to != nullptr);
+                        spi_hal_user_start(&hal);
+                        if (dmaDone.acquire(timeoutMs).isError()) {
+                                bmdsWarn("io: %s: a transfer didn't end", owner);
+                                return Error::IoError;
+                        }
+                        if (to != nullptr) {
+                                spi_hal_fetch_result(&hal);
+                                std::memcpy(to, rx, n);
+                        }
+                        return Error::Ok;
+                }
+                const size_t         lines = (n + CacheLine - 1) & ~(CacheLine - 1);
+                const spi_dma_ctx_t *ctx = spi_bus_get_dma_ctx(host());
+                if (ctx == nullptr) return Error::IoError;
+                spi_hal_trans_config_t t = {};
+                t.line_mode.data_lines = 1;
+                t.line_mode.addr_lines = 1;
+                t.line_mode.cmd_lines = 1;
+                uint8_t *send = nullptr;
+                uint8_t *receive = to != nullptr ? drx : nullptr;
+                if (!readOnly) {
+                        if (from == nullptr)
+                                std::memset(dtx, 0, n);
+                        else if (from != dtx) // (a piece swapped in place is there already)
+                                std::memcpy(dtx, from, n);
+                        send = dtx;
+                        t.tx_bitlen = int(n * 8);
+                        // Whole lines written back: the DMA reads memory, not the cache.
+                        (void)esp_cache_msync(dtx, lines, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                }
+                if (receive != nullptr) {
+                        t.rx_bitlen = int(n * 8);
+                        // Whole lines dropped from the cache, so none is written back over what the
+                        // DMA brings.
+                        (void)esp_cache_msync(drx, lines, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                }
+                t.send_buffer = send;
+                t.rcv_buffer = receive;
+                spi_hal_setup_trans(&hal, &halDev, &t);
+                if (receive != nullptr) {
+                        spicommon_dma_desc_setup_link(ctx->dmadesc_rx, receive, int(n), true);
+                        gdma_reset(ctx->rx_dma_chan);
+                        spi_hal_hw_prepare_rx(hal.hw);
+                        gdma_start(ctx->rx_dma_chan, intptr_t(ctx->dmadesc_rx));
+                }
+                if (send != nullptr) {
+                        spicommon_dma_desc_setup_link(ctx->dmadesc_tx, send, int(n), false);
+                        gdma_reset(ctx->tx_dma_chan);
+                        spi_hal_hw_prepare_tx(hal.hw);
+                        gdma_start(ctx->tx_dma_chan, intptr_t(ctx->dmadesc_tx));
+                }
+                // A direction this piece doesn't use: its DMA off (a FIFO piece, or one before, left it).
+                if (receive == nullptr) spi_ll_dma_rx_enable(hal.hw, false);
+                if (send == nullptr) spi_ll_dma_tx_enable(hal.hw, false);
+                spi_hal_enable_data_line(hal.hw, (!halDev.half_duplex && receive != nullptr) || send != nullptr,
+                                         receive != nullptr);
+                spi_hal_user_start(&hal);
+                if (dmaDone.acquire(timeoutMs).isError()) {
+                        bmdsWarn("io: %s: a DMA transfer didn't end", owner);
+                        return Error::IoError;
+                }
+                if (receive != nullptr) {
+                        (void)esp_cache_msync(drx, lines, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                        std::memcpy(to, drx, n);
+                }
+                return Error::Ok;
+        }
 
         // The controller's matrix signal @p what (`D`, `Q`) for bus @p bus: `SPI2_Q`.
         Result<uint16_t> inputSignal(unsigned bus, const char *what) {
@@ -253,12 +479,26 @@ namespace SpiPorts {
                 bc.miso_io_num = s.miso;
                 bc.quadwp_io_num = -1;
                 bc.quadhd_io_num = -1;
-                bc.max_transfer_sz = int(Piece);
+                bc.max_transfer_sz = int(s.dma ? DmaPiece : Piece);
                 bc.flags = SPICOMMON_BUSFLAG_MASTER;
-                if (const esp_err_t e = spi_bus_initialize(host(), &bc, SPI_DMA_DISABLED); e != ESP_OK) {
+                if (const esp_err_t e = spi_bus_initialize(host(), &bc, s.dma ? SPI_DMA_CH_AUTO : SPI_DMA_DISABLED);
+                    e != ESP_OK) {
                         putBack();
                         bmdsWarn("io: %s not started: the controller (%s)", key, esp_err_to_name(e));
                         return;
+                }
+                if (s.dma) {
+                        if (const Error derr = startDma(); derr.isError()) {
+                                if (intr != nullptr) esp_intr_free(intr);
+                                intr = nullptr;
+                                Memory::free(dtx);
+                                Memory::free(drx);
+                                dtx = drx = nullptr;
+                                spi_bus_free(host());
+                                putBack();
+                                bmdsWarn("io: %s not started: its DMA (%s)", key, derr.desc());
+                                return;
+                        }
                 }
                 // What ESP-IDF's master doesn't: MOSI read back, as the controller's D (3-wire) or
                 // its Q (loopback: MISO from MOSI inside the chip).
@@ -286,8 +526,9 @@ namespace SpiPorts {
                 deviceCount = count;
                 running = true;
                 addFiles();
-                bmdsInfo("io: %s: /dev/%s.0%s at %u Hz, mode %u%s", key, owner, count > 1 ? " and on" : "",
-                         unsigned(s.clock), unsigned(s.mode), s.loopback ? ", looped back" : "");
+                bmdsInfo("io: %s: /dev/%s.0%s at %u Hz, mode %u%s%s", key, owner, count > 1 ? " and on" : "",
+                         unsigned(s.clock), unsigned(s.mode), s.loopback ? ", looped back" : "",
+                         s.dma ? ", by DMA" : "");
                 return;
         }
 
@@ -360,7 +601,7 @@ namespace SpiPorts {
         void apply(Port &p) {
                 const GpioChip::Change change; // line watchers told once, after the lock
                 Mutex::Locker          lock(p.lock, WaitForever);
-                String        value(MemSpace::Psram);
+                String                 value(MemSpace::Psram);
                 if (SysConf::get(p.id, value).isError()) return;
                 if (value.isEmpty()) {
                         p.stop();
@@ -481,6 +722,46 @@ Result<size_t> SpiDevice::transfer(Span<const Transfer> transfers) {
                 const Transfer &t = transfers[i];
                 const uint8_t   bits = t.bits == 0 ? _settings.bits : t.bits;
                 const uint32_t  hz = t.speedHz == 0 ? _settings.speedHz : t.speedHz;
+                if (_port.setup.dma) {
+                        // DMA: the controller set up for this device, then pieces of up to 4 KB.
+                        failed = _port.prepareDma(*this, _settings.mode, hz);
+                        if (failed.isError()) break;
+                        if (!selected) {
+                                _port.select(_index, true);
+                                selected = true;
+                        }
+                        const bool swap = bits > 8 && (_settings.mode & LsbFirst) == 0;
+                        for (size_t done = 0; done < t.length && failed.isOk();) {
+                                const size_t n =
+                                        t.length - done < SpiPorts::DmaPiece ? t.length - done : SpiPorts::DmaPiece;
+                                const bool     readOnly = halfDuplex && t.rx != nullptr;
+                                const uint8_t *out = t.tx != nullptr ? t.tx + done : nullptr;
+                                uint8_t       *in = t.rx != nullptr ? t.rx + done : nullptr;
+                                // Words wider than a byte, sent most significant bit first: swapped
+                                // in the bounce buffer, both ways.
+                                if (swap && out != nullptr) {
+                                        std::memcpy(_port.dtx, out, n);
+                                        SpiPorts::swapWords(_port.dtx, n, bits);
+                                        failed = _port.dmaPiece(_port.dtx, in, n, readOnly, 1000);
+                                } else {
+                                        failed = _port.dmaPiece(out, in, n, readOnly, 1000);
+                                }
+                                if (failed.isOk() && swap && in != nullptr) SpiPorts::swapWords(in, n, bits);
+                                done += n;
+                        }
+                        if (failed.isError()) break;
+                        if (t.delayUs != 0) {
+                                if (t.delayUs < SpiPorts::SpinBelowUs)
+                                        esp_rom_delay_us(t.delayUs);
+                                else
+                                        Task::sleep((t.delayUs + 999u) / 1000u);
+                        }
+                        if (t.csChange && i + 1 < transfers.size()) {
+                                _port.select(_index, false);
+                                selected = false;
+                        }
+                        continue;
+                }
                 if (_handle == nullptr || _handleMode != _settings.mode || _handleHz != hz) {
                         // Added again for this transfer: the bus let go first, the chip select kept.
                         if (acquired) spi_device_release_bus(static_cast<spi_device_handle_t>(_handle));

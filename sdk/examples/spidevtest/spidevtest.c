@@ -10,7 +10,10 @@
  * bytes (0, 1, 2...) in one SPI_IOC_MESSAGE as two transfers, reads what came back, and says
  * whether it matches (a looped-back port: io/spiN's loopback) and how long it took.
  *
- *   spidevtest DEVICE [SPEED] [MODE] [BITS] [LEN]
+ *   spidevtest DEVICE [SPEED] [MODE] [BITS] [LEN] [REPEAT]
+ *
+ * REPEAT sends the message that many times and gives the time of one (the mean), as a measure of
+ * what a message costs beyond its bits.
  */
 
 #include <errno.h>
@@ -30,8 +33,8 @@ static int fail(const char *what, int fd) {
 }
 
 int main(int argc, char **argv) {
-        if (argc < 2 || argc > 6) {
-                fprintf(stderr, "usage: spidevtest DEVICE [SPEED] [MODE] [BITS] [LEN]\n");
+        if (argc < 2 || argc > 7) {
+                fprintf(stderr, "usage: spidevtest DEVICE [SPEED] [MODE] [BITS] [LEN] [REPEAT]\n");
                 return 2;
         }
         const int fd = open(argv[1], O_RDWR);
@@ -46,6 +49,7 @@ int main(int argc, char **argv) {
                 mode = (mode & ~(uint32_t)SPI_MODE_X_MASK) | ((uint32_t)strtoul(argv[3], NULL, 0) & SPI_MODE_X_MASK);
         if (argc > 4) bits = (uint8_t)strtoul(argv[4], NULL, 0);
         const long len = argc > 5 ? strtol(argv[5], NULL, 0) : 32;
+        const long repeat = argc > 6 ? strtol(argv[6], NULL, 0) : 1;
         if (len < 2 || len > 65536) {
                 fprintf(stderr, "spidevtest: LEN is 2 to 65536\n");
                 close(fd);
@@ -71,10 +75,12 @@ int main(int argc, char **argv) {
         t[1].len = (uint32_t)len - first;
         struct timespec a, b;
         clock_gettime(CLOCK_MONOTONIC, &a);
-        const int moved = ioctl(fd, SPI_IOC_MESSAGE(2), t);
+        int moved = 0;
+        for (long r = 0; r < (repeat > 0 ? repeat : 1) && moved >= 0; r++) moved = ioctl(fd, SPI_IOC_MESSAGE(2), t);
         clock_gettime(CLOCK_MONOTONIC, &b);
         if (moved < 0) return fail("SPI_IOC_MESSAGE", fd);
-        const double us = (double)(b.tv_sec - a.tv_sec) * 1e6 + (double)(b.tv_nsec - a.tv_nsec) / 1e3;
+        const double us = ((double)(b.tv_sec - a.tv_sec) * 1e6 + (double)(b.tv_nsec - a.tv_nsec) / 1e3) /
+                          (double)(repeat > 0 ? repeat : 1);
         printf("%s: mode %u, %u bits, %u Hz: %d bytes in %.0f us (%.0f KB/s)\n", argv[1], (unsigned)(mode & 3),
                (unsigned)(bits ? bits : 8), (unsigned)speed, moved, us, (double)moved / us * 1e6 / 1024);
         for (long i = 0; i < len && i < 16; i++) printf("%02x%s", rx[i], i + 1 == len || i == 15 ? "\n" : " ");

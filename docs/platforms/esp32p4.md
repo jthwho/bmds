@@ -885,6 +885,13 @@ until silicon v3; then test again.
   transaction; `SPI_TRANS_DMA_BUFFER_ALIGN_MANUAL` only turns that into `ESP_ERR_INVALID_ARG`. A
   4-byte register read can't meet it, so SPI ports run with DMA off (the controller's 64-byte
   buffer, nothing allocated) until GDMA on `spi_hal` of our own (`devplan/io.md` §11.5).
+- **SPI by DMA without ESP-IDF's per-transaction allocations:** keep ESP-IDF's bus
+  (`spi_bus_initialize()` with DMA) and run the transactions on `spi_hal` with buffers of your own
+  (`spicommon_dma_desc_setup_link()`, `gdma_reset()`/`gdma_start()`, `spi_hal_hw_prepare_tx/rx()`,
+  the transaction-done interrupt from `spicommon_irqsource_for_host()`), as ESP-IDF's SPI slave
+  does. Sync your buffers' whole lines; switch a direction's DMA off (`spi_ll_dma_*_enable()`) when
+  a piece doesn't use it, or one goes through the FIFO. `spi_hal_init()` sets the done status:
+  clear it before enabling the interrupt (`spiports.cpp`, `devplan/io.md` §14).
 - **ESP-IDF's SPI master leaves pins as nothing:** removing a device turns its CS output off
   (`spicommon_cs_free_io()`: the line floats, and an active-low device reads that as selected),
   and `spi_bus_free()` turns the bus's outputs off and leaves the input selectors it set. A

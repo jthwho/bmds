@@ -703,6 +703,9 @@ TEST_CASE("IoSpiSetup: io/spiN's value") {
                 CHECK(p.clock == 40000000);
                 REQUIRE(p.parse(chip, "sck=4 miso=54 clock=12345", why).isOk()); // receive only
                 CHECK(p.clock == 12345);
+                CHECK_FALSE(p.dma);
+                REQUIRE(p.parse(chip, "sck=4 mosi=53 dma", why).isOk());
+                CHECK(p.dma);
         }
 
         SUBCASE("refused, with the reason") {

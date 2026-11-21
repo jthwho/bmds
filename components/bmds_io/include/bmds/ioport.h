@@ -84,6 +84,7 @@ struct IoSpiSetup {
                 bool     csHigh = false;    ///< `cs-high`: chip selects active high.
                 bool     threeWire = false; ///< `3wire`: MOSI both ways.
                 bool     loopback = false;  ///< `loopback`: MISO read from MOSI inside the chip.
+                bool     dma = false;       ///< `dma`: transfers by GDMA in 4 KB pieces (else the 64-byte FIFO).
                 bool     force = false;     ///< `force`: its pins taken from their holders.
 
                 /**

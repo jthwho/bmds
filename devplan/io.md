@@ -1210,3 +1210,39 @@ bit 0's edge. So 6b adds, before DMA and the rest of §13's list:
   - **A clock trim:** not needed. The RMT's ticks keep step with the monotonic clock (§13.4), and
     steering by durations is exact to a tick; the RMT's fractional divider would only add jitter.
 - **Step 6 is done**: RMT ports, marks, the timed pulse, DMA, the LTC example (§13.1-§13.5).
+
+## 14. Step 7: DMA paths (2026-11-20)
+
+In parts: **7a** SPI by GDMA, **7b** UART through UHCI above a measured baud.
+
+### 14.1 7a: SPI by GDMA (design)
+
+- ESP-IDF's master with DMA bounces every buffer not whole cache lines in address and length (a
+  `heap_caps_aligned_alloc()` a transaction, §11.5), and on a DMA bus every transaction is DMA. So a
+  port with `dma` keeps ESP-IDF's bus (`spi_bus_initialize()` with DMA: the pins, the peripheral's
+  clock, the two GDMA channels and their descriptors) and adds no ESP-IDF device: its transactions
+  run here on `spi_hal`, as ESP-IDF's own SPI slave driver does on the same bus: a device's timing
+  from `spi_hal_cal_clock_conf()` with the master's divider choice, applied when the device or its
+  settings change; the transaction-done interrupt of its own waking the task (no polling); two 4 KB
+  bounce buffers in internal DMA RAM, 64-byte aligned, synced as whole lines around each piece
+  (whatever its length: they are ours), so nothing is allocated per transfer.
+- Chip selects stay the port's GPIOs (§11.5); a transfer goes in 4 KB pieces with CS held.
+
+### 14.2 As built: 7a (2026-11-20)
+
+- `IoSpiSetup::dma` (`dma`, host-tested); `spiports.cpp`: `startDma()`, `prepareDma()`,
+  `dmaPiece()`. A piece of 64 bytes or less goes through the controller's buffer by the CPU (its
+  DMA off for it): a DMA piece costs some 50 µs more in cache syncs, descriptors and two channels
+  started, which a few bytes don't repay.
+- **Measured on bmds0** (loopback, `spidevtest`; a message is two transfers; the mean of 200):
+
+  | 10 MHz | 4 B | 32 B | 64 B | 256 B | 1 KB | 4 KB |
+  |---|---|---|---|---|---|---|
+  | FIFO (ESP-IDF's master) | 74 µs | 160 | 216 | 445 | 1342 | 5154 |
+  | `dma` | 116 µs | 119 | 171 | 339 | 959 | 3404 |
+
+  64 KB at 80 MHz 8.15 MB/s (the FIFO path's 1.39, the wire's 9.77); at 40 MHz 4.12 MB/s; 8, 16
+  and 32-bit words, modes 0-3, 3-wire writes and reads, all read back as sent; CS low only during
+  a message. A 4-byte message still costs some 40 µs more than ESP-IDF's FIFO master (not found;
+  the measure itself varies by tens of µs between runs): `dma` stays a word to ask for.
+- **Size:** the SPI code 2.6 KB more (9.5 KB); 8 KB of internal DMA RAM while a `dma` port runs.

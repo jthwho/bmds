@@ -130,6 +130,7 @@ bool IoSpiSetup::operator==(const IoSpiSetup &o) const {
         return sck == o.sck && mosi == o.mosi && miso == o.miso && csCount == o.csCount &&
                std::memcmp(cs, o.cs, csCount) == 0 && mode == o.mode && clock == o.clock && bits == o.bits &&
                lsbFirst == o.lsbFirst && csHigh == o.csHigh && threeWire == o.threeWire && loopback == o.loopback &&
+               dma == o.dma &&
                force == o.force;
 }
 
@@ -199,6 +200,8 @@ Error IoSpiSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonB
                         csHigh = true;
                 } else if (word == "3wire") {
                         threeWire = true;
+                } else if (word == "dma") {
+                        dma = true;
                 } else if (word == "loopback") {
                         loopback = true;
                 } else if (word == "force") {

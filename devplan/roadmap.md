@@ -329,7 +329,9 @@ Plan: [`input.md`](input.md).
   monotonic clocks shown to keep step over ten minutes; checked on bmds0. Step 6c built (§13.5): a
   flash write's effect measured, running RMT ports hold `/flash`'s writes, `dma` carries a sender
   through forced writes; sync starts and a clock trim set aside with reasons. Step 6 done.
-  Next: step 7, DMA paths for the other ports (§3.8).
+  Step 7a built (§14.2): SPI ports with `dma` run their own transactions on `spi_hal` with GDMA
+  and aligned bounce buffers (64 KB at 80 MHz 8.15 MB/s, the FIFO's 1.39), small pieces by the
+  CPU. Next: 7b (UART through UHCI above a measured baud).
 
 ## Phase 6 — Graphics
 
