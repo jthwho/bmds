@@ -13,6 +13,7 @@
 #include <cstring>
 #include <bmds/command.h>
 #include <bmds/shell.h>
+#include <bmds/string.h>
 #include <bmds/sysconf.h>
 #include <bmds/sysconfcommand.h>
 
@@ -84,7 +85,13 @@ int SysConfCommand::run(CommandContext &ctx) {
                 return Shell::ExitSuccess;
         }
         if (std::strcmp(verb, "set") == 0 && args.size() == 4) {
-                const Error err = SysConf::set(key, args[3]);
+                String      why;
+                const Error err = SysConf::set(key, args[3], &why);
+                if (err.isError() && !why.isEmpty()) {
+                        // The check's own words: what is wrong, and what to do.
+                        ctx.eprintf("sysconf: %s: %s\n", key, why.cStr());
+                        return Shell::ExitFailure;
+                }
                 return err.isError() ? fail(ctx, key, err) : Shell::ExitSuccess;
         }
         if (std::strcmp(verb, "setdef") == 0 && args.size() == 3) {

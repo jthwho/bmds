@@ -91,7 +91,9 @@ namespace {
         }
 
         Error refuseOdd(StringView value) {
-                return Config::toInt(value) % 2 != 0 ? Error(Error::Invalid) : Error();
+                if (Config::toInt(value) % 2 == 0) return Error();
+                SysConf::refuse("an even number, please");
+                return Error::Invalid;
         }
 
         // The built-in declarations of these tests.
@@ -189,6 +191,18 @@ TEST_CASE("SysConf: set, setdef, save, revert, and a reboot") {
         CHECK(SysConf::set("panel/size", "100") == Error::OutOfRange);
         CHECK(SysConf::set("wm/even", "3") == Error::Invalid); // the declaration's check
         CHECK(SysConf::set("wm/even", "4").isOk());
+        {
+                // The check's reason, for the one who asked; none when it takes the value.
+                String why;
+                CHECK(SysConf::set("wm/even", "5", &why) == Error::Invalid);
+                CHECK(why.view() == "an even number, please");
+                CHECK(SysConf::set("wm/even", "4", &why).isOk());
+                CHECK(why.isEmpty());
+                CHECK(SysConf::set("panel/edge", "left", &why) == Error::Invalid); // refused before the check
+                CHECK(why.isEmpty());
+                CHECK(SysConf::set("nothing", "1", &why) == Error::NotExist);
+                CHECK(why.isEmpty());
+        }
         CHECK(SysConf::set("panel/edge", "bottom").isOk());
         CHECK(SysConf::set("wm/palette/desktop", "#102030").isOk());
         CHECK(get("wm/palette/desktop") == "102030");

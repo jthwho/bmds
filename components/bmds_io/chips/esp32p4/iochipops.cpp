@@ -10,6 +10,8 @@
  */
 
 #include <hal/gpio_ll.h>
+#include <soc/gpio_sig_map.h>
+#include <soc/io_mux_reg.h>
 #include <soc/gpio_struct.h>
 #include <soc/hp_sys_clkrst_struct.h>
 #include <soc/lp_iomux_struct.h>
@@ -46,6 +48,119 @@ namespace IoChipOps {
 
         int inputSource(unsigned signal) {
                 return gpio_ll_get_in_signal_connected_io(&GPIO, signal);
+        }
+
+        namespace {
+
+                // The LP IO mux's registers are readable and writable while their APB clock runs
+                // (readPad()'s note).
+                bool lpReachable(unsigned pad) {
+                        return pad < SOC_RTCIO_PIN_COUNT && HP_SYS_CLKRST.soc_clk_ctrl3.reg_iomux_apb_clk_en != 0;
+                }
+
+                // A USB PHY's pad enable for pads 24-27 (gpio_ll_func_sel() turns it off).
+                int8_t usbPadEnabled(unsigned pad) {
+                        if (pad == USB_USJ_INT_PHY_DM_GPIO_NUM || pad == USB_USJ_INT_PHY_DP_GPIO_NUM)
+                                return int8_t(USB_SERIAL_JTAG.conf0.usb_pad_enable);
+                        if (pad == USB_OTG_INT_PHY_DM_GPIO_NUM || pad == USB_OTG_INT_PHY_DP_GPIO_NUM)
+                                return int8_t(USB_WRAP.otg_conf.usb_pad_enable);
+                        return -1;
+                }
+
+                void setUsbPadEnabled(unsigned pad, bool on) {
+                        if (pad == USB_USJ_INT_PHY_DM_GPIO_NUM || pad == USB_USJ_INT_PHY_DP_GPIO_NUM)
+                                USB_SERIAL_JTAG.conf0.usb_pad_enable = on;
+                        else if (pad == USB_OTG_INT_PHY_DM_GPIO_NUM || pad == USB_OTG_INT_PHY_DP_GPIO_NUM)
+                                USB_WRAP.otg_conf.usb_pad_enable = on;
+                        return;
+                }
+
+        } // namespace
+
+        void savePad(unsigned pad, Saved &out) {
+                out.ioMux = IO_MUX.gpio[pad].val;
+                out.outSel = GPIO.func_out_sel_cfg[pad].val;
+                out.pin = GPIO.pin[pad].val;
+                const uint32_t bit = 1u << (pad % 32);
+                out.enabled = ((pad < 32 ? GPIO.enable.val : GPIO.enable1.val) & bit) != 0;
+                out.latch = ((pad < 32 ? GPIO.out.val : GPIO.out1.val) & bit) != 0;
+                out.lpIo = lpReachable(pad) && LP_IOMUX.pad[pad].mux_sel != 0;
+                out.usbPad = usbPadEnabled(pad);
+                return;
+        }
+
+        void restorePad(unsigned pad, const Saved &saved) {
+                // The latch before the driver, the driver before the signal, the domain last: the
+                // pad never drives what it didn't.
+                gpio_ll_set_level(&GPIO, pad, saved.latch);
+                GPIO.pin[pad].val = saved.pin;
+                IO_MUX.gpio[pad].val = saved.ioMux;
+                if (saved.enabled)
+                        gpio_ll_output_enable(&GPIO, pad);
+                else
+                        gpio_ll_output_disable(&GPIO, pad);
+                GPIO.func_out_sel_cfg[pad].val = saved.outSel;
+                if (saved.usbPad >= 0) setUsbPadEnabled(pad, saved.usbPad != 0);
+                if (lpReachable(pad)) LP_IOMUX.pad[pad].mux_sel = saved.lpIo;
+                return;
+        }
+
+        void configurePad(unsigned pad, const IoPinSetup &setup) {
+                // The HP domain's pad (an LP IO pad given back to it).
+                if (lpReachable(pad)) LP_IOMUX.pad[pad].mux_sel = 0;
+                const bool gpio = setup.function < 0;
+                gpio_ll_func_sel(&GPIO, uint8_t(pad), gpio ? PIN_FUNC_GPIO : uint32_t(setup.function));
+                if (setup.pullUp)
+                        gpio_ll_pullup_en(&GPIO, pad);
+                else
+                        gpio_ll_pullup_dis(&GPIO, pad);
+                if (setup.pullDown)
+                        gpio_ll_pulldown_en(&GPIO, pad);
+                else
+                        gpio_ll_pulldown_dis(&GPIO, pad);
+                gpio_ll_set_drive_capability(&GPIO, pad, gpio_drive_cap_t(setup.drive));
+                // Input on for anything that may read it: an input, an open drain line (it reads
+                // back), an input signal, an IO_MUX function (its peripheral decides).
+                const bool reads =
+                        setup.mode == IoPinSetup::Mode::Input || setup.mode == IoPinSetup::Mode::OpenDrain || !gpio;
+                if ((reads && setup.mode != IoPinSetup::Mode::Off) || setup.inputCount > 0)
+                        gpio_ll_input_enable(&GPIO, pad);
+                else
+                        gpio_ll_input_disable(&GPIO, pad);
+                if (setup.mode == IoPinSetup::Mode::OpenDrain)
+                        gpio_ll_od_enable(&GPIO, pad);
+                else
+                        gpio_ll_od_disable(&GPIO, pad);
+                gpio_ll_set_level(&GPIO, pad, setup.high);
+                // The direction, then the signal: the matrix output's enable from the GPIO bit.
+                if (setup.isOutput() && gpio)
+                        gpio_ll_output_enable(&GPIO, pad);
+                else
+                        gpio_ll_output_disable(&GPIO, pad);
+                gpio_ll_set_output_enable_ctrl(&GPIO, uint8_t(pad), false, false);
+                gpio_ll_set_output_signal_matrix_source(
+                        &GPIO, pad, setup.outSignal != IoPinSetup::NoSignal ? setup.outSignal : SIG_GPIO_OUT_IDX,
+                        false);
+                return;
+        }
+
+        void setLevel(unsigned pad, bool high) {
+                gpio_ll_set_level(&GPIO, pad, high);
+                return;
+        }
+
+        uint32_t inputWord(unsigned signal) {
+                return GPIO.func_in_sel_cfg[signal].val;
+        }
+
+        void setInputWord(unsigned signal, uint32_t word) {
+                GPIO.func_in_sel_cfg[signal].val = word;
+                return;
+        }
+
+        void routeInput(unsigned signal, unsigned pad) {
+                gpio_ll_set_input_signal_matrix_source(&GPIO, signal, pad, false);
+                return;
         }
 
 } // namespace IoChipOps

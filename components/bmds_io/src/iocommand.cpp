@@ -13,6 +13,7 @@
  */
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <new>
 #include <driver/gpio.h>
@@ -247,6 +248,40 @@ namespace {
                         ctx.printf("%c\n", level);
                         return Shell::ExitSuccess;
                 }
+                if (verb == "pulse" && args.size() >= 3 && args.size() <= 5) {
+                        // io pulse N [MS] [--force]
+                        bool        force = false;
+                        const char *msText = nullptr;
+                        for (size_t i = 3; i < args.size(); ++i) {
+                                if (std::strcmp(args[i], "--force") == 0)
+                                        force = true;
+                                else if (msText == nullptr)
+                                        msText = args[i];
+                                else
+                                        return ctx.usage();
+                        }
+                        if (!parsePad(args[2], pad)) {
+                                ctx.eprintf("io: no pin '%s'\n", args[2]);
+                                return Shell::ExitFailure;
+                        }
+                        unsigned ms = 10;
+                        if (msText != nullptr) {
+                                char         *end = nullptr;
+                                unsigned long v = std::strtoul(msText, &end, 10);
+                                if (end == msText || *end != '\0' || v == 0 || v > Io::MaxPulseMs) {
+                                        ctx.eprintf("io: a pulse is 1 to %u ms, not '%s'\n", Io::MaxPulseMs, msText);
+                                        return Shell::ExitFailure;
+                                }
+                                ms = unsigned(v);
+                        }
+                        char        why[256];
+                        const Error err = Io::pulse(pad, ms, force, why, sizeof(why));
+                        if (err.isError()) {
+                                ctx.eprintf("io: %s\n", why[0] != '\0' ? why : err.desc());
+                                return Shell::ExitFailure;
+                        }
+                        return Shell::ExitSuccess;
+                }
                 if (verb == "dump" && args.size() <= 3) {
                         if (args.size() == 2) return dumpPads(ctx, 0, static_cast<unsigned>(ioChip().padCount() - 1));
                         if (!parsePad(args[2], pad)) {
@@ -263,7 +298,7 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(io, runIo, "[pin N | get N | resources | signals [GROUP] | dump [N]]",
+BMDS_SHELL_COMMAND(io, runIo, "[pin N | get N | pulse N [MS] [--force] | resources | signals [GROUP] | dump [N]]",
                    "Show the chip's pins: wiring, holder, routing, level (devplan/io.md)")
 
 BMDS_NAMESPACE_END

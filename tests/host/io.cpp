@@ -16,6 +16,7 @@
 #include <bmds/iopad.h>
 #include <bmds/iopin.h>
 #include <bmds/ioregistry.h>
+#include <bmds/iosetup.h>
 
 using bmds::Error;
 using bmds::IoBoardUse;
@@ -465,5 +466,89 @@ TEST_CASE("IoPinRow, IoPinDetail: a pad as people are shown it") {
                 CHECK(std::strcmp(d.at(IoPinField::Owner), "io as probe") == 0);
                 CHECK(std::strcmp(d.at(IoPinField::Forced), "from eth0 (RMII TXD1)") == 0);
                 CHECK(std::strcmp(d.at(IoPinField::Class), "user") == 0);
+        }
+}
+
+TEST_CASE("IoGpioSetup: io/gpio's value") {
+        using bmds::IoGpioSetup;
+        using bmds::IoPinSetup;
+        using bmds::StringView;
+        const IoChip &chip = bmds::ioChip();
+        IoGpioSetup   setup;
+        char          why[IoGpioSetup::ReasonBytes];
+
+        SUBCASE("every word") {
+                REQUIRE(setup.parse(chip,
+                                    "14=out,high 15=in,pull-up GPIO16=od,low,drive=3 17=off,pull-down 35=in,force", why)
+                                .isOk());
+                CHECK(why[0] == '\0');
+                REQUIRE(setup.count() == 5);
+                const IoPinSetup *p = setup.find(14);
+                REQUIRE(p != nullptr);
+                CHECK(p->mode == IoPinSetup::Mode::Output);
+                CHECK(p->high);
+                CHECK(p->isOutput());
+                CHECK(p->function == -1);
+                CHECK(p->outSignal == IoPinSetup::NoSignal);
+                CHECK(setup.find(15)->pullUp);
+                CHECK(setup.find(15)->mode == IoPinSetup::Mode::Input);
+                CHECK(setup.find(16)->mode == IoPinSetup::Mode::OpenDrain);
+                CHECK(setup.find(16)->drive == 3);
+                CHECK_FALSE(setup.find(16)->high);
+                CHECK(setup.find(17)->mode == IoPinSetup::Mode::Off);
+                CHECK(setup.find(17)->pullDown);
+                CHECK(setup.find(35)->force);
+                CHECK(setup.find(18) == nullptr);
+        }
+
+        SUBCASE("an empty value, and spaces") {
+                CHECK(setup.parse(chip, "", why).isOk());
+                CHECK(setup.count() == 0);
+                CHECK(setup.parse(chip, "  14=out   15=in ", why).isOk());
+                CHECK(setup.count() == 2);
+        }
+
+        SUBCASE("IO_MUX functions by number or name, the GPIO's as none") {
+                REQUIRE(setup.parse(chip, "37=func=0 38=func=uart0_rxd 2=func=1", why).isOk());
+                CHECK(setup.find(37)->function == 0);
+                CHECK(setup.find(38)->function == 0); // UART0_RXD is 38's function 0
+                CHECK(setup.find(2)->function == -1); // the GPIO
+                CHECK(setup.parse(chip, "14=func=UART0_TXD", why) == Error::Invalid);
+                CHECK(std::strstr(why, "GPIO14 has no IO_MUX function") != nullptr);
+        }
+
+        SUBCASE("matrix signals") {
+                REQUIRE(setup.parse(chip, "14=out,out:UART1_TXD 15=in:uart1_rxd,in:I2C0_SDA,pull-up", why).isOk());
+                CHECK(setup.find(14)->outSignal == chip.findOutput("UART1_TXD").value());
+                CHECK(setup.find(15)->inputCount == 2);
+                CHECK(setup.find(15)->inputs[0] == chip.findInput("UART1_RXD").value());
+                CHECK(setup.parse(chip, "14=in,out:UART1_TXD", why) == Error::Invalid); // a signal needs out or od
+                CHECK(setup.parse(chip, "14=out,out:NOPE", why) == Error::Invalid);
+                CHECK(std::strstr(why, "no output signal 'NOPE'") != nullptr);
+                CHECK(setup.parse(chip, "14=in:UART1_RXD 15=in:UART1_RXD", why) == Error::Exists);
+                CHECK(setup.parse(chip, "37=func=0,out,out:UART1_TXD", why) == Error::Invalid);
+                CHECK(setup.parse(chip, "14=in:A,in:B,in:C,in:D,in:E", why) == Error::Invalid); // A isn't a signal
+        }
+
+        SUBCASE("refused, with the reason") {
+                CHECK(setup.parse(chip, "99=out", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "'99' isn't a pin of the chip's") == 0);
+                CHECK(setup.parse(chip, "x=out", why) == Error::Invalid);
+                CHECK(setup.parse(chip, "14=sideways", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "GPIO14: 'sideways' isn't a word io/gpio knows") == 0);
+                CHECK(setup.parse(chip, "14=out GPIO14=in", why) == Error::Exists);
+                CHECK(std::strcmp(why, "GPIO14 is set up twice") == 0);
+                CHECK(setup.parse(chip, "14=drive=4", why) == Error::Invalid);
+                CHECK(setup.count() == 0); // a refused value leaves nothing
+        }
+
+        SUBCASE("two setups compared, force included") {
+                IoGpioSetup other;
+                REQUIRE(setup.parse(chip, "14=out,high 15=in:UART1_RXD", why).isOk());
+                REQUIRE(other.parse(chip, "15=in:UART1_RXD 14=out,high", why).isOk());
+                CHECK(*setup.find(14) == *other.find(14));
+                CHECK(*setup.find(15) == *other.find(15));
+                REQUIRE(other.parse(chip, "14=out,high,force", why).isOk());
+                CHECK_FALSE(*setup.find(14) == *other.find(14));
         }
 }

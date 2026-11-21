@@ -53,8 +53,29 @@ class System {
                 /** @brief Returns microseconds since reset. @nonblocking */
                 static uint64_t uptimeUs();
 
-                /** @brief Restarts the chip, the records kept across resets saved first (`Kept::flush()`). Flush consoles first. */
+                /**
+                 * @brief Restarts the chip: the records kept across resets saved first
+                 *        (`Kept::flush()`), then the restart hooks run. Flush consoles first.
+                 */
                 [[noreturn]] static void restart();
+
+                /**
+                 * @brief Run by `restart()` before the chip restarts (on its task, the others
+                 *        still running): puts back hardware a restart leaves as it is (a
+                 *        software restart resets the CPUs, not IO_MUX: `io/gpio`'s pins). It
+                 *        must take no lock and not wait. Not run on a panic.
+                 */
+                using RestartHook = void (*)();
+
+                /** @brief Restart hooks at most. */
+                static constexpr size_t MaxRestartHooks = 8;
+
+                /**
+                 * @brief Adds @p hook, for the rest of the boot (ESP-IDF's own shutdown handlers are
+                 *        five, and taken).
+                 * @return `Ok`, or `Full` (`MaxRestartHooks`).
+                 */
+                static Error addRestartHook(RestartHook hook);
 
                 /**
                  * @brief Panics with @p message: the panic's report on the console and in the

@@ -300,8 +300,10 @@ Plan: [`input.md`](input.md).
   `ioman` in bmds-apps (the user's call), so `/dev/gpiochip0` and `gpio_ctl`'s reads came now
   (slot 139: chip and line info, Linux's translated in `linux/gpio.h`; pads' state and details;
   the connectors), ABI-locked, `sdk/examples/gpioinfo`; `io` and `gpio_ctl` answer from the same
-  `bmds/iopin.h`; host-tested; not yet checked on the board. Next: step 3 (GPIO and muxing
-  through sysconf).
+  `bmds/iopin.h`; host-tested; checked on bmds0. Step 3a built (§10, 2026-11-20): `io/gpio`
+  (GPIO, IO_MUX functions, matrix signals; `force` borrows a held pin, its registers saved and
+  put back), the refusal's reason in `sysconf set`, `io pulse`; checked on bmds0. Next: 3b
+  (edges with timestamps), 3c (the window writing `io/gpio`).
 
 ## Phase 6 — Graphics
 

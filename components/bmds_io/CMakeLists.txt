@@ -16,6 +16,7 @@ set(BMDS_IO_PURE_SRCS
         src/iochip.cpp
         src/iopad.cpp
         src/iopin.cpp
+        src/iosetup.cpp
         src/ioregistry.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
@@ -31,11 +32,12 @@ if(COMMAND idf_component_register)
                                     ${BMDS_IO_CHIP}/iochipops.cpp
                                     src/gpiochip.cpp
                                     src/io.cpp
+                                    src/iogpio.cpp
                                     src/iocommand.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS src
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_fs bmds_shell esp_driver_gpio hal soc
+                               PRIV_REQUIRES bmds_board bmds_fs bmds_shell bmds_sysconf esp_driver_gpio hal soc
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()

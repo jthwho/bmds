@@ -6,6 +6,7 @@
  * See LICENSE file in the project root folder for license information.
  */
 
+#include <atomic>
 #include <cstring>
 #include <esp_app_desc.h>
 #include <esp_chip_info.h>
@@ -59,8 +60,28 @@ uint64_t System::uptimeUs() {
         return static_cast<uint64_t>(Detail::monotonicUs()); // esp_timer's counter, without the ROM's division
 }
 
+namespace {
+
+        constinit System::RestartHook restartHooks[System::MaxRestartHooks] = {};
+        constinit std::atomic<size_t> restartHookCount{0};
+
+} // namespace
+
+Error System::addRestartHook(RestartHook hook) {
+        if (hook == nullptr) return Error::Invalid;
+        size_t n = restartHookCount.load(std::memory_order_relaxed);
+        do {
+                if (n == MaxRestartHooks) return Error::Full;
+        } while (!restartHookCount.compare_exchange_weak(n, n + 1, std::memory_order_acq_rel));
+        restartHooks[n] = hook; // the slot is this caller's
+        return Error::Ok;
+}
+
 void System::restart() {
         Kept::flush(); // the records kept across resets, saved now (devplan/keptstate.md §2c)
+        const size_t n = restartHookCount.load(std::memory_order_acquire);
+        for (size_t i = 0; i < n; ++i)
+                if (restartHooks[i] != nullptr) restartHooks[i]();
         esp_restart();
 }
 

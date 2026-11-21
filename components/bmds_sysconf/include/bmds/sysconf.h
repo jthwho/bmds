@@ -177,6 +177,26 @@ namespace SysConf {
         /** @brief As `set(StringView, StringView)`, for @p id. @blocking The check. */
         Error set(Id id, StringView value);
 
+        /** @brief Room for a check's reason (`refuse()`), NUL included. */
+        inline constexpr size_t ReasonBytes = 256;
+
+        /**
+         * @brief As `set(StringView, StringView)`, and when the parameter's check refuses the value
+         *        with a reason (`refuse()`), puts it in @p why for people (else @p why is empty).
+         * @blocking The check.
+         */
+        Error set(StringView key, StringView value, String *why);
+
+        /** @brief As `set(StringView, StringView, String *)`, for @p id. @blocking The check. */
+        Error set(Id id, StringView value, String *why);
+
+        /**
+         * @brief Called by a parameter's check (`Config::Check`) as it refuses a value: why, for
+         *        people (`GPIO35 is a system pin: eth0 uses it as RMII TXD1. Add force to change it
+         *        anyway.`), cut at `ReasonBytes`. Checks run one at a time; outside one it is lost.
+         */
+        void refuse(StringView why);
+
         /** @brief Sets @p key's current value to its default (not saved). */
         Error setDefault(StringView key);
 

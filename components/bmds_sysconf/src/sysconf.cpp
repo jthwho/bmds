@@ -70,6 +70,8 @@ namespace SysConf {
                 constinit StaticObject<Mutex> registryLock; // the state, the watchers' rings
                 constinit StaticObject<Mutex> notifyLock;   // notifications running; watchers' list
                 constinit StaticObject<Mutex> saveLock;     // one save (store write) at a time
+                constinit StaticObject<Mutex> checkLock;    // one check at a time: its reason (refuse())
+                constinit char                reason[ReasonBytes] = {};
 
 
                 bool underPrefix(StringView key, StringView prefix) {
@@ -334,6 +336,7 @@ namespace SysConf {
                         if (!registryLock.isCreated()) registryLock.create();
                         if (!notifyLock.isCreated()) notifyLock.create();
                         if (!saveLock.isCreated()) saveLock.create();
+                        if (!checkLock.isCreated()) checkLock.create();
                         {
                                 Mutex::Locker lock(*registryLock, WaitForever);
                                 const size_t  n = storePath.size() < sizeof(state.storePath) - 1
@@ -472,20 +475,44 @@ namespace SysConf {
                 return typed<uint32_t, Config::toColor>(key, Config::Type::Color);
         }
 
-        Error set(Id id, StringView value) {
+        void refuse(StringView why) {
+                // On the checking task, its lock held (set()'s): only that check writes it.
+                const size_t n = why.size() < ReasonBytes - 1 ? why.size() : ReasonBytes - 1;
+                std::memcpy(reason, why.data(), n);
+                reason[n] = '\0';
+                return;
+        }
+
+        Error set(Id id, StringView value, String *why) {
+                if (why != nullptr) why->clear();
                 if (!isValid(id)) return Error::NotExist;
                 const size_t index = size_t(id);
                 const Param &param = *state.entries[index].param; // entries are stable
                 String       canon(MemSpace::Psram);
                 Error        err = Config::canonical(param, value, canon);
-                if (err.isOk() && param.check != nullptr) err = param.check(canon.view());
+                if (err.isOk() && param.check != nullptr) {
+                        // One check at a time, so the reason it leaves is its own.
+                        Mutex::Locker lock(*checkLock, WaitForever);
+                        reason[0] = '\0';
+                        err = param.check(canon.view());
+                        if (err.isError() && why != nullptr && reason[0] != '\0') (void)why->assign(StringView(reason));
+                }
                 if (err.isError()) return err;
                 return apply(index, canon.view());
         }
 
-        Error set(StringView key, StringView value) {
+        Error set(Id id, StringView value) {
+                return set(id, value, nullptr);
+        }
+
+        Error set(StringView key, StringView value, String *why) {
                 const Result<Id> id = find(key);
-                return id.isOk() ? set(id.value(), value) : id.error();
+                if (id.isError() && why != nullptr) why->clear();
+                return id.isOk() ? set(id.value(), value, why) : id.error();
+        }
+
+        Error set(StringView key, StringView value) {
+                return set(key, value, nullptr);
         }
 
         Error setDefault(Id id) {

@@ -115,6 +115,36 @@ namespace Io {
          */
         Error readPin(unsigned pad, IoPinDetail &out);
 
+        /**
+         * @brief `io/gpio`'s check (devplan/io.md §10.1): the value parses for the chip, and
+         *        without `force` touches nothing another owner holds or the board wires; a
+         *        refusal's reason goes to `SysConf::refuse()`.
+         * @return `Ok`, `NotReady` (before `init()`), `Busy`, or `IoGpioSetup::parse()`'s errors.
+         * @blocking Waits for the registry's lock.
+         */
+        Error checkSetups(StringView value);
+
+        /**
+         * @brief The boot stage `iogpio`: applies `io/gpio` (after the drivers have claimed
+         *        theirs), and applies it again whenever it changes.
+         * @return `Ok`, `NotReady`, `NoMem`, or the watcher's error.
+         */
+        Error startSetups();
+
+        /** @brief The longest pulse `pulse()` gives, ms. */
+        inline constexpr unsigned MaxPulseMs = 10000;
+
+        /**
+         * @brief Inverts GPIO output @p pad's level for @p ms (1 to `MaxPulseMs`), then puts it
+         *        back (`io pulse`): a pad `io/gpio` has as an output, or with @p force any GPIO
+         *        output (borrowed for the pulse, its registers put back after).
+         * @param[out] why Why it is refused, for people, if not null.
+         * @return `Ok`, `Invalid` (the pad, @p ms), `InvalidState` (not a GPIO output), `Busy`
+         *         (held or board-wired, without @p force), `NotReady`.
+         * @blocking For the pulse.
+         */
+        Error pulse(unsigned pad, unsigned ms, bool force, char *why, size_t size);
+
 } // namespace Io
 
 BMDS_NAMESPACE_END

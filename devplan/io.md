@@ -513,3 +513,99 @@ the kernel gained the program interface it reads through. What this repository h
 - **Cost:** `gpio_ctl` 3.3 KB of flash (`gpiocalls.cpp`), the device file 0.4 KB and 4 B of
   internal RAM; `libbmds_io.a` is 16.0 KB (the shared rows and details included, 1.6 KB more
   than step 1). A `BMDS_GPIO_PINS` call borrows ~9 KB of PSRAM for its rows while it runs.
+
+## 10. Step 3: GPIO and muxing (design, 2026-11-20)
+
+Built in three parts, each checked on the board before the next: **3a** the kernel (`io/gpio`,
+forced claims with the pad saved and restored, `io pulse`), **3b** edges with timestamps on User
+inputs, **3c** the I/O Manager's inspector writing `io/gpio`.
+
+### 10.1 `io/gpio`
+
+One `String` parameter (§3.6), entries separated by spaces, `PIN=WORD,WORD...`; `PIN` is `14` or
+`GPIO14`. The words, in any order:
+
+| Word | Meaning |
+|---|---|
+| `in` | GPIO input (the default) |
+| `out` | GPIO output, push-pull |
+| `od` | GPIO output, open drain (its input on: the line reads back) |
+| `off` | neither input nor output (the pad left to its pulls) |
+| `high`, `low` | an output's level (`low` by default) |
+| `pull-up`, `pull-down` | the weak pull (none by default) |
+| `drive=0`..`3` | drive strength (2 by default, the chip's reset value) |
+| `func=N`, `func=NAME` | IO_MUX function N, or by its signal's name (`func=UART0_TXD`) |
+| `out:SIGNAL` | a matrix output signal drives it (with `out` or `od`: its level then the signal's) |
+| `in:SIGNAL` | a matrix input signal reads it (several allowed; with any mode, its input on) |
+| `force` | take it from its holder, or a board-wired pad (§3.3) |
+
+`14=out,high 15=in,pull-up 16=od,low 2=func=MTCK 20=out:LEDC_LS_SIG_OUT0 38=in:UART1_RXD,pull-up`.
+Signal and function names are the chip's (`io signals`), matched without case.
+
+- **The check** (sysconf's, so `sysconf set` refuses a bad value with the reason): every pad
+  exists and appears once; a function the pad has; signals that exist; an input signal read by
+  one pad only; and, without `force`, no pad held by another owner or wired by the board (Fixed,
+  Device), and no matrix signal whose peripheral instance another owner holds. The refusal names
+  the holder (`Io::busyText()`), and how to go on: `... Add force to change it anyway.`
+- **Applying** (a watcher, on the task that set it): the entries are compared with those applied;
+  a pad that left is released, one that came is claimed for the owner `io` (User; forced when
+  its entry says `force`), one that changed is configured again. Every pad's registers are saved
+  when it is claimed and written back when it is released: a forced pad goes back to its lender
+  as it was (and the lender holds it again), a free pad to what it was before (JTAG's function on
+  2, 4, 5). An input signal routed from the pad keeps its old source, put back with the pad.
+  The order on the pad: function, level, direction, then the matrix signal (`esp32p4.md`'s
+  pitfall). A forced pad logs once, both ways: `io: GPIO35 taken from eth0 (RMII TXD1)`.
+- **At boot** the saved value is applied by the stage `iogpio`, after the drivers have claimed
+  theirs, so a saved forced setup takes its pads from a running subsystem, as it did when set.
+- **Pads 24-27:** choosing a function there switches the USB PHYs off (`gpio_ll_func_sel()`);
+  the save and restore include those bits, so forcing the console's pads and letting go brings
+  USB-Serial/JTAG back.
+
+### 10.2 Revisions to §3.2 and §3.3
+
+- **ESP-IDF's reserve mask isn't fed from claims.** It is ESP-IDF's drivers' own bookkeeping of
+  output paths, and they act on it: Ethernet's MAC refuses a reserved pad
+  (`esp_eth_mac_esp_gpio.c`: `ESP_ERR_INVALID_STATE`), I²C and I²S warn and go on, and each revokes
+  its pads when it stops, which would take BMDS's marks off. Fed from claims taken before the
+  drivers start, it would stop eth0 starting. BMDS's own registry refuses the same conflicts
+  before any ESP-IDF driver runs, so the mask is left to ESP-IDF.
+- **Owners aren't called when a pad is forced from them** (the `revoked`/`restored` calls): no
+  driver yet could do anything with it, so it waits for one that can; the log says it instead.
+
+### 10.3 `io pulse` and the reason a value is refused
+
+- `io pulse PIN [MS] [--force]` (10 ms by default, 1-10000): an output's level inverted for `MS`,
+  then put back. A pad `io/gpio` has as an output, or with `--force` any output pad (a reset line a
+  driver holds): borrowed for the pulse, its registers saved and restored, the holder's claim
+  given back. A pad that isn't an output is refused: it would only float.
+- `SysConf::refuse(why)`: a check may leave the reason it refuses a value; `SysConf::set(key,
+  value, &why)` gives it to the caller (checks run one at a time, so the reason can't mix with
+  another's), and `sysconf set` prints it under its error. Programs' `sysconf_set` doesn't carry
+  it yet (3c, for the window).
+
+### 10.4 As built: 3a (2026-11-20)
+
+- `bmds/iosetup.h` (pure, host-tested): `IoGpioSetup::parse()` and `IoPinSetup`, every word of
+  §10.1, refusals with the reason (`GPIO14: 'sideways' isn't a word io/gpio knows`).
+- `iogpio.cpp`: `io/gpio` (`BMDS_SYSCONF`, its check `Io::checkSetups()`), the watcher applying
+  it, the owner `io` (User), the boot stage `iogpio` after `netmidi`; `Io::pulse()`, `io pulse`.
+  `IoChipOps::savePad()`, `restorePad()`, `configurePad()`, the input selectors' words.
+- `SysConf::refuse()` and `set(key, value, &why)`; `sysconf set` prints the reason.
+- **Checked on bmds0:** `2=out,low` (the green LED, in JTAG's `MTCK` at boot) set up, pulsed,
+  and let go back to `MTCK` exactly; `io pulse 3` refused (an input); `26=in` refused with eth0
+  named, `26=in,pull-down,force` taken ("Forced: from eth0 (PPS out)") and given back, eth0
+  holding it again; `14=in:UART1_RXD` routed and its old source (none) put back;
+  `15=in:I2S0_I_SD` refused (dsp0 holds i2s0); `2=out,low` saved, applied at boot by `iogpio`;
+  `15=out,high` set, not saved, and put back by a `reboot` (the restart hook below).
+- **A restored output driven by events** (the PPS, toggled by the ETM) keeps the latch it was
+  saved with until its next edge: after the give-back the PPS read high for about a second, then
+  ran as before (100 ms high, 1 Hz). A pad's driver is never told (§10.2), so a pad set by
+  software in the meantime keeps the saved level until the driver writes it again.
+- **A restart keeps the pads.** `esp_restart()` resets the CPUs and a few modules, not IO_MUX or
+  the GPIO matrix (`esp_system/port/soc/esp32p4/system_internal.c`), so pins set up by `io/gpio`
+  stayed set up into the next boot, where applying the saved value saved *them* as "what it was
+  before": letting go after a `reboot` left the LED's pin a GPIO output instead of `MTCK`. A
+  restart hook (`System::addRestartHook()`, run by `System::restart()`, which every reboot and
+  update goes through) now puts every pad `io/gpio` has back first. Not ESP-IDF's shutdown
+  handlers: there are five (`SHUTDOWN_HANDLERS_NO`), all taken, and registering failed. A panic
+  runs no hooks: after one, the pads stay as they were until power-on.

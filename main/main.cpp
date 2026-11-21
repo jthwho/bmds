@@ -133,6 +133,7 @@ namespace {
                 {"guinet", bmds::GuiService::listen}, // remote programs on the loopback while gui/listen says so
                 {"netmounts", startNetMounts},        // net/mounts' filesystems, mounted once the network is up
                 {"netmidi", bmds::NetMidi::init},     // MIDI over the network while midi/net/enabled is on
+                {"iogpio", bmds::Io::startSetups},    // io/gpio's pins, after the drivers have claimed theirs
                 {"shell", startSerialShell},
                 {"healthy", bmds::Update::confirm}, // the boot got here: kept if it was on probation
         };
