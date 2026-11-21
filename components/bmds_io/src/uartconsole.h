@@ -23,10 +23,15 @@
 BMDS_NAMESPACE_BEGIN
 
 class Deadline;
+struct UartStash;
 
 /**
  * @brief UART @p port as a `Console`: its own interrupt over the UART's LL layer (as the USB
  *        serial console's), a receive ring the interrupt fills and a transmit ring it drains.
+ *
+ * The interrupt is cache-safe: while the flash is busy it keeps the FIFO's input in a stash in
+ * internal RAM, moved into the ring at the flash's end. Above 1 Mbaud the input comes by UHCI's
+ * DMA instead (one port at a time), into a ring of descriptors in PSRAM (devplan/io.md §14.3).
  *
  * Made once per UART when its port first starts; `start()` and `stop()` as `io/uartN` changes.
  * It begins binary (no signals, no `\n` to CR LF): a program sets the modes it wants.
@@ -36,8 +41,12 @@ class Deadline;
  */
 class UartConsole final : public Console {
         public:
-                /** @brief Receive ring, bytes (PSRAM). */
-                static constexpr size_t RxBytes = 2048;
+                /**
+                 * @brief Receive ring, bytes (PSRAM): input while readers can't run, as through a
+                 *        flash write (85 ms measured at 1 Mbaud); 131 ms at the top baud
+                 *        (devplan/io.md §14.3).
+                 */
+                static constexpr size_t RxBytes = 65536;
 
                 /** @brief Transmit ring, bytes (PSRAM). */
                 static constexpr size_t TxBytes = 1024;
@@ -78,6 +87,15 @@ class UartConsole final : public Console {
                 static void isr(void *arg);
                 void        handleInterrupt();
                 void        enableTxInterrupt();
+                void        accept(uint8_t *buf, size_t n, uint32_t &sent);
+                void        drainStash(uint32_t &sent);
+                void        delivered(uint32_t sent);
+                Error       startDma();
+                void        stopDma();
+                void        handleDma();
+                void        drainDma(uint32_t &sent);
+
+                friend struct UartStash;
 
                 unsigned              _port;
                 char                  _name[8] = {};
@@ -87,7 +105,8 @@ class UartConsole final : public Console {
                 Semaphore             _txSpace{1, 0};
                 Semaphore             _rxReady{1, 0};
                 SpinLock              _intLock;
-                void                 *_intr = nullptr; // intr_handle_t
+                void                 *_intr = nullptr;  // intr_handle_t
+                UartStash            *_stash = nullptr; // internal RAM: input while the flash is busy
                 std::atomic<bool>     _running{false};
                 std::atomic<uint32_t> _rxDropped{0};
                 std::atomic<uint32_t> _lineErrors{0};

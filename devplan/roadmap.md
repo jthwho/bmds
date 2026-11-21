@@ -331,7 +331,10 @@ Plan: [`input.md`](input.md).
   through forced writes; sync starts and a clock trim set aside with reasons. Step 6 done.
   Step 7a built (§14.2): SPI ports with `dma` run their own transactions on `spi_hal` with GDMA
   and aligned bounce buffers (64 KB at 80 MHz 8.15 MB/s, the FIFO's 1.39), small pieces by the
-  CPU. Next: 7b (UART through UHCI above a measured baud).
+  CPU. Step 7b built (§14.3): UART input through flash writes (a cache-safe interrupt, a stash in
+  internal RAM moved at the flash's end) and above 1 Mbaud by UHCI's DMA into a ring of
+  descriptors; interrupt waits of up to 590 µs measured, which set that line; exact to 5 Mbaud
+  through forced writes on bmds0. Step 7 done.
 
 ## Phase 6 — Graphics
 

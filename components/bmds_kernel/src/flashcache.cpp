@@ -7,7 +7,8 @@
  *
  * IDF's start and end of a flash operation, wrapped (CMakeLists.txt): the
  * flash marked busy, and the IRAM-safe interrupts inside waited for, before
- * the cache is suspended (bmds/flashcache.h).
+ * the cache is suspended; at the end, the hooks interrupts deferred work for
+ * (bmds/flashcache.h).
  */
 
 #include <bmds/flashcache.h>
@@ -20,6 +21,27 @@ namespace FlashCache {
         // Internal RAM, read and written with the cache suspended.
         DRAM_ATTR uint32_t users = 0;
         DRAM_ATTR uint32_t flashOps = 0;
+
+        namespace {
+                DRAM_ATTR AfterHook afterHooks[MaxAfterHooks] = {};
+                DRAM_ATTR void     *afterArgs[MaxAfterHooks] = {};
+                DRAM_ATTR uint32_t  afterCount = 0;
+                DRAM_ATTR uint32_t  hooksRunning = 0;
+        } // namespace
+
+        Error addAfterHook(AfterHook hook, void *arg) {
+                // Set at start, from one task; read by the flash's end with the count last.
+                if (afterCount == MaxAfterHooks) return Error::Full;
+                afterHooks[afterCount] = hook;
+                afterArgs[afterCount] = arg;
+                __atomic_store_n(&afterCount, afterCount + 1, __ATOMIC_RELEASE);
+                return Error::Ok;
+        }
+
+        void waitHooks() {
+                while (__atomic_load_n(&hooksRunning, __ATOMIC_SEQ_CST) != 0) {}
+                return;
+        }
 
 } // namespace FlashCache
 
@@ -43,6 +65,11 @@ void IRAM_ATTR __wrap_spi_flash_disable_interrupts_caches_and_other_cpu(void) {
 void IRAM_ATTR __wrap_spi_flash_enable_interrupts_caches_and_other_cpu(void) {
         __real_spi_flash_enable_interrupts_caches_and_other_cpu();
         __atomic_fetch_sub(&bmds::FlashCache::flashOps, 1u, __ATOMIC_SEQ_CST);
+        // What interrupts deferred while the flash was busy, raised again.
+        __atomic_fetch_add(&bmds::FlashCache::hooksRunning, 1u, __ATOMIC_SEQ_CST);
+        const uint32_t n = __atomic_load_n(&bmds::FlashCache::afterCount, __ATOMIC_ACQUIRE);
+        for (uint32_t i = 0; i < n; ++i) bmds::FlashCache::afterHooks[i](bmds::FlashCache::afterArgs[i]);
+        __atomic_fetch_sub(&bmds::FlashCache::hooksRunning, 1u, __ATOMIC_SEQ_CST);
         return;
 }
 

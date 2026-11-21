@@ -36,6 +36,7 @@ if(COMMAND idf_component_register)
                                     src/critical.cpp
                                     src/crosscore.cpp
                                     src/esperr_check.cpp
+                                    src/flashcache.cpp
                                     src/kept.cpp
                                     src/log.cpp
                                     src/logstream.cpp
@@ -59,6 +60,11 @@ if(COMMAND idf_component_register)
         # memory.cpp reads the PSRAM heap's TLSF bitmaps (IDF's private heap list).
         set_source_files_properties(src/memory.cpp PROPERTIES INCLUDE_DIRECTORIES "${IDF_PATH}/components/heap"
                                                              COMPILE_DEFINITIONS MULTI_HEAP_FREERTOS)
+        # A flash operation's start waits for the IRAM-safe interrupts using the cache, and its end
+        # calls the hooks (flashcache.cpp).
+        target_link_libraries(${COMPONENT_LIB} INTERFACE
+                              "-Wl,--wrap=spi_flash_disable_interrupts_caches_and_other_cpu"
+                              "-Wl,--wrap=spi_flash_enable_interrupts_caches_and_other_cpu")
         # esp_timer_get_time() is Detail::monotonicUs() (platform.cpp): the same counter without the
         # ROM's 64-bit division (devplan/bench.md §15).
         target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_timer_get_time")

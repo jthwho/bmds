@@ -892,6 +892,26 @@ until silicon v3; then test again.
   does. Sync your buffers' whole lines; switch a direction's DMA off (`spi_ll_dma_*_enable()`) when
   a piece doesn't use it, or one goes through the FIFO. `spi_hal_init()` sets the done status:
   clear it before enabling the interrupt (`spiports.cpp`, `devplan/io.md` §14).
+- **Interrupts wait up to 600 µs at times:** a UART's FIFO fill on entry to its interrupt (level
+  1) showed waits of 410 µs on a quiet system and 590 µs during a flash write, most likely cache
+  write-backs (§3: interrupts masked throughout). A CPU-drained 128-byte FIFO can't cover that
+  above about 1 Mbaud (256 µs at 5 Mbaud dropped a byte a megabyte); UART input above 1 Mbaud
+  goes by UHCI's DMA (`uartconsole.cpp`, `devplan/io.md` §14.3). Measure with the FIFO's fill
+  on entry: bytes past the threshold times a byte's time.
+- **A flash write loses a UART's input unless its interrupt is cache-safe:** the FIFO (128 bytes:
+  11 ms at 115200) can't wait out a cache-off window, and 2 to 5% was lost at every baud. Those
+  windows last at most some 20 ms (`CONFIG_SPI_FLASH_ERASE_YIELD_DURATION_MS`): an IRAM interrupt
+  draining into internal RAM covers them, but the reader can't run for longer (about 85 ms at
+  1 Mbaud), so the receive ring needs that much too (64 KB, PSRAM).
+- **UHCI receive as an endless ring:** ESP-IDF's GDMA, receiving, goes on after a descriptor
+  closed by UHCI's idle EOF into the next, and gives each back with its owner bit cleared and its
+  length written; a circular list of descriptors with owner checking on never needs re-arming.
+  Its descriptors are in internal RAM, behind the L1 cache: read and write them through the
+  uncached alias (`+ SOC_NON_CACHEABLE_OFFSET`, as `gdma_link` does), `next` and `gdma_start()`
+  the cached address. Separator characters must be off (`uhci_ll_set_seper_chr()`), and the idle
+  EOF follows the UART's `rx_idle_thrhd` in bit times (`uart_ll_set_rx_idle_thr()`). ESP-IDF's own
+  UHCI driver ends a transfer at each idle EOF (re-armed from a task) and counts one callback as
+  one node (`uartconsole.cpp`).
 - **ESP-IDF's SPI master leaves pins as nothing:** removing a device turns its CS output off
   (`spicommon_cs_free_io()`: the line floats, and an active-low device reads that as selected),
   and `spi_bus_free()` turns the bus's outputs off and leaves the input selectors it set. A

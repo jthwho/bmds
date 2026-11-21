@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <bmds/config.h>
+#include <bmds/error.h>
 #include <bmds/placement.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -69,6 +70,29 @@ namespace FlashCache {
                 __atomic_fetch_sub(&users, 1u, __ATOMIC_RELEASE);
                 return;
         }
+
+        /** @brief What `addAfterHook()` takes: IRAM code, its argument in internal RAM. */
+        using AfterHook = void (*)(void *arg);
+
+        /** @brief Hooks a pause can leave work for, at most. */
+        constexpr unsigned MaxAfterHooks = 8;
+
+        /**
+         * @brief Calls @p hook with @p arg at the end of every flash operation, the cache back (an
+         *        interrupt that found the flash busy deferred work: the hook raises it again).
+         *        @p hook is IRAM code and @p arg in internal RAM; it runs in the flash operation's
+         *        task, and must only write registers and internal RAM. Set once, at start.
+         * @return `Ok`, or `Full` (`MaxAfterHooks`).
+         * @blocking
+         */
+        Error addAfterHook(AfterHook hook, void *arg);
+
+        /**
+         * @brief Waits until no hook runs (a flash operation's end, under way on the other core,
+         *        past): what a hook reads may then be changed, its effects undone.
+         * @blocking Spins for at most the hooks' bodies.
+         */
+        void waitHooks();
 
 } // namespace FlashCache
 

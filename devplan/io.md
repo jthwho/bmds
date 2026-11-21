@@ -1246,3 +1246,45 @@ In parts: **7a** SPI by GDMA, **7b** UART through UHCI above a measured baud.
   a message. A 4-byte message still costs some 40 µs more than ESP-IDF's FIFO master (not found;
   the measure itself varies by tens of µs between runs): `dma` stays a word to ask for.
 - **Size:** the SPI code 2.6 KB more (9.5 KB); 8 KB of internal DMA RAM while a `dma` port runs.
+
+### 14.3 7b: UART input at speed and through flash writes (2026-11-21)
+
+- **Measured first** (bmds0, `io/uart1` looped back, random bytes written and compared): the FIFO
+  path of §11.1 was exact at 115200 to 5 Mbaud over 64 KB on a quiet system, but a forced 256 KB
+  flash write meanwhile lost 2 to 5% at every baud (115200 included): the receive interrupt (in
+  flash) can't run while the caches are off. So the pause came first, at every baud.
+- **The interrupt made cache-safe:** allocated in IRAM. On entry it asks `FlashCache` (moved from
+  the drivers to the kernel, so `bmds_io` can use it) whether the cache may be touched: if so, it
+  runs as before, first moving what a pause left into the ring. If not, it only drains the FIFO
+  into a stash in internal RAM (a port's: 25 ms of input at its baud, 256 B to 2.5 KB: ESP-IDF gives
+  the cache back at least every 20 ms of an erase) and masks the transmit interrupt (its ring is in
+  PSRAM), and marks the port deferred. `FlashCache` gains hooks called at the end of every flash
+  operation (`addAfterHook()`, `waitHooks()` for a port that stops); a UART's raises its transmit
+  interrupt if a port deferred, so the work runs at once; an interrupt that defers after the hook
+  passed sees the flash idle and raises it itself. Ctrl-C and the like are found as the stash is
+  moved, as for any input.
+- **The receive ring 64 KB** (was 2 KB, PSRAM): with the stash, 1 Mbaud still dropped 6.5 KB a
+  write: the ring filled while the reader couldn't run (some 85 ms). 64 KB is 655 ms at 1 Mbaud,
+  131 ms at 5, Linux's tty buffer's size.
+- **Interrupt latency sets the FIFO's limit:** the FIFO's fill on the interrupt's entry, recorded,
+  showed waits of up to 590 µs at times (410 µs with no flash write): cache write-backs run with
+  interrupts masked (a dirty 64 KB ~250 µs: docs/platforms/esp32p4.md). At 5 Mbaud the 128-byte
+  FIFO holds 256 µs, so 5 Mbaud dropped bytes now and then even quietly (one overflow in 1.5 MB),
+  as did a 192 µs margin under writes. The receive threshold is now 32 bytes (96 of room: 960 µs at
+  1 Mbaud), and **above 1 Mbaud input comes by UHCI**.
+- **UHCI** (the P4 has one: the first port above 1 Mbaud gets it; a second warns unless it has
+  `rts/cts`): not ESP-IDF's driver (its receive calls back a node at a time, counts a pause's
+  several completions as one, and an idle EOF ends the transfer, to be re-armed from a task), but
+  UHCI on its LL layer between the UART and an AHB GDMA channel of our own, into a ring of 32
+  descriptors that never ends: 2 KB each in PSRAM (64 KB, 131 ms at 5 Mbaud), 128-byte aligned
+  and invalidated as whole lines before they're read, descriptors in internal DMA RAM read and
+  written through their uncached alias. The DMA gives one back full or closed by an idle line (UHCI's
+  idle EOF, the UART's idle threshold ten symbols) and goes on into the next. Its interrupt is
+  cache-safe: with the cache, it moves every descriptor given back (owner the CPU) into the ring
+  and gives it back, under the port's spinlock (the UART's interrupt drains it too, after a pause);
+  without, it defers as the UART's does, the DMA meanwhile filling the ring. Owner checking on: a
+  ring run into a descriptor not yet read stops, and is started again there once drained.
+- **Checked** on bmds0, loopback with a forced 256 KB flash write overlapping: 115200, 1M (the
+  FIFO), 2M, 3M and 5M (UHCI) all exact over 64 KB to 512 KB, repeated; a 6-byte message closed by
+  the idle line; 5M by DMA 3% and 10% of the two cores while `dd` and `head` ran. Not seen: a
+  ring stopped by owner checking (it would take an interrupt 131 ms late); its restart is untested.
