@@ -356,7 +356,8 @@ namespace IoSetups {
                 if (const Error err = startRmtPorts(); err.isError()) return err;
                 if (const Error err = startPwmPorts(); err.isError()) return err;
                 if (const Error err = startPcntPorts(); err.isError()) return err;
-                return startParlioPorts();
+                if (const Error err = startParlioPorts(); err.isError()) return err;
+                return startAdc();
         }
 
 } // namespace IoSetups

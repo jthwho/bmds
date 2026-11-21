@@ -197,6 +197,7 @@ struct BoardPin {
                 BoardPinUse use = BoardPinUse::Free; ///< What it is to the board.
                 const char *label = "";              ///< What it is wired to (`UEXT UART0 TX`), or "".
                 const char *note = "";               ///< On-board parts on it, jumpers, caveats; or "".
+                uint8_t     analogDivider = 0;       ///< It reads what it senses divided by this (VBAT/2: 2), or 0.
 };
 
 /** @brief A pin of a connector (`BoardConnector::pins`), in the connector's numbering from 1. */

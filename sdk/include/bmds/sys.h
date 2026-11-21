@@ -233,6 +233,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_COUNTERDEV_CTL 144u /**< `int32_t counterdev_ctl(fd, op, arg)`: `/dev/counterN`. */
 #define BMDS_SYS_PARLIO_CTL 145u     /**< `int32_t parlio_ctl(fd, op, arg)`: `/dev/parlioN`. */
 #define BMDS_SYS_WRITE_NOW 146u      /**< `int32_t write_now(fd, buf, size)`: what fits now. */
+#define BMDS_SYS_ADC_CTL 147u        /**< `int32_t adc_ctl(fd, op, arg)`: `/dev/adcN`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -2332,6 +2333,66 @@ typedef struct bmds_parlio_info_t {
 } bmds_parlio_info_t;
 
 /*
+ * The ADC (slot 147, appended 2026-11-21, devplan/io.md §15.7): `/dev/adc0`, the pins `io/adc0`
+ * gives it. Any open takes one-shot readings, calibrated to millivolts; the first to `read()`
+ * starts streaming the pins in turn at `io/adc0`'s rate (until it closes), its `read()` giving
+ * whole `bmds_adc_sample_t` records. Conversion n of a stream (those lost counted) was taken n
+ * periods of the rate after `start_ns`.
+ */
+#define BMDS_ADC_INFO 0u    /**< `bmds_adc_info_t *`: the ADC and its stream. */
+#define BMDS_ADC_CHANNEL 1u /**< `bmds_adc_channel_t *` (`index` in): a pin of `io/adc0`'s. */
+#define BMDS_ADC_READ                                                                                                  \
+        2u /**< `bmds_adc_reading_t *` (`pin` in): a one-shot reading (`-BMDS_EBUSY` while its unit streams). */
+
+/** @brief `bmds_adc_info_t::flags`. */
+#define BMDS_ADC_CONFIGURED 0x1u /**< `io/adc0` gives it pins. */
+#define BMDS_ADC_STREAMING 0x2u  /**< A stream runs. */
+#define BMDS_ADC_MINE 0x4u       /**< This open's: its `read()` gives the samples. */
+
+/** @brief The ADC (`BMDS_ADC_INFO`). */
+typedef struct bmds_adc_info_t {
+                uint32_t size;     /**< Set by the caller: `sizeof(bmds_adc_info_t)`. */
+                uint32_t flags;    /**< `BMDS_ADC_...`. */
+                uint32_t channels; /**< Its pins. */
+                uint32_t rate_hz;  /**< Conversions a second when streaming (over all its pins), or 0. */
+                int64_t  start_ns; /**< The stream's start (monotonic), or 0. */
+                uint64_t samples;  /**< The stream's conversions so far, those lost counted. */
+                uint64_t lost;     /**< Of them, dropped (its pool was full). */
+                uint32_t buffer;   /**< The stream's pool, bytes. */
+                uint32_t reserved; /**< Zero. */
+} bmds_adc_info_t;
+
+/** @brief A pin of the ADC's (`BMDS_ADC_CHANNEL`). */
+typedef struct bmds_adc_channel_t {
+                uint32_t size;      /**< Set by the caller: `sizeof(bmds_adc_channel_t)`. */
+                uint32_t index;     /**< Which (set by the caller): 0 to `channels` - 1. */
+                int32_t  pin;       /**< Its GPIO. */
+                uint32_t unit;      /**< Its ADC unit: 0 (ADC1) or 1 (ADC2). */
+                uint32_t channel;   /**< Its channel on the unit. */
+                uint32_t atten_cdb; /**< Its attenuation, hundredths of a dB (0, 250, 600, 1200). */
+                uint32_t divider;   /**< The board divides what it senses by this before the pin (VBAT/2: 2), or 0. */
+                uint32_t reserved;  /**< Zero. */
+} bmds_adc_channel_t;
+
+/** @brief A one-shot reading (`BMDS_ADC_READ`). */
+typedef struct bmds_adc_reading_t {
+                uint32_t size;    /**< Set by the caller: `sizeof(bmds_adc_reading_t)`. */
+                int32_t  pin;     /**< The pin (set by the caller). */
+                uint32_t raw;     /**< The conversion, 0 to 4095. */
+                int32_t  mv;      /**< Calibrated, millivolts at the pin. */
+                int64_t  time_ns; /**< When (monotonic). */
+} bmds_adc_reading_t;
+
+/** @brief A streamed conversion, as `read()` gives them. */
+typedef struct bmds_adc_sample_t {
+                uint8_t  pin;       /**< Its GPIO. */
+                uint8_t  reserved;  /**< Zero. */
+                uint16_t raw;       /**< The conversion, 0 to 4095. */
+                uint16_t mv;        /**< Calibrated, millivolts at the pin. */
+                uint16_t reserved2; /**< Zero. */
+} bmds_adc_sample_t;
+
+/*
  * Surfaces (slots 117-121, appended 2026-10-14, devplan/games.md §11): a picture a program draws
  * with the CPU into its own buffers and presents, in a window or full screen (the user's setting
  * per application, the program's suggestion its default, Alt+Enter between them); its events read
@@ -3112,6 +3173,7 @@ typedef int32_t (*bmds_sys_pwm_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_counterdev_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_parlio_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_write_now_fn)(int32_t fd, const void *buf, uint32_t size);
+typedef int32_t (*bmds_sys_adc_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -4696,6 +4758,18 @@ static inline int32_t bmds_parlio_ctl(int32_t fd, uint32_t op, void *arg) {
 static inline int32_t bmds_write_now(int32_t fd, const void *buf, uint32_t size) {
         if (!bmds_sys_has(BMDS_SYS_WRITE_NOW)) return -BMDS_ENOSYS;
         return ((bmds_sys_write_now_fn)bmds_sys->slot[BMDS_SYS_WRITE_NOW])(fd, buf, size);
+}
+
+/**
+ * @brief Operates on ADC file @p fd (`/dev/adc0`): `BMDS_ADC_...` with @p arg as each says (slot
+ *        147, appended 2026-11-21, devplan/io.md §15.7).
+ * @return 0, or `-BMDS_ENOTTY` (not the ADC), `-BMDS_EBADF`, `-BMDS_EINVAL` (an op, a `size`, an
+ *         index), `-BMDS_ENODEV` (a pin it doesn't have, or no `io/adc0`), `-BMDS_EBUSY` (its unit
+ *         streams), `-BMDS_EIO`, `-BMDS_EFAULT`, `-BMDS_ENOSYS`.
+ */
+static inline int32_t bmds_adc_ctl(int32_t fd, uint32_t op, void *arg) {
+        if (!bmds_sys_has(BMDS_SYS_ADC_CTL)) return -BMDS_ENOSYS;
+        return ((bmds_sys_adc_ctl_fn)bmds_sys->slot[BMDS_SYS_ADC_CTL])(fd, op, arg);
 }
 
 /**

@@ -54,6 +54,9 @@ namespace IoSetups {
         /** @brief The PARLIO ports (`io/parlio0`, `io/parlio1`: devplan/io.md §15.5); `startPorts()` calls it. */
         Error startParlioPorts();
 
+        /** @brief The ADC (`io/adc0`, `/dev/adc0`: devplan/io.md §15.7); `startPorts()` calls it. */
+        Error startAdc();
+
 } // namespace IoSetups
 
 BMDS_NAMESPACE_END

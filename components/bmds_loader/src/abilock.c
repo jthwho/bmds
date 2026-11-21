@@ -1221,3 +1221,21 @@ _Static_assert(offsetof(bmds_parlio_info_t, width) == 12 && offsetof(bmds_parlio
                "ABI: bmds_parlio_info_t");
 /* Non-blocking writes (devplan/programs.md §22, 2026-11-21). */
 _Static_assert(BMDS_SYS_WRITE_NOW == 146, "ABI: slot WRITE_NOW");
+/* The ADC: /dev/adc0 (devplan/io.md §15.7, 2026-11-21). */
+_Static_assert(BMDS_SYS_ADC_CTL == 147, "ABI: slot ADC_CTL");
+_Static_assert(BMDS_ADC_INFO == 0 && BMDS_ADC_CHANNEL == 1 && BMDS_ADC_READ == 2 && BMDS_ADC_CONFIGURED == 1 &&
+                       BMDS_ADC_STREAMING == 2 && BMDS_ADC_MINE == 4,
+               "ABI: adc_ctl ops and flags");
+_Static_assert(offsetof(bmds_adc_info_t, rate_hz) == 12 && offsetof(bmds_adc_info_t, start_ns) == 16 &&
+                       offsetof(bmds_adc_info_t, samples) == 24 && offsetof(bmds_adc_info_t, lost) == 32 &&
+                       offsetof(bmds_adc_info_t, buffer) == 40 && sizeof(bmds_adc_info_t) == 48,
+               "ABI: bmds_adc_info_t");
+_Static_assert(offsetof(bmds_adc_channel_t, pin) == 8 && offsetof(bmds_adc_channel_t, atten_cdb) == 20 &&
+                       offsetof(bmds_adc_channel_t, divider) == 24 && sizeof(bmds_adc_channel_t) == 32,
+               "ABI: bmds_adc_channel_t");
+_Static_assert(offsetof(bmds_adc_reading_t, raw) == 8 && offsetof(bmds_adc_reading_t, mv) == 12 &&
+                       offsetof(bmds_adc_reading_t, time_ns) == 16 && sizeof(bmds_adc_reading_t) == 24,
+               "ABI: bmds_adc_reading_t");
+_Static_assert(offsetof(bmds_adc_sample_t, raw) == 2 && offsetof(bmds_adc_sample_t, mv) == 4 &&
+                       sizeof(bmds_adc_sample_t) == 8,
+               "ABI: bmds_adc_sample_t");

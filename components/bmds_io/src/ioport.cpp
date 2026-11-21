@@ -659,4 +659,130 @@ Error IoParlioSetup::parse(const IoChip &chip, StringView text, char (&why)[Reas
         return Error::Ok;
 }
 
+namespace {
+
+        // `0`, `2.5`, `6`, `12` (dB).
+        bool attenOf(StringView text, IoAdcSetup::Atten &out) {
+                if (text.endsWith(StringView("db"))) text = text.left(text.size() - 2);
+                if (text == "0")
+                        out = IoAdcSetup::Atten::Db0;
+                else if (text == "2.5")
+                        out = IoAdcSetup::Atten::Db2_5;
+                else if (text == "6")
+                        out = IoAdcSetup::Atten::Db6;
+                else if (text == "12")
+                        out = IoAdcSetup::Atten::Db12;
+                else
+                        return false;
+                return true;
+        }
+
+} // namespace
+
+bool IoAdcSetup::channelOf(const IoChip &chip, int pad, uint8_t &unit, uint8_t &channel) {
+        if (pad < 0 || size_t(pad) >= chip.pads.size()) return false;
+        const char *a = chip.pads[size_t(pad)].analog;
+        // `ADC1_CH4`, maybe followed by other functions.
+        if (a == nullptr || std::strncmp(a, "ADC", 3) != 0 || a[3] < '1' || a[3] > '2' ||
+            std::strncmp(a + 4, "_CH", 3) != 0 || a[7] < '0' || a[7] > '9')
+                return false;
+        unit = uint8_t(a[3] - '1');
+        channel = uint8_t(a[7] - '0');
+        return true;
+}
+
+uint32_t IoAdcSetup::centiDb(Atten a) {
+        switch (a) {
+                case Atten::Db0: return 0;
+                case Atten::Db2_5: return 250;
+                case Atten::Db6: return 600;
+                case Atten::Db12: return 1200;
+        }
+        return 0;
+}
+
+int IoAdcSetup::indexOf(int pad) const {
+        for (int i = 0; i < pinCount; ++i)
+                if (pins[i] == pad) return i;
+        return -1;
+}
+
+bool IoAdcSetup::operator==(const IoAdcSetup &o) const {
+        if (pinCount != o.pinCount) return false;
+        for (size_t i = 0; i < pinCount; ++i)
+                if (pins[i] != o.pins[i] || atten[i] != o.atten[i]) return false;
+        return rate == o.rate && buffer == o.buffer && force == o.force;
+}
+
+Error IoAdcSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonBytes]) {
+        why[0] = '\0';
+        *this = IoAdcSetup();
+        Atten      all = Atten::Db12;
+        bool       own[MaxPins] = {};
+        StringView list;
+        bool       listGiven = false;
+        while (!text.isEmpty()) {
+                StringView word = take(text, ' ');
+                if (word.isEmpty()) continue;
+                const size_t     eq = word.indexOf('=');
+                const StringView key = eq == StringView::NPos ? word : word.left(eq);
+                const StringView value = eq == StringView::NPos ? StringView() : word.mid(eq + 1);
+                if (key == "pins") {
+                        list = value;
+                        listGiven = true;
+                } else if (key == "atten") {
+                        if (!attenOf(value, all))
+                                return refuse(why, Error::Invalid, "atten is 0, 2.5, 6 or 12 (dB), not '%.*s'",
+                                              int(value.size()), value.data());
+                } else if (key == "rate") {
+                        uint32_t r = 0;
+                        if (!clockOf(value, r) || r < MinRate || r > MaxRate)
+                                return refuse(why, Error::Invalid,
+                                              "rate is 611 to 83333 conversions a second (or with k), not '%.*s'",
+                                              int(value.size()), value.data());
+                        rate = r;
+                } else if (key == "buffer") {
+                        uint32_t b = 0;
+                        if (!number(value, b) || b < MinBuffer || b > MaxBuffer || b % 4 != 0)
+                                return refuse(why, Error::Invalid,
+                                              "buffer is 1024 to 65536 bytes, a multiple of 4, not '%.*s'",
+                                              int(value.size()), value.data());
+                        buffer = b;
+                } else if (word == "force") {
+                        force = true;
+                } else {
+                        return refuse(why, Error::Invalid, "'%.*s' isn't a word the ADC knows", int(word.size()),
+                                      word.data());
+                }
+        }
+        if (!listGiven || list.isEmpty()) return refuse(why, Error::Invalid, "the ADC needs pins=");
+        while (!list.isEmpty()) {
+                StringView one = take(list, ',');
+                if (pinCount == MaxPins) return refuse(why, Error::Invalid, "pins= is 14 at most");
+                const size_t     colon = one.indexOf(':');
+                const StringView padText = colon == StringView::NPos ? one : one.left(colon);
+                int8_t           at = -1;
+                if (!pad(chip, padText, at))
+                        return refuse(why, Error::Invalid, "pins: '%.*s' isn't a pin of the chip's",
+                                      int(padText.size()), padText.data());
+                uint8_t u = 0, c = 0;
+                if (!channelOf(chip, at, u, c))
+                        return refuse(why, Error::Invalid, "GPIO%d has no ADC channel", int(at));
+                if (indexOf(at) >= 0) return refuse(why, Error::Invalid, "GPIO%d is given twice", int(at));
+                if (colon != StringView::NPos) {
+                        if (!attenOf(one.mid(colon + 1), atten[pinCount]))
+                                return refuse(why, Error::Invalid, "GPIO%d: atten is 0, 2.5, 6 or 12 (dB)", int(at));
+                        own[pinCount] = true;
+                }
+                pins[pinCount] = at;
+                unit[pinCount] = u;
+                channel[pinCount] = c;
+                ++pinCount;
+        }
+        for (size_t i = 0; i < pinCount; ++i)
+                if (!own[i]) atten[i] = all;
+        if (buffer != 0 && rate == 0) return refuse(why, Error::Invalid, "buffer= is a stream's: it needs rate=");
+        return Error::Ok;
+}
+
 BMDS_NAMESPACE_END

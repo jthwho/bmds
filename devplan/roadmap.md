@@ -343,7 +343,10 @@ Plan: [`input.md`](input.md).
   `parlio_ctl` slot 145), the receiver's DMA ring kept by us (ESP-IDF's misses nodes when an
   interrupt is late); loopback exact to 20 MB/s on bmds0. Found: the SDK's `O_NONBLOCK` blocked a
   write larger than the room: fixed (programs.md §22: `write_now`, slot 146, streams' rooms).
-  Next: ADC readings, a longer logic strip, a second chip.
+  Step 8d built (§15.8): ADC readings (`io/adc0`, `/dev/adc0`, `adc_ctl` slot 147, `io adc`,
+  the battery sense's divider) calibrated on bmds0; streaming built but refused: ESP-IDF
+  v6.1-dev-1's continuous driver reads 0 on the P4 (a later ESP-IDF's doesn't). Next: a later
+  ESP-IDF (then ADC streaming), a longer logic strip, a second chip.
 
 ## Phase 6 — Graphics
 

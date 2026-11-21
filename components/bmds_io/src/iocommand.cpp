@@ -17,6 +17,8 @@
 #include <cstring>
 #include <new>
 #include <driver/gpio.h>
+#include <bmds/adcdevice.h>
+#include <bmds/board.h>
 #include <bmds/clock.h>
 #include <bmds/command.h>
 #include <bmds/io.h>
@@ -312,6 +314,47 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // io adc [N]: io/adc0's pins read once, at the pin and through the board's divider.
+        int showAdc(CommandContext &ctx, int only) {
+                AdcDevice::Info info;
+                (void)AdcDevice::status(info, nullptr);
+                if (!info.configured) {
+                        ctx.eprintf("io: no ADC pins (io/adc0)\n");
+                        return Shell::ExitFailure;
+                }
+                bool found = false;
+                for (unsigned i = 0; i < info.channels; ++i) {
+                        AdcDevice::Channel c;
+                        if (AdcDevice::channel(i, c).isError() || (only >= 0 && c.pin != only)) continue;
+                        found = true;
+                        const char *label = "";
+                        for (const BoardPin &p : board().pins)
+                                if (p.gpio == c.pin) label = p.label;
+                        ctx.printf("GPIO%-2d ADC%u_CH%u %4.1f dB  ", int(c.pin), unsigned(c.unit + 1),
+                                   unsigned(c.channel), double(c.attenCdb) / 100.0);
+                        AdcDevice::Reading r;
+                        const Error        err = AdcDevice::reading(c.pin, r);
+                        if (err == Error::Busy) {
+                                ctx.printf("streaming (/dev/adc0)");
+                        } else if (err.isError()) {
+                                ctx.printf("(%s)", err.desc());
+                        } else {
+                                ctx.printf("%4u  %4d mV", unsigned(r.raw), int(r.mv));
+                                if (c.divider > 1) ctx.printf("  (%.3f V sensed)", double(r.mv) * c.divider / 1000.0);
+                        }
+                        ctx.printf("%s%s\n", label[0] != '\0' ? "  " : "", label);
+                }
+                if (!found) {
+                        ctx.eprintf("io: GPIO%d isn't one of io/adc0's pins\n", only);
+                        return Shell::ExitFailure;
+                }
+                if (info.streaming)
+                        ctx.printf("streaming: %llu conversions at %u a second, %llu lost\n",
+                                   (unsigned long long)info.samples, unsigned(info.rateHz),
+                                   (unsigned long long)info.lost);
+                return Shell::ExitSuccess;
+        }
+
         int runIo(CommandContext &ctx) {
                 const Args args = ctx.args();
                 if (!Io::isReady()) {
@@ -394,6 +437,14 @@ namespace {
                         return dumpPads(ctx, pad, pad);
                 }
                 if (verb == "spi" && args.size() >= 4) return spiTransfer(ctx, args);
+                if (verb == "adc" && args.size() <= 3) {
+                        if (args.size() == 2) return showAdc(ctx, -1);
+                        if (!parsePad(args[2], pad)) {
+                                ctx.eprintf("io: no pin '%s'\n", args[2]);
+                                return Shell::ExitFailure;
+                        }
+                        return showAdc(ctx, int(pad));
+                }
                 if (verb == "resources" && args.size() == 2) return showResources(ctx);
                 if (verb == "signals" && args.size() <= 3)
                         return showSignals(ctx, args.size() == 3 ? args[2] : nullptr);
@@ -402,10 +453,9 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(
-        io, runIo,
-        "[pin N | get N | edges N [-f] | pulse N [MS] [--force] | spi B.C HEX... | resources | signals [GROUP] | "
-        "dump [N]]",
-        "Show the chip's pins: wiring, holder, routing, level (devplan/io.md)")
+BMDS_SHELL_COMMAND(io, runIo,
+                   "[pin N | get N | edges N [-f] | pulse N [MS] [--force] | spi B.C HEX... | adc [N] | resources | "
+                   "signals [GROUP] | dump [N]]",
+                   "Show the chip's pins: wiring, holder, routing, level (devplan/io.md)")
 
 BMDS_NAMESPACE_END

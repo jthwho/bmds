@@ -48,7 +48,7 @@ namespace Detail {
                 {17, BoardPinUse::Free, "", ""},
                 {18, BoardPinUse::Free, "", ""},
                 {19, BoardPinUse::Free, "", ""},
-                {20, BoardPinUse::Free, "Battery sense (VBAT/2)", "Needs the BAT_SENS_E1/E2 jumpers closed"},
+                {20, BoardPinUse::Free, "Battery sense (VBAT/2)", "Needs the BAT_SENS_E1/E2 jumpers closed", 2},
                 {21, BoardPinUse::Device, "USB hub reset", "Active low; 10k pull-up"},
                 {22, BoardPinUse::Device, "UEXT I2C SDA", "2.2k pull-up"},
                 {23, BoardPinUse::Device, "UEXT I2C SCL", "2.2k pull-up"},

@@ -5,9 +5,9 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * A port's setup, `io/uartN`'s, `io/spiN`'s, `io/rmtN`'s, `io/pwmN`'s, `io/pcntN`'s and
- * `io/parlioN`'s values (devplan/io.md §11.1, §11.5, §13.1, §15.1, §15.3, §15.5): parsed and
- * checked against the chip.
+ * A port's setup, `io/uartN`'s, `io/spiN`'s, `io/rmtN`'s, `io/pwmN`'s, `io/pcntN`'s,
+ * `io/parlioN`'s and `io/adc0`'s values (devplan/io.md §11.1, §11.5, §13.1, §15.1, §15.3, §15.5,
+ * §15.7): parsed and checked against the chip.
  * Pure, host-tested; `Io` checks the holders and runs the port.
  */
 
@@ -302,6 +302,60 @@ struct IoParlioSetup {
 
                 /** @brief True if @p other sets the port up the same way. */
                 bool operator==(const IoParlioSetup &other) const;
+};
+
+/**
+ * @brief The ADC's setup: `pins=20,16:6 atten=12 rate=10k` (devplan/io.md §15.7).
+ *
+ * @par Thread Safety
+ * A plain value.
+ */
+struct IoAdcSetup {
+                /** @brief Room for `parse()`'s reason, NUL included. */
+                static constexpr size_t ReasonBytes = IoUartSetup::ReasonBytes;
+
+                static constexpr size_t   MaxPins = 14;      ///< The chip's ADC channels.
+                static constexpr uint32_t MinRate = 611;     ///< `rate=`'s slowest (the hardware's).
+                static constexpr uint32_t MaxRate = 83333;   ///< Its fastest.
+                static constexpr uint32_t MinBuffer = 1024;  ///< `buffer=`'s smallest.
+                static constexpr uint32_t MaxBuffer = 65536; ///< Its largest.
+
+                /** @brief An input's attenuation (ESP-IDF's `adc_atten_t`, in order): its range. */
+                enum class Atten : uint8_t {
+                        Db0,
+                        Db2_5,
+                        Db6,
+                        Db12
+                };
+
+                int8_t   pins[MaxPins] = {};    ///< `pins=`: the pads, `pinCount` of them.
+                Atten    atten[MaxPins] = {};   ///< Each one's attenuation.
+                uint8_t  unit[MaxPins] = {};    ///< Each one's ADC unit, 0 or 1.
+                uint8_t  channel[MaxPins] = {}; ///< Each one's channel on its unit.
+                uint8_t  pinCount = 0;
+                uint32_t rate = 0;      ///< `rate=`: conversions a second when streaming, or 0 (readings only).
+                uint32_t buffer = 0;    ///< `buffer=`: the stream's pool, bytes, or 0 (100 ms of conversions).
+                bool     force = false; ///< `force`: its pins taken from their holders.
+
+                /**
+                 * @brief Parses @p text for @p chip: words known, pads with an ADC channel, each once,
+                 *        attenuations of 0, 2.5, 6 or 12 dB.
+                 * @param[out] why Why it is refused, for people, or "".
+                 * @return `Ok`, or `Invalid`.
+                 */
+                Error parse(const IoChip &chip, StringView text, char (&why)[ReasonBytes]);
+
+                /** @brief The index of @p pad among `pins`, or -1. */
+                int indexOf(int pad) const;
+
+                /** @brief Pad @p pad's ADC unit and channel from @p chip's table (`ADC1_CH4`). */
+                static bool channelOf(const IoChip &chip, int pad, uint8_t &unit, uint8_t &channel);
+
+                /** @brief @p a in hundredths of a dB (12 dB: 1200). */
+                static uint32_t centiDb(Atten a);
+
+                /** @brief True if @p other sets the ADC up the same way. */
+                bool operator==(const IoAdcSetup &other) const;
 };
 
 BMDS_NAMESPACE_END

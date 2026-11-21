@@ -1476,3 +1476,46 @@ strip, a second chip, each when asked for.
   time meanwhile.
 - Not built: the sender's `valid` line and clock gating, loop transmission (a frame repeated),
   the receiver's level and pulse delimiters (frames from a valid line), ioman's Ports tab.
+
+### 15.7 8d: ADC readings and streaming (design, 2026-11-21)
+
+- **The user's choices:** BMDS's own call, not Linux's IIO (its API is sysfs, and BMDS has no
+  `/sys`); readings and streaming.
+- **The setting:** `io/adc0`: `pins=20,16:6,17` (pads with an ADC channel, each `:ATTEN` in dB,
+  0, 2.5, 6 or 12; `atten=` the rest's, 12 unless given), `rate=` (conversions a second over all
+  the pins, 611 to 83333: streaming; none, readings only), `buffer=` (the stream's pool, 100 ms of
+  conversions unless given), `force`. The pads are claimed as `adc0`'s.
+- **`/dev/adc0` and `adc_ctl` (slot 147):** `BMDS_ADC_READ` (a pin's raw value and calibrated mV,
+  one-shot; `EBUSY` while its unit streams), `BMDS_ADC_CHANNEL` (a pin's unit, channel,
+  attenuation and the board's divider: GPIO20 reads VBAT/2), `BMDS_ADC_INFO`. The first open to
+  `read()` starts streaming (the pins in turn at `rate=`), until it closes; its `read()` gives
+  `bmds_adc_sample_t` records (pin, raw, mV). Sample n (those lost counted) was taken n conversion
+  periods after the start; a pool that fills drops new frames, counted exactly (ESP-IDF's driver
+  with `flush_pool` off calls back once a frame).
+- **ESP-IDF's drivers:** one-shot units per ADC unit, a curve-fitting calibration per pin, the
+  continuous driver for streaming (its interrupt walks every finished descriptor: no node is
+  missed). `/flash`'s writes held while streaming.
+- **`io adc`:** each pin's reading, and through the board's divider what it measures.
+- **The board:** `BoardPin::analogDivider` (2 on GPIO20).
+
+### 15.8 As built: 8d (2026-11-21)
+
+- `IoAdcSetup` (`ioport.h`, host-tested: pads and their channels from the chip's table, an
+  attenuation each), `AdcDevice` (`adcdevice.h`, one per open), `adcports.cpp`, `adc_ctl`
+  (`adccalls.cpp`, slot 147), `io adc [N]`, `BoardPin::analogDivider` (GPIO20: 2),
+  `sdk/examples/adc` (`info`, `read`, `stream`).
+- **Readings, checked** on bmds0: GPIO16 driven high (`io/gpio`, `force`) 3393 mV, low 4 mV; a
+  PWM's pin caught at either level (3390, 4 mV); 6 dB on GPIO20 shown through its divider; a pin
+  not `io/adc0`'s `ENODEV`. Calibrated by ESP-IDF's curve fitting from eFuse, per pin.
+- **Streaming: built, refused.** ESP-IDF v6.1-dev-1's continuous driver hands over zeros on this
+  P4 (v1.3): its stock `continuous_read` example, flashed in place of BMDS's app and BMDS put back
+  from a backup (the flash read whole first, `ota_0` written back and compared), read 0 too; the
+  same example built with ESP-IDF v6.1-dev-9279 streamed the right values on the same board
+  (3452 raw on a pad driven high). The ADC files differ between them only by refactors: the fix is
+  among the P4's clock, power and DMA changes since. `rate=` is accepted and the stream code stays
+  (`StreamWorks`), `read()` answering `NotSupported`, until BMDS moves to a later ESP-IDF.
+- **Found on the way:** ESP-IDF's continuous driver asserts (`adc_continuous.c:81`, the system
+  down) unless a frame is whole cache lines on the P4, which it doesn't check: frames here are
+  whole rounds of the pins and whole 64-byte lines. Its one-shot and continuous modes don't share
+  a unit: the one-shot units close while a stream runs. And PARLIO's receiver (8c) left its input
+  signals routed when ESP-IDF deleted it: their selectors are now kept and put back.

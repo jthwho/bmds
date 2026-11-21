@@ -1176,3 +1176,63 @@ TEST_CASE("IoParlioSetup: io/parlioN's value") {
                 CHECK_FALSE(a == b);
         }
 }
+
+TEST_CASE("IoAdcSetup: io/adc0's value") {
+        using bmds::IoAdcSetup;
+        using A = IoAdcSetup::Atten;
+        const IoChip &chip = bmds::ioChip();
+        IoAdcSetup    a;
+        char          why[IoAdcSetup::ReasonBytes];
+
+        SUBCASE("pins, their channels, attenuations, streaming") {
+                REQUIRE(a.parse(chip, "pins=20", why).isOk());
+                CHECK(a.pinCount == 1);
+                CHECK(a.unit[0] == 0);
+                CHECK(a.channel[0] == 4);
+                CHECK(a.atten[0] == A::Db12);
+                CHECK(a.rate == 0);
+                REQUIRE(a.parse(chip, "pins=20,16:6,49:2.5db atten=0 rate=10k buffer=8192 force", why).isOk());
+                CHECK(a.pinCount == 3);
+                CHECK(a.atten[0] == A::Db0);
+                CHECK(a.atten[1] == A::Db6);
+                CHECK(a.unit[2] == 1);
+                CHECK(a.channel[2] == 0);
+                CHECK(a.atten[2] == A::Db2_5);
+                CHECK(a.rate == 10000);
+                CHECK(a.buffer == 8192);
+                CHECK(a.force);
+                CHECK(a.indexOf(49) == 2);
+                CHECK(a.indexOf(17) == -1);
+                CHECK(IoAdcSetup::centiDb(A::Db2_5) == 250);
+                // ADC2_CH2's table entry carries the comparator's functions after it.
+                uint8_t u = 0, c = 0;
+                REQUIRE(IoAdcSetup::channelOf(chip, 51, u, c));
+                CHECK((u == 1 && c == 2));
+                CHECK_FALSE(IoAdcSetup::channelOf(chip, 46, u, c));
+        }
+
+        SUBCASE("refusals, in words") {
+                CHECK(a.parse(chip, "rate=10k", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "the ADC needs pins=") == 0);
+                CHECK(a.parse(chip, "pins=46", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "GPIO46 has no ADC channel") == 0);
+                CHECK(a.parse(chip, "pins=20,20", why) == Error::Invalid);
+                CHECK(a.parse(chip, "pins=20:3", why) == Error::Invalid);
+                CHECK(a.parse(chip, "pins=20 atten=11", why) == Error::Invalid);
+                CHECK(a.parse(chip, "pins=20 rate=100", why) == Error::Invalid);
+                CHECK(a.parse(chip, "pins=20 rate=100k", why) == Error::Invalid);
+                CHECK(a.parse(chip, "pins=20 buffer=4096", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "buffer= is a stream's: it needs rate=") == 0);
+                CHECK(a.parse(chip, "pins=20 rate=1k buffer=100", why) == Error::Invalid);
+                CHECK(a.parse(chip, "pins=20 bits=12", why) == Error::Invalid);
+        }
+
+        SUBCASE("equality") {
+                IoAdcSetup x, y;
+                REQUIRE(x.parse(chip, "pins=20,16 atten=6", why).isOk());
+                REQUIRE(y.parse(chip, "atten=6 pins=20,16", why).isOk());
+                CHECK(x == y);
+                REQUIRE(y.parse(chip, "pins=20,16:12 atten=6", why).isOk());
+                CHECK_FALSE(x == y);
+        }
+}

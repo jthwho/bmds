@@ -24,6 +24,7 @@
 #include <soc/axi_dma_struct.h>
 #include <soc/ext_mem_defs.h>
 #include <soc/gdma_channel.h>
+#include <soc/parlio_periph.h>
 #include <bmds/deadline.h>
 #include <bmds/detail/platform.h>
 #include <bmds/flashwrites.h>
@@ -74,6 +75,11 @@ namespace ParlioPorts {
                         int8_t           pads[MaxPads] = {};
                         IoChipOps::Saved saved[MaxPads];
                         unsigned         padCount = 0;
+                        // A receiver's input signals' selectors: ESP-IDF's driver routes them and leaves
+                        // them routed when deleted (a pad then still read by PARLIO_RX_DATAn).
+                        uint16_t inSignals[MaxPads] = {};
+                        uint32_t inWords[MaxPads] = {};
+                        unsigned inCount = 0;
                         // A sender.
                         parlio_tx_unit_handle_t tx = nullptr;
                         uint8_t                *txBuffers = nullptr; // TxPieces × TxPiece, internal DMA RAM
@@ -241,6 +247,10 @@ namespace ParlioPorts {
                 }
                 if (delimiter != nullptr) (void)parlio_del_rx_delimiter(delimiter);
                 delimiter = nullptr;
+                while (inCount > 0) {
+                        --inCount;
+                        IoChipOps::setInputWord(inSignals[inCount], inWords[inCount]);
+                }
                 Memory::free(txBuffers);
                 txBuffers = nullptr;
                 Memory::free(ring);
@@ -355,6 +365,17 @@ namespace ParlioPorts {
                                 transfers.store(0);
                         }
                 } else {
+                        // Its input signals' selectors kept, to put back after the driver's done.
+                        const auto &sig = parlio_periph_signals.groups[0].rx_units[0];
+                        inCount = 0;
+                        for (int i = 0; i < width; ++i) {
+                                inSignals[inCount] = uint16_t(sig.data_sigs[i]);
+                                inWords[inCount++] = IoChipOps::inputWord(unsigned(sig.data_sigs[i]));
+                        }
+                        if (s.clkIn >= 0) {
+                                inSignals[inCount] = uint16_t(sig.clk_in_sig);
+                                inWords[inCount++] = IoChipOps::inputWord(unsigned(sig.clk_in_sig));
+                        }
                         ring = static_cast<uint8_t *>(Memory::allocAligned(MemSpace::InternalDma, s.buffer, CacheLine));
                         if (ring == nullptr) err = ESP_ERR_NO_MEM;
                         parlio_rx_unit_config_t c = {};
@@ -515,9 +536,12 @@ namespace ParlioPorts {
         void putBackAtRestart() {
                 if (!state.isCreated()) return;
                 for (Port &p : state->ports)
-                        if (p.running)
+                        if (p.running) {
+                                for (unsigned i = p.inCount; i-- > 0;)
+                                        IoChipOps::setInputWord(p.inSignals[i], p.inWords[i]);
                                 for (unsigned i = p.padCount; i-- > 0;)
                                         IoChipOps::restorePad(unsigned(p.pads[i]), p.saved[i]);
+                        }
                 return;
         }
 

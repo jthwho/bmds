@@ -918,6 +918,18 @@ until silicon v3; then test again.
 - **`restorePad()` must not cut a monitor's input:** a pad's saved input enable put back while
   another peripheral still reads it through the matrix took its signal away; a pad some input
   signal still selects keeps its input on (`iochipops.cpp`).
+- **ESP-IDF v6.1-dev-1's ADC continuous mode reads 0 on this P4 (v1.3):** its own
+  `continuous_read` example too; built with v6.1-dev-9279 it streams the right values on the same
+  board. One-shot reads are right with either. Its continuous driver also asserts unless
+  `conv_frame_size` is whole 64-byte cache lines (it checks only whole 4-byte conversions), and
+  one-shot and continuous mode can't share a unit (`adcports.cpp`, `devplan/io.md` §15.8).
+- **ESP-IDF's PARLIO receiver leaves its input signals routed** when deleted (a pad still read
+  as `PARLIO_RX_DATAn`): keep their selectors and put them back (`parlioports.cpp`).
+- **Trying a stock ESP-IDF example on a BMDS board** without losing it: read the whole flash first
+  (`esptool read-flash 0 0x1000000`, 75 s over USB), write only the example's app at `ota_0`
+  (0x10000; the partition table, otadata and `/flash` untouched, BMDS's bootloader boots it if built
+  with `ESP32P4_SELECTS_REV_LESS_V3` and the USB-Serial/JTAG console), then write `ota_0` back from
+  the backup and compare it read back.
 - **Interrupts wait up to 600 µs at times:** a UART's FIFO fill on entry to its interrupt (level
   1) showed waits of 410 µs on a quiet system and 590 µs during a flash write, most likely cache
   write-backs (§3: interrupts masked throughout). A CPU-drained 128-byte FIFO can't cover that

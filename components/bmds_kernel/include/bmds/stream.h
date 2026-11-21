@@ -29,6 +29,7 @@ class RmtChannel;
 class PwmChip;
 class CounterChip;
 class ParlioPort;
+class AdcDevice;
 class MidiFile;
 class PtpClock;
 class Pty;
@@ -257,6 +258,9 @@ class Stream {
 
                 /** @brief Returns this as a PARLIO port's stream (`/dev/parlioN`: `devplan/io.md` §15.5), or null. */
                 virtual ParlioPort *parlioPort() { return nullptr; }
+
+                /** @brief Returns this as the ADC's stream (`/dev/adc0`: `devplan/io.md` §15.7), or null. */
+                virtual AdcDevice *adcDevice() { return nullptr; }
 
                 /**
                  * @brief Returns the stream's whole contents where they lie, if it has them at an
