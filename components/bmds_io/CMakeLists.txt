@@ -16,6 +16,7 @@ set(BMDS_IO_PURE_SRCS
         src/iochip.cpp
         src/iopad.cpp
         src/iopin.cpp
+        src/ioport.cpp
         src/iosetup.cpp
         src/ioregistry.cpp)
 
@@ -33,11 +34,14 @@ if(COMMAND idf_component_register)
                                     src/gpiochip.cpp
                                     src/io.cpp
                                     src/iogpio.cpp
+                                    src/ioports.cpp
+                                    src/iosetups.cpp
+                                    src/uartconsole.cpp
                                     src/iocommand.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS src
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_fs bmds_shell bmds_sysconf esp_driver_gpio hal soc
+                               PRIV_REQUIRES bmds_board bmds_console bmds_fs bmds_shell bmds_sysconf esp_driver_gpio esp_hw_support hal soc
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()

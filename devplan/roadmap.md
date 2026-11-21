@@ -306,8 +306,9 @@ Plan: [`input.md`](input.md).
   (§10.6): edges with timestamps on `io/gpio`'s inputs (`edges`, `rising`, `falling`,
   `debounce=`), `io edges`, `gpio_ctl`'s `BMDS_GPIO_EDGES`; checked on bmds0. Step 3c built
   (§10.8): `ioman` sets pins up through `io/gpio`, asks before forcing in the kernel's words
-  (`BMDS_SYSCONF_FIELD_REFUSAL`), and draws a watched pin's edges; checked on bmds0. Next: step 4
-  (ports: UART, I²C, SPI on chosen pins).
+  (`BMDS_SYSCONF_FIELD_REFUSAL`), and draws a watched pin's edges; checked on bmds0. Step 4a
+  built (§11.2): UART ports, `io/uartN` → `/dev/ttySN`, a `Console` on its own interrupt;
+  checked on bmds0 in loopback. Next: 4b (I²C ports, `/dev/i2c-N`).
 
 ## Phase 6 — Graphics
 

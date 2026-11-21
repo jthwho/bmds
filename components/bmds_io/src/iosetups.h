@@ -1,0 +1,44 @@
+/**
+ * @file      iosetups.h
+ * @copyright Jason Howard. All rights reserved.
+ *
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file in the project root folder for license information.
+ *
+ * What io/gpio and the ports share (devplan/io.md §10, §11): who else holds a resource, and a
+ * check's refusal in words. Private to bmds_io; target only.
+ */
+
+#pragma once
+
+#include <bmds/config.h>
+#include <bmds/error.h>
+#include <bmds/iochip.h>
+
+BMDS_NAMESPACE_BEGIN
+
+namespace IoSetups {
+
+        /** @brief The peripheral instance a matrix signal belongs to (`UART1_RXD`: uart1), or `NoIoResource`. */
+        IoResource instanceOf(const IoChip &chip, uint16_t signal, bool input);
+
+        /**
+         * @brief True if an owner other than @p self holds @p r, or the board wires it (a pad
+         *        nobody holds: Fixed, System).
+         * @blocking Waits for the registry's lock.
+         */
+        bool takenElsewhere(IoResource r, const char *self);
+
+        /**
+         * @brief Refuses a value's use of @p r (for @p signal, a matrix signal of its, or null) in
+         *        words, through `SysConf::refuse()`: the holder named, and how to go on.
+         * @return `Busy`.
+         */
+        Error refuseTaken(IoResource r, const char *signal);
+
+        /** @brief The boot stage's ports (`Io::startSetups()` calls it). */
+        Error startPorts();
+
+} // namespace IoSetups
+
+BMDS_NAMESPACE_END

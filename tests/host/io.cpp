@@ -16,6 +16,7 @@
 #include <bmds/iopad.h>
 #include <bmds/iopin.h>
 #include <bmds/ioregistry.h>
+#include <bmds/ioport.h>
 #include <bmds/iosetup.h>
 
 using bmds::Error;
@@ -574,5 +575,63 @@ TEST_CASE("IoGpioSetup: io/gpio's value") {
                 CHECK(*setup.find(15) == *other.find(15));
                 REQUIRE(other.parse(chip, "14=out,high,force", why).isOk());
                 CHECK_FALSE(*setup.find(14) == *other.find(14));
+        }
+}
+
+TEST_CASE("IoUartSetup: io/uartN's value") {
+        using bmds::IoUartSetup;
+        const IoChip &chip = bmds::ioChip();
+        IoUartSetup   u;
+        char          why[IoUartSetup::ReasonBytes];
+
+        SUBCASE("the defaults, and every word") {
+                REQUIRE(u.parse(chip, "tx=37 rx=GPIO38", why).isOk());
+                CHECK(u.tx == 37);
+                CHECK(u.rx == 38);
+                CHECK(u.baud == 115200);
+                CHECK(u.dataBits == 8);
+                CHECK(u.parity == 'n');
+                CHECK(u.stopBits == 1);
+                CHECK_FALSE(u.rtsCts);
+                REQUIRE(u.parse(chip, "tx=14 rx=15 rts=16 cts=17 flow=rtscts baud=9600 format=7e2 loopback force", why)
+                                .isOk());
+                CHECK(u.rts == 16);
+                CHECK(u.cts == 17);
+                CHECK(u.rtsCts);
+                CHECK(u.baud == 9600);
+                CHECK(u.dataBits == 7);
+                CHECK(u.parity == 'e');
+                CHECK(u.stopBits == 2);
+                CHECK(u.loopback);
+                CHECK(u.force);
+                REQUIRE(u.parse(chip, "rx=38", why).isOk()); // receive only
+                CHECK(u.tx == -1);
+        }
+
+        SUBCASE("refused, with the reason") {
+                CHECK(u.parse(chip, "baud=9600", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "a UART port needs tx=, rx= or both") == 0);
+                CHECK(u.parse(chip, "tx=99", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "tx: '99' isn't a pin of the chip's") == 0);
+                CHECK(u.parse(chip, "tx=14 rx=14", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "GPIO14 is given twice") == 0);
+                CHECK(u.parse(chip, "tx=14 baud=100", why) == Error::Invalid);
+                CHECK(u.parse(chip, "tx=14 baud=5000001", why) == Error::Invalid);
+                CHECK(u.parse(chip, "tx=14 format=9n1", why) == Error::Invalid);
+                CHECK(u.parse(chip, "tx=14 format=8x1", why) == Error::Invalid);
+                CHECK(u.parse(chip, "tx=14 rts=15", why) == Error::Invalid);             // without flow=rtscts
+                CHECK(u.parse(chip, "tx=14 flow=rtscts rts=15", why) == Error::Invalid); // no cts
+                CHECK(u.parse(chip, "tx=14 flow=xon", why) == Error::Invalid);
+                CHECK(u.parse(chip, "tx=14 parity=e", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "'parity=e' isn't a word a UART port knows") == 0);
+        }
+
+        SUBCASE("compared") {
+                IoUartSetup other;
+                REQUIRE(u.parse(chip, "tx=37 rx=38", why).isOk());
+                REQUIRE(other.parse(chip, "rx=38 tx=37 baud=115200 format=8n1", why).isOk());
+                CHECK(u == other);
+                REQUIRE(other.parse(chip, "rx=38 tx=37 baud=9600", why).isOk());
+                CHECK_FALSE(u == other);
         }
 }

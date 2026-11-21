@@ -30,6 +30,7 @@
 #include <bmds/thread.h>
 
 #include "iochipops.h"
+#include "iosetups.h"
 
 BMDS_NAMESPACE_BEGIN
 
@@ -126,53 +127,16 @@ namespace {
                 return "set up";
         }
 
-        // The peripheral instance a matrix signal belongs to (`UART1_RXD`: uart1), or `NoIoResource`.
-        IoResource instanceOf(const IoChip &chip, uint16_t signal, bool input) {
-                const Span<const uint8_t> groups = input ? chip.inputGroups : chip.outputGroups;
-                if (signal >= groups.size() || groups[signal] >= chip.groups.size()) return NoIoResource;
-                const StringView group(chip.groups[groups[signal]]);
-                // The group's name as a resource's (`UART1` → `uart1`), else with a 0 (`EMAC` → `emac0`).
-                char   name[24];
-                size_t n = 0;
-                for (; n < group.size() && n + 2 < sizeof(name); ++n) {
-                        const char c = group[n];
-                        name[n] = c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c;
-                }
-                name[n] = '\0';
-                auto [r, err] = chip.findResource(StringView(name, n));
-                if (err.isOk()) return r;
-                name[n] = '0';
-                auto [r0, err0] = chip.findResource(StringView(name, n + 1));
-                return err0.isOk() ? r0 : NoIoResource;
-        }
-
-        // True if someone other than `io` holds @p r, or the board wires it (for a pad).
         bool takenElsewhere(IoResource r) {
-                IoHolder h;
-                if (Io::registry().holder(r, h).isError()) return false;
-                if (h.isHeld()) return std::strcmp(h.owner, Owner) != 0;
-                return h.resourceClass == IoClass::Fixed || h.resourceClass == IoClass::System;
+                return IoSetups::takenElsewhere(r, Owner);
         }
 
-        // Refuses a value's use of @p r (for @p signal, a matrix signal of its, or null): the
-        // holder named, and how to go on.
         Error refuseTaken(IoResource r, const char *signal) {
-                char busy[160];
-                char text[SysConf::ReasonBytes];
-                (void)Io::busyText(r, busy, sizeof(busy));
-                if (signal != nullptr) {
-                        char name[24];
-                        (void)ioChip().resourceName(r, name, sizeof(name));
-                        std::snprintf(text, sizeof(text), "%s is %s's: %s Add force to route it anyway.", signal, name,
-                                      busy);
-                } else {
-                        std::snprintf(
-                                text, sizeof(text),
-                                "%s Changing it will probably break that hardware: add force to change it anyway.",
-                                busy);
-                }
-                SysConf::refuse(StringView(text));
-                return Error::Busy;
+                return IoSetups::refuseTaken(r, signal);
+        }
+
+        IoResource instanceOf(const IoChip &chip, uint16_t signal, bool input) {
+                return IoSetups::instanceOf(chip, signal, input);
         }
 
         void lenderOf(unsigned pad, char (&out)[IoHolder::NameBytes], const char *&role) {
@@ -398,7 +362,10 @@ namespace Io {
                         Mutex::Locker lock(s->lock, WaitForever);
                         applyLocked();
                 }
-                return s->watcher.start(StringView(GpioKey), changed, nullptr);
+                if (const Error watching = s->watcher.start(StringView(GpioKey), changed, nullptr); watching.isError())
+                        return watching;
+                // The ports after io/gpio: a port's pins can't be io/gpio's too (the registry says so).
+                return IoSetups::startPorts();
         }
 
         Error pulse(unsigned pad, unsigned ms, bool force, char *why, size_t size) {

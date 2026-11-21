@@ -684,3 +684,61 @@ Signal and function names are the chip's (`io signals`), matched without case.
   Change GPIO21 anyway?", answered No (nothing changed); GPIO14 set up as
   `od,high,pull-up,edges`, three pulses from `io pulse` listed (six edges) and drawn in the
   strip; `io/gpio` put back to its default afterwards, nothing saved.
+
+## 11. Step 4: ports (design, 2026-11-20)
+
+In parts, each checked on the board before the next: **4a** UART (`io/uartN`, `/dev/ttySN`),
+**4b** I²C (`io/i2cN`, `/dev/i2c-N`, the system bus as `/dev/i2c-0`), **4c** SPI, **4d** the I/O
+Manager's Ports tab.
+
+### 11.1 4a: UART
+
+- **`io/uart0` .. `io/uart4`** (sysconf, empty: off): `tx=37 rx=38 [rts=N] [cts=N]
+  [baud=115200] [format=8n1] [flow=rtscts] [loopback] [force]`. `format` is the data bits (5-8),
+  the parity (`n`, `e`, `o`) and the stop bits (1, 2); `loopback` ties TX to RX inside the UART
+  (a port tried without wires); `force` as `io/gpio`'s. At least one of `tx` and `rx`; a pin once.
+  The check refuses, in words, what `io/gpio`'s does (held or board-wired pins without `force`)
+  and a UART another owner holds.
+- **The port:** the owner `ttySN` (User) holds the pins and `uartN`; each pin's registers are
+  saved and put back when the port stops (`IoChipOps`, as `io/gpio`), and its signals go through
+  the GPIO matrix (`UARTn_TXD`, `_RXD`, `_RTS`, `_CTS`; a UART's rates are far inside the
+  matrix's). A changed value stops the port and starts it again.
+- **`/dev/ttySN` is a `Console`** (as the USB serial console): a terminal for `term_get` and
+  `term_set`, a shell's if one is started on it, readable for `poll` as input arrives, Ctrl-C a
+  signal when its mode says so. It starts **binary** (no signals, no `\n` → CR LF): a serial
+  line carries a device's bytes as they are, and a program sets the modes it wants. Present in
+  `/dev` while the port runs.
+- **Its own interrupt over the UART's LL layer**, not ESP-IDF's driver (revising §4): the USB
+  console's design, so input arriving wakes pollers and Ctrl-C signals from the receive path,
+  with no task per port. The receive interrupt (FIFO full at 64, or idle after 10 symbols)
+  copies into a 2 KB ring, the transmit one refills the 128-byte FIFO from a 1 KB ring; both in
+  PSRAM (the interrupt isn't an IRAM one). Bytes lost to a full ring, framing and parity errors
+  are counted (`io pin`'s port line; the counters for sysmon come with 4d).
+- **Speed and format from programs** (termios' `cfsetspeed`, `CSIZE`, `PARENB`, `CSTOPB`,
+  `CRTSCTS`, `TCSBRK`, `TIOCMGET`): with step 5's ioctls, as `term_ctl` operations. Until then
+  the port runs as `io/uartN` says and a program's speed is taken as given.
+
+### 11.2 As built: 4a (2026-11-20)
+
+- `bmds/ioport.h` (pure, host-tested): `IoUartSetup::parse()`, every word of §11.1, refusals in
+  words. `ioports.cpp`: `io/uart0`..`4` (`BMDS_SYSCONF`, a check each), a watcher on `io`, the
+  owner `ttySN` holding the pins and `uartN`, `/dev/ttySN` added when the port first starts
+  (present while it runs), a restart hook putting the pins back. `uartconsole.cpp`: the
+  `Console`. `iosetups.cpp`: what `io/gpio` and the ports share (who else holds a resource, a
+  refusal in words).
+- **The order on start:** the inputs (RX, CTS) routed while the UART is off, the UART started
+  (its FIFO cleared), then the outputs (TX, RTS) routed, idle high from their first instant.
+  Routed the other way round, the switch of RX to its pad read as a byte (`\xff` before the
+  first line, seen on the board).
+- **Found on the board:** `uart_ll_get_txfifo_len()` on the P4 is the room left in the FIFO,
+  not what it holds. Taken the other way, the transmit interrupt wrote nothing, stayed raised,
+  and ran until the interrupt watchdog reset the chip (a panic: no restart hooks, so GPIO14 kept
+  `UART1_TXD` into the next boots until a power cycle). The receive loop also stops at a FIFO's
+  worth a pass now, whatever the count says.
+- **`/dev`'s table** (`Vfs::MaxDeviceFiles`) was full at 32 with three ports' nodes: 40 now
+  (224 bytes of internal RAM), and a port's node is added only when it first starts.
+- **Checked on bmds0** (UART loopback: no wires): `hello-uart` written and read back; 1800
+  bytes (more than the 1 KB transmit ring) through and identical; 9600 baud `7e2` and 57600
+  after a change, no stray bytes; `tx=26` refused naming eth0; stopped: `/dev/ttyS1` gone, the
+  pins back as they were; an unsaved port's pins put back by a `reboot`.
+- About 13.7 KB of code (the object files' text), the rings 3 KB of PSRAM per port started.
