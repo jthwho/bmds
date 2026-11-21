@@ -28,6 +28,7 @@ class SpiDevice;
 class RmtChannel;
 class PwmChip;
 class CounterChip;
+class ParlioPort;
 class MidiFile;
 class PtpClock;
 class Pty;
@@ -235,6 +236,9 @@ class Stream {
 
                 /** @brief Returns this as the counter device's stream (`/dev/counter0`: `devplan/io.md` §15.3), or null. */
                 virtual CounterChip *counterChip() { return nullptr; }
+
+                /** @brief Returns this as a PARLIO port's stream (`/dev/parlioN`: `devplan/io.md` §15.5), or null. */
+                virtual ParlioPort *parlioPort() { return nullptr; }
 
                 /**
                  * @brief Returns the stream's whole contents where they lie, if it has them at an

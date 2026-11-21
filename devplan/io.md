@@ -1409,3 +1409,70 @@ strip, a second chip, each when asked for.
   between sectors); it is 50 ms now. A loopback test couldn't show it.
 - Not built: the index (`COUNTER_EVENT_INDEX`: the clear signal raises no event of its own here),
   `ceiling` and overflow events (a 64-bit count doesn't wrap), the direction-change event.
+
+### 15.5 8c: PARLIO ports (design)
+
+- **No Linux API** fits a parallel unit (Linux has none), so as the RMT's (§13.1): `io/parlio0`
+  and `io/parlio1`, ports with `dir=tx` or `dir=rx` (the P4 has one TX unit and one RX unit: one
+  port of each direction), `/dev/parlioN` while one runs, and `parlio_ctl` (slot 145) with
+  `BMDS_PARLIO_INFO` (its counts, and a receiver's start time: sample `n` was taken `n` sample
+  periods after it). ESP-IDF's driver (it runs the DMA, its descriptors and the clock dividers).
+- **Settings:** `data=46,47,48,16` (1 to 16 pins: the width is the next of 1, 2, 4, 8, 16, lines
+  past the pins idle or read 0), `clock=10m` (the rate: from PLL_F160M, or the expected rate of
+  `clk-in=PIN`, an external clock), `clk=PIN` (the clock out: a sender's with its data, a
+  receiver's sample clock), `edge=rising|falling` (when data is taken; falling unless given), `msb` (bit order inside a
+  byte when narrower than 8), a sender's `idle=N` (the lines between transfers), a receiver's
+  `buffer=BYTES` (its ring, 4 KB to 65472 bytes of internal DMA RAM in whole 64-byte lines, 16 KB
+  unless given) and `monitor` (pads
+  read, not taken), `force`.
+- **Data:** a sample is `width` bits; bytes carry 8/width samples (width < 8, LSB first unless
+  `msb`), or a sample's 2 bytes (16, little-endian). A sender's `write()` is copied into four 4 KB
+  internal DMA buffers and goes out as transfers in order; the clock stops between transfers (a
+  gap of microseconds: fine for clocked data, measured). A receiver samples without end (soft
+  delimiter, partial receive, ESP-IDF's logic analyzer's way) into its ring, `read()` taking from
+  it; a reader too slow loses the oldest, counted.
+- **Flash writes** are held while a port runs (`FlashWrites::hold()`, as the RMT's): at megabytes
+  a second no internal ring covers an erase's 45 ms, and the DMA goes on but its interrupts don't.
+- **Checked** by loopback: a sender's data and clock read by a receiver with `monitor` and
+  `clk-in=` on the same pins, every byte compared, at rates up to the hardware's.
+
+### 15.6 As built: 8c (2026-11-21)
+
+- `IoParlioSetup` (`ioport.h`, host-tested; `drive=` added, `edge=` falling unless given),
+  `ParlioPort` (`parlioport.h`), `parlioports.cpp` (ESP-IDF's driver for both units, the
+  receiver's ring kept by us), `parlio_ctl` (`parliocalls.cpp`, slot 145, `bmds_parlio_info_t` with
+  the sender's `idle`), `sdk/examples/parlio` (`info`, `rate`: a receiver's count against its
+  clock; `loop`: a pattern sent and read back, compared sample by sample, the gaps measured).
+- **ESP-IDF's receiver tells of one DMA node an interrupt** and walks its descriptors one a call:
+  an interrupt late (they wait up to 600 µs, §14.3) with two nodes done tells of one, and from then
+  its counts, its pointers and the lines it invalidates are a node off (a free-running receiver's
+  count fell four nodes behind its clock in 4 s at 20 MB/s). So its ring is ours to read: the AXI-DMA
+  channel PARLIO's receiver is connected to (`in_peri_sel`) gives the current descriptor, their
+  links the ring (checked to tile the buffer, or the port doesn't start); each callback takes every
+  node the hardware has handed back (owner the CPU: it writes that back with owner checking off),
+  invalidates it, moves the head and gives it back; a read is bounded by the DMA's real position
+  (its current descriptor) before and after its copy, so a reader a ring behind loses the oldest,
+  counted, never reads them half overwritten. Count against the clock since: within a node.
+- **The sender's clock runs on between transfers** (its lines at `idle=`): a receiver on it
+  samples the idle value there, so `loop` uses a pattern without it. Its lines rest at 0 until a
+  transfer gives them the idle value: a sender with `idle=` sends one short transfer of it at its
+  start. A transfer's restart costs 8 µs at least (more when the writer lags).
+- **A monitor's pads keep their input** when their owner stops: `IoChipOps::restorePad()` put the
+  saved input enable back (off), which cut the clock and data from a receiver reading another
+  port's pads (§10.4); a pad some input signal still reads now keeps its input on.
+- **Edges:** through the matrix, with this sender's clock on `clk-in=`, a receiver sampling on the
+  rising edge saw data-dependent single-line errors (GPIO46, as several other lines fell at once),
+  at 1 MHz too; on the falling edge none, with either sender edge. `edge=` is falling unless given
+  (ESP-IDF's default too).
+- **Checked** on bmds0 by loopback (`monitor`, `clk-in=`): 1, 4 and 8 lines, every sample the same
+  over megabytes at 1, 10 and 20 MHz (8 lines at 20 MHz: 20 MB/s); 4 lines at 40 MHz mostly, with
+  some runs' errors (the edge of what the header's pins and the matrix carry). A 16 KB ring lost
+  data, counted, when `loop`'s reader stalled 5 ms at 5 MB/s; 64 KB rings didn't, but 64 KB of
+  internal RAM left 23 KB free at the low point: rings are the user's choice (16 KB unless given).
+- **Found, not fixed here:** the SDK's `O_NONBLOCK` is a `poll()` then a blocking call, and the
+  kernel doesn't know a descriptor's mode: a write larger than a stream's room (a PARLIO sender's
+  16 KB, an RMT ring, a pipe) waits inside for the rest instead of returning what fit (POSIX). A
+  change of its own (the kernel told the mode: an ABI addition). `loop` writes a 4 KB piece at a
+  time meanwhile.
+- Not built: the sender's `valid` line and clock gating, loop transmission (a frame repeated),
+  the receiver's level and pulse delimiters (frames from a valid line), ioman's Ports tab.

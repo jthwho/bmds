@@ -46,6 +46,7 @@ if(COMMAND idf_component_register)
                                     src/rmtcalls.cpp
                                     src/pwmcalls.cpp
                                     src/countercalls.cpp
+                                    src/parliocalls.cpp
                                     src/guicalls.cpp
                                     src/surfacecalls.cpp
                                     src/syntaxcalls.cpp

@@ -5,8 +5,9 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * A port's setup, `io/uartN`'s, `io/spiN`'s, `io/rmtN`'s, `io/pwmN`'s and `io/pcntN`'s values
- * (devplan/io.md §11.1, §11.5, §13.1, §15.1, §15.3): parsed and checked against the chip.
+ * A port's setup, `io/uartN`'s, `io/spiN`'s, `io/rmtN`'s, `io/pwmN`'s, `io/pcntN`'s and
+ * `io/parlioN`'s values (devplan/io.md §11.1, §11.5, §13.1, §15.1, §15.3, §15.5): parsed and
+ * checked against the chip.
  * Pure, host-tested; `Io` checks the holders and runs the port.
  */
 
@@ -253,6 +254,54 @@ struct IoPcntSetup {
 
                 /** @brief True if @p other sets the counter up the same way. */
                 bool operator==(const IoPcntSetup &other) const;
+};
+
+/**
+ * @brief A PARLIO port's setup: `dir=tx data=46,47,48,16 clock=10m clk=17` (devplan/io.md §15.5).
+ *
+ * @par Thread Safety
+ * A plain value.
+ */
+struct IoParlioSetup {
+                /** @brief Room for `parse()`'s reason, NUL included. */
+                static constexpr size_t ReasonBytes = IoUartSetup::ReasonBytes;
+
+                static constexpr size_t   MaxData = 16;        ///< Data lines at most.
+                static constexpr uint32_t MinClock = 1000;     ///< The slowest `clock=`.
+                static constexpr uint32_t MaxClock = 80000000; ///< The fastest (the hardware may refuse less).
+                static constexpr uint32_t MinBuffer = 4096;    ///< A receiver's smallest `buffer=`.
+                static constexpr uint32_t MaxBuffer =
+                        65472; ///< Its largest (one frame of the hardware's, whole cache lines).
+                static constexpr uint32_t DefaultBuffer = 16384; ///< Unless given.
+
+                bool     receive = false;    ///< `dir=rx` (else `dir=tx`).
+                int8_t   data[MaxData] = {}; ///< `data=`: the pads, `dataCount` of them, line 0 first.
+                uint8_t  dataCount = 0;      ///< How many.
+                uint32_t clock = 1000000;    ///< `clock=`: the rate, Hz (an external clock's expected rate).
+                int8_t   clk = -1;           ///< `clk=`: the clock out's pad, or -1.
+                int8_t   clkIn = -1;         ///< `clk-in=`: an external clock's pad, or -1 (the internal one).
+                bool     rising =
+                        false; ///< `edge=`: data taken on the rising edge (else, the default, falling: ESP-IDF's).
+                bool     msb = false;            ///< `msb`: bits in a byte from the top (width < 8).
+                uint32_t idle = 0;               ///< `idle=`: a sender's lines between transfers.
+                uint32_t buffer = DefaultBuffer; ///< `buffer=`: a receiver's ring, bytes.
+                bool     monitor = false;        ///< `monitor`: a receiver's pads read, not taken.
+                uint8_t  drive = 2;              ///< `drive=`: the outputs' strength, 0 to 3 (ESP-IDF's 2).
+                bool     force = false;          ///< `force`: its pins taken from their holders.
+
+                /**
+                 * @brief Parses @p text for @p chip: words known, pads that exist, each once, `dir=`
+                 *        and `data=`; a sender's words not on a receiver and the other way.
+                 * @param[out] why Why it is refused, for people, or "".
+                 * @return `Ok`, or `Invalid`.
+                 */
+                Error parse(const IoChip &chip, StringView text, char (&why)[ReasonBytes]);
+
+                /** @brief The width: 1, 2, 4, 8 or 16 lines, the pins rounded up. */
+                uint8_t width() const;
+
+                /** @brief True if @p other sets the port up the same way. */
+                bool operator==(const IoParlioSetup &other) const;
 };
 
 BMDS_NAMESPACE_END

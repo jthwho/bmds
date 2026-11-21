@@ -51,6 +51,9 @@ namespace IoSetups {
         /** @brief The pulse counters (`io/pcnt0` .. `io/pcnt3`, `/dev/counter0`: devplan/io.md §15.3); `startPorts()` calls it. */
         Error startPcntPorts();
 
+        /** @brief The PARLIO ports (`io/parlio0`, `io/parlio1`: devplan/io.md §15.5); `startPorts()` calls it. */
+        Error startParlioPorts();
+
 } // namespace IoSetups
 
 BMDS_NAMESPACE_END

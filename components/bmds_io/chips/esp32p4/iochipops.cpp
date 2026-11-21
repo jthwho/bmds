@@ -102,6 +102,14 @@ namespace IoChipOps {
                 GPIO.func_out_sel_cfg[pad].val = saved.outSel;
                 if (saved.usbPad >= 0) setUsbPadEnabled(pad, saved.usbPad != 0);
                 if (lpReachable(pad)) LP_IOMUX.pad[pad].mux_sel = saved.lpIo;
+                // A peripheral still reading it through the matrix (a monitor: another owner's
+                // receiver on a pad this one drove) keeps its input: the saved word may have it off.
+                constexpr unsigned Signals = sizeof(GPIO.func_in_sel_cfg) / sizeof(GPIO.func_in_sel_cfg[0]);
+                for (unsigned signal = 0; signal < Signals; ++signal)
+                        if (gpio_ll_get_in_signal_connected_io(&GPIO, signal) == int(pad)) {
+                                gpio_ll_input_enable(&GPIO, pad);
+                                break;
+                        }
                 return;
         }
 

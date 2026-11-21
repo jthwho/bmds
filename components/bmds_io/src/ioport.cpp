@@ -545,4 +545,118 @@ Error IoPcntSetup::parse(const IoChip &chip, StringView text, char (&why)[Reason
         return Error::Ok;
 }
 
+uint8_t IoParlioSetup::width() const {
+        uint8_t w = 1;
+        while (w < dataCount) w = uint8_t(w * 2);
+        return w;
+}
+
+bool IoParlioSetup::operator==(const IoParlioSetup &o) const {
+        if (dataCount != o.dataCount) return false;
+        for (size_t i = 0; i < dataCount; ++i)
+                if (data[i] != o.data[i]) return false;
+        return receive == o.receive && clock == o.clock && clk == o.clk && clkIn == o.clkIn && rising == o.rising &&
+               msb == o.msb && idle == o.idle && buffer == o.buffer && monitor == o.monitor && drive == o.drive &&
+               force == o.force;
+}
+
+Error IoParlioSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonBytes]) {
+        why[0] = '\0';
+        *this = IoParlioSetup();
+        bool dirGiven = false, sendWord = false, receiveWord = false;
+        while (!text.isEmpty()) {
+                StringView word = take(text, ' ');
+                if (word.isEmpty()) continue;
+                const size_t     eq = word.indexOf('=');
+                const StringView key = eq == StringView::NPos ? word : word.left(eq);
+                const StringView value = eq == StringView::NPos ? StringView() : word.mid(eq + 1);
+                if (key == "dir") {
+                        if (value != "tx" && value != "rx")
+                                return refuse(why, Error::Invalid, "dir is tx or rx, not '%.*s'", int(value.size()),
+                                              value.data());
+                        receive = value == "rx";
+                        dirGiven = true;
+                } else if (key == "data") {
+                        StringView list = value;
+                        dataCount = 0;
+                        while (!list.isEmpty()) {
+                                const StringView one = take(list, ',');
+                                if (dataCount == MaxData) return refuse(why, Error::Invalid, "data is 1 to 16 pins");
+                                if (!pad(chip, one, data[dataCount]))
+                                        return refuse(why, Error::Invalid, "data: '%.*s' isn't a pin of the chip's",
+                                                      int(one.size()), one.data());
+                                ++dataCount;
+                        }
+                } else if (key == "clock") {
+                        uint32_t c = 0;
+                        if (!clockOf(value, c) || c < MinClock || c > MaxClock)
+                                return refuse(why, Error::Invalid,
+                                              "clock is 1k to 80m (Hz, or with k or m), not '%.*s'", int(value.size()),
+                                              value.data());
+                        clock = c;
+                } else if (key == "clk" || key == "clk-in") {
+                        if (!pad(chip, value, key == "clk" ? clk : clkIn))
+                                return refuse(why, Error::Invalid, "%.*s: '%.*s' isn't a pin of the chip's",
+                                              int(key.size()), key.data(), int(value.size()), value.data());
+                } else if (key == "edge") {
+                        if (value != "rising" && value != "falling")
+                                return refuse(why, Error::Invalid, "edge is rising or falling, not '%.*s'",
+                                              int(value.size()), value.data());
+                        rising = value == "rising";
+                } else if (key == "idle") {
+                        uint32_t v = 0;
+                        if (!number(value, v))
+                                return refuse(why, Error::Invalid, "idle is the lines' value, not '%.*s'",
+                                              int(value.size()), value.data());
+                        idle = v;
+                        sendWord = true;
+                } else if (key == "buffer") {
+                        uint32_t b = 0;
+                        if (!number(value, b) || b < MinBuffer || b > MaxBuffer || b % 64 != 0)
+                                return refuse(why, Error::Invalid,
+                                              "buffer is 4096 to 65472 bytes, a multiple of 64, not "
+                                              "'%.*s'",
+                                              int(value.size()), value.data());
+                        buffer = b;
+                        receiveWord = true;
+                } else if (key == "drive") {
+                        uint32_t d = 0;
+                        if (!number(value, d) || d > 3)
+                                return refuse(why, Error::Invalid, "drive is 0 to 3, not '%.*s'", int(value.size()),
+                                              value.data());
+                        drive = uint8_t(d);
+                } else if (word == "msb") {
+                        msb = true;
+                } else if (word == "monitor") {
+                        monitor = true;
+                        receiveWord = true;
+                } else if (word == "force") {
+                        force = true;
+                } else {
+                        return refuse(why, Error::Invalid, "'%.*s' isn't a word a PARLIO port knows", int(word.size()),
+                                      word.data());
+                }
+        }
+        if (!dirGiven) return refuse(why, Error::Invalid, "a PARLIO port needs dir=tx or dir=rx");
+        if (dataCount == 0) return refuse(why, Error::Invalid, "a PARLIO port needs data=");
+        if (receive && sendWord) return refuse(why, Error::Invalid, "idle= is a sender's (dir=tx)");
+        if (!receive && receiveWord)
+                return refuse(why, Error::Invalid, "buffer= and monitor are a receiver's (dir=rx)");
+        if (receive && clk >= 0 && clkIn >= 0)
+                return refuse(why, Error::Invalid, "a receiver gives its clock out (clk=) only from its own clock");
+        if (idle >= (uint64_t(1) << width()))
+                return refuse(why, Error::Invalid, "idle is more than %u lines hold", unsigned(width()));
+        if (monitor && force) return refuse(why, Error::Invalid, "monitor takes nothing: force has nothing to take");
+        // Each pin once.
+        int8_t all[MaxData + 2];
+        size_t n = 0;
+        for (size_t i = 0; i < dataCount; ++i) all[n++] = data[i];
+        if (clk >= 0) all[n++] = clk;
+        if (clkIn >= 0) all[n++] = clkIn;
+        for (size_t i = 0; i < n; ++i)
+                for (size_t j = i + 1; j < n; ++j)
+                        if (all[i] == all[j]) return refuse(why, Error::Invalid, "GPIO%d is given twice", int(all[i]));
+        return Error::Ok;
+}
+
 BMDS_NAMESPACE_END

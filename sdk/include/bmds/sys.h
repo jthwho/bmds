@@ -230,8 +230,8 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_SPI_CTL 141u    /**< `int32_t spi_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/spidevB.C`. */
 #define BMDS_SYS_RMT_CTL 142u    /**< `int32_t rmt_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/rmtN`. */
 #define BMDS_SYS_PWM_CTL 143u    /**< `int32_t pwm_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/pwmchipN`. */
-#define BMDS_SYS_COUNTERDEV_CTL                                                                                        \
-        144u /**< `int32_t counterdev_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/counterN`. */
+#define BMDS_SYS_COUNTERDEV_CTL 144u /**< `int32_t counterdev_ctl(fd, op, arg)`: `/dev/counterN`. */
+#define BMDS_SYS_PARLIO_CTL 145u     /**< `int32_t parlio_ctl(fd, op, arg)`: `/dev/parlioN`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -2298,6 +2298,39 @@ typedef struct bmds_counterdev_info_t {
 } bmds_counterdev_info_t;
 
 /*
+ * PARLIO (slot 145, appended 2026-11-21, devplan/io.md §15.5): `/dev/parlioN`, a parallel I/O
+ * port (`io/parlioN`), a sender or a receiver of `width`-bit samples, clocked. A sender's `write()`
+ * takes whole samples (bytes holding 8/width of them below 8 lines, two bytes each at 16,
+ * little-endian) and sends them in order, its clock running on with the lines at `idle` between
+ * its transfers (a receiver on that clock samples the idle value there); a receiver's
+ * `read()` gives the samples taken without end since it started, the oldest dropped (counted) when
+ * a reader falls a ring behind.
+ */
+#define BMDS_PARLIO_INFO 0u /**< `bmds_parlio_info_t *`: the port and its counts. */
+
+/** @brief `bmds_parlio_info_t::flags`. */
+#define BMDS_PARLIO_RECEIVE 0x1u        /**< A receiver (else a sender). */
+#define BMDS_PARLIO_RUNNING 0x2u        /**< Its port runs. */
+#define BMDS_PARLIO_EXTERNAL_CLOCK 0x4u /**< Clocked from `clk-in=` (`clock_hz` its expected rate). */
+#define BMDS_PARLIO_MONITOR 0x8u        /**< A receiver reading pads it doesn't take. */
+
+/** @brief A PARLIO port (`BMDS_PARLIO_INFO`). */
+typedef struct bmds_parlio_info_t {
+                uint32_t size;      /**< Set by the caller: `sizeof(bmds_parlio_info_t)`. */
+                uint32_t port;      /**< N of `/dev/parlioN`. */
+                uint32_t flags;     /**< `BMDS_PARLIO_...`. */
+                uint32_t width;     /**< Bits a sample: 1, 2, 4, 8 or 16. */
+                uint32_t clock_hz;  /**< Samples a second (asked; an external clock's expected). */
+                uint32_t buffer;    /**< A receiver's ring, bytes. */
+                int64_t  start_ns;  /**< A receiver: its first sample's time (monotonic); sample n is n periods on. */
+                uint64_t bytes;     /**< Sent, or received, since the port started. */
+                uint64_t lost;      /**< A receiver: bytes dropped unread (a reader a ring behind). */
+                uint64_t transfers; /**< A sender: transfers done. */
+                uint32_t idle;      /**< A sender: the lines' value between transfers (its clock runs on). */
+                uint32_t reserved;  /**< Zero. */
+} bmds_parlio_info_t;
+
+/*
  * Surfaces (slots 117-121, appended 2026-10-14, devplan/games.md §11): a picture a program draws
  * with the CPU into its own buffers and presents, in a window or full screen (the user's setting
  * per application, the program's suggestion its default, Alt+Enter between them); its events read
@@ -3076,6 +3109,7 @@ typedef int32_t (*bmds_sys_spi_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_rmt_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_pwm_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_counterdev_ctl_fn)(int32_t fd, uint32_t op, void *arg);
+typedef int32_t (*bmds_sys_parlio_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -4636,6 +4670,17 @@ static inline int32_t bmds_pwm_ctl(int32_t fd, uint32_t op, void *arg) {
 static inline int32_t bmds_counterdev_ctl(int32_t fd, uint32_t op, void *arg) {
         if (!bmds_sys_has(BMDS_SYS_COUNTERDEV_CTL)) return -BMDS_ENOSYS;
         return ((bmds_sys_counterdev_ctl_fn)bmds_sys->slot[BMDS_SYS_COUNTERDEV_CTL])(fd, op, arg);
+}
+
+/**
+ * @brief Operates on PARLIO port file @p fd (`/dev/parlioN`): `BMDS_PARLIO_...` with @p arg as each
+ *        says (slot 145, appended 2026-11-21, devplan/io.md §15.5).
+ * @return 0, or `-BMDS_ENOTTY` (not a PARLIO port), `-BMDS_EBADF`, `-BMDS_EINVAL` (an op, a
+ *         `size`), `-BMDS_ENODEV` (its port never started), `-BMDS_EFAULT`, `-BMDS_ENOSYS`.
+ */
+static inline int32_t bmds_parlio_ctl(int32_t fd, uint32_t op, void *arg) {
+        if (!bmds_sys_has(BMDS_SYS_PARLIO_CTL)) return -BMDS_ENOSYS;
+        return ((bmds_sys_parlio_ctl_fn)bmds_sys->slot[BMDS_SYS_PARLIO_CTL])(fd, op, arg);
 }
 
 /**

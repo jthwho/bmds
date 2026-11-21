@@ -904,6 +904,20 @@ until silicon v3; then test again.
   peripheral's input left routed (an RMT receiver whose channel wasn't deleted) still reads its
   pad after a reboot; `io` shows it. Deleting the channel (ESP-IDF connects its signal to 0x3E,
   constant zero) clears it.
+- **ESP-IDF's PARLIO receiver loses DMA nodes when its interrupt is late:** its node-done
+  callback walks one descriptor a call, and GDMA folds two done nodes into one interrupt; its counts,
+  pointers and cache invalidation then run a node off (a receiver's count fell behind its clock at
+  20 MB/s). The hardware writes each RX descriptor back with owner = CPU even with owner checking
+  off, so a driver can take every finished node by its owner bit; the ring is found from the
+  AXI-DMA channel whose `in_peri_sel` is PARLIO's (3) and its `in_dscr` (`parlioports.cpp`). Its
+  direct-mounted buffer must be internal RAM and a multiple of 64 bytes.
+- **PARLIO TX:** its clock runs on between transfers (the lines at the transfer's idle value), and
+  the lines rest at 0 until the first transfer. A receiver clocked from it through the GPIO matrix
+  was clean sampling on the falling edge, not the rising (data-dependent errors on one pin, at
+  1 MHz too); 4 lines at 40 MHz through the EXT1 header's pins erred at times, 8 at 20 MHz didn't.
+- **`restorePad()` must not cut a monitor's input:** a pad's saved input enable put back while
+  another peripheral still reads it through the matrix took its signal away; a pad some input
+  signal still selects keeps its input on (`iochipops.cpp`).
 - **Interrupts wait up to 600 µs at times:** a UART's FIFO fill on entry to its interrupt (level
   1) showed waits of 410 µs on a quiet system and 590 µs during a flash write, most likely cache
   write-backs (§3: interrupts masked throughout). A CPU-drained 128-byte FIFO can't cover that

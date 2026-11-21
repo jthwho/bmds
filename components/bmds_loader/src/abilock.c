@@ -1209,3 +1209,13 @@ _Static_assert(offsetof(bmds_counterdev_info_t, function) == 16 && offsetof(bmds
                        offsetof(bmds_counterdev_info_t, threshold) == 32 &&
                        offsetof(bmds_counterdev_info_t, events_lost) == 40 && sizeof(bmds_counterdev_info_t) == 48,
                "ABI: bmds_counterdev_info_t");
+/* PARLIO: /dev/parlioN (devplan/io.md §15.5, 2026-11-21). */
+_Static_assert(BMDS_SYS_PARLIO_CTL == 145, "ABI: slot PARLIO_CTL");
+_Static_assert(BMDS_PARLIO_INFO == 0 && BMDS_PARLIO_RECEIVE == 1 && BMDS_PARLIO_RUNNING == 2 &&
+                       BMDS_PARLIO_EXTERNAL_CLOCK == 4 && BMDS_PARLIO_MONITOR == 8,
+               "ABI: parlio_ctl ops and flags");
+_Static_assert(offsetof(bmds_parlio_info_t, width) == 12 && offsetof(bmds_parlio_info_t, buffer) == 20 &&
+                       offsetof(bmds_parlio_info_t, start_ns) == 24 && offsetof(bmds_parlio_info_t, bytes) == 32 &&
+                       offsetof(bmds_parlio_info_t, lost) == 40 && offsetof(bmds_parlio_info_t, transfers) == 48 &&
+                       offsetof(bmds_parlio_info_t, idle) == 56 && sizeof(bmds_parlio_info_t) == 64,
+               "ABI: bmds_parlio_info_t");

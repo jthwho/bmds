@@ -1101,3 +1101,78 @@ TEST_CASE("IoPcntSetup: io/pcntN's value") {
                 CHECK_FALSE(x == y);
         }
 }
+
+TEST_CASE("IoParlioSetup: io/parlioN's value") {
+        using bmds::IoParlioSetup;
+        const IoChip &chip = bmds::ioChip();
+        IoParlioSetup p;
+        char          why[IoParlioSetup::ReasonBytes];
+
+        SUBCASE("the defaults, and every word") {
+                REQUIRE(p.parse(chip, "dir=tx data=46", why).isOk());
+                CHECK_FALSE(p.receive);
+                CHECK(p.dataCount == 1);
+                CHECK(p.width() == 1);
+                CHECK(p.clock == 1000000);
+                CHECK_FALSE(p.rising);
+                REQUIRE(p.parse(chip, "dir=tx data=46 edge=rising", why).isOk());
+                CHECK(p.rising);
+                REQUIRE(p.parse(chip, "dir=tx data=46,47,48 clock=10m clk=17 edge=falling msb idle=5 force", why)
+                                .isOk());
+                CHECK(p.dataCount == 3);
+                CHECK(p.data[2] == 48);
+                CHECK(p.width() == 4);
+                CHECK(p.clock == 10000000);
+                CHECK(p.clk == 17);
+                CHECK_FALSE(p.rising);
+                CHECK(p.msb);
+                CHECK(p.idle == 5);
+                CHECK(p.force);
+                CHECK(p.drive == 2);
+                REQUIRE(p.parse(chip, "dir=tx data=46 drive=0", why).isOk());
+                CHECK(p.drive == 0);
+                CHECK(p.parse(chip, "dir=tx data=46 drive=4", why) == Error::Invalid);
+                REQUIRE(p.parse(chip, "dir=rx data=46,47,48,16,17 clk-in=18 clock=40m buffer=32768 monitor", why)
+                                .isOk());
+                CHECK(p.receive);
+                CHECK(p.width() == 8);
+                CHECK(p.clkIn == 18);
+                CHECK(p.buffer == 32768);
+                CHECK(p.monitor);
+                REQUIRE(p.parse(chip, "dir=rx data=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15", why).isOk());
+                CHECK(p.width() == 16);
+                CHECK(p.buffer == IoParlioSetup::DefaultBuffer);
+        }
+
+        SUBCASE("refusals, in words") {
+                CHECK(p.parse(chip, "data=46", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "a PARLIO port needs dir=tx or dir=rx") == 0);
+                CHECK(p.parse(chip, "dir=tx", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "a PARLIO port needs data=") == 0);
+                CHECK(p.parse(chip, "dir=tx data=46,46", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "GPIO46 is given twice") == 0);
+                CHECK(p.parse(chip, "dir=tx data=46 clk=46", why) == Error::Invalid);
+                CHECK(p.parse(chip, "dir=tx data=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16", why) == Error::Invalid);
+                CHECK(p.parse(chip, "dir=tx data=46 buffer=8192", why) == Error::Invalid);
+                CHECK(p.parse(chip, "dir=tx data=46 monitor", why) == Error::Invalid);
+                CHECK(p.parse(chip, "dir=rx data=46 idle=1", why) == Error::Invalid);
+                CHECK(p.parse(chip, "dir=rx data=46 clk=17 clk-in=18", why) == Error::Invalid);
+                CHECK(p.parse(chip, "dir=tx data=46,47 idle=4", why) == Error::Invalid);
+                CHECK(p.parse(chip, "dir=rx data=46 buffer=4100", why) == Error::Invalid);
+                CHECK(p.parse(chip, "dir=rx data=46 buffer=65536", why) == Error::Invalid);
+                REQUIRE(p.parse(chip, "dir=rx data=46 buffer=65472", why).isOk());
+                CHECK(p.parse(chip, "dir=rx data=46 clock=90m", why) == Error::Invalid);
+                CHECK(p.parse(chip, "dir=rx data=46 monitor force", why) == Error::Invalid);
+                CHECK(p.parse(chip, "dir=rx data=46 valid=47", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "'valid=47' isn't a word a PARLIO port knows") == 0);
+        }
+
+        SUBCASE("equality") {
+                IoParlioSetup a, b;
+                REQUIRE(a.parse(chip, "dir=tx data=46,47 clock=1m", why).isOk());
+                REQUIRE(b.parse(chip, "clock=1m data=46,47 dir=tx", why).isOk());
+                CHECK(a == b);
+                REQUIRE(b.parse(chip, "dir=tx data=47,46 clock=1m", why).isOk());
+                CHECK_FALSE(a == b);
+        }
+}

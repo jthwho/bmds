@@ -339,7 +339,11 @@ Plan: [`input.md`](input.md).
   (host-tested), four timers shared by period; waveforms read back by the RMT on bmds0. Step 8b
   built (§15.4): PCNT as Linux's counter device, `/dev/counter0` and `io/pcntN`, `counterdev_ctl`
   (slot 144), 64-bit counts and threshold events from a cache-safe interrupt, exact to 4 MHz
-  through flash writes on bmds0. Next: PARLIO, ADC readings, a longer logic strip, a second chip.
+  through flash writes on bmds0. Step 8c built (§15.6): PARLIO ports (`io/parlioN`, `/dev/parlioN`,
+  `parlio_ctl` slot 145), the receiver's DMA ring kept by us (ESP-IDF's misses nodes when an
+  interrupt is late); loopback exact to 20 MB/s on bmds0. Found: the SDK's `O_NONBLOCK` blocks a
+  write larger than the room (a POSIX gap, its own change). Next: ADC readings, a longer logic
+  strip, a second chip.
 
 ## Phase 6 — Graphics
 
