@@ -18,6 +18,7 @@ set(BMDS_IO_PURE_SRCS
         src/ioline.cpp
         src/iopin.cpp
         src/ioport.cpp
+        src/pwmtiming.cpp
         src/iosetup.cpp
         src/ioregistry.cpp)
 
@@ -40,6 +41,7 @@ if(COMMAND idf_component_register)
                                     src/iosetups.cpp
                                     src/spiports.cpp
                                     src/rmtports.cpp
+                                    src/pwmports.cpp
                                     src/uartconsole.cpp
                                     src/iocommand.cpp
                                INCLUDE_DIRS include

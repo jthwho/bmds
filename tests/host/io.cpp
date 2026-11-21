@@ -19,6 +19,7 @@
 #include <bmds/ioline.h>
 #include <bmds/ioport.h>
 #include <bmds/iosetup.h>
+#include <bmds/pwmtiming.h>
 
 using bmds::Error;
 using bmds::IoBoardUse;
@@ -910,5 +911,134 @@ TEST_CASE("IoRmtSetup: io/rmtN's value") {
                 CHECK(r == other);
                 REQUIRE(other.parse(chip, "dir=tx pin=46 continuous", why).isOk());
                 CHECK_FALSE(r == other);
+        }
+}
+
+TEST_CASE("IoPwmSetup: io/pwmN's value") {
+        using bmds::IoPwmSetup;
+        const IoChip &chip = bmds::ioChip();
+        IoPwmSetup    p;
+        char          why[IoPwmSetup::ReasonBytes];
+
+        SUBCASE("times, shares and the defaults") {
+                REQUIRE(p.parse(chip, "pin=21", why).isOk());
+                CHECK(p.pin == 21);
+                CHECK(p.periodNs == 0);
+                CHECK(p.dutyNs() == 0);
+                REQUIRE(p.parse(chip, "pin=GPIO21 period=1ms duty=25% offset=100us force", why).isOk());
+                CHECK(p.periodNs == 1000000);
+                CHECK(p.dutyNs() == 250000);
+                CHECK(p.offsetNs() == 100000);
+                CHECK(p.force);
+                REQUIRE(p.parse(chip, "pin=21 period=1.5ms duty=12.5% offset=0.5%", why).isOk());
+                CHECK(p.periodNs == 1500000);
+                CHECK(p.dutyNs() == 187500);
+                CHECK(p.offsetNs() == 7500);
+                REQUIRE(p.parse(chip, "pin=21 period=20000 duty=2.5us", why).isOk());
+                CHECK(p.periodNs == 20000);
+                CHECK(p.dutyNs() == 2500);
+                REQUIRE(p.parse(chip, "pin=21 period=13s duty=100%", why).isOk());
+                CHECK(p.periodNs == 13000000000ull);
+                CHECK(p.dutyNs() == 13000000000ull);
+                REQUIRE(p.parse(chip, "pin=21 period=1ms duty=33.33%", why).isOk());
+                CHECK(p.dutyNs() == 333300);
+        }
+
+        SUBCASE("refusals, in words") {
+                CHECK(p.parse(chip, "period=1ms", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "a PWM channel needs pin=") == 0);
+                CHECK(p.parse(chip, "pin=21 period=1ms duty=2ms", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "duty is longer than the period") == 0);
+                CHECK(p.parse(chip, "pin=21 period=1ms offset=100%", why) == Error::Invalid);
+                CHECK(p.parse(chip, "pin=21 offset=1us", why) == Error::Invalid);
+                CHECK(p.parse(chip, "pin=21 period=61s", why) == Error::Invalid);
+                CHECK(p.parse(chip, "pin=21 period=1ks", why) == Error::Invalid);
+                CHECK(p.parse(chip, "pin=21 period=1. duty=1", why) == Error::Invalid);
+                CHECK(p.parse(chip, "pin=21 period=1ms duty=101%", why) == Error::Invalid);
+                CHECK(p.parse(chip, "pin=21 period=1ms duty=1.234%", why) == Error::Invalid);
+                CHECK(p.parse(chip, "pin=21 freq=1k", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "'freq=1k' isn't a word a PWM channel knows") == 0);
+                CHECK(p.parse(chip, "pin=99", why) == Error::Invalid);
+        }
+
+        SUBCASE("equality") {
+                IoPwmSetup a, b;
+                REQUIRE(a.parse(chip, "pin=21 period=1ms duty=25%", why).isOk());
+                REQUIRE(b.parse(chip, "pin=21 period=1ms duty=250us", why).isOk());
+                CHECK_FALSE(a == b); // the same waveform, said differently: a change all the same
+                REQUIRE(b.parse(chip, "duty=25% period=1ms pin=21", why).isOk());
+                CHECK(a == b);
+        }
+}
+
+TEST_CASE("LedcTiming: Linux's rounding onto LEDC") {
+        using bmds::LedcTiming;
+        using bmds::PwmWaveform;
+        constexpr uint32_t Hz = 80000000; // 12.5 ns
+
+        SUBCASE("common periods exact, with the most bits that keep them so") {
+                LedcTiming t = LedcTiming::round({1000000, 250000, 0}, Hz); // 1 kHz, 25 %
+                CHECK(t.ticks == 80000);
+                CHECK(t.bits == 15);
+                CHECK(t.div256 == 625); // 2.44
+                CHECK(t.duty == 8192);
+                CHECK(t.waveform(Hz) == PwmWaveform{1000000, 250000, 0});
+                t = LedcTiming::round({20000000, 1500000, 0}, Hz); // a servo's 50 Hz, 1.5 ms
+                CHECK(t.bits == 17);
+                CHECK(t.waveform(Hz).periodNs == 20000000);
+                // Counts of 152.6 ns: 1.5 ms is 9830.4 of them, so down to 9830.
+                CHECK(t.duty == 9830);
+                CHECK(t.waveform(Hz).dutyNs == 1499938);
+                t = LedcTiming::round({40000, 20000, 10000}, Hz); // a fan's 25 kHz
+                CHECK(t.bits == 11);
+                CHECK(t.waveform(Hz) == PwmWaveform{40000, 20000, 10000});
+        }
+
+        SUBCASE("down to the next the hardware has, sub-ns dropped") {
+                // 1 ms + 5 ns: 80000 ticks and a 5 ns remainder, below a tick.
+                LedcTiming t = LedcTiming::round({1000005, 0, 0}, Hz);
+                CHECK(t.ticks == 80000);
+                // 12.5 ns steps: 37 ns is two ticks (25 ns) and 37.5 would be three.
+                t = LedcTiming::round({37, 0, 0}, Hz);
+                CHECK(t.ticks == 2);
+                CHECK(t.waveform(Hz).periodNs == 25);
+                // An odd tick count is kept, at the bits that can (8: a fractional divider).
+                t = LedcTiming::round({1000011, 0, 0}, Hz);
+                CHECK(t.ticks == 80000);
+                t = LedcTiming::round({1000012, 0, 0}, Hz); // 80001 ticks: 1000012.5 ns, its .5 dropped
+                CHECK(t.ticks == 80001);
+                CHECK(t.bits == 8);
+                CHECK(t.waveform(Hz).periodNs == 1000012);
+                // A duty between counts: down.
+                t = LedcTiming::round({1000000, 250020, 0}, Hz); // counts of 30.5 ns
+                CHECK(t.duty == 8192);
+        }
+
+        SUBCASE("up only when nothing is below; the edges") {
+                LedcTiming t = LedcTiming::round({1, 0, 0}, Hz);
+                CHECK(t.ticks == 2);
+                CHECK(t.bits == 1);
+                CHECK(t.div256 == 256);
+                t = LedcTiming::round({0, 0, 0}, Hz);
+                CHECK(t.ticks == 0);
+                CHECK(t.waveform(Hz) == PwmWaveform{});
+                // The longest: a divider of 1023.996 at 20 bits, 13.4 s.
+                t = LedcTiming::round({60000000000ull, 60000000000ull, 0}, Hz);
+                CHECK(t.bits == 20);
+                CHECK(t.div256 == LedcTiming::MaxDiv256);
+                CHECK(t.duty == (1u << 20));
+                CHECK(t.waveform(Hz).periodNs == 13421721600ull); // 262143 × 4096 ticks
+                // Full duty, and the last offset.
+                t = LedcTiming::round({1000000, 1000000, 999999}, Hz);
+                CHECK(t.duty == (1u << t.bits));
+                CHECK(t.hpoint == (1u << t.bits) - 1);
+        }
+
+        SUBCASE("a timer shared by the same timing") {
+                const LedcTiming a = LedcTiming::round({1000000, 100000, 0}, Hz);
+                const LedcTiming b = LedcTiming::round({1000000, 900000, 500000}, Hz);
+                const LedcTiming c = LedcTiming::round({500000, 100000, 0}, Hz);
+                CHECK(a.sharesTimer(b));
+                CHECK_FALSE(a.sharesTimer(c));
         }
 }

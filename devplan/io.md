@@ -1288,3 +1288,65 @@ In parts: **7a** SPI by GDMA, **7b** UART through UHCI above a measured baud.
   FIFO), 2M, 3M and 5M (UHCI) all exact over 64 KB to 512 KB, repeated; a 6-byte message closed by
   the idle line; 5M by DMA 3% and 10% of the two cores while `dd` and `head` ran. Not seen: a
   ring stopped by owner checking (it would take an interrupt 131 ms late); its restart is untested.
+
+## 15. Step 8: later port kinds (2026-11-21)
+
+In parts, in §6's order: **8a** LEDC as PWM, then PCNT, PARLIO, ADC readings, a longer logic
+strip, a second chip, each when asked for.
+
+### 15.1 8a: LEDC as PWM (design)
+
+- **Linux's API:** `/dev/pwmchip0`, the PWM character device (Linux 6.13 on): `PWM_IOCTL_REQUEST`
+  and `FREE` (a channel held by one open file; another's request is `EBUSY`), `ROUNDWF`, `GETWF`,
+  `SETROUNDEDWF`, `SETEXACTWF` (`EDOM` when not exact) on `struct pwmchip_waveform`: a period, a
+  duty and the duty's offset from the period's start, in ns; a period of 0 is off. Rounding is
+  Linux's: each value down to the next the hardware has, up only when there is none below (a
+  period never down to 0); an operation on a channel not requested requests it, as Linux's do;
+  `duty > period` or `offset >= period` is `EINVAL`. A channel keeps its waveform when its file
+  closes, as Linux's do. The SDK's `linux/pwm.h` is Linux's; `linux.c` translates the ioctls onto
+  `pwm_ctl` (slot 143), whose ops take a `bmds_pwm_waveform_t` (`size` first), plus
+  `BMDS_PWM_INFO` (a channel's pin, timer, resolution, who holds it: Linux has sysfs for that).
+  `BMDS_EDOM` (33) appended.
+- **Settings:** `io/pwm0` .. `io/pwm7`, a channel each: `pin=21 period=1ms duty=25% offset=0`
+  (times with ns, us, ms or s, decimals allowed; duty and offset also as a share of the period),
+  `force`. The setting's waveform is the channel's at start and whenever it changes; a program's
+  changes last until then (Linux's runtime state). A channel without a pin is `ENODEV`.
+- **The hardware:** LEDC on its LL layer (no ESP-IDF driver: its frequency is whole hertz), the
+  global source PLL_F80M (80 MHz, 12.5 ns), eight channels on four timers. A timer's period is
+  `div × 2^bits` source ticks, `div` with 8 fraction bits (1 to 1023.996), `bits` 1 to 20; a
+  channel's duty and offset (hpoint) are whole counts of `period / 2^bits`. Periods are kept to
+  whole ticks (with 8 or more bits the fractional divider's dither completes within a period, so
+  each period is the same length and only edges inside move, by a tick at most; below 8 bits the
+  divider is whole). For a period, of every `bits` the largest whole-tick period not above the
+  request is taken, the longest of them won, ties to the most bits: 1 kHz gets 15 bits exactly,
+  50 Hz 17, 25 kHz 11. From 25 ns to 13.4 s.
+- **Timers shared:** channels with the same timing share a timer; a channel alone on its timer
+  changes it in place; else a free timer, else `EBUSY` (five different periods at once). Changes
+  take effect at a period's end (LEDC's update bits), with no glitch.
+- **Checked by the RMT:** an RMT receiver with `monitor` on the same pin measures each waveform's
+  edges against what `GETWF` says.
+
+### 15.2 As built: 8a (2026-11-21)
+
+- `IoPwmSetup` (`ioport.h`), `LedcTiming` and `PwmWaveform` (`pwmtiming.h`, pure, host-tested
+  with the rounding's cases), `PwmChip` (`pwmchip.h`, a stream per open), `pwmports.cpp` (the
+  ports, LEDC on its LL layer, the timers), `pwm_ctl` (`pwmcalls.cpp`, slot 143), `linux/pwm.h`
+  and `linux.c`'s translation, `sdk/examples/pwm` (`info`, `get`, `round`, `set`, `exact`, `hold`).
+  LEDC is on while a channel runs (its timers then claimed by `pwmchip0`), off after the last.
+- **Checked** on bmds0, each waveform read back by an RMT `monitor` on the same pin: 1 kHz 25 %
+  (250/750 µs), 25 kHz with an offset, 1 µs at 250 ns, 100 µs at 0.1 % (97 ns: eight 12.5 ns
+  ticks read), a servo's 20 ms at 1.5 ms (1499.938 µs: 17 bits' counts), 0 % and 100 % (the pin
+  held low and high). **A duty past the period's end wraps** (10 µs from 35 µs of 40: 10 high, 30
+  low), so offsets need no help. `SETEXACTWF` of an inexact period `EDOM`, `duty > period`
+  `EINVAL`, a channel without a pin `ENODEV`, another program's channel `EBUSY` (`pwm hold`), and
+  the fifth period `EBUSY` until a channel moved to a timer already running its period. Changing
+  a timer's period in place makes one period of the old length or the new (a 1510 µs pulse seen
+  once moving from 40 µs to 20 ms).
+- **Found on the way, in the RMT ports (§13):** changing `io/rmtN` waited for a reader blocked on
+  a receiver with no input (the reader held the stream's lock): the change now wakes it first and
+  it leaves `NotExist`, as from a port that went. And a receiver's input routing survives a
+  restart (the matrix isn't reset, §10.4): one left by that hang read GPIO46 after the reboot,
+  cleared by starting and stopping two receivers (ESP-IDF disconnects a channel's signal when it
+  deletes it).
+- Not built: ioman's Ports tab doesn't show PWM channels (nor RMT ports yet); LEDC's hardware
+  fades and gamma curves (Linux's API has none).

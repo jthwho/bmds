@@ -229,6 +229,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_I2C_CTL 140u    /**< `int32_t i2c_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/i2c-N`. */
 #define BMDS_SYS_SPI_CTL 141u    /**< `int32_t spi_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/spidevB.C`. */
 #define BMDS_SYS_RMT_CTL 142u    /**< `int32_t rmt_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/rmtN`. */
+#define BMDS_SYS_PWM_CTL 143u    /**< `int32_t pwm_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/pwmchipN`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -2162,6 +2163,53 @@ typedef struct bmds_rmt_mark_t {
 } bmds_rmt_mark_t;
 
 /*
+ * PWM (slot 143, appended 2026-11-21, devplan/io.md §15.1): `/dev/pwmchip0`, the PWM channels
+ * (`io/pwmN` gives a channel its pin), as Linux's PWM character device: a channel is held by one
+ * open file at a time (an operation on one not held takes it, `-BMDS_EBUSY` if another file has
+ * it), and a waveform is rounded as Linux's: each value down to the next the hardware has, up only
+ * when there is none below. A channel keeps its waveform when its file closes. `linux/pwm.h`'s
+ * requests are these.
+ */
+#define BMDS_PWM_REQUEST 0u     /**< `bmds_pwm_waveform_t *` (`hwpwm`): this file holds the channel. */
+#define BMDS_PWM_FREE 1u        /**< `bmds_pwm_waveform_t *` (`hwpwm`): lets it go (`-BMDS_EINVAL` if not held here). */
+#define BMDS_PWM_ROUND 2u       /**< `bmds_pwm_waveform_t *`: rounded as setting it would, nothing set. */
+#define BMDS_PWM_GET 3u         /**< `bmds_pwm_waveform_t *`: the channel's waveform (`hwpwm` in). */
+#define BMDS_PWM_SET_ROUNDED 4u /**< `bmds_pwm_waveform_t *`: rounded and set, from the next period. */
+#define BMDS_PWM_SET_EXACT 5u   /**< `bmds_pwm_waveform_t *`: set as given (to the ns), else `-BMDS_EDOM`. */
+#define BMDS_PWM_INFO 6u        /**< `bmds_pwm_info_t *` (`hwpwm` in): the channel and the chip. */
+
+/** @brief `bmds_pwm_info_t::flags`. */
+#define BMDS_PWM_HAS_PIN 0x1u   /**< `io/pwmN` gives it a pin (else its operations are `-BMDS_ENODEV`). */
+#define BMDS_PWM_REQUESTED 0x2u /**< A file holds it. */
+#define BMDS_PWM_MINE 0x4u      /**< This file holds it. */
+#define BMDS_PWM_ON 0x8u        /**< Its period isn't 0. */
+
+/**
+ * @brief A channel's waveform (Linux's `pwmchip_waveform`): active for `duty_ns` of each
+ *        `period_ns`, starting `offset_ns` after the period's start; a period of 0 is off.
+ *        `duty_ns <= period_ns` and `offset_ns < period_ns` (or all 0), else `-BMDS_EINVAL`.
+ */
+typedef struct bmds_pwm_waveform_t {
+                uint32_t size;      /**< Set by the caller: `sizeof(bmds_pwm_waveform_t)`. */
+                uint32_t hwpwm;     /**< The channel: N of `io/pwmN`. */
+                uint64_t period_ns; /**< The repeating period; 0: off. */
+                uint64_t duty_ns;   /**< The active part. */
+                uint64_t offset_ns; /**< Its start in the period. */
+} bmds_pwm_waveform_t;
+
+/** @brief A channel and its chip (`BMDS_PWM_INFO`). */
+typedef struct bmds_pwm_info_t {
+                uint32_t size;      /**< Set by the caller: `sizeof(bmds_pwm_info_t)`. */
+                uint32_t hwpwm;     /**< The channel asked about (set by the caller). */
+                uint32_t npwm;      /**< The chip's channels. */
+                uint32_t flags;     /**< `BMDS_PWM_...`. */
+                int32_t  pin;       /**< Its pin, or -1. */
+                int32_t  timer;     /**< The hardware timer it runs on, or -1 (off). */
+                uint32_t bits;      /**< Its resolution: 2^bits steps a period, or 0 (off). */
+                uint32_t source_hz; /**< The clock its timer divides (its edges' grain). */
+} bmds_pwm_info_t;
+
+/*
  * Surfaces (slots 117-121, appended 2026-10-14, devplan/games.md §11): a picture a program draws
  * with the CPU into its own buffers and presents, in a window or full screen (the user's setting
  * per application, the program's suggestion its default, Alt+Enter between them); its events read
@@ -2938,6 +2986,7 @@ typedef int32_t (*bmds_sys_gpio_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_i2c_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_spi_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_rmt_ctl_fn)(int32_t fd, uint32_t op, void *arg);
+typedef int32_t (*bmds_sys_pwm_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -4473,6 +4522,19 @@ static inline int32_t bmds_spi_ctl(int32_t fd, uint32_t op, void *arg) {
 static inline int32_t bmds_rmt_ctl(int32_t fd, uint32_t op, void *arg) {
         if (!bmds_sys_has(BMDS_SYS_RMT_CTL)) return -BMDS_ENOSYS;
         return ((bmds_sys_rmt_ctl_fn)bmds_sys->slot[BMDS_SYS_RMT_CTL])(fd, op, arg);
+}
+
+/**
+ * @brief Operates on PWM chip file @p fd (`/dev/pwmchip0`): `BMDS_PWM_...` with @p arg as each
+ *        says (slot 143, appended 2026-11-21, devplan/io.md §15.1).
+ * @return 0, or `-BMDS_ENOTTY` (not a PWM chip), `-BMDS_EBADF`, `-BMDS_EINVAL` (an op, a `size`,
+ *         a channel, a waveform), `-BMDS_ENODEV` (a channel without a pin), `-BMDS_EBUSY`
+ *         (another file holds it, or no timer is free for its period), `-BMDS_EDOM`
+ *         (`BMDS_PWM_SET_EXACT`), `-BMDS_EFAULT`, `-BMDS_ENOSYS`.
+ */
+static inline int32_t bmds_pwm_ctl(int32_t fd, uint32_t op, void *arg) {
+        if (!bmds_sys_has(BMDS_SYS_PWM_CTL)) return -BMDS_ENOSYS;
+        return ((bmds_sys_pwm_ctl_fn)bmds_sys->slot[BMDS_SYS_PWM_CTL])(fd, op, arg);
 }
 
 /**

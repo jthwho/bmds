@@ -5,8 +5,8 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * A port's setup, `io/uartN`'s, `io/spiN`'s and `io/rmtN`'s values (devplan/io.md §11.1, §11.5,
- * §13.1): parsed and checked against the chip.
+ * A port's setup, `io/uartN`'s, `io/spiN`'s, `io/rmtN`'s and `io/pwmN`'s values (devplan/io.md
+ * §11.1, §11.5, §13.1, §15.1): parsed and checked against the chip.
  * Pure, host-tested; `Io` checks the holders and runs the port.
  */
 
@@ -150,6 +150,49 @@ struct IoRmtSetup {
 
                 /** @brief True if @p other sets the port up the same way. */
                 bool operator==(const IoRmtSetup &other) const;
+};
+
+/**
+ * @brief A PWM channel's setup: `pin=21 period=1ms duty=25% offset=0` (devplan/io.md §15.1).
+ *
+ * Times take ns, us, ms or s (decimals allowed; a bare number is ns); duty and offset also a share
+ * of the period (`25%`, to hundredths).
+ *
+ * @par Thread Safety
+ * A plain value.
+ */
+struct IoPwmSetup {
+                /** @brief Room for `parse()`'s reason, NUL included. */
+                static constexpr size_t ReasonBytes = IoUartSetup::ReasonBytes;
+
+                static constexpr uint64_t MaxPeriodNs =
+                        60000000000ull;                  ///< `period=`'s longest (the hardware's: 13.4 s).
+                static constexpr uint32_t Whole = 10000; ///< A share's whole: 100.00 %.
+
+                int8_t   pin = -1;            ///< `pin=`: its pad.
+                uint64_t periodNs = 0;        ///< `period=`: 0, off.
+                uint64_t duty = 0;            ///< `duty=`: ns, or hundredths of a percent (`dutyShare`).
+                bool     dutyShare = false;   ///< `duty=` was a share of the period.
+                uint64_t offset = 0;          ///< `offset=`: ns, or hundredths of a percent (`offsetShare`).
+                bool     offsetShare = false; ///< `offset=` was a share of the period.
+                bool     force = false;       ///< `force`: its pin taken from its holder.
+
+                /**
+                 * @brief Parses @p text for @p chip: words known, a pad that exists, a duty no longer
+                 *        than the period and an offset shorter than it.
+                 * @param[out] why Why it is refused, for people, or "".
+                 * @return `Ok`, or `Invalid`.
+                 */
+                Error parse(const IoChip &chip, StringView text, char (&why)[ReasonBytes]);
+
+                /** @brief The duty in ns (a share resolved against the period). */
+                uint64_t dutyNs() const { return dutyShare ? periodNs * duty / Whole : duty; }
+
+                /** @brief The offset in ns. */
+                uint64_t offsetNs() const { return offsetShare ? periodNs * offset / Whole : offset; }
+
+                /** @brief True if @p other sets the channel up the same way. */
+                bool operator==(const IoPwmSetup &other) const;
 };
 
 BMDS_NAMESPACE_END

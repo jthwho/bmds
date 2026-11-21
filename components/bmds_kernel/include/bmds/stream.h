@@ -26,6 +26,7 @@ class GpioLines;
 class I2cClient;
 class SpiDevice;
 class RmtChannel;
+class PwmChip;
 class MidiFile;
 class PtpClock;
 class Pty;
@@ -227,6 +228,9 @@ class Stream {
 
                 /** @brief Returns this as an RMT port's stream (`/dev/rmtN`: `devplan/io.md` §13.1), or null. */
                 virtual RmtChannel *rmtChannel() { return nullptr; }
+
+                /** @brief Returns this as a PWM chip's stream (`/dev/pwmchip0`: `devplan/io.md` §15.1), or null. */
+                virtual PwmChip *pwmChip() { return nullptr; }
 
                 /**
                  * @brief Returns the stream's whole contents where they lie, if it has them at an

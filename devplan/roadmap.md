@@ -334,7 +334,10 @@ Plan: [`input.md`](input.md).
   CPU. Step 7b built (§14.3): UART input through flash writes (a cache-safe interrupt, a stash in
   internal RAM moved at the flash's end) and above 1 Mbaud by UHCI's DMA into a ring of
   descriptors; interrupt waits of up to 590 µs measured, which set that line; exact to 5 Mbaud
-  through forced writes on bmds0. Step 7 done.
+  through forced writes on bmds0. Step 7 done. Step 8a built (§15.2): PWM on LEDC as Linux's
+  PWM character device, `/dev/pwmchip0` and `io/pwmN`, `pwm_ctl` (slot 143), Linux's rounding
+  (host-tested), four timers shared by period; waveforms read back by the RMT on bmds0. Next (when
+  asked): PCNT, PARLIO, ADC readings, a longer logic strip, a second chip.
 
 ## Phase 6 — Graphics
 

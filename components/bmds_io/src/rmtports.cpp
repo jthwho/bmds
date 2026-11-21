@@ -104,6 +104,9 @@ namespace RmtPorts {
                         bool                  txOn = false;     // a transaction runs
                         bool                  txEnding = false; // the encoder said done
                         bool                  stopping = false;
+                        // A setting change under way: a waiting reader or writer leaves (NotExist)
+                        // so the change can take the stream's lock.
+                        std::atomic<bool>     leaving{false};
                         bool                  dry = false;     // in an underrun now
                         uint32_t              filler = 0;      // a filler symbol
                         uint32_t              fillerTicks = 0; // its ticks
@@ -767,14 +770,18 @@ namespace RmtPorts {
                         return;
                 }
                 if (!value.isEmpty() && p.running && s == p.setup) return;
-                // A stream reading or writing it is let go first (the stream's lock).
+                // A stream reading or writing it is let go first (the stream's lock): one waiting
+                // for input or room is woken and leaves, as from a port that went.
                 if (p.stream != nullptr) {
+                        p.leaving.store(true, std::memory_order_release);
+                        p.wake();
                         Mutex::Locker streamLock(p.streamLock(), WaitForever);
                         p.stop();
                         if (p.ring != nullptr) Memory::free(p.ring);
                         p.ring = nullptr;
                 }
                 if (!value.isEmpty()) (void)p.start(s);
+                p.leaving.store(false, std::memory_order_release);
                 return;
         }
 
@@ -850,6 +857,7 @@ Error RmtChannel::info(Info &out) const {
 Result<size_t> RmtChannel::write(ByteSpan data, unsigned int timeoutMs) {
         if (data.size() % sizeof(uint32_t) != 0) return makeError<size_t>(Error::Invalid);
         Mutex::Locker lock(_lock, WaitForever);
+        if (_port.leaving.load(std::memory_order_acquire)) return makeError<size_t>(Error::NotExist);
         Port         &p = _port;
         if (!p.running) return makeError<size_t>(Error::NotExist);
         if (p.setup.receive) return makeError<size_t>(Error::NotSupported);
@@ -903,7 +911,7 @@ Result<size_t> RmtChannel::write(ByteSpan data, unsigned int timeoutMs) {
                         if (done > 0) break;
                         return makeError<size_t>(err);
                 }
-                if (!p.running) return makeError<size_t>(Error::NotExist);
+                if (!p.running || p.leaving.load(std::memory_order_acquire)) return makeError<size_t>(Error::NotExist);
         }
         return makeResult(done * sizeof(uint32_t));
 }
@@ -937,6 +945,7 @@ Result<size_t> RmtChannel::read(WritableByteSpan buf, unsigned int timeoutMs) {
                 return readMarks(_port, buf, timeoutMs, _marked);
         }
         Mutex::Locker lock(_lock, WaitForever);
+        if (_port.leaving.load(std::memory_order_acquire)) return makeError<size_t>(Error::NotExist);
         Port         &p = _port;
         Deadline      deadline(timeoutMs);
         const size_t  room = buf.size() / sizeof(uint32_t);
@@ -963,7 +972,7 @@ Result<size_t> RmtChannel::read(WritableByteSpan buf, unsigned int timeoutMs) {
                 if (t != h) return makeError<size_t>(Error::Invalid); // room for less than a header
                 const Error err = Interrupt::waitCurrent(_moved, deadline);
                 if (err.isError()) return makeError<size_t>(err);
-                if (!p.running) return makeError<size_t>(Error::NotExist);
+                if (!p.running || p.leaving.load(std::memory_order_acquire)) return makeError<size_t>(Error::NotExist);
         }
 }
 

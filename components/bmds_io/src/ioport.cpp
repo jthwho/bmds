@@ -356,4 +356,112 @@ Error IoRmtSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonB
         return Error::Ok;
 }
 
+namespace {
+
+        // `1.5ms`, `250us`, `20000` (ns), `2s`: whole ns, at most @p limit.
+        bool timeOf(StringView text, uint64_t limit, uint64_t &out) {
+                uint64_t scale = 1;
+                if (text.endsWith(StringView("ns"))) {
+                        text = text.left(text.size() - 2);
+                } else if (text.endsWith(StringView("us"))) {
+                        scale = 1000;
+                        text = text.left(text.size() - 2);
+                } else if (text.endsWith(StringView("ms"))) {
+                        scale = 1000000;
+                        text = text.left(text.size() - 2);
+                } else if (text.endsWith(StringView("s"))) {
+                        scale = 1000000000;
+                        text = text.left(text.size() - 1);
+                }
+                const size_t     dot = text.indexOf('.');
+                const StringView whole = dot == StringView::NPos ? text : text.left(dot);
+                const StringView part = dot == StringView::NPos ? StringView() : text.mid(dot + 1);
+                if (whole.isEmpty() && part.isEmpty()) return false;
+                uint32_t w = 0;
+                if (!whole.isEmpty() && !number(whole, w)) return false;
+                if (dot != StringView::NPos && part.isEmpty()) return false;
+                uint64_t ns = uint64_t(w) * scale;
+                // The fraction's digits, as far as they mean whole ns.
+                uint64_t place = scale;
+                for (const char c : part) {
+                        if (c < '0' || c > '9') return false;
+                        place /= 10;
+                        ns += uint64_t(c - '0') * place;
+                }
+                if (ns > limit) return false;
+                out = ns;
+                return true;
+        }
+
+        // `25%`, `12.5%`, `33.33%`: hundredths of a percent, at most 100 %.
+        bool shareOf(StringView text, uint64_t &out) {
+                if (text.isEmpty() || text.back() != '%') return false;
+                text = text.left(text.size() - 1);
+                const size_t     dot = text.indexOf('.');
+                const StringView whole = dot == StringView::NPos ? text : text.left(dot);
+                const StringView part = dot == StringView::NPos ? StringView() : text.mid(dot + 1);
+                uint32_t         w = 0;
+                if (whole.isEmpty() || !number(whole, w) || part.size() > 2) return false;
+                if (dot != StringView::NPos && part.isEmpty()) return false;
+                uint64_t v = uint64_t(w) * 100;
+                uint64_t place = 10;
+                for (const char c : part) {
+                        if (c < '0' || c > '9') return false;
+                        v += uint64_t(c - '0') * place;
+                        place /= 10;
+                }
+                if (v > IoPwmSetup::Whole) return false;
+                out = v;
+                return true;
+        }
+
+} // namespace
+
+bool IoPwmSetup::operator==(const IoPwmSetup &o) const {
+        return pin == o.pin && periodNs == o.periodNs && duty == o.duty && dutyShare == o.dutyShare &&
+               offset == o.offset && offsetShare == o.offsetShare && force == o.force;
+}
+
+Error IoPwmSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonBytes]) {
+        why[0] = '\0';
+        *this = IoPwmSetup();
+        while (!text.isEmpty()) {
+                StringView word = take(text, ' ');
+                if (word.isEmpty()) continue;
+                const size_t     eq = word.indexOf('=');
+                const StringView key = eq == StringView::NPos ? word : word.left(eq);
+                const StringView value = eq == StringView::NPos ? StringView() : word.mid(eq + 1);
+                if (key == "pin") {
+                        if (!pad(chip, value, pin))
+                                return refuse(why, Error::Invalid, "pin: '%.*s' isn't a pin of the chip's",
+                                              int(value.size()), value.data());
+                } else if (key == "period") {
+                        if (!timeOf(value, MaxPeriodNs, periodNs))
+                                return refuse(why, Error::Invalid,
+                                              "period is a time up to 60s (ns, us, ms or s; 0: off), not '%.*s'",
+                                              int(value.size()), value.data());
+                } else if (key == "duty" || key == "offset") {
+                        const bool duty_ = key == "duty";
+                        uint64_t   v = 0;
+                        bool       share = shareOf(value, v);
+                        if (!share && !timeOf(value, MaxPeriodNs, v))
+                                return refuse(why, Error::Invalid,
+                                              "%s is a time or a share of the period (25%%), not '%.*s'",
+                                              duty_ ? "duty" : "offset", int(value.size()), value.data());
+                        (duty_ ? duty : offset) = v;
+                        (duty_ ? dutyShare : offsetShare) = share;
+                } else if (word == "force") {
+                        force = true;
+                } else {
+                        return refuse(why, Error::Invalid, "'%.*s' isn't a word a PWM channel knows", int(word.size()),
+                                      word.data());
+                }
+        }
+        if (pin < 0) return refuse(why, Error::Invalid, "a PWM channel needs pin=");
+        if (dutyNs() > periodNs) return refuse(why, Error::Invalid, "duty is longer than the period");
+        if (periodNs > 0 ? offsetNs() >= periodNs : offsetNs() > 0)
+                return refuse(why, Error::Invalid, "offset is within the period (shorter than it)");
+        return Error::Ok;
+}
+
 BMDS_NAMESPACE_END

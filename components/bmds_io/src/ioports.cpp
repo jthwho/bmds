@@ -353,7 +353,8 @@ namespace IoSetups {
                 }
                 if (const Error err = s->watcher.start(StringView("io"), changed, nullptr); err.isError()) return err;
                 if (const Error err = startSpiPorts(); err.isError()) return err;
-                return startRmtPorts();
+                if (const Error err = startRmtPorts(); err.isError()) return err;
+                return startPwmPorts();
         }
 
 } // namespace IoSetups

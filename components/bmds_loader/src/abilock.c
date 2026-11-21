@@ -1167,3 +1167,19 @@ _Static_assert(BMDS_RMT_MARK == 0 && offsetof(bmds_rmt_info_t, marks) == 72 &&
 _Static_assert(offsetof(bmds_rmt_mark_t, time_ns) == 8 && offsetof(bmds_rmt_mark_t, ticks) == 16 &&
                        sizeof(bmds_rmt_mark_t) == 24,
                "ABI: bmds_rmt_mark_t");
+/* PWM: /dev/pwmchip0 (devplan/io.md §15.1, 2026-11-21). */
+_Static_assert(BMDS_SYS_PWM_CTL == 143, "ABI: slot PWM_CTL");
+_Static_assert(BMDS_PWM_REQUEST == 0 && BMDS_PWM_FREE == 1 && BMDS_PWM_ROUND == 2 && BMDS_PWM_GET == 3 &&
+                       BMDS_PWM_SET_ROUNDED == 4 && BMDS_PWM_SET_EXACT == 5 && BMDS_PWM_INFO == 6 &&
+                       BMDS_PWM_HAS_PIN == 1 && BMDS_PWM_REQUESTED == 2 && BMDS_PWM_MINE == 4 && BMDS_PWM_ON == 8 &&
+                       BMDS_EDOM == 33,
+               "ABI: pwm_ctl ops and flags");
+_Static_assert(offsetof(bmds_pwm_waveform_t, hwpwm) == 4 && offsetof(bmds_pwm_waveform_t, period_ns) == 8 &&
+                       offsetof(bmds_pwm_waveform_t, duty_ns) == 16 && offsetof(bmds_pwm_waveform_t, offset_ns) == 24 &&
+                       sizeof(bmds_pwm_waveform_t) == 32,
+               "ABI: bmds_pwm_waveform_t");
+_Static_assert(offsetof(bmds_pwm_info_t, npwm) == 8 && offsetof(bmds_pwm_info_t, flags) == 12 &&
+                       offsetof(bmds_pwm_info_t, pin) == 16 && offsetof(bmds_pwm_info_t, timer) == 20 &&
+                       offsetof(bmds_pwm_info_t, bits) == 24 && offsetof(bmds_pwm_info_t, source_hz) == 28 &&
+                       sizeof(bmds_pwm_info_t) == 32,
+               "ABI: bmds_pwm_info_t");

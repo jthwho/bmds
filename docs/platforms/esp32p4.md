@@ -892,6 +892,18 @@ until silicon v3; then test again.
   does. Sync your buffers' whole lines; switch a direction's DMA off (`spi_ll_dma_*_enable()`) when
   a piece doesn't use it, or one goes through the FIFO. `spi_hal_init()` sets the done status:
   clear it before enabling the interrupt (`spiports.cpp`, `devplan/io.md` §14).
+- **LEDC's timing:** one source for all four timers (PLL_F80M here: `ledc_ll_set_slow_clk_sel()`),
+  each timer's period `div × 2^bits` ticks with `div` in 1/256ths (1 to 1023.996) and `bits` 1 to
+  20, a channel's duty and hpoint in counts of that. With 8 bits or more a fractional divider's
+  pattern completes within a period, so each period is the same whole-tick length; fewer bits
+  want a whole divider. A duty running past the period's end wraps to its start (measured), so any
+  offset works. ESP-IDF's driver takes whole hertz; for ns-exact periods use the LL layer
+  (`pwmports.cpp`). Its `ledc_ll.h` fails C++'s `-Wmissing-field-initializers` in
+  `ledc_ll_set_fade_param_range()`: include it with that warning off.
+- **The GPIO matrix's input selects survive a restart,** as IO_MUX does (`devplan/io.md` §10.4): a
+  peripheral's input left routed (an RMT receiver whose channel wasn't deleted) still reads its
+  pad after a reboot; `io` shows it. Deleting the channel (ESP-IDF connects its signal to 0x3E,
+  constant zero) clears it.
 - **Interrupts wait up to 600 µs at times:** a UART's FIFO fill on entry to its interrupt (level
   1) showed waits of 410 µs on a quiet system and 590 µs during a flash write, most likely cache
   write-backs (§3: interrupts masked throughout). A CPU-drained 128-byte FIFO can't cover that

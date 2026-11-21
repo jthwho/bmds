@@ -79,5 +79,6 @@
 #define BMDS_EBADMSG 74      /**< Bad message (TLS: a record that failed its check). */
 #define BMDS_EKEYREJECTED 129 /**< Key was rejected (TLS: a certificate refused). */
 #define BMDS_ENXIO 6          /**< No such device or address (I²C: nothing acknowledged). Appended 2026-11-20. */
+#define BMDS_EDOM 33 /**< Argument out of domain (PWM: a waveform not exactly possible). Appended 2026-11-21. */
 
 #endif /* BMDS_ERRNO_H */

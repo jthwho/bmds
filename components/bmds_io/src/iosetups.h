@@ -45,6 +45,9 @@ namespace IoSetups {
         /** @brief The RMT ports (`io/rmt0` .. `io/rmt7`: devplan/io.md §13.1); `startPorts()` calls it. */
         Error startRmtPorts();
 
+        /** @brief The PWM channels (`io/pwm0` .. `io/pwm7`, `/dev/pwmchip0`: devplan/io.md §15.1); `startPorts()` calls it. */
+        Error startPwmPorts();
+
 } // namespace IoSetups
 
 BMDS_NAMESPACE_END

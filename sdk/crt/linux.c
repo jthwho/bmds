@@ -38,6 +38,7 @@
 #include <linux/gpio.h>
 #include <linux/i2c-dev.h>
 #include <linux/spi/spidev.h>
+#include <linux/pwm.h>
 #include <linux/ptp_clock.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -1320,6 +1321,39 @@ static long spi_ioctl(long fd, unsigned long request, void *arg) {
         return (long)bmds_spi_ctl((int32_t)fd, BMDS_SPI_SETUP, &s);
 }
 
+/* /dev/pwmchip0's requests (linux/pwm.h) on pwm_ctl: the channel by value for REQUEST and FREE,
+ * a pwmchip_waveform for the rest (the ABI's bmds_pwm_waveform_t, but for its size word). */
+static long pwm_ioctl(long fd, unsigned long request, void *arg) {
+        bmds_pwm_waveform_t w = {.size = sizeof(w)};
+        uint32_t            op = 0;
+        switch (request) {
+                case PWM_IOCTL_REQUEST:
+                case PWM_IOCTL_FREE:
+                        if ((unsigned long)arg > UINT32_MAX) return -EINVAL;
+                        w.hwpwm = (uint32_t)(unsigned long)arg;
+                        return (long)bmds_pwm_ctl((int32_t)fd,
+                                                  request == PWM_IOCTL_REQUEST ? BMDS_PWM_REQUEST : BMDS_PWM_FREE, &w);
+                case PWM_IOCTL_ROUNDWF: op = BMDS_PWM_ROUND; break;
+                case PWM_IOCTL_GETWF: op = BMDS_PWM_GET; break;
+                case PWM_IOCTL_SETROUNDEDWF: op = BMDS_PWM_SET_ROUNDED; break;
+                case PWM_IOCTL_SETEXACTWF: op = BMDS_PWM_SET_EXACT; break;
+                default: return -ENOTTY;
+        }
+        if (arg == NULL) return -EFAULT;
+        struct pwmchip_waveform *wf = arg;
+        if (wf->__pad != 0) return -EINVAL;
+        w.hwpwm = wf->hwpwm;
+        w.period_ns = wf->period_length_ns;
+        w.duty_ns = wf->duty_length_ns;
+        w.offset_ns = wf->duty_offset_ns;
+        const long r = (long)bmds_pwm_ctl((int32_t)fd, op, &w);
+        if (r < 0 || op == BMDS_PWM_SET_ROUNDED || op == BMDS_PWM_SET_EXACT) return r;
+        wf->period_length_ns = w.period_ns;
+        wf->duty_length_ns = w.duty_ns;
+        wf->duty_offset_ns = w.offset_ns;
+        return r;
+}
+
 static long do_ioctl(long fd, unsigned long request, void *arg) {
         /* OSS: /dev/dsp's 'P' requests and /dev/mixer's 'M' (oss.c). */
         const unsigned long type = request >> 8 & 0xff;
@@ -1333,6 +1367,7 @@ static long do_ioctl(long fd, unsigned long request, void *arg) {
         if (type == PTP_CLK_MAGIC) return ptp_ioctl(fd, request, arg);
         if (type == GPIO_IOC_MAGIC) return gpio_ioctl(fd, request, arg);
         if (type == SPI_IOC_MAGIC) return spi_ioctl(fd, request, arg);
+        if (type == 0x75) return pwm_ioctl(fd, request, arg); /* linux/pwm.h's */
         if ((request >= I2C_RETRIES && request <= I2C_PEC) || request == I2C_SMBUS) return i2c_ioctl(fd, request, arg);
         switch (request) {
                 case TCGETS: return tc_get(fd, arg);
