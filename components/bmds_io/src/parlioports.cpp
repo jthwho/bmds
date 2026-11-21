@@ -645,6 +645,14 @@ Result<size_t> ParlioPort::read(WritableByteSpan buf, unsigned int timeoutMs) {
         }
 }
 
+size_t ParlioPort::writeRoom() {
+        const Port &p = _port;
+        if (!p.running || p.setup.receive) return RoomUnknown; // a write says why
+        const uint32_t busy = p.txInFlight.load(std::memory_order_acquire);
+        const size_t   room = busy >= ParlioPorts::TxPieces ? 0 : (ParlioPorts::TxPieces - busy) * ParlioPorts::TxPiece;
+        return p.setup.width() == 16 ? room & ~size_t(1) : room; // whole samples
+}
+
 uint8_t ParlioPort::readiness() {
         const Port &p = _port;
         if (!p.running) return 0;

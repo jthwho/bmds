@@ -79,6 +79,13 @@ class Pipe final : public Stream {
 
                 uint8_t   readiness() override;
                 WaitList *readinessWaiters() override { return &_pollers; }
+                /** @brief The ring's free bytes while a reader has it (else a write says `BrokenPipe`). */
+                size_t writeRoom() override { return _readerOpen.load() ? _ring.freeSpace() : RoomUnknown; }
+                /** @brief POSIX's `PIPE_BUF`: a write this size or less goes whole or not at all. */
+                size_t atomicWriteBytes() const override { return AtomicBytes; }
+
+                /** @brief `PIPE_BUF` (the SDK's limits.h). */
+                static constexpr size_t AtomicBytes = 4096;
 
                 void handleClosed(uint8_t mode) override;
 

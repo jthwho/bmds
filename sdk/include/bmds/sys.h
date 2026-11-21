@@ -232,6 +232,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_PWM_CTL 143u    /**< `int32_t pwm_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/pwmchipN`. */
 #define BMDS_SYS_COUNTERDEV_CTL 144u /**< `int32_t counterdev_ctl(fd, op, arg)`: `/dev/counterN`. */
 #define BMDS_SYS_PARLIO_CTL 145u     /**< `int32_t parlio_ctl(fd, op, arg)`: `/dev/parlioN`. */
+#define BMDS_SYS_WRITE_NOW 146u      /**< `int32_t write_now(fd, buf, size)`: what fits now. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -3110,6 +3111,7 @@ typedef int32_t (*bmds_sys_rmt_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_pwm_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_counterdev_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_parlio_ctl_fn)(int32_t fd, uint32_t op, void *arg);
+typedef int32_t (*bmds_sys_write_now_fn)(int32_t fd, const void *buf, uint32_t size);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -4681,6 +4683,19 @@ static inline int32_t bmds_counterdev_ctl(int32_t fd, uint32_t op, void *arg) {
 static inline int32_t bmds_parlio_ctl(int32_t fd, uint32_t op, void *arg) {
         if (!bmds_sys_has(BMDS_SYS_PARLIO_CTL)) return -BMDS_ENOSYS;
         return ((bmds_sys_parlio_ctl_fn)bmds_sys->slot[BMDS_SYS_PARLIO_CTL])(fd, op, arg);
+}
+
+/**
+ * @brief Writes what @p fd takes now of @p size bytes, without waiting: a non-blocking write
+ *        (slot 146, appended 2026-11-21, devplan/programs.md §22). To a pipe, @p size of
+ *        `PIPE_BUF` (4096) or less goes whole or not at all; a stream that can't tell its room
+ *        (a file: it never waits) takes it all, as `bmds_write()`.
+ * @return The bytes written, `-BMDS_EAGAIN` if none could be now, or as `bmds_write()`'s errors
+ *         (`-BMDS_EPIPE` for a pipe nobody reads), `-BMDS_ENOSYS` (a kernel without it).
+ */
+static inline int32_t bmds_write_now(int32_t fd, const void *buf, uint32_t size) {
+        if (!bmds_sys_has(BMDS_SYS_WRITE_NOW)) return -BMDS_ENOSYS;
+        return ((bmds_sys_write_now_fn)bmds_sys->slot[BMDS_SYS_WRITE_NOW])(fd, buf, size);
 }
 
 /**

@@ -991,6 +991,12 @@ void RmtChannel::handleClosed(uint8_t mode) {
         return;
 }
 
+size_t RmtChannel::writeRoom() {
+        const Port &p = _port;
+        if (!p.running || p.setup.receive) return RoomUnknown; // a write says why
+        return size_t(p.room()) * sizeof(uint32_t);
+}
+
 uint8_t RmtChannel::readiness() {
         const Port &p = _port;
         if (!p.running) return Readable | Writable; // a call says it stopped

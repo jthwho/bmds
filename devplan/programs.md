@@ -1383,3 +1383,47 @@ Nothing on any hot path: `kernel.syscall` (getpid 2.38 µs), `programs.launch` (
 - A crash report the user can keep (registers and a short stack walk into the log's history),
   as a panic's report is now; `tools/bmds-panic` could decode it with the program's ELF.
 - Whether `ecall` from a program (a stray Linux binary) should be `SIGSYS` rather than a panic.
+
+## 22. Non-blocking writes take what fits (design, 2026-11-21)
+
+- **The gap** (found in devplan/io.md §15.6): the SDK's `O_NONBLOCK` is a `poll()` then the
+  ordinary call, and the kernel doesn't know a descriptor's mode. A read is right that way (a
+  stream's read returns what it has once readable), a write isn't: a stream that has room writes
+  the whole of it, waiting inside for the rest (a 64 KB write to a pipe of 16 KB waited for the
+  reader). POSIX: a non-blocking write takes what fits now and returns that count, `EAGAIN` if
+  nothing fits; to a pipe, `PIPE_BUF` (4096) bytes or fewer go whole or not at all.
+- **The call:** `write_now(fd, buf, size)` (slot 146): what the stream takes without waiting, the
+  count; `-BMDS_EAGAIN` if nothing. The SDK's `write()` uses it for an `O_NONBLOCK` descriptor (a
+  socket still by `MSG_DONTWAIT`, an audio fd still by its room). The mode stays the SDK's.
+- **The streams:** `Stream::writeRoom()`, the bytes a write takes now without waiting
+  (`RoomUnknown` by default: the write as before, for streams that never wait, as files); a
+  pipe's ring (and `atomicWriteBytes()`: `PIPE_BUF`), a socket pair's, a pty's, the UART and USB
+  serial consoles' (half their room while `\n` becomes CR LF), an RMT sender's ring, a PARLIO
+  sender's free buffers. A stream gone (a pipe without a reader) answers `RoomUnknown` and its
+  write says why (`EPIPE`).
+- **Checked:** `progtest poll`'s pipe cases (a write bigger than the ring, a full ring, `PIPE_BUF`
+  whole or not at all, a big write partial), host tests of the rooms, and a PARLIO sender's write
+  of 64 KB at once returning what its buffers took.
+
+### 22a. As built (2026-11-21)
+
+- `Stream::writeRoom()` and `atomicWriteBytes()` (`stream.h`); rooms for `Pipe` (and
+  `AtomicBytes`, 4096), `StreamPair`'s ends, `PtyConsole`, `UartConsole`, `RmtChannel` and
+  `ParlioPort`. The USB serial console keeps `RoomUnknown`: its colour filter may lengthen output,
+  and it gives up on a reader that stalls anyway. `Process::writeNow()`, `write_now` (slot 146),
+  `bmds_write_now()`; `linux.c`'s `write()` uses it for an `O_NONBLOCK` descriptor.
+- **`writev()` too:** a non-blocking one stops at the first piece that doesn't go whole; a
+  `writev()` of 1 KB or less in all is gathered on the stack and written once (POSIX: to a pipe,
+  `PIPE_BUF` or less is one write, whole or not at all; malloc there wouldn't be signal-safe).
+  Between 1 KB and `PIPE_BUF` it still goes in pieces: atomic would need a vectored write in the
+  kernel. **`readv()`** no longer waits for a second piece once the first got something (it
+  returned what was there only when a piece came back short).
+- **Checked** on bmds0: `progtest poll`'s new cases (a 64 KB write to an empty pipe takes the
+  ring's 16 KB, a full pipe `EAGAIN`, 200 bytes into 100 of room `EAGAIN`, 100 go, 5000 into 1000
+  give 1000, a 20-byte `writev()` into 15 of room `EAGAIN` and into 20 all of it, every byte
+  taken read back, `EPIPE` without a reader, `readv()` returning 3 bytes into two pieces), and
+  `spawn`, `scripts`, `signals`, `files`, `threads` unchanged; host tests of the pipe's and the
+  socket pair's rooms; the PARLIO example's non-blocking writes of all that's left return in at
+  most 0.5 ms (99 ms before). The RMT, UART and pty rooms aren't exercised on the board.
+- **Seen, left as it is:** `O_NONBLOCK` here is a descriptor's, not shared with a `dup()`
+  (`progtest poll` asserts that); POSIX shares file status flags between duplicates.

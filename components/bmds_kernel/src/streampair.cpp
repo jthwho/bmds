@@ -23,6 +23,7 @@ class StreamPair::End final : public Stream {
                 using Stream::write;
                 uint8_t   readiness() override;
                 WaitList *readinessWaiters() override { return &_pollers; }
+                size_t    writeRoom() override; // the other end's ring free, while it is open
                 void      handleClosed(uint8_t mode) override;
 
                 End *peer = nullptr;
@@ -138,6 +139,10 @@ Result<size_t> StreamPair::End::write(ByteSpan data, unsigned int timeoutMs) {
         }
         _writeLock.unlock();
         return Result<size_t>(done, err);
+}
+
+size_t StreamPair::End::writeRoom() {
+        return peer->_open.load() ? peer->_in.freeSpace() : RoomUnknown;
 }
 
 uint8_t StreamPair::End::readiness() {

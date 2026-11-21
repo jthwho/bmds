@@ -208,3 +208,20 @@ TEST_CASE("Pipe: allocation failure") {
         }
         CHECK(HostMemory::liveAllocations() == base);
 }
+
+TEST_CASE("Pipe: its room, for a non-blocking write") {
+        auto [ends, err] = Pipe::create(64);
+        REQUIRE(err.isOk());
+        bmds::Stream &s = ends.write->stream();
+        CHECK(s.writeRoom() == 64);
+        CHECK(s.atomicWriteBytes() == Pipe::AtomicBytes);
+        REQUIRE(ends.write->write(bmds::StringView("0123456789"), WaitForever).error().isOk());
+        CHECK(s.writeRoom() == 54);
+        uint8_t b[4];
+        REQUIRE(ends.read->read(WritableByteSpan(b), WaitForever).error().isOk());
+        CHECK(s.writeRoom() == 58);
+        // Nobody reading: no room to tell, so a write says why (BrokenPipe).
+        ends.read.reset();
+        CHECK(s.writeRoom() == bmds::Stream::RoomUnknown);
+        CHECK(ends.write->write(bmds::StringView("x"), WaitForever).error() == Error::BrokenPipe);
+}

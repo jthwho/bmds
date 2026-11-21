@@ -341,9 +341,9 @@ Plan: [`input.md`](input.md).
   (slot 144), 64-bit counts and threshold events from a cache-safe interrupt, exact to 4 MHz
   through flash writes on bmds0. Step 8c built (§15.6): PARLIO ports (`io/parlioN`, `/dev/parlioN`,
   `parlio_ctl` slot 145), the receiver's DMA ring kept by us (ESP-IDF's misses nodes when an
-  interrupt is late); loopback exact to 20 MB/s on bmds0. Found: the SDK's `O_NONBLOCK` blocks a
-  write larger than the room (a POSIX gap, its own change). Next: ADC readings, a longer logic
-  strip, a second chip.
+  interrupt is late); loopback exact to 20 MB/s on bmds0. Found: the SDK's `O_NONBLOCK` blocked a
+  write larger than the room: fixed (programs.md §22: `write_now`, slot 146, streams' rooms).
+  Next: ADC readings, a longer logic strip, a second chip.
 
 ## Phase 6 — Graphics
 

@@ -221,6 +221,7 @@ class Process {
 
                 int32_t read(int32_t fd, void *buf, uint32_t size);
                 int32_t write(int32_t fd, const void *buf, uint32_t size);
+                int32_t writeNow(int32_t fd, const void *buf, uint32_t size);
                 int32_t close(int32_t fd);
                 int32_t seek(int32_t fd, int64_t offset, uint32_t whence, int64_t *position);
                 int32_t isatty(int32_t fd);

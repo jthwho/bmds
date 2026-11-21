@@ -852,6 +852,26 @@ int32_t Process::write(int32_t fd, const void *buf, uint32_t size) {
         return static_cast<int32_t>(n);
 }
 
+// A non-blocking write (devplan/programs.md §22): what the stream takes now, never a wait. A
+// stream that can't tell its room takes it all (it never waits, or a write says it's gone).
+int32_t Process::writeNow(int32_t fd, const void *buf, uint32_t size) {
+        const FileHandle::Ptr h = handleOf(fd);
+        if (!h) return -BMDS_EBADF;
+        if (!h->canWrite()) return -BMDS_EBADF;
+        if (size > INT32_MAX) size = INT32_MAX;
+        if (_memory != nullptr && !canRead(buf, size)) return -BMDS_EFAULT;
+        Stream      &s = h->stream();
+        const size_t room = s.writeRoom();
+        if (room != Stream::RoomUnknown) {
+                if (size == 0) return 0;
+                // Up to PIPE_BUF, whole or not at all; past it, what fits.
+                if (room < size && size <= s.atomicWriteBytes()) return -BMDS_EAGAIN;
+                if (room == 0) return -BMDS_EAGAIN;
+                if (room < size) size = uint32_t(room);
+        }
+        return write(fd, buf, size);
+}
+
 int32_t Process::close(int32_t fd) {
         FileHandle::Ptr gone; // the last reference goes after the lock (a file's close writes)
         Error           err;

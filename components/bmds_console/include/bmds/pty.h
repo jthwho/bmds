@@ -45,6 +45,7 @@ class PtyConsole final : public Console {
                 uint32_t       capabilities() const override { return Ansi; }
                 Result<size_t> write(ByteSpan data, unsigned int timeoutMs) override;
                 Error          flush(unsigned int timeoutMs) override;
+                size_t         writeRoom() override; // the output ring's free bytes (half while \n is CR LF)
                 void           handleOpened(uint8_t mode) override;
                 void           handleClosed(uint8_t mode) override;
                 void           addUser() override;

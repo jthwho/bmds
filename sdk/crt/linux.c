@@ -555,8 +555,20 @@ static long gated_write(long fd, const void *buf, size_t size) {
                 const long room = __bmds_oss_room(fd);
                 if (room == 0) return -EAGAIN;
                 if (room > 0 && (size_t)room < size) size = (size_t)room;
+                /* Anything else: what the stream takes now, never a wait (POSIX's non-blocking
+                 * write; a pipe's PIPE_BUF whole or not at all). */
+                if (room < 0) {
+                        const int32_t r = bmds_write_now((int32_t)fd, buf, (uint32_t)size);
+                        if (r != -BMDS_ENOSYS) return (long)(r);
+                }
         }
         return (long)(bmds_write((int32_t)fd, buf, (uint32_t)size));
+}
+
+/* True if fd is ready to read (writing: to write) now, without waiting. */
+static int ready_now(long fd, int writing) {
+        bmds_pollfd_t p = {.size = sizeof(p), .fd = (int32_t)fd, .events = writing ? BMDS_POLL_OUT : BMDS_POLL_IN};
+        return bmds_io_poll(&p, 1, 0, NULL) > 0;
 }
 
 static long do_open(long dirfd, const char *path, long flags) {
@@ -593,11 +605,36 @@ static long io_vector(long fd, const struct iovec *v, long count, int writing) {
         }
         const long g = io_gate(fd, writing);
         if (g <= 0) return g;
+        const int nonblock = is_nonblock(fd);
+        if (writing && count > 1) {
+                /* Small enough, it is one write, whole or not at all (POSIX's writev to a pipe, up to
+                 * PIPE_BUF): gathered on the stack (signal-safe: no malloc), then written once.
+                 * Between this and PIPE_BUF it goes in pieces (devplan/programs.md §22). */
+                char   one[1024];
+                size_t all = 0;
+                for (long i = 0; i < count && all <= sizeof(one); ++i) all += v[i].iov_len;
+                if (all <= sizeof(one)) {
+                        size_t at = 0;
+                        for (long i = 0; i < count; ++i) {
+                                memcpy(one + at, v[i].iov_base, v[i].iov_len);
+                                at += v[i].iov_len;
+                        }
+                        return nonblock ? gated_write(fd, one, all)
+                                        : (long)(bmds_write((int32_t)fd, one, (uint32_t)all));
+                }
+        }
         long total = 0;
         for (long i = 0; i < count; ++i) {
                 if (v[i].iov_len == 0) continue;
-                const int32_t n = writing ? bmds_write((int32_t)fd, v[i].iov_base, (uint32_t)v[i].iov_len)
-                                          : bmds_read((int32_t)fd, v[i].iov_base, (uint32_t)v[i].iov_len);
+                /* As one call: once something moved, the next piece only if it moves without a
+                 * wait (a read returns what was there; a non-blocking write what fit). */
+                if (total > 0 && (!writing || nonblock) && !ready_now(fd, writing)) break;
+                int32_t n;
+                if (writing && nonblock)
+                        n = (int32_t)gated_write(fd, v[i].iov_base, v[i].iov_len);
+                else
+                        n = writing ? bmds_write((int32_t)fd, v[i].iov_base, (uint32_t)v[i].iov_len)
+                                    : bmds_read((int32_t)fd, v[i].iov_base, (uint32_t)v[i].iov_len);
                 if (n < 0) return total > 0 ? total : (long)(n);
                 total += n;
                 if ((size_t)n < v[i].iov_len) break;

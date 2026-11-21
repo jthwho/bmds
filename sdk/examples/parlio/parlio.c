@@ -128,10 +128,8 @@ int main(int argc, char **argv) {
                 (void)poll(p, 2, 100);
                 if (out < total && (p[1].revents & POLLOUT)) {
                         const double w0 = now_s();
-                        // A piece at a time: after poll() it goes at once (a larger write would
-                        // wait for room inside: the SDK's O_NONBLOCK is a poll first).
-                        const size_t  chunk = total - out < 4096 ? total - out : 4096;
-                        const ssize_t n = write(tx, sent + out, chunk);
+                        // All that's left: a non-blocking write takes what fits and returns.
+                        const ssize_t n = write(tx, sent + out, total - out);
                         if (now_s() - w0 > slowest) slowest = now_s() - w0;
                         if (n < 0 && errno != EAGAIN) return fail("write", errno);
                         if (n > 0) out += (size_t)n;

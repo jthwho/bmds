@@ -83,3 +83,15 @@ TEST_CASE("StreamPair: more than a ring's worth streams through a concurrent rea
         }
         CHECK(HostMemory::liveAllocations() == base);
 }
+
+TEST_CASE("StreamPair: an end's room is the other's ring, for a non-blocking write") {
+        auto [pair, err] = StreamPair::create(64);
+        REQUIRE(err.isOk());
+        bmds::Stream &a = pair.first->stream();
+        CHECK(a.writeRoom() == 64);
+        REQUIRE(pair.first->write(bmds::StringView("hello"), WaitForever).error().isOk());
+        CHECK(a.writeRoom() == 59);
+        CHECK(pair.second->stream().writeRoom() == 64);
+        pair.second.reset();
+        CHECK(a.writeRoom() == bmds::Stream::RoomUnknown);
+}

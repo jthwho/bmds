@@ -48,6 +48,11 @@ int32_t bmds_k_write(int32_t fd, const void *buf, uint32_t size) {
         return call->write(fd, buf, size);
 }
 
+int32_t bmds_k_write_now(int32_t fd, const void *buf, uint32_t size) {
+        KernelCall call;
+        return call->writeNow(fd, buf, size);
+}
+
 int32_t bmds_k_close(int32_t fd) {
         KernelCall call;
         return call->close(fd);

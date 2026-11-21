@@ -146,6 +146,24 @@ class Stream {
                  */
                 virtual uint8_t readiness() { return Readable | Writable; }
 
+                /** @brief `writeRoom()` of a stream that doesn't say: its writes may wait. */
+                static constexpr size_t RoomUnknown = SIZE_MAX;
+
+                /**
+                 * @brief Returns the bytes a `write()` takes now without waiting (a non-blocking
+                 *        write takes that much: devplan/programs.md §22), or `RoomUnknown`: the
+                 *        default, for streams that never wait (files, memory) or that are gone (a
+                 *        write then says why).
+                 * @nonblocking
+                 */
+                virtual size_t writeRoom() { return RoomUnknown; }
+
+                /**
+                 * @brief Returns the size up to which a write goes whole or not at all when it can't
+                 *        all go now (a pipe's `PIPE_BUF`), or 0 (the default: any part).
+                 */
+                virtual size_t atomicWriteBytes() const { return 0; }
+
                 /**
                  * @brief Returns the list notified whenever `readiness()` may have
                  *        changed, or null if it never changes (the default).

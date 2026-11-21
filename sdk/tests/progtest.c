@@ -147,6 +147,7 @@
 #include <sys/socket.h>
 #include <sys/soundcard.h>
 #include <sys/resource.h>
+#include <sys/uio.h>
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
 #include <sys/un.h>
@@ -1390,6 +1391,48 @@ static int polling(const char *self) {
         CHECK(d >= 0 && !(fcntl(d, F_GETFL) & O_NONBLOCK) && close(d) == 0);
         CHECK(write(fds[1], "z", 1) == 1 && read(fds[0], &b, 1) == 1 && b == 'z');
         CHECK(close(fds[0]) == 0 && close(fds[1]) == 0);
+        // A non-blocking write takes what fits now (devplan/programs.md §22): more than the ring
+        // gives the ring's worth, a full ring EAGAIN; PIPE_BUF or less goes whole or not at all,
+        // more in part; writev the same; every byte taken comes out.
+        {
+                static char big[65536];
+                char        sink[4096];
+                memset(big, 'w', sizeof(big));
+                CHECK(pipe(fds) == 0 && fcntl(fds[1], F_SETFL, O_NONBLOCK) == 0);
+                const ssize_t ring = write(fds[1], big, sizeof(big));
+                CHECK(ring > 0 && ring < (ssize_t)sizeof(big));
+                CHECK(write(fds[1], big, 1) == -1 && errno == EAGAIN);
+                CHECK(read(fds[0], sink, 100) == 100);
+                CHECK(write(fds[1], big, 200) == -1 && errno == EAGAIN);
+                CHECK(write(fds[1], big, 100) == 100);
+                CHECK(read(fds[0], sink, 1000) == 1000);
+                CHECK(write(fds[1], big, 5000) == 1000);
+                // writev: its 20 bytes are one write, whole or not at all.
+                const struct iovec two[2] = {{big, 10}, {big, 10}};
+                CHECK(writev(fds[1], two, 2) == -1 && errno == EAGAIN);
+                CHECK(read(fds[0], sink, 15) == 15);
+                CHECK(writev(fds[1], two, 2) == -1 && errno == EAGAIN);
+                CHECK(read(fds[0], sink, 5) == 5);
+                CHECK(writev(fds[1], two, 2) == 20);
+                CHECK(fcntl(fds[0], F_SETFL, O_NONBLOCK) == 0);
+                ssize_t left = 0, n;
+                while ((n = read(fds[0], sink, sizeof(sink))) > 0) left += n;
+                CHECK(n == -1 && errno == EAGAIN && left == ring);
+                // A reader gone: the write says so.
+                CHECK(close(fds[0]) == 0);
+                signal(SIGPIPE, SIG_IGN);
+                CHECK(write(fds[1], big, 10) == -1 && errno == EPIPE);
+                signal(SIGPIPE, SIG_DFL);
+                CHECK(close(fds[1]) == 0);
+        }
+        // readv returns what was there: a second piece isn't waited for.
+        {
+                CHECK(pipe(fds) == 0 && write(fds[1], "abc", 3) == 3);
+                char         x[3], y[3];
+                struct iovec two[2] = {{x, sizeof(x)}, {y, sizeof(y)}};
+                CHECK(readv(fds[0], two, 2) == 3 && memcmp(x, "abc", 3) == 0);
+                CHECK(close(fds[0]) == 0 && close(fds[1]) == 0);
+        }
         // termios: ECHO and ICRNL both ways; VMIN 0 with VTIME 1: a read waits
         // 0.1 s and returns 0; O_NONBLOCK on the terminal.
         if (isatty(0)) {

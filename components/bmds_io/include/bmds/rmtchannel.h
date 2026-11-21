@@ -92,6 +92,7 @@ class RmtChannel final : public Stream {
                 Result<size_t> write(ByteSpan data, unsigned int timeoutMs) override;
                 uint8_t        readiness() override;
                 WaitList      *readinessWaiters() override { return &_pollers; }
+                size_t         writeRoom() override; // a sender's ring free, in bytes (whole symbols)
                 RmtChannel    *rmtChannel() override { return this; }
                 void           handleClosed(uint8_t mode) override;
 

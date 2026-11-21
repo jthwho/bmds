@@ -295,6 +295,13 @@ Result<size_t> PtyConsole::write(ByteSpan data, unsigned int timeoutMs) {
         return makeResult(done);
 }
 
+size_t PtyConsole::writeRoom() {
+        // Hung up, a write takes it all (dropped); else what fits even if every byte were \n.
+        if (_pty._hungUp.load(std::memory_order_acquire)) return RoomUnknown;
+        const size_t free = _pty._output->freeSpace();
+        return mode().nlToCrNl ? free / 2 : free;
+}
+
 Error PtyConsole::flush(unsigned int timeoutMs) {
         // Handed over once the emulator has read it all (or hung up).
         const Deadline deadline(timeoutMs);

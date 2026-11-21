@@ -1219,3 +1219,5 @@ _Static_assert(offsetof(bmds_parlio_info_t, width) == 12 && offsetof(bmds_parlio
                        offsetof(bmds_parlio_info_t, lost) == 40 && offsetof(bmds_parlio_info_t, transfers) == 48 &&
                        offsetof(bmds_parlio_info_t, idle) == 56 && sizeof(bmds_parlio_info_t) == 64,
                "ABI: bmds_parlio_info_t");
+/* Non-blocking writes (devplan/programs.md §22, 2026-11-21). */
+_Static_assert(BMDS_SYS_WRITE_NOW == 146, "ABI: slot WRITE_NOW");

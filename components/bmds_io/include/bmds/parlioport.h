@@ -65,6 +65,7 @@ class ParlioPort final : public Stream {
                 Error          flush(unsigned int timeoutMs) override;
                 uint8_t        readiness() override;
                 WaitList      *readinessWaiters() override { return &_pollers; }
+                size_t         writeRoom() override; // a sender's free buffers, in bytes
                 ParlioPort    *parlioPort() override { return this; }
 
         private:

@@ -644,6 +644,13 @@ Result<size_t> UartConsole::readInput(WritableByteSpan buf, unsigned int timeout
         }
 }
 
+size_t UartConsole::writeRoom() {
+        // Stopped, a write says so; else what fits even if every byte were \n.
+        if (!_running.load(std::memory_order_acquire)) return RoomUnknown;
+        const size_t free = _tx.freeSpace();
+        return mode().nlToCrNl ? free / 2 : free;
+}
+
 Result<size_t> UartConsole::write(ByteSpan data, unsigned int timeoutMs) {
         if (data.isEmpty()) return makeResult(size_t(0));
         Deadline deadline(timeoutMs);

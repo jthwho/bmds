@@ -77,6 +77,7 @@ class UartConsole final : public Console {
                 uint32_t       capabilities() const override { return 0; }
                 Result<size_t> write(ByteSpan data, unsigned int timeoutMs) override;
                 Error          flush(unsigned int timeoutMs) override;
+                size_t         writeRoom() override; // the transmit ring's free bytes (half while \n is CR LF)
 
         protected:
                 Result<size_t> readInput(WritableByteSpan buf, unsigned int timeoutMs) override;
