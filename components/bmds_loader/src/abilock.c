@@ -1059,3 +1059,23 @@ _Static_assert(offsetof(bmds_gpio_edges_t, offset) == 4 && offsetof(bmds_gpio_ed
 #endif
 /* A sysconf_set's refusal, in the check's words (devplan/io.md §10.7, 2026-11-20). */
 _Static_assert(BMDS_SYSCONF_FIELD_REFUSAL == 7, "ABI: BMDS_SYSCONF_FIELD_REFUSAL");
+/* I2C: /dev/i2c-N (devplan/io.md §11.3, 2026-11-20). */
+_Static_assert(BMDS_SYS_I2C_CTL == 140, "ABI: slot I2C_CTL");
+_Static_assert(BMDS_I2C_INFO == 0 && BMDS_I2C_SET_TARGET == 1 && BMDS_I2C_TRANSFER == 2 && BMDS_I2C_FORCE == 1 &&
+                       BMDS_I2C_MSG_READ == 1 && BMDS_I2C_MAX_MESSAGES == 42 && BMDS_ENXIO == 6,
+               "ABI: i2c_ctl ops, flags; ENXIO");
+_Static_assert(offsetof(bmds_i2c_info_t, bus) == 4 && offsetof(bmds_i2c_info_t, clock_hz) == 8 &&
+                       offsetof(bmds_i2c_info_t, target) == 12 && offsetof(bmds_i2c_info_t, flags) == 16 &&
+                       offsetof(bmds_i2c_info_t, max_commands) == 20 && sizeof(bmds_i2c_info_t) == 24,
+               "ABI: bmds_i2c_info_t");
+_Static_assert(offsetof(bmds_i2c_target_t, address) == 4 && offsetof(bmds_i2c_target_t, flags) == 8 &&
+                       sizeof(bmds_i2c_target_t) == 16,
+               "ABI: bmds_i2c_target_t");
+#if UINTPTR_MAX == 0xffffffffu // (pointers inside)
+_Static_assert(offsetof(bmds_i2c_msg_t, flags) == 2 && offsetof(bmds_i2c_msg_t, length) == 4 &&
+                       offsetof(bmds_i2c_msg_t, data) == 8 && sizeof(bmds_i2c_msg_t) == 12,
+               "ABI: bmds_i2c_msg_t");
+_Static_assert(offsetof(bmds_i2c_transfer_t, count) == 4 && offsetof(bmds_i2c_transfer_t, messages) == 8 &&
+                       sizeof(bmds_i2c_transfer_t) == 16,
+               "ABI: bmds_i2c_transfer_t");
+#endif

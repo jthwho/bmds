@@ -25,6 +25,8 @@ if(COMMAND idf_component_register)
                                     src/displayregs.cpp
                                     src/flashcache.cpp
                                     src/i2cbus.cpp
+                                    src/i2cclient.cpp
+                                    src/i2ccommand.cpp
                                     src/jpegcodec.cpp
                                     src/lt8912b.cpp
                                     src/memtestcommand.cpp
@@ -34,7 +36,7 @@ if(COMMAND idf_component_register)
                                     src/surface.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_io bmds_kernel
-                               PRIV_REQUIRES bmds_bench bmds_board bmds_shell bmds_sysconf esp_driver_i2c esp_driver_jpeg esp_hw_support esp_hal_lcd esp_mm esp_timer
+                               PRIV_REQUIRES bmds_bench bmds_board bmds_fs bmds_shell bmds_sysconf esp_driver_i2c esp_driver_jpeg esp_hw_support esp_hal_lcd esp_mm esp_timer
                                              spi_flash
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})

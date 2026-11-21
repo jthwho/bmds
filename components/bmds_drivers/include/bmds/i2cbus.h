@@ -23,6 +23,19 @@ BMDS_NAMESPACE_BEGIN
 class I2cBus;
 
 /**
+ * @brief One message of a raw transfer (`I2cBus::transfer()`): Linux's `i2c_msg` in shape.
+ *
+ * @par Thread Safety
+ * A plain value.
+ */
+struct I2cMessage {
+                uint16_t address = 0;    ///< The 7-bit address.
+                bool     read = false;   ///< Read (else write).
+                uint8_t *data = nullptr; ///< The bytes written, or where the bytes read go.
+                size_t   length = 0;     ///< How many (0: the address alone, a probe).
+};
+
+/**
  * @brief One address on an I²C bus, at its own clock: what a driver talks to.
  *
  * Made by `I2cBus::device()` and kept for good (a driver asks once, at its
@@ -122,18 +135,47 @@ class I2cBus {
                  */
                 Error probe(uint8_t address, unsigned int timeoutMs);
 
+                /** @brief Commands one transfer may take (the controller's command registers). */
+                static constexpr size_t MaxCommands = 8;
+
+                /**
+                 * @brief Sends @p messages as one transaction, a repeated start between each and
+                 *        one stop at the end (devplan/io.md §11.3): a write is a start, its address
+                 *        and its bytes (3 commands), a read a start, its address and its bytes (up to
+                 *        4); at most `MaxCommands` in all with the stop: a write then a read fits.
+                 *        Between the drivers' own transactions (the bus's lock).
+                 * @return `Ok`; `NotFound` (an address or a byte not acknowledged), `Timeout`,
+                 *         `Invalid` (an address past 0x7f, too many commands), `NoMem`.
+                 * @blocking
+                 */
+                Error transfer(Span<const I2cMessage> messages, unsigned int timeoutMs);
+
+                /** @brief True if a BMDS driver uses @p address on this bus (`device()`'s). */
+                bool isOwned(uint8_t address) const;
+
+                /** @brief The buses there are (their numbers: 0 up). */
+                static size_t count();
+
+                /**
+                 * @brief Adds `/dev/i2c-N` for each bus (devplan/io.md §11.3): a file per open, its
+                 *        own target address (`I2cClient`). After the buses and the VFS; once.
+                 * @return `Ok`, or `Vfs::addDeviceFile()`'s error.
+                 */
+                static Error addFiles();
+
         private:
                 I2cBus(size_t number, void *handle, uint32_t clockHz, IoClaim &&claim)
                     : _number(number), _handle(handle), _clockHz(clockHz), _claim(std::move(claim)) {}
                 template <typename T> friend class StaticObject;
 
-                size_t    _number;
-                void     *_handle; // the IDF bus
-                uint32_t  _clockHz;
-                IoClaim   _claim; // its pads and controller (devplan/io.md §3.2)
-                Mutex     _lock;  // the device table
-                I2cDevice _devices[MaxDevices];
-                size_t    _deviceCount = 0;
+                size_t        _number;
+                void         *_handle; // the IDF bus
+                uint32_t      _clockHz;
+                IoClaim       _claim;         // its pads and controller (devplan/io.md §3.2)
+                mutable Mutex _lock;          // the device table, _raw
+                void         *_raw = nullptr; // the device raw transfers go through, made when first wanted
+                I2cDevice     _devices[MaxDevices];
+                size_t        _deviceCount = 0;
 };
 
 BMDS_NAMESPACE_END

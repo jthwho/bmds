@@ -78,5 +78,6 @@
 #define BMDS_EPROTO 71       /**< Protocol error (TLS: an alert, nothing in common). */
 #define BMDS_EBADMSG 74      /**< Bad message (TLS: a record that failed its check). */
 #define BMDS_EKEYREJECTED 129 /**< Key was rejected (TLS: a certificate refused). */
+#define BMDS_ENXIO 6          /**< No such device or address (I²C: nothing acknowledged). Appended 2026-11-20. */
 
 #endif /* BMDS_ERRNO_H */

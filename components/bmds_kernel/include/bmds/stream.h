@@ -22,6 +22,7 @@ class AudioFile;
 class DecodedFile;
 class FileHandle;
 class GpioChip;
+class I2cClient;
 class MidiFile;
 class PtpClock;
 class Pty;
@@ -211,6 +212,9 @@ class Stream {
 
                 /** @brief Returns this as a GPIO chip (`/dev/gpiochip0`: `devplan/io.md` §3.9), or null. */
                 virtual GpioChip *gpioChip() { return nullptr; }
+
+                /** @brief Returns this as an I²C bus's file (`/dev/i2c-N`: `devplan/io.md` §11.3), or null. */
+                virtual I2cClient *i2cClient() { return nullptr; }
 
                 /**
                  * @brief Returns the stream's whole contents where they lie, if it has them at an

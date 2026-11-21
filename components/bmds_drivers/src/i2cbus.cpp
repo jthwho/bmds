@@ -7,18 +7,23 @@
  */
 
 #include <cstdio>
+#include <new>
 #include <driver/i2c_master.h>
 #include <bmds/board.h>
 #include <bmds/i2cbus.h>
+#include <bmds/i2cclient.h>
 #include <bmds/io.h>
 #include <bmds/log.h>
+#include <bmds/memory.h>
 #include <bmds/staticobject.h>
+#include <bmds/vfs.h>
 
 BMDS_NAMESPACE_BEGIN
 
 namespace {
 
         constinit StaticObject<I2cBus> buses[BoardI2cCount];
+        constinit char                 fileNames[BoardI2cCount][8]; // `i2c-0`: /dev's names, kept
 
         // IDF's timeout: -1 waits for ever.
         int idfTimeout(unsigned int timeoutMs) {
@@ -135,6 +140,122 @@ Error I2cBus::probe(uint8_t address, unsigned int timeoutMs) {
                 i2c_master_probe(static_cast<i2c_master_bus_handle_t>(_handle), address, idfTimeout(timeoutMs));
         if (err == ESP_ERR_NOT_FOUND) return Error::NotFound;
         return transferError(err);
+}
+
+
+size_t I2cBus::count() {
+        size_t n = 0;
+        while (n < BoardI2cCount && buses[n].isCreated()) ++n;
+        return n;
+}
+
+bool I2cBus::isOwned(uint8_t address) const {
+        Mutex::Locker lock(_lock, WaitForever);
+        for (size_t i = 0; i < _deviceCount; ++i)
+                if (_devices[i]._address == address) return true;
+        return false;
+}
+
+Error I2cBus::transfer(Span<const I2cMessage> messages, unsigned int timeoutMs) {
+        if (messages.isEmpty()) return Error::Invalid;
+        // The commands: per message a start, its address byte, then its bytes (a read's last one
+        // not acknowledged); one stop. As many as the controller holds, or refused.
+        i2c_operation_job_t ops[MaxCommands] = {};
+        uint8_t             addressBytes[MaxCommands] = {};
+        size_t              n = 0;
+        const auto          add = [&](const i2c_operation_job_t &op) {
+                if (n == MaxCommands) return false;
+                ops[n++] = op;
+                return true;
+        };
+        for (size_t m = 0; m < messages.size(); ++m) {
+                const I2cMessage &msg = messages[m];
+                if (msg.address > 0x7f || (msg.length > 0 && msg.data == nullptr)) return Error::Invalid;
+                i2c_operation_job_t start = {};
+                start.command = I2C_MASTER_CMD_START;
+                addressBytes[m < MaxCommands ? m : 0] = uint8_t(msg.address << 1 | (msg.read ? 1 : 0));
+                i2c_operation_job_t addr = {};
+                addr.command = I2C_MASTER_CMD_WRITE;
+                addr.write.ack_check = true;
+                addr.write.data = &addressBytes[m < MaxCommands ? m : 0];
+                addr.write.total_bytes = 1;
+                if (!add(start) || !add(addr)) return Error::Invalid;
+                if (msg.length == 0) continue;
+                if (!msg.read) {
+                        i2c_operation_job_t w = {};
+                        w.command = I2C_MASTER_CMD_WRITE;
+                        w.write.ack_check = true;
+                        w.write.data = msg.data;
+                        w.write.total_bytes = msg.length;
+                        if (!add(w)) return Error::Invalid;
+                        continue;
+                }
+                if (msg.length > 1) {
+                        i2c_operation_job_t r = {};
+                        r.command = I2C_MASTER_CMD_READ;
+                        r.read.ack_value = I2C_ACK_VAL;
+                        r.read.data = msg.data;
+                        r.read.total_bytes = msg.length - 1;
+                        if (!add(r)) return Error::Invalid;
+                }
+                i2c_operation_job_t last = {};
+                last.command = I2C_MASTER_CMD_READ;
+                last.read.ack_value = I2C_NACK_VAL; // the last byte: the device lets go of the bus
+                last.read.data = msg.data + msg.length - 1;
+                last.read.total_bytes = 1;
+                if (!add(last)) return Error::Invalid;
+        }
+        i2c_operation_job_t stop = {};
+        stop.command = I2C_MASTER_CMD_STOP;
+        if (!add(stop)) return Error::Invalid;
+        void *raw = nullptr;
+        {
+                // The device the raw transfers go through, the bus's clock, and no address of its own:
+                // the driver otherwise writes a device's address after every start, before ours.
+                Mutex::Locker lock(_lock, WaitForever);
+                if (_raw == nullptr) {
+                        i2c_device_config_t config = {};
+                        config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+                        config.device_address = I2C_DEVICE_ADDRESS_NOT_USED;
+                        config.scl_speed_hz = _clockHz;
+                        i2c_master_dev_handle_t handle = nullptr;
+                        const esp_err_t err = i2c_master_bus_add_device(static_cast<i2c_master_bus_handle_t>(_handle),
+                                                                        &config, &handle);
+                        if (err != ESP_OK) return Error::fromEspErr(err);
+                        _raw = handle;
+                }
+                raw = _raw;
+        }
+        const esp_err_t err = i2c_master_execute_defined_operations(dev(raw), ops, n, idfTimeout(timeoutMs));
+        if (err == ESP_ERR_INVALID_RESPONSE) return Error::NotFound; // not acknowledged
+        return transferError(err);
+}
+
+Error I2cBus::addFiles() {
+        for (size_t i = 0; i < count(); ++i) {
+                std::snprintf(fileNames[i], sizeof(fileNames[i]), "i2c-%u", static_cast<unsigned>(i));
+                Vfs::DeviceFile file;
+                file.name = fileNames[i];
+                file.arg = &*buses[i];
+                file.isDevice = true;
+                // A client per open: its own target (Linux's i2c-dev), gone with its handle.
+                file.open = [](void *arg, uint8_t flags) -> Result<FileHandle::Ptr> {
+                        const uint8_t mode = ((flags & Vfs::Read) ? FileHandle::Read : 0) |
+                                             ((flags & Vfs::Write) ? FileHandle::Write : 0);
+                        if (mode == 0) return makeError<FileHandle::Ptr>(Error::Invalid);
+                        void *mem = Memory::alloc(MemSpace::Psram, sizeof(I2cClient));
+                        if (mem == nullptr) return makeError<FileHandle::Ptr>(Error::NoMem);
+                        auto *client = ::new (mem) I2cClient(*static_cast<I2cBus *>(arg));
+                        auto [handle, err] = FileHandle::open(*client, mode);
+                        if (err.isError()) {
+                                client->~I2cClient();
+                                Memory::free(mem);
+                        }
+                        return Result<FileHandle::Ptr>(std::move(handle), err);
+                };
+                if (const Error err = Vfs::addDeviceFile(file); err.isError()) return err;
+        }
+        return Error::Ok;
 }
 
 BMDS_NAMESPACE_END

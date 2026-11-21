@@ -858,6 +858,13 @@ until silicon v3; then test again.
   - **Unaligned pieces cost a quarter more:** 16,000-byte writes of a file take 26% longer than
     16 KB ones (a single-sector write for the partial sectors each time); gather them
     (`BlockWriter`).
+- **ESP-IDF's I²C master writes the device's address itself:** after every start of a
+  transaction it runs (`s_i2c_start_end_command`), defined operations
+  (`i2c_master_execute_defined_operations`) included, it puts the device's address byte (read
+  or write by the next command) ahead of the operations' own. A raw transfer that writes its own
+  address bytes needs a device added with `I2C_DEVICE_ADDRESS_NOT_USED` (0xffff), or the wire
+  carries two address bytes and nothing acknowledges. Found when `/dev/i2c-N`'s forced read of
+  the bridge got no answer; used by `I2cBus::transfer()` (`devplan/io.md` §11.4).
 - **`esp_random()` costs ~56 µs a word, and more:** it waits 14 × the CPU's MHz APB cycles
   since the last word (the P4's tested sampling rate), and asks the clock tree for the CPU and APB
   frequencies on every call, which reads the PLL's settings over the analog I2C bus in critical

@@ -36,6 +36,7 @@
 #include <sys/ioctl.h>
 #include <sys/timex.h>
 #include <linux/gpio.h>
+#include <linux/i2c-dev.h>
 #include <linux/ptp_clock.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -1063,6 +1064,170 @@ static long gpio_ioctl(long fd, unsigned long request, void *arg) {
         }
 }
 
+/* /dev/i2c-N's requests (linux/i2c-dev.h) on i2c_ctl. */
+static long i2c_ctl(long fd, uint32_t op, void *arg) {
+        return (long)bmds_i2c_ctl((int32_t)fd, op, arg);
+}
+
+/* Messages as one transaction: what was sent, or the error. */
+static long i2c_send(long fd, bmds_i2c_msg_t *m, uint32_t count) {
+        bmds_i2c_transfer_t t = {.size = sizeof(t), .count = count, .messages = m};
+        return i2c_ctl(fd, BMDS_I2C_TRANSFER, &t);
+}
+
+/* SMBus on plain messages, at the file's target (Linux's i2c_smbus_xfer_emulated()). */
+static long i2c_smbus(long fd, struct i2c_smbus_ioctl_data *d) {
+        bmds_i2c_info_t info = {.size = sizeof(info)};
+        const long      r = i2c_ctl(fd, BMDS_I2C_INFO, &info);
+        if (r < 0) return r;
+        if (info.target < 0) return -EINVAL;
+        const uint16_t        addr = (uint16_t)info.target;
+        const int             read = d->read_write == I2C_SMBUS_READ;
+        union i2c_smbus_data *data = d->data;
+        uint8_t               out[I2C_SMBUS_BLOCK_MAX + 2];
+        uint8_t               in[I2C_SMBUS_BLOCK_MAX];
+        bmds_i2c_msg_t        m[2];
+        uint32_t              n = 1;
+        uint8_t               command = d->command;
+        memset(m, 0, sizeof(m));
+        m[0].address = m[1].address = addr;
+        if (d->size != I2C_SMBUS_QUICK && !(d->size == I2C_SMBUS_BYTE && !read) && data == NULL) return -EFAULT;
+        switch (d->size) {
+                case I2C_SMBUS_QUICK: m[0].flags = read ? BMDS_I2C_MSG_READ : 0; break;
+                case I2C_SMBUS_BYTE:
+                        m[0].length = 1;
+                        if (read) {
+                                m[0].flags = BMDS_I2C_MSG_READ;
+                                m[0].data = &data->byte;
+                        } else {
+                                m[0].data = &command; /* the command is the byte */
+                        }
+                        break;
+                case I2C_SMBUS_BYTE_DATA:
+                case I2C_SMBUS_WORD_DATA:
+                case I2C_SMBUS_PROC_CALL: {
+                        const uint16_t bytes = d->size == I2C_SMBUS_BYTE_DATA ? 1 : 2;
+                        out[0] = command;
+                        if (read && d->size != I2C_SMBUS_PROC_CALL) {
+                                m[0].length = 1;
+                                m[0].data = out;
+                                m[1].flags = BMDS_I2C_MSG_READ;
+                                m[1].length = bytes;
+                                m[1].data = in;
+                                n = 2;
+                                break;
+                        }
+                        out[1] = bytes == 1 ? data->byte : (uint8_t)(data->word & 0xff);
+                        out[2] = (uint8_t)(data->word >> 8);
+                        m[0].length = (uint16_t)(1 + bytes);
+                        m[0].data = out;
+                        if (d->size == I2C_SMBUS_PROC_CALL) { /* a word out, a word back */
+                                m[1].flags = BMDS_I2C_MSG_READ;
+                                m[1].length = 2;
+                                m[1].data = in;
+                                n = 2;
+                        }
+                        break;
+                }
+                case I2C_SMBUS_I2C_BLOCK_BROKEN:
+                case I2C_SMBUS_I2C_BLOCK_DATA: {
+                        const uint8_t len = data->block[0];
+                        if (len == 0 || len > I2C_SMBUS_BLOCK_MAX) return -EINVAL;
+                        out[0] = command;
+                        m[0].data = out;
+                        if (read) {
+                                m[0].length = 1;
+                                m[1].flags = BMDS_I2C_MSG_READ;
+                                m[1].length = len;
+                                m[1].data = &data->block[1];
+                                n = 2;
+                        } else {
+                                memcpy(out + 1, &data->block[1], len);
+                                m[0].length = (uint16_t)(1 + len);
+                        }
+                        break;
+                }
+                case I2C_SMBUS_BLOCK_DATA: {
+                        /* A block read's length is the device's first byte: not in a fixed message. */
+                        if (read) return -EOPNOTSUPP;
+                        const uint8_t len = data->block[0];
+                        if (len == 0 || len > I2C_SMBUS_BLOCK_MAX) return -EINVAL;
+                        out[0] = command;
+                        out[1] = len;
+                        memcpy(out + 2, &data->block[1], len);
+                        m[0].length = (uint16_t)(2 + len);
+                        m[0].data = out;
+                        break;
+                }
+                default: return -EOPNOTSUPP; /* block process call */
+        }
+        const long s = i2c_send(fd, m, n);
+        if (s < 0) return s;
+        if (n == 2 && m[1].data == in) {
+                if (d->size == I2C_SMBUS_BYTE_DATA)
+                        data->byte = in[0];
+                else
+                        data->word = (uint16_t)(in[0] | in[1] << 8);
+        }
+        return 0;
+}
+
+static long i2c_ioctl(long fd, unsigned long request, void *arg) {
+        switch (request) {
+                case I2C_SLAVE:
+                case I2C_SLAVE_FORCE: {
+                        const unsigned long address = (unsigned long)arg;
+                        if (address > 0x7f) return -EINVAL;
+                        bmds_i2c_target_t t = {.size = sizeof(t),
+                                               .address = (uint32_t)address,
+                                               .flags = request == I2C_SLAVE_FORCE ? BMDS_I2C_FORCE : 0};
+                        return i2c_ctl(fd, BMDS_I2C_SET_TARGET, &t);
+                }
+                case I2C_FUNCS: {
+                        if (arg == NULL) return -EFAULT;
+                        bmds_i2c_info_t info = {.size = sizeof(info)};
+                        const long      r = i2c_ctl(fd, BMDS_I2C_INFO, &info);
+                        if (r < 0) return r;
+                        *(unsigned long *)arg = I2C_FUNC_I2C | I2C_FUNC_SMBUS_QUICK | I2C_FUNC_SMBUS_BYTE |
+                                                I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA |
+                                                I2C_FUNC_SMBUS_PROC_CALL | I2C_FUNC_SMBUS_WRITE_BLOCK_DATA |
+                                                I2C_FUNC_SMBUS_I2C_BLOCK;
+                        return 0;
+                }
+                case I2C_RDWR: {
+                        const struct i2c_rdwr_ioctl_data *rdwr = arg;
+                        if (rdwr == NULL || rdwr->msgs == NULL) return -EFAULT;
+                        if (rdwr->nmsgs == 0 || rdwr->nmsgs > I2C_RDWR_IOCTL_MAX_MSGS) return -EINVAL;
+                        bmds_i2c_msg_t m[I2C_RDWR_IOCTL_MAX_MSGS];
+                        for (uint32_t i = 0; i < rdwr->nmsgs; i++) {
+                                const struct i2c_msg *g = &rdwr->msgs[i];
+                                if ((g->flags & ~I2C_M_RD) != 0) return -EOPNOTSUPP; /* ten-bit, no-start, ... */
+                                m[i].address = g->addr;
+                                m[i].flags = (g->flags & I2C_M_RD) ? BMDS_I2C_MSG_READ : 0;
+                                m[i].length = g->len;
+                                m[i].reserved = 0;
+                                m[i].data = g->buf;
+                        }
+                        return i2c_send(fd, m, rdwr->nmsgs);
+                }
+                case I2C_SMBUS:
+                        if (arg == NULL) return -EFAULT;
+                        return i2c_smbus(fd, arg);
+                case I2C_TENBIT:
+                case I2C_PEC:
+                case I2C_TIMEOUT:
+                case I2C_RETRIES: {
+                        bmds_i2c_info_t info = {.size = sizeof(info)};
+                        const long      r = i2c_ctl(fd, BMDS_I2C_INFO, &info);
+                        if (r < 0) return r;
+                        /* Ten-bit addresses and PEC aren't offered; the bus keeps its own timeout. */
+                        if ((request == I2C_TENBIT || request == I2C_PEC) && arg != NULL) return -EOPNOTSUPP;
+                        return 0;
+                }
+                default: return -ENOTTY;
+        }
+}
+
 static long do_ioctl(long fd, unsigned long request, void *arg) {
         /* OSS: /dev/dsp's 'P' requests and /dev/mixer's 'M' (oss.c). */
         const unsigned long type = request >> 8 & 0xff;
@@ -1075,6 +1240,7 @@ static long do_ioctl(long fd, unsigned long request, void *arg) {
         }
         if (type == PTP_CLK_MAGIC) return ptp_ioctl(fd, request, arg);
         if (type == GPIO_IOC_MAGIC) return gpio_ioctl(fd, request, arg);
+        if ((request >= I2C_RETRIES && request <= I2C_PEC) || request == I2C_SMBUS) return i2c_ioctl(fd, request, arg);
         switch (request) {
                 case TCGETS: return tc_get(fd, arg);
                 case TCSETS:

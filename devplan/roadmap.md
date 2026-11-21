@@ -308,7 +308,10 @@ Plan: [`input.md`](input.md).
   (§10.8): `ioman` sets pins up through `io/gpio`, asks before forcing in the kernel's words
   (`BMDS_SYSCONF_FIELD_REFUSAL`), and draws a watched pin's edges; checked on bmds0. Step 4a
   built (§11.2): UART ports, `io/uartN` → `/dev/ttySN`, a `Console` on its own interrupt;
-  checked on bmds0 in loopback. Next: 4b (I²C ports, `/dev/i2c-N`).
+  checked on bmds0 in loopback. Step 4b built (§11.4): the system's I²C buses as Linux's
+  `/dev/i2c-N` (a target per open, a driver's addresses needing force), `i2c_ctl` (slot 140),
+  Linux's i2c-dev and SMBus, `i2c scan|read|write`, `sdk/examples/i2cread`; checked on bmds0.
+  Next: 4c (SPI).
 
 ## Phase 6 — Graphics
 

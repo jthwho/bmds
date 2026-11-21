@@ -102,6 +102,7 @@ namespace {
                 {"i2c", bmds::I2cBus::init},
                 {"vfs", bmds::Vfs::init},
                 {"gpio", bmds::GpioChip::addFiles},   // /dev/gpiochip0 (devplan/io.md §3.9)
+                {"i2cdev", bmds::I2cBus::addFiles},   // /dev/i2c-N on the system's buses (devplan/io.md §11.3)
                 {"flash", bmds::FlashDisk::init},     // /flash: the board's own files, the update's records
                 {"recovery", bmds::Update::watch},    // crashes in a row, Esc at power on: to recovery
                 {"rom", bmds::RomDisk::init},         // /rom: the files that come with the firmware

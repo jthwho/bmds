@@ -344,7 +344,7 @@ io resources                instances and channels: free or held by whom; ports'
 io signals [PERIPHERAL]     the chip's matrix signals and the pads each reaches through IO_MUX
 io get 14                   reads a level (reading changes nothing)
 io pulse 14 [MS] [--force]  one action on a pin set up as an output
-io i2c scan N · io i2c read N ADDR REG [COUNT] · io spi xfer B.C HEX
+i2c scan N · i2c read N ADDR REG [COUNT] (its own command: §11.4) · io spi xfer B.C HEX
 ```
 
 Linux's own tools (`gpioget`, `gpioset`, `gpiomon`, `i2cdetect`) from `dist/` cover the rest the
@@ -742,3 +742,59 @@ Manager's Ports tab.
   after a change, no stray bytes; `tx=26` refused naming eth0; stopped: `/dev/ttyS1` gone, the
   pins back as they were; an unsaved port's pins put back by a `reboot`.
 - About 13.7 KB of code (the object files' text), the rings 3 KB of PSRAM per port started.
+
+### 11.3 4b: I²C, `/dev/i2c-N` on the system's buses (design, 2026-11-20)
+
+- **No I²C port on chosen pins for now:** the P4 has two I²C controllers and BMDS runs both, the
+  main bus (`i2c0`: display bridge, codec, HDMI DDC) and UEXT's (`i2c1`); the LP I²C reaches
+  only pads 0-15. So 4b is §3.6's other half: **the system's buses as Linux's `/dev/i2c-N`**,
+  over the existing `I2cBus`, without a port. `io/i2cN` waits for a chip or board with a free
+  controller.
+- **A file per open:** opening `/dev/i2c-N` makes a client (a small stream in PSRAM, gone with
+  its last handle) holding that file's target address and force flag, as Linux's i2c-dev's
+  `i2c_client` per open file. `read()` and `write()` are a plain read or write at the target.
+- **`i2c_ctl(fd, op, arg)`** (slot 140): `BMDS_I2C_INFO` (the bus, its clock, the file's
+  target and force, what it can do), `BMDS_I2C_SET_TARGET` (an address, and force),
+  `BMDS_I2C_TRANSFER` (messages, Linux's `i2c_msg` in shape: address, read or write, length,
+  buffer; one transaction with repeated starts, at most 42 messages as Linux).
+- **Addresses a BMDS driver owns** (an `I2cBus` device: the codec, the bridge, DDC's EDID) are
+  `EBUSY` unless the file's force is set (`I2C_SLAVE_FORCE`), for `SET_TARGET` as Linux and for
+  `TRANSFER` too (Linux lets `I2C_RDWR` through; here a driver's chip changed behind it is what
+  `force` exists for).
+- **The bus as ESP-IDF drives it:** one raw device per bus whose transfers are ESP-IDF's
+  "defined operations" (START, WRITE of the address byte and data, READ, STOP), so any message
+  sequence goes on the wire as given; the bus's own lock keeps transactions whole between the
+  drivers and the files.
+- **Linux:** `linux/i2c-dev.h` and `linux/i2c.h` (Linux's layouts and numbers): `I2C_SLAVE`,
+  `I2C_SLAVE_FORCE`, `I2C_FUNCS`, `I2C_RDWR`, `I2C_SMBUS` (quick, byte, byte data, word data,
+  process call, I2C block, block write: built from messages in `linux.c`; block read needs a
+  length the device gives, not offered), `I2C_TIMEOUT`, `I2C_RETRIES` (taken, ignored).
+- **Shell:** `i2c scan N` (`i2cdetect`'s grid: `UU` for a driver's address), `i2c read N
+  ADDR REG [COUNT] [--force]`, `i2c write N ADDR REG BYTE... [--force]`.
+
+### 11.4 As built: 4b (2026-11-20)
+
+- `I2cBus::transfer()` (messages as one transaction), `isOwned()`, `count()`, `addFiles()`
+  (boot stage `i2cdev` after `gpio`); `I2cClient` (`bmds/i2cclient.h`), a stream per open in
+  PSRAM, freeing itself in `handleClosed()`; `Stream::i2cClient()`.
+- **The raw device has no address** (`I2C_DEVICE_ADDRESS_NOT_USED`): ESP-IDF writes a device's
+  own address after every start of a transaction it runs, defined operations included, so a
+  raw device with an address put that byte ahead of ours and nothing answered
+  (`docs/platforms/esp32p4.md`).
+- **Commands:** at most 8 (`SOC_I2C_CMD_REG_NUM`): a write is 3, a read 4 (its last byte not
+  acknowledged), an address alone 2, plus the stop. A write then a read of any length fits
+  (ESP-IDF moves a long read through the 32-byte FIFO in pieces: a 128-byte EDID read works);
+  three messages do not, and are `EOPNOTSUPP`, not split.
+- **`i2c_ctl`** (slot 140, `bmds/sys.h`, ABI-locked), `BMDS_ENXIO` (6) appended for an address
+  or byte not acknowledged, as Linux. `linux.c` translates `I2C_SLAVE`, `_FORCE`, `I2C_FUNCS`,
+  `I2C_RDWR` (`I2C_M_RD` only), `I2C_SMBUS` (as §11.3), `I2C_TIMEOUT`, `I2C_RETRIES`;
+  `I2C_TENBIT` and `I2C_PEC` take 0 only.
+- **Shell:** a command of its own, `i2c` (in `bmds_drivers`: `bmds_io` cannot depend on the
+  drivers); bare, it lists the buses and the addresses their drivers own.
+- **Size:** about 4.5 KB of code (the bus's transfer 1.1, the command 2.0, `i2c_ctl` 1.0, the
+  client 0.4); 16 bytes of names; a client 20 bytes of PSRAM per open file.
+- **Checked on bmds0:** `i2c scan 0` finds 0x11, 0x12, 0x18, 0x30, 0x3a, 0x4b, 0x50, 0x54 with
+  the bridge's 0x48-0x4a as `UU`; `i2c read 0 0x48 0 2 --force` is its id `12 b2`; the example
+  `sdk/examples/i2cread` (Linux's API only) reads EDID at 0x50 by SMBus and by `I2C_RDWR` (128
+  bytes), gets `EBUSY` at 0x48, the id with `-f`, `ENXIO` at an empty address; the display
+  unaffected.

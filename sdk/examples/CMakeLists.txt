@@ -30,6 +30,7 @@ bmds_add_program(beat SOURCES beat/beat.c DISPLAY)
 bmds_add_program(tlsclient SOURCES tlsclient/tlsclient.c)
 bmds_add_program(screencap SOURCES screencap/screencap.c)
 bmds_add_program(gpioinfo SOURCES gpioinfo/gpioinfo.c)
+bmds_add_program(i2cread SOURCES i2cread/i2cread.c)
 
 # Application folders (devplan/apps.md): copied into a card's apps/, each a command in /apps.
 bmds_add_app(surfdemo PROGRAM surfdemo DESKTOP surfdemo/app.desktop)

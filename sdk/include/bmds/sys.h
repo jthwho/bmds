@@ -226,6 +226,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_FILE_MAP 137u   /**< `int32_t file_map(int32_t fd, int64_t offset, uint32_t length, void **addr)`. */
 #define BMDS_SYS_FILE_UNMAP 138u /**< `int32_t file_unmap(void *addr)`. */
 #define BMDS_SYS_GPIO_CTL 139u   /**< `int32_t gpio_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/gpiochipN`. */
+#define BMDS_SYS_I2C_CTL 140u    /**< `int32_t i2c_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/i2c-N`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1836,6 +1837,66 @@ typedef struct bmds_gpio_connector_pin_t {
 } bmds_gpio_connector_pin_t;
 
 /*
+ * I²C (slot 140, appended 2026-11-20, devplan/io.md §11.3): `/dev/i2c-N`, the system's I²C buses,
+ * a file per open with its own target address, operated on by `i2c_ctl`. Linux's i2c-dev
+ * (`linux/i2c-dev.h`) is carried out on it by the SDK's `ioctl()`; `read` and `write` are a plain
+ * read or write at the target.
+ */
+
+/** @brief `i2c_ctl` operations on a `/dev/i2c-N` fd. */
+#define BMDS_I2C_INFO 0u       /**< `bmds_i2c_info_t *`: the bus, and this file's target. */
+#define BMDS_I2C_SET_TARGET 1u /**< `bmds_i2c_target_t *`: this file's target (Linux's `I2C_SLAVE`). */
+#define BMDS_I2C_TRANSFER 2u   /**< `bmds_i2c_transfer_t *`: messages as one transaction; returns how many. */
+
+/** @brief `bmds_i2c_info_t::flags`, `bmds_i2c_target_t::flags`. */
+#define BMDS_I2C_FORCE 0x1u /**< Addresses a BMDS driver owns may be reached (Linux's `I2C_SLAVE_FORCE`). */
+
+/** @brief `bmds_i2c_msg_t::flags`: Linux's `I2C_M_...` bits. */
+#define BMDS_I2C_MSG_READ 0x1u /**< Read (else write): Linux's `I2C_M_RD`. */
+
+/** @brief The most messages a transfer takes (Linux's `I2C_RDWR_IOCTL_MAX_MSGS`); the bus may take fewer. */
+#define BMDS_I2C_MAX_MESSAGES 42u
+
+/** @brief A bus, and a file's target on it (`BMDS_I2C_INFO`). */
+typedef struct bmds_i2c_info_t {
+                uint32_t size;     /**< Set by the caller: `sizeof(bmds_i2c_info_t)`. */
+                uint32_t bus;      /**< N of `/dev/i2c-N`. */
+                uint32_t clock_hz; /**< Its clock. */
+                int32_t  target;   /**< This file's target address, or -1. */
+                uint32_t flags;    /**< `BMDS_I2C_FORCE` if this file may reach a driver's address. */
+                uint32_t
+                        max_commands; /**< A transfer's commands at most: a message is 2, its bytes 1 more (a read's 2), and 1 to stop. */
+} bmds_i2c_info_t;
+
+/** @brief A file's target (`BMDS_I2C_SET_TARGET`). */
+typedef struct bmds_i2c_target_t {
+                uint32_t size;     /**< Set by the caller: `sizeof(bmds_i2c_target_t)`. */
+                uint32_t address;  /**< The 7-bit address. */
+                uint32_t flags;    /**< `BMDS_I2C_FORCE`: kept for the file from then on. */
+                uint32_t reserved; /**< Zero. */
+} bmds_i2c_target_t;
+
+/** @brief One message of a transfer (Linux's `i2c_msg` in shape). */
+typedef struct bmds_i2c_msg_t {
+                uint16_t address;  /**< The 7-bit address. */
+                uint16_t flags;    /**< `BMDS_I2C_MSG_...`. */
+                uint16_t length;   /**< Bytes (0: the address alone). */
+                uint16_t reserved; /**< Zero. */
+                uint8_t *data;     /**< The bytes written, or where the bytes read go. */
+} bmds_i2c_msg_t;
+
+/**
+ * @brief Messages as one transaction (`BMDS_I2C_TRANSFER`): a repeated start between each, one
+ *        stop at the end. An address a BMDS driver owns is refused unless the file is forced.
+ */
+typedef struct bmds_i2c_transfer_t {
+                uint32_t        size;     /**< Set by the caller: `sizeof(bmds_i2c_transfer_t)`. */
+                uint32_t        count;    /**< Messages, 1 to `BMDS_I2C_MAX_MESSAGES`. */
+                bmds_i2c_msg_t *messages; /**< The messages. */
+                uint32_t        reserved; /**< Zero. */
+} bmds_i2c_transfer_t;
+
+/*
  * Surfaces (slots 117-121, appended 2026-10-14, devplan/games.md §11): a picture a program draws
  * with the CPU into its own buffers and presents, in a window or full screen (the user's setting
  * per application, the program's suggestion its default, Alt+Enter between them); its events read
@@ -2609,6 +2670,7 @@ typedef int32_t (*bmds_sys_gui_screen_capture_fn)(int32_t conn, bmds_screen_capt
 typedef int32_t (*bmds_sys_file_map_fn)(int32_t fd, int64_t offset, uint32_t length, void **addr);
 typedef int32_t (*bmds_sys_file_unmap_fn)(void *addr);
 typedef int32_t (*bmds_sys_gpio_ctl_fn)(int32_t fd, uint32_t op, void *arg);
+typedef int32_t (*bmds_sys_i2c_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -4102,6 +4164,20 @@ static inline int32_t bmds_file_unmap(void *addr) {
 static inline int32_t bmds_gpio_ctl(int32_t fd, uint32_t op, void *arg) {
         if (!bmds_sys_has(BMDS_SYS_GPIO_CTL)) return -BMDS_ENOSYS;
         return ((bmds_sys_gpio_ctl_fn)bmds_sys->slot[BMDS_SYS_GPIO_CTL])(fd, op, arg);
+}
+
+/**
+ * @brief Operates on I²C bus file @p fd (`/dev/i2c-N`): `BMDS_I2C_...` with @p arg as each says
+ *        (slot 140, appended 2026-11-20, devplan/io.md §11.3).
+ * @return 0 (`BMDS_I2C_TRANSFER`: the messages sent), or `-BMDS_ENOTTY` (not an I²C bus file),
+ *         `-BMDS_EBADF`, `-BMDS_EINVAL` (an op, a `size`, an address past 0x7f, a count),
+ *         `-BMDS_EBUSY` (a BMDS driver's address, the file not forced), `-BMDS_ENXIO` (nothing
+ *         acknowledged), `-BMDS_ETIMEDOUT`, `-BMDS_ENOTSUP` (more commands than the bus takes),
+ *         `-BMDS_EFAULT`, `-BMDS_ENOSYS`.
+ */
+static inline int32_t bmds_i2c_ctl(int32_t fd, uint32_t op, void *arg) {
+        if (!bmds_sys_has(BMDS_SYS_I2C_CTL)) return -BMDS_ENOSYS;
+        return ((bmds_sys_i2c_ctl_fn)bmds_sys->slot[BMDS_SYS_I2C_CTL])(fd, op, arg);
 }
 
 /**
