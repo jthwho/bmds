@@ -24,6 +24,7 @@
 #include <esp_private/rmt.h>
 #include <bmds/deadline.h>
 #include <bmds/detail/platform.h>
+#include <bmds/flashwrites.h>
 #include <bmds/gpiochip.h>
 #include <bmds/interrupt.h>
 #include <bmds/io.h>
@@ -51,7 +52,9 @@ namespace RmtPorts {
         constexpr size_t   MemSymbols = 48;        // a channel's own memory (SOC_RMT_MEM_WORDS_PER_CHANNEL)
         constexpr size_t   Block = MemSymbols / 2; // a receiver's block: half the memory (its ping-pong)
         constexpr uint32_t FillerUs = 100;         // a continuous sender's idle filler, each half of a symbol
-        constexpr size_t   MaxMarks = 32;          // marks waiting for the wire, and reached unread, a port
+        // Marks waiting for the wire, and reached unread, a port: DMA's encoder runs up to its whole
+        // buffer ahead (2046 symbols: some 40 LTC frames), so 64.
+        constexpr size_t MaxMarks = 64;
 
         // A symbol's ticks: both halves, up to a 0 duration (a run's end).
         uint32_t ticksOf(uint32_t s, bool &ended) {
@@ -524,6 +527,7 @@ namespace RmtPorts {
                 claim.reset();
                 running = false;
                 txOn = false;
+                FlashWrites::release();
                 wake(); // a waiting writer or reader sees it stopped
                 bmdsInfo("io: %s stopped", owner);
                 return;
@@ -583,7 +587,10 @@ namespace RmtPorts {
                         c.gpio_num = gpio_num_t(s.pin);
                         c.clk_src = RMT_CLK_SRC_DEFAULT;
                         c.resolution_hz = s.resolution;
-                        c.mem_block_symbols = MemSymbols;
+                        // DMA: a buffer of its own in internal RAM, refilled half at a time, so the
+                        // stream goes on through a flash write's pause for half its length.
+                        c.mem_block_symbols = s.dma > 0 ? s.dma : MemSymbols;
+                        c.flags.with_dma = s.dma > 0;
                         c.trans_queue_depth = 1;
                         c.flags.invert_out = s.invert;
                         c.flags.init_level = s.idleHigh;
@@ -682,10 +689,13 @@ namespace RmtPorts {
                 }
                 claim = std::move(got);
                 running = true;
+                // /flash's writes wait while it runs (devplan/io.md §13.5), as they do while audio
+                // plays: a write pauses everything not in internal RAM, the RMT's interrupts too.
+                FlashWrites::hold();
                 addFile();
-                bmdsInfo("io: %s: /dev/%s on GPIO%d, %s on channel %d at %u ticks a second", key, owner, int(s.pin),
+                bmdsInfo("io: %s: /dev/%s on GPIO%d, %s on channel %d at %u ticks a second%s", key, owner, int(s.pin),
                          s.receive ? (s.monitor ? "receiving (monitor)" : "receiving") : "sending", channel,
-                         unsigned(s.resolution));
+                         unsigned(s.resolution), s.dma > 0 ? ", by DMA" : "");
                 return Error::Ok;
         }
 
@@ -875,9 +885,13 @@ Result<size_t> RmtChannel::write(ByteSpan data, unsigned int timeoutMs) {
                 }
                 p.head.store(h, std::memory_order_release);
                 // Sending, or started: a burst that ended (or is ending) starts again once it has.
+                // DMA fills its whole buffer as it starts: it waits for a buffer's worth (or a full
+                // ring, or the writer's close), or it would start with filler.
                 p.txLock.lock();
-                const bool start = !p.txOn || p.txEnding;
+                bool start = !p.txOn || p.txEnding;
                 p.txLock.unlock();
+                const uint32_t waiting = h - p.tail.load(std::memory_order_acquire);
+                if (start && p.setup.dma > 0 && !full && waiting < p.setup.dma) start = false;
                 if (start) {
                         (void)rmt_tx_wait_all_done(p.handle, -1);
                         if (p.startTransaction().isError()) return makeError<size_t>(Error::IoError);
@@ -951,6 +965,21 @@ Result<size_t> RmtChannel::read(WritableByteSpan buf, unsigned int timeoutMs) {
                 if (err.isError()) return makeError<size_t>(err);
                 if (!p.running) return makeError<size_t>(Error::NotExist);
         }
+}
+
+void RmtChannel::handleClosed(uint8_t mode) {
+        // A writer gone: what it left goes out (a DMA sender waits for a buffer's worth till then).
+        if ((mode & FileHandle::Write) == 0) return;
+        Mutex::Locker lock(_lock, WaitForever);
+        Port         &p = _port;
+        if (!p.running || p.setup.receive || p.head.load() == p.tail.load()) return;
+        p.txLock.lock();
+        const bool start = !p.txOn || p.txEnding;
+        p.txLock.unlock();
+        if (!start) return;
+        (void)rmt_tx_wait_all_done(p.handle, -1);
+        (void)p.startTransaction();
+        return;
 }
 
 uint8_t RmtChannel::readiness() {

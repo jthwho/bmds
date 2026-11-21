@@ -1175,3 +1175,38 @@ bit 0's edge. So 6b adds, before DMA and the rest of §13's list:
 - **Size:** the RMT code 12.6 KB (3 KB more), ESP-IDF's gptimer driver; the firmware 5 KB more.
 - **Next (6c):** DMA on the channels that have it, sync starts, a flash write's effect on a stream
   (the RMT's and the timer's interrupts run from flash), and a clock trim.
+
+### 13.5 6c: a flash write's effect, and DMA (built, 2026-11-20)
+
+- **What a flash write does:** the flash's erase and program turn the caches off, and everything
+  not in internal RAM waits, the RMT's interrupts and the marks' timer among them (auto-suspend
+  faults reads on this board's flash: §13's platform notes). Measured on bmds0, LTC at 25 fps
+  from the channel's own memory (24 symbols a half, some 10 ms): 256 KB written to `/flash` 3 s
+  into a stream gave 7, 9 and 6 underruns (200 ms of filler) in three runs with a receiving port
+  also running, and none in two runs without; a receiving port loses what comes in while it is
+  paused (the reader decoded 128 to 138 of 200 frames).
+- **Held writes:** a running RMT port holds `/flash`'s writes (`FlashWrites::hold()`), as audio
+  playing does: the write queue waits until somebody needs it written (`sync`, a restart) or it
+  is half full. A 16 KB write while an LTC stream ran: held, no underrun.
+- **`dma[=SYMBOLS]`** (a sender; 1024 unless given, up to 2046; the P4 has one sending channel with
+  DMA): ESP-IDF's DMA reads a buffer of that many symbols in internal RAM, refilled half at a time
+  by the same encoder, so a stream goes on through a pause up to half the buffer long (1023
+  symbols: some 800 ms of LTC). The encoder fills a whole half each time, so the ring holds a whole
+  DMA buffer at least (twice it unless `buffer=` says) and a DMA stream starts once its ring has a
+  buffer's worth (or is full, or its writer closes): started with less, it filled the rest with
+  idle, 400 ms of it at an LTC stream's start. Marks run up to a buffer ahead of the wire: 64
+  kept a port (32 lost 56 of 300).
+- **Measured:** with DMA, two forced 256 KB writes (`sync`) during each of two streams: no underrun
+  (the one counted was each stream's end, filler after its last frame went to the encoder).
+- **Not done, and why:**
+  - **Marks and their pulse during a forced write:** the timer's interrupt runs from flash, so a
+    mark due in the pause fires at its end (a latch late by up to the pause). Its fix is a timer
+    interrupt and mark state in IRAM, and the pin set from there: worth it if a latch must be on
+    time through `sync`; held writes don't delay it.
+  - **Receiving by DMA:** a receiver loses input during a forced write; DMA would carry it as it
+    does a sender. Not needed by the uses so far.
+  - **Sync starts** (TX channels started on the same tick): no use yet needs edges tick-exact
+    across channels (the display's latch is the timed pulse); kept for when one does.
+  - **A clock trim:** not needed. The RMT's ticks keep step with the monotonic clock (§13.4), and
+    steering by durations is exact to a tick; the RMT's fractional divider would only add jitter.
+- **Step 6 is done**: RMT ports, marks, the timed pulse, DMA, the LTC example (§13.1-§13.5).

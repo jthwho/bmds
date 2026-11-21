@@ -115,6 +115,9 @@ struct IoRmtSetup {
                 static constexpr uint32_t MaxGlitchNs = 3000;       ///< `min=`: the hardware filter's reach.
                 static constexpr uint32_t MaxTicks = 32767;         ///< A duration's most ticks (15 bits).
                 static constexpr uint32_t MaxPulseUs = 100000;      ///< `pulse-width=`'s longest.
+                static constexpr uint32_t DefaultDma = 1024;        ///< `dma`'s buffer, symbols.
+                static constexpr uint32_t MinDma = 64;              ///< `dma=`'s smallest.
+                static constexpr uint32_t MaxDma = 2046;            ///< Its largest (two DMA nodes of 4095 bytes).
 
                 int8_t   pin = -1;             ///< `pin=`: its pad.
                 bool     receive = false;      ///< `dir=rx` (else `dir=tx`).
@@ -129,6 +132,7 @@ struct IoRmtSetup {
                 int8_t   pulsePin = -1;        ///< `pulse=`: a sender's pad pulsed at each mark, or -1.
                 uint32_t pulseWidthUs = 10;    ///< `pulse-width=`, µs.
                 bool     pulseLow = false;     ///< `pulse-low`: the pulse goes low (it rests high).
+                uint32_t dma = 0;              ///< `dma[=SYMBOLS]`: a sender's DMA buffer (internal RAM), or 0: none.
                 bool     force = false;        ///< `force`: its pin taken from its holder.
 
                 /**

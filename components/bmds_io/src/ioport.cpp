@@ -230,7 +230,7 @@ bool IoRmtSetup::operator==(const IoRmtSetup &o) const {
         return pin == o.pin && receive == o.receive && resolution == o.resolution && idleHigh == o.idleHigh &&
                invert == o.invert && continuous == o.continuous && buffer == o.buffer && minNs == o.minNs &&
                maxNs == o.maxNs && monitor == o.monitor && force == o.force && pulsePin == o.pulsePin &&
-               pulseWidthUs == o.pulseWidthUs && pulseLow == o.pulseLow;
+               pulseWidthUs == o.pulseWidthUs && pulseLow == o.pulseLow && dma == o.dma;
 }
 
 uint32_t IoRmtSetup::maxTicks() const {
@@ -243,6 +243,7 @@ Error IoRmtSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonB
         why[0] = '\0';
         *this = IoRmtSetup();
         bool dirGiven = false;
+        bool bufferGiven = false;
         bool sendWord = false, receiveWord = false;
         while (!text.isEmpty()) {
                 StringView word = take(text, ' ');
@@ -280,6 +281,7 @@ Error IoRmtSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonB
                                               unsigned(MinBuffer), unsigned(MaxBuffer), int(value.size()),
                                               value.data());
                         buffer = b;
+                        bufferGiven = true;
                 } else if (key == "min") {
                         uint32_t n = 0;
                         if (!number(value, n) || n > MaxGlitchNs)
@@ -307,6 +309,13 @@ Error IoRmtSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonB
                                               unsigned(MaxPulseUs), int(value.size()), value.data());
                         pulseWidthUs = w;
                         sendWord = true;
+                } else if (key == "dma") {
+                        uint32_t n = DefaultDma;
+                        if (eq != StringView::NPos && (!number(value, n) || n < MinDma || n > MaxDma || n % 2 != 0))
+                                return refuse(why, Error::Invalid, "dma is an even %u to %u symbols, not '%.*s'",
+                                              unsigned(MinDma), unsigned(MaxDma), int(value.size()), value.data());
+                        dma = n;
+                        sendWord = true;
                 } else if (word == "pulse-low") {
                         pulseLow = true;
                         sendWord = true;
@@ -328,10 +337,15 @@ Error IoRmtSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonB
         if (pin < 0) return refuse(why, Error::Invalid, "an RMT port needs pin=");
         if (!dirGiven) return refuse(why, Error::Invalid, "an RMT port needs dir=tx or dir=rx");
         if (receive && sendWord)
-                return refuse(why, Error::Invalid, "idle=, continuous and pulse= are a sender's (dir=tx)");
+                return refuse(why, Error::Invalid, "idle=, continuous, pulse= and dma are a sender's (dir=tx)");
         if (!receive && receiveWord)
                 return refuse(why, Error::Invalid, "min=, max= and monitor are a receiver's (dir=rx)");
         if (pulsePin >= 0 && pulsePin == pin) return refuse(why, Error::Invalid, "GPIO%d is given twice", int(pin));
+        // DMA fills half its buffer at a time from the ring: the ring holds a whole DMA buffer at
+        // least (twice it unless asked).
+        if (dma > 0 && !bufferGiven) buffer = 2 * dma;
+        if (dma > 0 && buffer < dma)
+                return refuse(why, Error::Invalid, "buffer is at least dma's (%u symbols) for DMA", unsigned(dma));
         if (monitor && force) return refuse(why, Error::Invalid, "monitor takes nothing: force has nothing to take");
         if (maxNs != 0 && uint64_t(maxNs) * resolution / 1000000000u > MaxTicks)
                 return refuse(why, Error::Invalid, "max is at most %u ticks: %u ns at this resolution",

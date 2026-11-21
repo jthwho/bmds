@@ -93,6 +93,7 @@ class RmtChannel final : public Stream {
                 uint8_t        readiness() override;
                 WaitList      *readinessWaiters() override { return &_pollers; }
                 RmtChannel    *rmtChannel() override { return this; }
+                void           handleClosed(uint8_t mode) override;
 
         private:
                 friend struct RmtPorts::Port;

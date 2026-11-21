@@ -326,8 +326,10 @@ Plan: [`input.md`](input.md).
   an LTC generator and reader (`sdk/examples/ltc`), timed back within 7 µs; checked on bmds0.
   Step 6b built (§13.4): frame marks (each one's time read back as the wire reaches it) and a
   `pulse=` pin pulsed at each by a hardware timer (a display's latch: 2 to 8 µs), the RMT and
-  monotonic clocks shown to keep step over ten minutes; checked on bmds0. Next: 6c (DMA, sync
-  starts, a flash write's effect measured, a clock trim).
+  monotonic clocks shown to keep step over ten minutes; checked on bmds0. Step 6c built (§13.5): a
+  flash write's effect measured, running RMT ports hold `/flash`'s writes, `dma` carries a sender
+  through forced writes; sync starts and a clock trim set aside with reasons. Step 6 done.
+  Next: step 7, DMA paths for the other ports (§3.8).
 
 ## Phase 6 — Graphics
 

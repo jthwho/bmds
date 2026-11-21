@@ -862,6 +862,12 @@ until silicon v3; then test again.
   fills the channel's memory through the encoder. A stream's start stamped before the call was
   80 µs early against what a receiver measured back; stamped when it returns, 7 µs (the
   receiver's interrupt and a tick). `rmtports.cpp`, `devplan/io.md` §13.2.
+- **A flash write starves an RMT stream fed from the channel's memory:** 24 symbols a half (some
+  10 ms of LTC) don't cover an erase's pause, during which the RMT's interrupts (in flash) can't
+  refill it. Held writes avoid most pauses; for the rest, the sending DMA channel's buffer (up to
+  2046 symbols in internal RAM) carried a stream through two forced 256 KB writes. ESP-IDF's DMA
+  encoder fills a whole half at a time, with filler if the source has less, so a DMA stream must
+  start with a buffer's worth waiting (`devplan/io.md` §13.5).
 - **The RMT's ticks and the monotonic clock keep step:** both come from the 40 MHz crystal (the
   RMT through PLL_F80M, the systimer directly); a stream's frames timed afresh after ten minutes
   sat where its tick count said within a µs. A `gptimer` at 1 MHz keeps step with both too.

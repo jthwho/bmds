@@ -16,6 +16,8 @@
  *                                     each even frame TICKS longer and each odd one TICKS shorter
  *   ltc runs DEVICE [SECONDS]         each run's first edge from a receiving port's headers (a
  *                                     pulse pin monitored: each pulse a run)
+ *   ltc info DEVICE                   a port's counts (underruns, filler, marks), from beside the
+ *                                     program using it
  *   ltc read DEVICE [FPS] [SECONDS]   frames decoded from a receiving port, each frame's first
  *                                     edge timed from the stream's headers
  *
@@ -141,19 +143,20 @@ static int sendLtc(const char *device, unsigned fps, unsigned seconds, const cha
         const unsigned frames = seconds * fps;
         if (display >= 0) showFrame(display, &tc); /* frame 0's digits, latched at its mark */
         /* A stream's start is known only once it has started: 1 ms of idle first, so frame 0's
-           mark (and its pulse) is timed before it is due, as every later one is. */
-        {
+           mark (and its pulse) is timed before it is due, as every later one is. In frame 0's
+           write, so the ring doesn't run dry between them. */
+        uint32_t lead = 0;
+        if (info.underruns == 0 && info.symbols == 0) {
                 const uint32_t idle = (info.flags & BMDS_RMT_IDLE_HIGH) ? 1u : 0u;
-                const uint32_t lead = (uint32_t)(res / 2000);
-                const uint32_t symbol = (lead & 0x7fffu) | idle << 15 | (lead & 0x7fffu) << 16 | idle << 31;
-                if (info.underruns == 0 && info.symbols == 0 && write(fd, &symbol, sizeof(symbol)) < 0)
-                        return fail("write");
+                const uint32_t ticks = (uint32_t)(res / 2000);
+                lead = (ticks & 0x7fffu) | idle << 15 | (ticks & 0x7fffu) << 16 | idle << 31;
         }
         for (unsigned f = 0; f < frames; f++, nextFrame(&tc, fps)) {
                 /* A mark at bit 0's edge, then the frame's symbols: its runs two to a symbol, the
                    last split over a symbol of its own if it has no partner (same level, no edge),
                    so the next frame's mark falls on a symbol too. */
                 size_t n = 0;
+                if (f == 0 && lead != 0) out[n++] = lead;
                 out[n++] = BMDS_RMT_MARK;
                 uint8_t bits[80];
                 frameBits(&tc, bits);
@@ -211,6 +214,14 @@ static int sendLtc(const char *device, unsigned fps, unsigned seconds, const cha
                                 showFrame(display, &at);
                         }
                 }
+        }
+        /* What is still on its way (DMA runs a buffer ahead): its marks, till the last frame's. */
+        const int64_t deadline = monotonicNs() + 5000000000ll;
+        while (marksSeen < frames && monotonicNs() < deadline) {
+                struct pollfd p = {fd, POLLIN, 0};
+                if (poll(&p, 1, 200) <= 0) continue;
+                bmds_rmt_mark_t m;
+                if (read(fd, &m, sizeof(m)) == (ssize_t)sizeof(m) && m.number >= base) marksSeen++;
         }
         bmds_rmt_ctl(fd, BMDS_RMT_INFO, &info);
         printf("sent %u frames: %llu symbols, %llu ticks (%llu idle filler, %lld moved by -j), %u underruns; %llu "
@@ -364,6 +375,19 @@ static int printRuns(const char *device, unsigned seconds) {
         return 0;
 }
 
+/* A port's counts, from another program (no marks read). */
+static int printInfo(const char *device) {
+        const int fd = open(device, O_RDONLY);
+        if (fd < 0) return fail(device);
+        bmds_rmt_info_t info = {.size = sizeof(info)};
+        if (bmds_rmt_ctl(fd, BMDS_RMT_INFO, &info) < 0) return fail("BMDS_RMT_INFO");
+        printf("%s: %llu symbols, %llu ticks, %llu filler, %u underruns, %llu marks, %u overruns\n", device,
+               (unsigned long long)info.symbols, (unsigned long long)info.ticks, (unsigned long long)info.filler_ticks,
+               (unsigned)info.underruns, (unsigned long long)info.marks, (unsigned)info.overruns);
+        close(fd);
+        return 0;
+}
+
 int main(int argc, char **argv) {
         const char *display = NULL;
         unsigned    jiggle = 0;
@@ -379,6 +403,7 @@ int main(int argc, char **argv) {
                 else
                         count = 6;
         }
+        if (count >= 2 && strcmp(args[0], "info") == 0) return printInfo(args[1]);
         if (count >= 2 && strcmp(args[0], "runs") == 0)
                 return printRuns(args[1], count > 2 ? (unsigned)atoi(args[2]) : 5);
         if (count < 2 || count > 4 || (strcmp(args[0], "send") != 0 && strcmp(args[0], "read") != 0)) {
