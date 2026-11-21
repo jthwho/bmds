@@ -227,6 +227,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_FILE_UNMAP 138u /**< `int32_t file_unmap(void *addr)`. */
 #define BMDS_SYS_GPIO_CTL 139u   /**< `int32_t gpio_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/gpiochipN`. */
 #define BMDS_SYS_I2C_CTL 140u    /**< `int32_t i2c_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/i2c-N`. */
+#define BMDS_SYS_SPI_CTL 141u    /**< `int32_t spi_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/spidevB.C`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1897,6 +1898,75 @@ typedef struct bmds_i2c_transfer_t {
 } bmds_i2c_transfer_t;
 
 /*
+ * SPI (slot 141, appended 2026-11-20, devplan/io.md §11.5): `/dev/spidevB.C`, a device on an SPI
+ * port (`io/spiB`, chip select C), operated on by `spi_ctl`. Linux's spidev
+ * (`linux/spi/spidev.h`) is carried out on it by the SDK's `ioctl()`; `read` and `write` are
+ * Linux's half-duplex ones.
+ */
+
+/** @brief `spi_ctl` operations on a `/dev/spidevB.C` fd. */
+#define BMDS_SPI_INFO 0u     /**< `bmds_spi_info_t *`: the device and its settings. */
+#define BMDS_SPI_SETUP 1u    /**< `bmds_spi_setup_t *`: its mode, word size and speed (Linux's `SPI_IOC_WR_*`). */
+#define BMDS_SPI_TRANSFER 2u /**< `bmds_spi_transfer_t *`: transfers as one message; returns the bytes moved. */
+
+/** @brief `bmds_spi_info_t::mode`, `bmds_spi_setup_t::mode`: Linux's `SPI_*` mode bits. */
+#define BMDS_SPI_CPHA 0x1u      /**< Clock phase. */
+#define BMDS_SPI_CPOL 0x2u      /**< Clock polarity (idles high). */
+#define BMDS_SPI_CS_HIGH 0x4u   /**< Chip select active high. */
+#define BMDS_SPI_LSB_FIRST 0x8u /**< Least significant bit first. */
+#define BMDS_SPI_3WIRE 0x10u    /**< MOSI both ways (the port's: `io/spiB`'s `3wire`). */
+#define BMDS_SPI_LOOP 0x20u     /**< MISO read from MOSI (the port's: `loopback`). */
+#define BMDS_SPI_NO_CS 0x40u    /**< No chip select (the port's: no `cs=`). */
+
+/** @brief The most transfers one message takes, and the most bytes. */
+#define BMDS_SPI_MAX_TRANSFERS 64u
+#define BMDS_SPI_MAX_BYTES 65536u
+
+/** @brief A device and its settings (`BMDS_SPI_INFO`). */
+typedef struct bmds_spi_info_t {
+                uint32_t size;          /**< Set by the caller: `sizeof(bmds_spi_info_t)`. */
+                uint32_t bus;           /**< B of `/dev/spidevB.C`. */
+                uint32_t cs;            /**< C of `/dev/spidevB.C`. */
+                uint32_t mode;          /**< `BMDS_SPI_...` bits. */
+                uint32_t bits_per_word; /**< 8, 16 or 32. */
+                uint32_t max_speed_hz;  /**< Its clock as set. */
+                uint32_t actual_hz;     /**< Its clock as the controller divides it (0: not used yet). */
+                uint32_t reserved;      /**< Zero. */
+} bmds_spi_info_t;
+
+/** @brief A device's settings (`BMDS_SPI_SETUP`): all three, as `BMDS_SPI_INFO` gave them, changed. */
+typedef struct bmds_spi_setup_t {
+                uint32_t size; /**< Set by the caller: `sizeof(bmds_spi_setup_t)`. */
+                uint32_t
+                        mode; /**< `BMDS_SPI_...`: `CPHA`, `CPOL`, `CS_HIGH`, `LSB_FIRST`; the port's own as they are. */
+                uint32_t bits_per_word; /**< 8, 16 or 32 (0: 8). */
+                uint32_t max_speed_hz;  /**< 1000 up (lowered to what the controller reaches). */
+} bmds_spi_setup_t;
+
+/** @brief One transfer of a message: Linux's `spi_ioc_transfer` exactly. */
+typedef struct bmds_spi_xfer_t {
+                uint64_t tx_buf;           /**< The bytes sent (a pointer), or 0: zeros. */
+                uint64_t rx_buf;           /**< Where the bytes read go (a pointer), or 0. */
+                uint32_t len;              /**< Bytes, a whole number of words. */
+                uint32_t speed_hz;         /**< 0: the device's. */
+                uint16_t delay_usecs;      /**< A wait after it. */
+                uint8_t  bits_per_word;    /**< 0: the device's; else 8, 16, 32. */
+                uint8_t  cs_change;        /**< Chip select released after it (before the next). */
+                uint8_t  tx_nbits;         /**< 0 or 1. */
+                uint8_t  rx_nbits;         /**< 0 or 1. */
+                uint8_t  word_delay_usecs; /**< 0. */
+                uint8_t  pad;              /**< Zero. */
+} bmds_spi_xfer_t;
+
+/** @brief Transfers as one message, the chip select held between them (`BMDS_SPI_TRANSFER`). */
+typedef struct bmds_spi_transfer_t {
+                uint32_t         size;      /**< Set by the caller: `sizeof(bmds_spi_transfer_t)`. */
+                uint32_t         count;     /**< Transfers, 1 to `BMDS_SPI_MAX_TRANSFERS`. */
+                bmds_spi_xfer_t *transfers; /**< The transfers. */
+                uint32_t         reserved;  /**< Zero. */
+} bmds_spi_transfer_t;
+
+/*
  * Surfaces (slots 117-121, appended 2026-10-14, devplan/games.md §11): a picture a program draws
  * with the CPU into its own buffers and presents, in a window or full screen (the user's setting
  * per application, the program's suggestion its default, Alt+Enter between them); its events read
@@ -2671,6 +2741,7 @@ typedef int32_t (*bmds_sys_file_map_fn)(int32_t fd, int64_t offset, uint32_t len
 typedef int32_t (*bmds_sys_file_unmap_fn)(void *addr);
 typedef int32_t (*bmds_sys_gpio_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_i2c_ctl_fn)(int32_t fd, uint32_t op, void *arg);
+typedef int32_t (*bmds_sys_spi_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -4178,6 +4249,19 @@ static inline int32_t bmds_gpio_ctl(int32_t fd, uint32_t op, void *arg) {
 static inline int32_t bmds_i2c_ctl(int32_t fd, uint32_t op, void *arg) {
         if (!bmds_sys_has(BMDS_SYS_I2C_CTL)) return -BMDS_ENOSYS;
         return ((bmds_sys_i2c_ctl_fn)bmds_sys->slot[BMDS_SYS_I2C_CTL])(fd, op, arg);
+}
+
+/**
+ * @brief Operates on SPI device file @p fd (`/dev/spidevB.C`): `BMDS_SPI_...` with @p arg as each
+ *        says (slot 141, appended 2026-11-20, devplan/io.md §11.5).
+ * @return 0 (`BMDS_SPI_TRANSFER`: the bytes moved), or `-BMDS_ENOTTY` (not an SPI device file),
+ *         `-BMDS_EBADF`, `-BMDS_EINVAL` (an op, a `size`, a mode, word size, speed, length or
+ *         count), `-BMDS_EMSGSIZE` (past `BMDS_SPI_MAX_BYTES`), `-BMDS_ENODEV` (the port stopped),
+ *         `-BMDS_EFAULT`, `-BMDS_EIO`, `-BMDS_ENOSYS`.
+ */
+static inline int32_t bmds_spi_ctl(int32_t fd, uint32_t op, void *arg) {
+        if (!bmds_sys_has(BMDS_SYS_SPI_CTL)) return -BMDS_ENOSYS;
+        return ((bmds_sys_spi_ctl_fn)bmds_sys->slot[BMDS_SYS_SPI_CTL])(fd, op, arg);
 }
 
 /**

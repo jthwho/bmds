@@ -858,6 +858,21 @@ until silicon v3; then test again.
   - **Unaligned pieces cost a quarter more:** 16,000-byte writes of a file take 26% longer than
     16 KB ones (a single-sector write for the partial sectors each time); gather them
     (`BlockWriter`).
+- **ESP-IDF's SPI master with DMA allocates per transaction unless buffers are whole cache
+  lines:** a buffer must be DMA-capable and aligned to the cache line (64 bytes here) in address
+  *and length*, or `setup_priv_desc()` takes a `heap_caps_aligned_alloc()` bounce buffer for that
+  transaction; `SPI_TRANS_DMA_BUFFER_ALIGN_MANUAL` only turns that into `ESP_ERR_INVALID_ARG`. A
+  4-byte register read can't meet it, so SPI ports run with DMA off (the controller's 64-byte
+  buffer, nothing allocated) until GDMA on `spi_hal` of our own (`devplan/io.md` §11.5).
+- **ESP-IDF's SPI master leaves pins as nothing:** removing a device turns its CS output off
+  (`spicommon_cs_free_io()`: the line floats, and an active-low device reads that as selected),
+  and `spi_bus_free()` turns the bus's outputs off and leaves the input selectors it set. A
+  device's mode and clock are fixed when it is added, so changing them means a CS glitch. SPI
+  ports drive their chip selects as GPIO outputs and save and put back pads and selectors
+  (`spiports.cpp`). With the matrix, a master's MOSI isn't routed back in, so 3-wire reads and
+  an internal loopback need the D or Q input routed from the MOSI pad by hand.
+- **`spi_device_transmit()` costs about 37 µs a transaction** beyond the bits (its queue, the
+  interrupt, the waiting task woken), measured in 64-byte pieces at 1-80 MHz.
 - **ESP-IDF's I²C master writes the device's address itself:** after every start of a
   transaction it runs (`s_i2c_start_end_command`), defined operations
   (`i2c_master_execute_defined_operations`) included, it puts the device's address byte (read

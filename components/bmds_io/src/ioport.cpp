@@ -5,11 +5,12 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * A port's setup, parsed (devplan/io.md §11.1).
+ * A port's setup, parsed (devplan/io.md §11.1, §11.5).
  */
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <bmds/ioport.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -122,6 +123,106 @@ Error IoUartSetup::parse(const IoChip &chip, StringView text, char (&why)[Reason
                                 return refuse(why, Error::Invalid, "GPIO%d is given twice", int(pins[i]));
         if ((rts >= 0 || cts >= 0) && !rtsCts) return refuse(why, Error::Invalid, "rts= and cts= are for flow=rtscts");
         if (rtsCts && (rts < 0 || cts < 0)) return refuse(why, Error::Invalid, "flow=rtscts needs rts= and cts=");
+        return Error::Ok;
+}
+
+bool IoSpiSetup::operator==(const IoSpiSetup &o) const {
+        return sck == o.sck && mosi == o.mosi && miso == o.miso && csCount == o.csCount &&
+               std::memcmp(cs, o.cs, csCount) == 0 && mode == o.mode && clock == o.clock && bits == o.bits &&
+               lsbFirst == o.lsbFirst && csHigh == o.csHigh && threeWire == o.threeWire && loopback == o.loopback &&
+               force == o.force;
+}
+
+namespace {
+
+        // `1m`, `500k`, `40000000`.
+        bool clockOf(StringView text, uint32_t &out) {
+                uint32_t scale = 1;
+                if (!text.isEmpty() && (text.back() == 'k' || text.back() == 'K')) scale = 1000;
+                if (!text.isEmpty() && (text.back() == 'm' || text.back() == 'M')) scale = 1000000;
+                if (scale != 1) text = text.left(text.size() - 1);
+                uint32_t n = 0;
+                if (!number(text, n) || uint64_t(n) * scale > 0xffffffffu) return false;
+                out = n * scale;
+                return true;
+        }
+
+} // namespace
+
+Error IoSpiSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonBytes]) {
+        why[0] = '\0';
+        *this = IoSpiSetup();
+        while (!text.isEmpty()) {
+                StringView word = take(text, ' ');
+                if (word.isEmpty()) continue;
+                const size_t     eq = word.indexOf('=');
+                const StringView key = eq == StringView::NPos ? word : word.left(eq);
+                const StringView value = eq == StringView::NPos ? StringView() : word.mid(eq + 1);
+                int8_t          *pin = key == "sck" ? &sck : key == "mosi" ? &mosi : key == "miso" ? &miso : nullptr;
+                if (pin != nullptr) {
+                        if (!pad(chip, value, *pin))
+                                return refuse(why, Error::Invalid, "%.*s: '%.*s' isn't a pin of the chip's",
+                                              int(key.size()), key.data(), int(value.size()), value.data());
+                } else if (key == "cs") {
+                        StringView list = value;
+                        csCount = 0;
+                        while (!list.isEmpty()) {
+                                const StringView one = take(list, ',');
+                                if (csCount == MaxCs)
+                                        return refuse(why, Error::Invalid, "cs takes %u pins at most", unsigned(MaxCs));
+                                if (!pad(chip, one, cs[csCount]))
+                                        return refuse(why, Error::Invalid, "cs: '%.*s' isn't a pin of the chip's",
+                                                      int(one.size()), one.data());
+                                ++csCount;
+                        }
+                        if (csCount == 0) return refuse(why, Error::Invalid, "cs needs a pin: cs=5 or cs=5,6");
+                } else if (key == "mode") {
+                        if (value.size() != 1 || value[0] < '0' || value[0] > '3')
+                                return refuse(why, Error::Invalid, "mode is 0 to 3, not '%.*s'", int(value.size()),
+                                              value.data());
+                        mode = uint8_t(value[0] - '0');
+                } else if (key == "clock") {
+                        uint32_t c = 0;
+                        if (!clockOf(value, c) || c < MinClock || c > MaxClock)
+                                return refuse(why, Error::Invalid,
+                                              "clock is 1k to 80m (Hz, or with k or m), not '%.*s'", int(value.size()),
+                                              value.data());
+                        clock = c;
+                } else if (key == "bits") {
+                        if (value != "8" && value != "16" && value != "32")
+                                return refuse(why, Error::Invalid, "bits is 8, 16 or 32, not '%.*s'", int(value.size()),
+                                              value.data());
+                        bits = uint8_t(value == "8" ? 8 : value == "16" ? 16 : 32);
+                } else if (word == "lsb") {
+                        lsbFirst = true;
+                } else if (word == "cs-high") {
+                        csHigh = true;
+                } else if (word == "3wire") {
+                        threeWire = true;
+                } else if (word == "loopback") {
+                        loopback = true;
+                } else if (word == "force") {
+                        force = true;
+                } else {
+                        return refuse(why, Error::Invalid, "'%.*s' isn't a word an SPI port knows", int(word.size()),
+                                      word.data());
+                }
+        }
+        if (sck < 0) return refuse(why, Error::Invalid, "an SPI port needs sck=");
+        if (mosi < 0 && miso < 0) return refuse(why, Error::Invalid, "an SPI port needs mosi=, miso= or both");
+        if (threeWire && loopback) return refuse(why, Error::Invalid, "3wire and loopback don't go together");
+        if ((threeWire || loopback) && miso >= 0)
+                return refuse(why, Error::Invalid,
+                              "%s uses MOSI for what comes in: no miso=", threeWire ? "3wire" : "loopback");
+        if ((threeWire || loopback) && mosi < 0)
+                return refuse(why, Error::Invalid, "%s needs mosi=", threeWire ? "3wire" : "loopback");
+        int8_t pins[3 + MaxCs] = {sck, mosi, miso};
+        size_t n = 3;
+        for (size_t i = 0; i < csCount; ++i) pins[n++] = cs[i];
+        for (size_t i = 0; i < n; ++i)
+                for (size_t k = i + 1; k < n; ++k)
+                        if (pins[i] >= 0 && pins[i] == pins[k])
+                                return refuse(why, Error::Invalid, "GPIO%d is given twice", int(pins[i]));
         return Error::Ok;
 }
 

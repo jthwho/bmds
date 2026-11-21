@@ -798,3 +798,79 @@ Manager's Ports tab.
   `sdk/examples/i2cread` (Linux's API only) reads EDID at 0x50 by SMBus and by `I2C_RDWR` (128
   bytes), gets `EBUSY` at 0x48, the id with `-f`, `ENXIO` at an empty address; the display
   unaffected.
+
+### 11.5 4c: SPI, `io/spi2`, `io/spi3`, `/dev/spidevB.C` (design, 2026-11-20)
+
+Both GP-SPIs are free on this board (`io resources`), so SPI is a port on chosen pins, as §11.1.
+
+- **`io/spi2`, `io/spi3`** (sysconf, empty: off): `sck=4 mosi=53 miso=54 cs=5[,N...] [mode=0]
+  [clock=1m] [bits=8] [lsb] [cs-high] [3wire] [loopback] [force]`. `clock` in Hz, or with `k` or
+  `m`, 1k to 80m; `cs` up to 6 pads, in order (`/dev/spidevB.0`, `.1`...), none for one device
+  with no chip select (Linux's `SPI_NO_CS`); `3wire` is MOSI both ways (no `miso=`); `loopback`
+  reads MISO from MOSI inside the chip (no `miso=`: a port tried without wires); `force` as
+  §11.1. `sck=` and one of `mosi=` and `miso=` at least. The owner `spidevN` holds the pads and
+  `spiN`; `/dev/spidevN.C` is there while the port runs, added when it first starts.
+- **The bus's pins through ESP-IDF's `spi_master`:** it picks IO_MUX when the pads are the
+  controller's and the matrix otherwise. The pads and every input
+  selector of the controller are saved before `spi_bus_initialize()` and put back after
+  `spi_bus_free()` (which only turns the outputs off). `3wire` and `loopback` enable MOSI's
+  input and route the controller's D (3-wire) or Q (loopback) from it, as ESP-IDF's master
+  doesn't.
+- **Chip selects are the port's own GPIO outputs**, not ESP-IDF's: removing an ESP-IDF device
+  turns its CS output off (floating: an active-low device selected), and a device's mode or
+  speed is fixed when it is added. With CS ours, each node has an ESP-IDF device with no CS pin,
+  added again when its settings change, even between two transfers of a message with CS held:
+  Linux's per-transfer speed and `cs_change` work as they do there. The order: acquire the bus
+  (ESP-IDF sets the device's mode, so the clock idles right before CS falls), CS, transfers, CS
+  released, the bus released. Speeds above what full duplex reads through the matrix take are
+  lowered to ESP-IDF's limit, as Linux lowers to a controller's maximum.
+- **Data: the controller's 64-byte buffer first** (§6: FIFO paths first, measured; DMA is step
+  7). ESP-IDF's master with DMA wants each buffer aligned to the cache line (64 bytes here) in
+  address *and length*, and otherwise allocates a bounce buffer for that transaction: a 4-byte
+  register read would allocate every time. With DMA off it copies to and from the controller's
+  buffer and allocates nothing, so a transfer goes in pieces of 64 bytes with CS held; GDMA
+  comes with transfers of our own on `spi_hal` (step 7). `spi_device_transmit()` (its interrupt,
+  the caller's task waiting), not polling. Words of 8, 16 or 32 bits (Linux's in the CPU's order, sent most significant bit first: their
+  bytes swapped into the buffer); other sizes `EINVAL`.
+- **Settings per node, as Linux's `spi_device`:** from `io/spiN` when the port starts, changed
+  by programs (`SPI_IOC_WR_*`) until it starts again. `CPHA`, `CPOL`, `CS_HIGH`, `LSB_FIRST` can
+  be set; `3WIRE`, `LOOP`, `NO_CS` are the port's (set the same, or `EINVAL`); the rest `EINVAL`.
+- **`spi_ctl(fd, op, arg)`** (slot 141): `BMDS_SPI_INFO`, `BMDS_SPI_SETUP` (mode, bits, speed),
+  `BMDS_SPI_TRANSFER` (an array of `bmds_spi_xfer_t`, Linux's `spi_ioc_transfer` exactly: 32
+  bytes, 64-bit buffer fields, so `SPI_IOC_MESSAGE`'s array passes through `linux.c` as it is;
+  at most 64 transfers, 64 KB). `tx_nbits` and `rx_nbits` 1 only, `word_delay_usecs` 0 only
+  (dual and quad need their pins: later); `delay_usecs` waits after its transfer, spinning below
+  100 µs, sleeping above. `read()` and `write()` are Linux's half-duplex ones (MISO ignored;
+  zeros sent).
+- **Linux:** `linux/spi/spidev.h` and `linux/spi/spi.h` (Linux's numbers): `SPI_IOC_RD_` and
+  `WR_MODE`, `MODE32`, `LSB_FIRST`, `BITS_PER_WORD`, `MAX_SPEED_HZ`, `SPI_IOC_MESSAGE(N)`.
+- **Shell:** `io spi B.C HEX...`: one full-duplex transfer at a node, the bytes read printed.
+- **Checks on the board:** in loopback (no wires): bytes back as sent at a few speeds and modes,
+  a transfer longer than the buffers, CS on its pad (`io get`) low only during a transfer;
+  `spidev_test`-shaped use from an SDK example.
+
+### 11.6 As built: 4c (2026-11-20)
+
+- `IoSpiSetup` (`bmds/ioport.h`, host-tested): every word of §11.5. `spiports.cpp`: `io/spi2`,
+  `io/spi3` (a check each, a watcher on `io`, a restart hook putting the pads back), the owner
+  `spidevN`, `/dev/spidevN.C` added when first started; `SpiDevice` (`bmds/spidevice.h`) per chip
+  select, made once and kept; `Stream::spiDevice()`. `IoChipOps::enableInput()` for MOSI read
+  back. `Vfs::MaxDeviceFiles` 40 → 48 (224 bytes): UART and SPI nodes together reach past 40.
+- **FIFO path, measured:** each 64-byte piece costs about 37 µs beyond its bits on the wire
+  (`spi_device_transmit()`: its queue, the interrupt, the task woken): 706 KB/s at 10 MHz (the
+  wire's 1220), 1.2 MB/s at 40 MHz, 1.4 MB/s asked at 80 MHz; 110 KB/s at 1 MHz (122). GDMA
+  (step 7) is for the fast end.
+- **`spi_ctl`** (slot 141, `bmds/sys.h`, ABI-locked): `bmds_spi_xfer_t` is Linux's
+  `spi_ioc_transfer`, checked by `linux.c` at build time, so `SPI_IOC_MESSAGE(N)` passes its
+  array through unchanged.
+- **Size:** about 10 KB of code (the port and devices 6.9, the parser 1.6, `spi_ctl` 1.2, `io
+  spi` 0.6); a device 40 bytes of PSRAM, the ports' state about 1 KB of PSRAM (the 64-byte
+  buffers in it); ESP-IDF's bus and devices from its own heap while a port runs.
+- **Checked on bmds0** (UEXT's pads, loopback, no wires): `io spi 2.0 deadbeef0102` back as
+  sent; `sdk/examples/spidevtest` (Linux's API only) read back as sent in modes 0-3, 8, 16 and
+  32-bit words, 1 to 80 MHz, 32 bytes to 64 KB (two transfers, CS held); CS low during a message
+  and high after, on the second of two chip selects too, low idle with `cs-high`; a 12-bit word
+  `EINVAL`; SPI3 at the same time on EXT1's pads; `cs=7` refused naming i2c0; stopped, the files
+  gone, the pads and `spi2`, `spi3` free again. 3-wire writes and reads run (nothing on the wire
+  to answer). Not checked: a real device, and Linux's word order for 16 and 32 bits (a loopback
+  swaps both ways).

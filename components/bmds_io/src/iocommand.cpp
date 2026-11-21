@@ -22,6 +22,7 @@
 #include <bmds/io.h>
 #include <bmds/memory.h>
 #include <bmds/shell.h>
+#include <bmds/spidevice.h>
 #include <bmds/thread.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -255,6 +256,62 @@ namespace {
                 return Shell::ExitSuccess;
         }
 
+        // io spi B.C HEX...: one full-duplex transfer at /dev/spidevB.C, the bytes read printed.
+        int spiTransfer(CommandContext &ctx, Span<char *const> args) {
+                constexpr size_t MaxBytes = 256;
+                unsigned         bus = 0, index = 0;
+                char             tail = 0;
+                if (std::sscanf(args[2], "%u.%u%c", &bus, &index, &tail) != 2) return ctx.usage();
+                SpiDevice *d = SpiDevice::find(bus, index);
+                if (d == nullptr || !d->isRunning()) {
+                        ctx.eprintf("io: no /dev/spidev%u.%u (io/spi%u sets an SPI port up)\n", bus, index, bus);
+                        return Shell::ExitFailure;
+                }
+                uint8_t out[MaxBytes], in[MaxBytes];
+                size_t  n = 0;
+                for (size_t a = 3; a < args.size(); ++a) {
+                        const char  *hex = args[a];
+                        const size_t length = std::strlen(hex);
+                        if (length == 0 || length % 2 != 0) {
+                                ctx.eprintf("io: '%s' isn't bytes in hex (two digits each)\n", hex);
+                                return Shell::ExitFailure;
+                        }
+                        for (size_t i = 0; i < length; i += 2) {
+                                const char    pair[3] = {hex[i], hex[i + 1], '\0'};
+                                char         *end = nullptr;
+                                unsigned long v = std::strtoul(pair, &end, 16);
+                                if (end != pair + 2) {
+                                        ctx.eprintf("io: '%s' isn't bytes in hex (two digits each)\n", hex);
+                                        return Shell::ExitFailure;
+                                }
+                                if (n == MaxBytes) {
+                                        ctx.eprintf("io: %u bytes at most\n", unsigned(MaxBytes));
+                                        return Shell::ExitFailure;
+                                }
+                                out[n++] = uint8_t(v);
+                        }
+                }
+                SpiDevice::Settings settings;
+                if (d->settings(settings, nullptr).isOk() && (settings.mode & SpiDevice::ThreeWire) != 0) {
+                        ctx.eprintf(
+                                "io: spidev%u.%u is 3-wire: data goes one way at a time (write to it, or read it)\n",
+                                bus, index);
+                        return Shell::ExitFailure;
+                }
+                SpiDevice::Transfer t;
+                t.tx = out;
+                t.rx = in;
+                t.length = uint32_t(n);
+                auto [moved, err] = d->transfer(Span<const SpiDevice::Transfer>(&t, 1));
+                if (err.isError()) {
+                        ctx.eprintf("io: spidev%u.%u: %s\n", bus, index, err.desc());
+                        return Shell::ExitFailure;
+                }
+                for (size_t i = 0; i < moved; ++i)
+                        ctx.printf("%02x%s", in[i], (i + 1) % 16 == 0 || i + 1 == moved ? "\n" : " ");
+                return Shell::ExitSuccess;
+        }
+
         int runIo(CommandContext &ctx) {
                 const Args args = ctx.args();
                 if (!Io::isReady()) {
@@ -336,6 +393,7 @@ namespace {
                         }
                         return dumpPads(ctx, pad, pad);
                 }
+                if (verb == "spi" && args.size() >= 4) return spiTransfer(ctx, args);
                 if (verb == "resources" && args.size() == 2) return showResources(ctx);
                 if (verb == "signals" && args.size() <= 3)
                         return showSignals(ctx, args.size() == 3 ? args[2] : nullptr);
@@ -344,8 +402,10 @@ namespace {
 
 } // namespace
 
-BMDS_SHELL_COMMAND(io, runIo,
-                   "[pin N | get N | edges N [-f] | pulse N [MS] [--force] | resources | signals [GROUP] | dump [N]]",
-                   "Show the chip's pins: wiring, holder, routing, level (devplan/io.md)")
+BMDS_SHELL_COMMAND(
+        io, runIo,
+        "[pin N | get N | edges N [-f] | pulse N [MS] [--force] | spi B.C HEX... | resources | signals [GROUP] | "
+        "dump [N]]",
+        "Show the chip's pins: wiring, holder, routing, level (devplan/io.md)")
 
 BMDS_NAMESPACE_END

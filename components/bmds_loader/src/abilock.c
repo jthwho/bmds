@@ -1079,3 +1079,29 @@ _Static_assert(offsetof(bmds_i2c_transfer_t, count) == 4 && offsetof(bmds_i2c_tr
                        sizeof(bmds_i2c_transfer_t) == 16,
                "ABI: bmds_i2c_transfer_t");
 #endif
+/* SPI: /dev/spidevB.C (devplan/io.md §11.5, 2026-11-20). */
+_Static_assert(BMDS_SYS_SPI_CTL == 141, "ABI: slot SPI_CTL");
+_Static_assert(BMDS_SPI_INFO == 0 && BMDS_SPI_SETUP == 1 && BMDS_SPI_TRANSFER == 2 && BMDS_SPI_CPHA == 0x1 &&
+                       BMDS_SPI_CPOL == 0x2 && BMDS_SPI_CS_HIGH == 0x4 && BMDS_SPI_LSB_FIRST == 0x8 &&
+                       BMDS_SPI_3WIRE == 0x10 && BMDS_SPI_LOOP == 0x20 && BMDS_SPI_NO_CS == 0x40 &&
+                       BMDS_SPI_MAX_TRANSFERS == 64 && BMDS_SPI_MAX_BYTES == 65536,
+               "ABI: spi_ctl ops, mode bits, limits");
+_Static_assert(offsetof(bmds_spi_info_t, bus) == 4 && offsetof(bmds_spi_info_t, cs) == 8 &&
+                       offsetof(bmds_spi_info_t, mode) == 12 && offsetof(bmds_spi_info_t, bits_per_word) == 16 &&
+                       offsetof(bmds_spi_info_t, max_speed_hz) == 20 && offsetof(bmds_spi_info_t, actual_hz) == 24 &&
+                       sizeof(bmds_spi_info_t) == 32,
+               "ABI: bmds_spi_info_t");
+_Static_assert(offsetof(bmds_spi_setup_t, mode) == 4 && offsetof(bmds_spi_setup_t, bits_per_word) == 8 &&
+                       offsetof(bmds_spi_setup_t, max_speed_hz) == 12 && sizeof(bmds_spi_setup_t) == 16,
+               "ABI: bmds_spi_setup_t");
+_Static_assert(offsetof(bmds_spi_xfer_t, rx_buf) == 8 && offsetof(bmds_spi_xfer_t, len) == 16 &&
+                       offsetof(bmds_spi_xfer_t, speed_hz) == 20 && offsetof(bmds_spi_xfer_t, delay_usecs) == 24 &&
+                       offsetof(bmds_spi_xfer_t, bits_per_word) == 26 && offsetof(bmds_spi_xfer_t, cs_change) == 27 &&
+                       offsetof(bmds_spi_xfer_t, tx_nbits) == 28 && offsetof(bmds_spi_xfer_t, rx_nbits) == 29 &&
+                       offsetof(bmds_spi_xfer_t, word_delay_usecs) == 30 && sizeof(bmds_spi_xfer_t) == 32,
+               "ABI: bmds_spi_xfer_t (Linux's spi_ioc_transfer)");
+#if UINTPTR_MAX == 0xffffffffu // (a pointer inside)
+_Static_assert(offsetof(bmds_spi_transfer_t, count) == 4 && offsetof(bmds_spi_transfer_t, transfers) == 8 &&
+                       sizeof(bmds_spi_transfer_t) == 16,
+               "ABI: bmds_spi_transfer_t");
+#endif

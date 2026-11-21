@@ -39,6 +39,9 @@ namespace IoSetups {
         /** @brief The boot stage's ports (`Io::startSetups()` calls it). */
         Error startPorts();
 
+        /** @brief The SPI ports (`io/spi2`, `io/spi3`: devplan/io.md §11.5); `startPorts()` calls it. */
+        Error startSpiPorts();
+
 } // namespace IoSetups
 
 BMDS_NAMESPACE_END

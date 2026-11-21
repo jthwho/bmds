@@ -42,6 +42,7 @@ if(COMMAND idf_component_register)
                                     src/fscalls.cpp
                                     src/gpiocalls.cpp
                                     src/i2ccalls.cpp
+                                    src/spicalls.cpp
                                     src/guicalls.cpp
                                     src/surfacecalls.cpp
                                     src/syntaxcalls.cpp

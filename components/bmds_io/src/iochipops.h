@@ -79,6 +79,9 @@ namespace IoChipOps {
         /** @brief Routes input signal @p signal from pad @p pad through the matrix. @nonblocking */
         void routeInput(unsigned signal, unsigned pad);
 
+        /** @brief Turns pad @p pad's input on, its output as it is (a pad read back while driven). @nonblocking */
+        void enableInput(unsigned pad);
+
 } // namespace IoChipOps
 
 BMDS_NAMESPACE_END

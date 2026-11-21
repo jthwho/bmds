@@ -311,7 +311,9 @@ Plan: [`input.md`](input.md).
   checked on bmds0 in loopback. Step 4b built (§11.4): the system's I²C buses as Linux's
   `/dev/i2c-N` (a target per open, a driver's addresses needing force), `i2c_ctl` (slot 140),
   Linux's i2c-dev and SMBus, `i2c scan|read|write`, `sdk/examples/i2cread`; checked on bmds0.
-  Next: 4c (SPI).
+  Step 4c built (§11.6): SPI ports, `io/spi2`, `io/spi3` → `/dev/spidevB.C` (chip selects of
+  the port's own), `spi_ctl` (slot 141), Linux's spidev, `io spi`, `sdk/examples/spidevtest`;
+  checked on bmds0 in loopback. Next: 4d (the I/O Manager's Ports tab).
 
 ## Phase 6 — Graphics
 

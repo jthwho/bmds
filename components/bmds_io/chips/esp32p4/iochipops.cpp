@@ -167,6 +167,11 @@ namespace IoChipOps {
                 return;
         }
 
+        void enableInput(unsigned pad) {
+                gpio_ll_input_enable(&GPIO, pad);
+                return;
+        }
+
 } // namespace IoChipOps
 
 BMDS_NAMESPACE_END

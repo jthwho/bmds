@@ -635,3 +635,75 @@ TEST_CASE("IoUartSetup: io/uartN's value") {
                 CHECK_FALSE(u == other);
         }
 }
+
+TEST_CASE("IoSpiSetup: io/spiN's value") {
+        using bmds::IoSpiSetup;
+        const IoChip &chip = bmds::ioChip();
+        IoSpiSetup    p;
+        char          why[IoSpiSetup::ReasonBytes];
+
+        SUBCASE("the defaults, and every word") {
+                REQUIRE(p.parse(chip, "sck=4 mosi=53 miso=54 cs=5", why).isOk());
+                CHECK(p.sck == 4);
+                CHECK(p.mosi == 53);
+                CHECK(p.miso == 54);
+                CHECK(p.csCount == 1);
+                CHECK(p.cs[0] == 5);
+                CHECK(p.mode == 0);
+                CHECK(p.clock == 1000000);
+                CHECK(p.bits == 8);
+                CHECK_FALSE(p.lsbFirst);
+                REQUIRE(p.parse(chip, "sck=4 mosi=53 cs=5,6,GPIO7 mode=3 clock=500k bits=16 lsb cs-high loopback force",
+                                why)
+                                .isOk());
+                CHECK(p.csCount == 3);
+                CHECK(p.cs[2] == 7);
+                CHECK(p.mode == 3);
+                CHECK(p.clock == 500000);
+                CHECK(p.bits == 16);
+                CHECK(p.lsbFirst);
+                CHECK(p.csHigh);
+                CHECK(p.loopback);
+                CHECK(p.force);
+                REQUIRE(p.parse(chip, "sck=4 mosi=53 3wire clock=40m", why).isOk()); // no chip select
+                CHECK(p.csCount == 0);
+                CHECK(p.threeWire);
+                CHECK(p.clock == 40000000);
+                REQUIRE(p.parse(chip, "sck=4 miso=54 clock=12345", why).isOk()); // receive only
+                CHECK(p.clock == 12345);
+        }
+
+        SUBCASE("refused, with the reason") {
+                CHECK(p.parse(chip, "mosi=53", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "an SPI port needs sck=") == 0);
+                CHECK(p.parse(chip, "sck=4", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "an SPI port needs mosi=, miso= or both") == 0);
+                CHECK(p.parse(chip, "sck=4 mosi=4", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "GPIO4 is given twice") == 0);
+                CHECK(p.parse(chip, "sck=4 mosi=53 cs=5,53", why) == Error::Invalid);
+                CHECK(p.parse(chip, "sck=4 mosi=53 cs=", why) == Error::Invalid);
+                CHECK(p.parse(chip, "sck=4 mosi=53 cs=5,6,7,8,9,10,11", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "cs takes 6 pins at most") == 0);
+                CHECK(p.parse(chip, "sck=4 mosi=53 cs=99", why) == Error::Invalid);
+                CHECK(p.parse(chip, "sck=4 mosi=53 mode=4", why) == Error::Invalid);
+                CHECK(p.parse(chip, "sck=4 mosi=53 clock=999", why) == Error::Invalid);
+                CHECK(p.parse(chip, "sck=4 mosi=53 clock=81m", why) == Error::Invalid);
+                CHECK(p.parse(chip, "sck=4 mosi=53 clock=fast", why) == Error::Invalid);
+                CHECK(p.parse(chip, "sck=4 mosi=53 bits=9", why) == Error::Invalid);
+                CHECK(p.parse(chip, "sck=4 mosi=53 miso=54 loopback", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "loopback uses MOSI for what comes in: no miso=") == 0);
+                CHECK(p.parse(chip, "sck=4 miso=54 3wire", why) == Error::Invalid);
+                CHECK(p.parse(chip, "sck=4 mosi=53 3wire loopback", why) == Error::Invalid);
+                CHECK(p.parse(chip, "sck=4 mosi=53 speed=1m", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "'speed=1m' isn't a word an SPI port knows") == 0);
+        }
+
+        SUBCASE("compared") {
+                IoSpiSetup other;
+                REQUIRE(p.parse(chip, "sck=4 mosi=53 cs=5", why).isOk());
+                REQUIRE(other.parse(chip, "cs=5 mosi=53 sck=4 mode=0 clock=1m", why).isOk());
+                CHECK(p == other);
+                REQUIRE(other.parse(chip, "sck=4 mosi=53 cs=6", why).isOk());
+                CHECK_FALSE(p == other);
+        }
+}

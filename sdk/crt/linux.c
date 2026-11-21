@@ -37,6 +37,7 @@
 #include <sys/timex.h>
 #include <linux/gpio.h>
 #include <linux/i2c-dev.h>
+#include <linux/spi/spidev.h>
 #include <linux/ptp_clock.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -1228,6 +1229,48 @@ static long i2c_ioctl(long fd, unsigned long request, void *arg) {
         }
 }
 
+/* /dev/spidevB.C's requests (linux/spi/spidev.h) on spi_ctl. spi_ioc_transfer is the ABI's
+ * bmds_spi_xfer_t, so SPI_IOC_MESSAGE's array passes through as it is. */
+_Static_assert(sizeof(struct spi_ioc_transfer) == sizeof(bmds_spi_xfer_t), "spi_ioc_transfer is bmds_spi_xfer_t");
+
+static long spi_ioctl(long fd, unsigned long request, void *arg) {
+        const unsigned long nr = request & 0xff;
+        const unsigned long dir = request >> 30;
+        const unsigned long size = request >> 16 & 0x3fff;
+        if (arg == NULL) return -EFAULT;
+        if (nr == 0 && dir == _IOC_WRITE) { /* SPI_IOC_MESSAGE(N) */
+                if (size == 0 || size % sizeof(struct spi_ioc_transfer) != 0) return -EINVAL;
+                bmds_spi_transfer_t t = {.size = sizeof(t),
+                                         .count = (uint32_t)(size / sizeof(struct spi_ioc_transfer)),
+                                         .transfers = arg};
+                return (long)bmds_spi_ctl((int32_t)fd, BMDS_SPI_TRANSFER, &t);
+        }
+        bmds_spi_info_t info = {.size = sizeof(info)};
+        const long      r = (long)bmds_spi_ctl((int32_t)fd, BMDS_SPI_INFO, &info);
+        if (r < 0) return r;
+        bmds_spi_setup_t s = {.size = sizeof(s),
+                              .mode = info.mode,
+                              .bits_per_word = info.bits_per_word,
+                              .max_speed_hz = info.max_speed_hz};
+        switch (request) {
+                case SPI_IOC_RD_MODE: *(uint8_t *)arg = (uint8_t)info.mode; return 0;
+                case SPI_IOC_RD_MODE32: *(uint32_t *)arg = info.mode; return 0;
+                case SPI_IOC_RD_LSB_FIRST: *(uint8_t *)arg = (info.mode & SPI_LSB_FIRST) ? 1 : 0; return 0;
+                case SPI_IOC_RD_BITS_PER_WORD: *(uint8_t *)arg = (uint8_t)info.bits_per_word; return 0;
+                case SPI_IOC_RD_MAX_SPEED_HZ: *(uint32_t *)arg = info.max_speed_hz; return 0;
+                case SPI_IOC_WR_MODE: s.mode = (info.mode & ~0xffu) | *(const uint8_t *)arg; break;
+                case SPI_IOC_WR_MODE32: s.mode = *(const uint32_t *)arg; break;
+                case SPI_IOC_WR_LSB_FIRST:
+                        s.mode = *(const uint8_t *)arg ? info.mode | SPI_LSB_FIRST
+                                                       : info.mode & ~(uint32_t)SPI_LSB_FIRST;
+                        break;
+                case SPI_IOC_WR_BITS_PER_WORD: s.bits_per_word = *(const uint8_t *)arg; break;
+                case SPI_IOC_WR_MAX_SPEED_HZ: s.max_speed_hz = *(const uint32_t *)arg; break;
+                default: return -ENOTTY;
+        }
+        return (long)bmds_spi_ctl((int32_t)fd, BMDS_SPI_SETUP, &s);
+}
+
 static long do_ioctl(long fd, unsigned long request, void *arg) {
         /* OSS: /dev/dsp's 'P' requests and /dev/mixer's 'M' (oss.c). */
         const unsigned long type = request >> 8 & 0xff;
@@ -1240,6 +1283,7 @@ static long do_ioctl(long fd, unsigned long request, void *arg) {
         }
         if (type == PTP_CLK_MAGIC) return ptp_ioctl(fd, request, arg);
         if (type == GPIO_IOC_MAGIC) return gpio_ioctl(fd, request, arg);
+        if (type == SPI_IOC_MAGIC) return spi_ioctl(fd, request, arg);
         if ((request >= I2C_RETRIES && request <= I2C_PEC) || request == I2C_SMBUS) return i2c_ioctl(fd, request, arg);
         switch (request) {
                 case TCGETS: return tc_get(fd, arg);

@@ -349,7 +349,8 @@ namespace IoSetups {
                         Mutex::Locker lock(s->lock, WaitForever);
                         for (unsigned n = 0; n < UartCount; ++n) applyUart(n);
                 }
-                return s->watcher.start(StringView("io"), changed, nullptr);
+                if (const Error err = s->watcher.start(StringView("io"), changed, nullptr); err.isError()) return err;
+                return startSpiPorts();
         }
 
 } // namespace IoSetups
