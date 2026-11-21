@@ -24,6 +24,7 @@
 #define BMDS_LINUX_I2C_DEV_H
 
 #include <stdint.h>
+#include <linux/types.h> /* Linux's includes it: ported code uses __u8 and the like */
 #include <linux/i2c.h>
 
 #ifdef __cplusplus
@@ -55,6 +56,8 @@ struct i2c_rdwr_ioctl_data {
 };
 
 #define I2C_RDWR_IOCTL_MAX_MSGS 42
+/* Linux keeps the first spelling, which programs use (i2c-tools' i2ctransfer). */
+#define I2C_RDRW_IOCTL_MAX_MSGS I2C_RDWR_IOCTL_MAX_MSGS
 
 #ifdef __cplusplus
 }

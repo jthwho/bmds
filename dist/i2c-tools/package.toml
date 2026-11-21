@@ -1,0 +1,12 @@
+# i2c-tools (devplan/io.md §12.5): i2cdetect, i2cget, i2cset, i2cdump, i2ctransfer on BMDS's
+# /dev/i2c-N, Linux's i2c-dev as the SDK carries it out.
+name = "i2c-tools"
+version = "4.4"
+description = "I2C tools: i2cdetect, i2cget, i2cset, i2cdump, i2ctransfer (Linux's i2c-dev)"
+title = "i2c-tools"
+category = "System"
+license = "GPL-2.0-or-later AND LGPL-2.1-or-later"
+homepage = "https://i2c.wiki.kernel.org/index.php/I2C_Tools"
+source = "https://mirrors.edge.kernel.org/pub/software/utils/i2c-tools/i2c-tools-4.4.tar.xz"
+sha256 = "8b15f0a880ab87280c40cfd7235cfff28134bf14d5646c07518b1ff6642a2473"
+license_files = ["COPYING", "COPYING.LGPL"]

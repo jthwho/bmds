@@ -1012,3 +1012,30 @@ tools and `i2c-tools`, which test both halves.
   each, *requested* (`used input rising falling pull-up`, consumer `gpioline`), *reconfigured*
   twice (the pull), *released*, *requested* by `io` as an output, *released*; unwatching twice
   `EBUSY`; `gpioinfo` (a chip per open) as before.
+
+### 12.5 5c: libgpiod's tools and i2c-tools (built, 2026-11-20)
+
+- **`dist/libgpiod`** (2.3.2, kernel.org's tarball, its published hash): the library and the six
+  tools (`gpiodetect`, `gpioinfo`, `gpioget`, `gpioset`, `gpiomon`, `gpionotify`) built with
+  the SDK's compiler directly (upstream builds with meson); gpioset's interactive mode needs
+  libedit and is left out, as upstream does without it. **`dist/i2c-tools`** (4.4): `i2cdetect`,
+  `i2cget`, `i2cset`, `i2cdump`, `i2ctransfer` and libi2c.
+- **One program each, a link per tool** (as Dropbear's): every tool apart carried the library
+  and musl, 200-260 KB each (1.4 MB for libgpiod's six); as one, 326 KB and 257 KB.
+- **Patches, each saying why:** libgpiod's chip check asked sysfs whether a character device's
+  subsystem is gpio (BMDS has no /sys): it now takes a device named `gpiochipN` that answers
+  `GPIO_GET_CHIPINFO_IOCTL`, opening no other (the tools scan /dev, and a device may act on being
+  opened). i2c-tools lists buses from /proc/bus/i2c or sysfs: with neither it lists /dev/i2c-N.
+- **The SDK, made more like Linux** (what the two needed): `linux/types.h` (`__u8`...
+  `__aligned_u64`), `linux/const.h`, `linux/ioctl.h` (Linux's field macros over musl's encoding);
+  `linux/i2c.h` and `i2c-dev.h` include `linux/types.h` as Linux's do, and `i2c-dev.h` keeps
+  Linux's misspelt `I2C_RDRW_IOCTL_MAX_MSGS`; `linux/spi/spidev.h` uses `linux/ioctl.h`.
+- **Checked on bmds0** (run as `gpiodmulti TOOL`, `i2cmulti TOOL` from the card): `gpiodetect`;
+  `gpioinfo` with consumers; `gpioset` holding GPIO46 while `gpioget` got `Resource busy` and
+  `gpioinfo` named `gpioset`; `gpionotify` saw *requested* and *released* only; `gpioget` with
+  pull-up and pull-down, active low; `gpiomon` holding 47 with `edges=both` shown and giving it
+  back when killed; `i2cdetect -l` and `-y 0` (`UU` at the bridge's addresses); `i2cget` of
+  EDID, `Resource busy` at 0x48 without `-f`, its id with it; `i2ctransfer w1@0x50 0 r8`;
+  `i2cdump`; `i2cset` to nothing: `Write failed`. Both package (`bmds-dist package`).
+- **Step 5 is done.** Next: step 6, the RMT (§3.7).
+

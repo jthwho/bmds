@@ -318,8 +318,10 @@ Plan: [`input.md`](input.md).
   Step 5a built (§12.2): programs' line requests, Linux's GPIO v2 line fd (values, config,
   edge events read and polled), `gpio_ctl` ops 7-10, `sdk/examples/gpioline`; checked on bmds0.
   Step 5b built (§12.4): line info watched on the chip fd (requested, reconfigured, released,
-  one event per change), a request's settings in line info; checked on bmds0. Next: 5c
-  (`dist/` recipes for libgpiod's tools and i2c-tools).
+  one event per change), a request's settings in line info; checked on bmds0. Step 5c built
+  (§12.5): `dist/libgpiod` (2.3.2) and `dist/i2c-tools` (4.4), each one program with a link per
+  tool, two small patches for no /sys; `linux/types.h`, `const.h`, `ioctl.h` in the SDK; checked
+  on bmds0. Step 5 done. Next: step 6, the RMT (§3.7).
 
 ## Phase 6 — Graphics
 

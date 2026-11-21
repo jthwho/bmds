@@ -16,6 +16,7 @@
 #define BMDS_LINUX_I2C_H
 
 #include <stdint.h>
+#include <linux/types.h> /* Linux's includes it: ported code uses __u8 and the like */
 
 #ifdef __cplusplus
 extern "C" {

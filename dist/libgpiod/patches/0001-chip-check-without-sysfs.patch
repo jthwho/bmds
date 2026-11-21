@@ -1,0 +1,72 @@
+BMDS has no /sys: a GPIO chip is a character device named gpiochipN that answers
+GPIO_GET_CHIPINFO_IOCTL (devplan/io.md §12.5). Linux asks sysfs whether the device's
+subsystem is gpio, so it opens nothing; this opens only a device named gpiochipN, so the
+tools' scan of /dev opens no other (a device may act on being opened).
+
+--- a/lib/internal.c
++++ b/lib/internal.c
+@@ -2,6 +2,7 @@
+ // SPDX-FileCopyrightText: 2021-2022 Bartosz Golaszewski <brgl@bgdev.pl>
+ 
+ #include <errno.h>
++#include <fcntl.h>
+ #include <poll.h>
+ #include <stdint.h>
+ #include <stdio.h>
+@@ -50,30 +51,38 @@
+ 		goto out_free_realname;
+ 	}
+ 
+-	/* Is the device associated with the GPIO subsystem? */
+-	snprintf(devpath, sizeof(devpath), "/sys/dev/char/%u:%u/subsystem",
+-		 major(statbuf.st_rdev), minor(statbuf.st_rdev));
+-
+-	sysfsp = realpath(devpath, NULL);
+-	if (!sysfsp)
+-		goto out_free_realname;
+-
+ 	/*
+-	 * In glibc, if any of the underlying readlink() calls fail (which is
+-	 * perfectly normal when resolving paths), errno is not cleared.
++	 * BMDS has no /sys: a GPIO chip is a character device named gpiochipN
++	 * (opening no other: a device may do something when opened) that
++	 * answers GPIO_GET_CHIPINFO_IOCTL.
+ 	 */
+-	errno = 0;
+-
+-	if (strcmp(sysfsp, "/sys/bus/gpio") != 0) {
+-		/* This is a character device but not the one we're after. */
+-		errno = ENODEV;
+-		goto out_free_sysfsp;
++	(void)devpath;
++	(void)sysfsp;
++	{
++		const char *base = strrchr(realname, '/');
++		struct gpiochip_info info;
++		int fd;
++
++		base = base ? base + 1 : realname;
++		if (strncmp(base, "gpiochip", 8) != 0 || base[8] < '0' ||
++		    base[8] > '9') {
++			errno = ENODEV;
++			goto out_free_realname;
++		}
++		fd = open(realname, O_RDONLY | O_CLOEXEC);
++		if (fd < 0)
++			goto out_free_realname;
++		rv = ioctl(fd, GPIO_GET_CHIPINFO_IOCTL, &info);
++		close(fd);
++		if (rv) {
++			errno = ENODEV;
++			goto out_free_realname;
++		}
+ 	}
+ 
++	errno = 0;
+ 	ret = true;
+ 
+-out_free_sysfsp:
+-	free(sysfsp);
+ out_free_realname:
+ 	free(realname);
+ out:

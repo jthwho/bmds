@@ -1,0 +1,63 @@
+BMDS has neither /proc/bus/i2c nor sysfs: `i2cdetect -l` (and finding a bus by name) list
+the /dev/i2c-N there are, each an I2C adapter (devplan/io.md §12.5).
+
+--- a/tools/i2cbusses.c
++++ b/tools/i2cbusses.c
+@@ -194,7 +194,7 @@
+ 	/* look in sysfs */
+ 	/* First figure out where sysfs was mounted */
+ 	if ((f = fopen("/proc/mounts", "r")) == NULL) {
+-		goto done;
++		goto devfs;
+ 	}
+ 	while (fgets(n, NAME_MAX, f)) {
+ 		sscanf(n, "%*[^ ] %[^ ] %[^ ] %*s\n", sysfs, fstype);
+@@ -205,7 +205,7 @@
+ 	}
+ 	fclose(f);
+ 	if (! foundsysfs) {
+-		goto done;
++		goto devfs;
+ 	}
+ 
+ 	/* Bus numbers in i2c-adapter don't necessarily match those in
+@@ -315,6 +315,39 @@
+ 		}
+ 	}
+ 	closedir(dir);
++	goto done;
++
++devfs:
++	/* No /proc/bus/i2c and no sysfs (BMDS): the buses are /dev/i2c-N,
++	   each an I2C adapter. */
++	if ((dir = opendir("/dev")) != NULL) {
++		while ((de = readdir(dir)) != NULL) {
++			int i2cbus;
++			char end;
++
++			if (sscanf(de->d_name, "i2c-%d%c", &i2cbus, &end) != 1)
++				continue;
++			if ((count + 1) % BUNCH == 0) {
++				adapters = more_adapters(adapters, count + 1);
++				if (!adapters) {
++					closedir(dir);
++					return NULL;
++				}
++			}
++			snprintf(s, sizeof(s), "I2C bus %d", i2cbus);
++			adapters[count].nr = i2cbus;
++			adapters[count].name = strdup(s);
++			if (adapters[count].name == NULL) {
++				closedir(dir);
++				free_adapters(adapters);
++				return NULL;
++			}
++			adapters[count].funcs = adap_types[2].funcs;
++			adapters[count].algo = adap_types[2].algo;
++			count++;
++		}
++		closedir(dir);
++	}
+ 
+ done:
+ 	/* Sort by bus number for convenience */

@@ -1,0 +1,12 @@
+# libgpiod's tools (devplan/io.md §12.5): gpiodetect, gpioinfo, gpioget, gpioset, gpiomon and
+# gpionotify on BMDS's /dev/gpiochip0, Linux's GPIO character device v2 as the SDK carries it out.
+name = "libgpiod"
+version = "2.3.2"
+description = "GPIO tools: gpiodetect, gpioinfo, gpioget, gpioset, gpiomon, gpionotify (Linux's GPIO character device)"
+title = "libgpiod tools"
+category = "System"
+license = "GPL-2.0-or-later AND LGPL-2.1-or-later"
+homepage = "https://git.kernel.org/pub/scm/libs/libgpiod/libgpiod.git/"
+source = "https://mirrors.edge.kernel.org/pub/software/libs/libgpiod/libgpiod-2.3.2.tar.xz"
+sha256 = "dc48fb87cd72019745acb201599caf559556b5d913844df0ed011067d19e9a6b"
+license_files = ["LICENSES/GPL-2.0-or-later.txt", "LICENSES/LGPL-2.1-or-later.txt"]

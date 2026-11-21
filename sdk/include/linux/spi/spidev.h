@@ -22,7 +22,8 @@
 #define BMDS_LINUX_SPI_SPIDEV_H
 
 #include <stdint.h>
-#include <sys/ioctl.h>
+#include <linux/ioctl.h>
+#include <linux/types.h>
 #include <linux/spi/spi.h>
 
 #ifdef __cplusplus
@@ -30,10 +31,6 @@ extern "C" {
 #endif
 
 #define SPI_IOC_MAGIC 'k'
-
-#ifndef _IOC_SIZEBITS
-#define _IOC_SIZEBITS 14 /* Linux's (linux/ioctl.h): musl's sys/ioctl.h has the encoding, not this */
-#endif
 
 /** @brief One transfer of `SPI_IOC_MESSAGE(N)`. */
 struct spi_ioc_transfer {
