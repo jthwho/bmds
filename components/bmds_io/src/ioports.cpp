@@ -352,7 +352,8 @@ namespace IoSetups {
                         for (unsigned n = 0; n < UartCount; ++n) applyUart(n);
                 }
                 if (const Error err = s->watcher.start(StringView("io"), changed, nullptr); err.isError()) return err;
-                return startSpiPorts();
+                if (const Error err = startSpiPorts(); err.isError()) return err;
+                return startRmtPorts();
         }
 
 } // namespace IoSetups

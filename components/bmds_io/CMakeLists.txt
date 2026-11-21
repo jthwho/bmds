@@ -39,12 +39,13 @@ if(COMMAND idf_component_register)
                                     src/ioports.cpp
                                     src/iosetups.cpp
                                     src/spiports.cpp
+                                    src/rmtports.cpp
                                     src/uartconsole.cpp
                                     src/iocommand.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS src
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_console bmds_fs bmds_shell bmds_sysconf esp_driver_gpio esp_driver_spi esp_hw_support hal soc
+                               PRIV_REQUIRES bmds_board bmds_console bmds_fs bmds_shell bmds_sysconf esp_driver_gpio esp_driver_rmt esp_driver_spi esp_hw_support hal soc
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()

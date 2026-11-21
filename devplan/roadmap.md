@@ -321,7 +321,10 @@ Plan: [`input.md`](input.md).
   one event per change), a request's settings in line info; checked on bmds0. Step 5c built
   (§12.5): `dist/libgpiod` (2.3.2) and `dist/i2c-tools` (4.4), each one program with a link per
   tool, two small patches for no /sys; `linux/types.h`, `const.h`, `ioctl.h` in the SDK; checked
-  on bmds0. Step 5 done. Next: step 6, the RMT (§3.7).
+  on bmds0. Step 5 done. Step 6a built (§13.2): RMT ports, `io/rmt0`..`7` → `/dev/rmtN`,
+  gapless sending from a ring, received runs with their first edge's time, `rmt_ctl` (slot 142),
+  an LTC generator and reader (`sdk/examples/ltc`), timed back within 7 µs; checked on bmds0.
+  Next: 6b (DMA, sync starts, a flash write's effect measured, a clock trim).
 
 ## Phase 6 — Graphics
 

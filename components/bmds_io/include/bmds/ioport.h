@@ -5,8 +5,8 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * A port's setup, `io/uartN`'s and `io/spiN`'s values (devplan/io.md §11.1, §11.5): parsed and
- * checked against the chip.
+ * A port's setup, `io/uartN`'s, `io/spiN`'s and `io/rmtN`'s values (devplan/io.md §11.1, §11.5,
+ * §13.1): parsed and checked against the chip.
  * Pure, host-tested; `Io` checks the holders and runs the port.
  */
 
@@ -96,6 +96,51 @@ struct IoSpiSetup {
 
                 /** @brief True if @p other sets the port up the same way. */
                 bool operator==(const IoSpiSetup &other) const;
+};
+
+/**
+ * @brief An RMT port's setup: `pin=46 dir=tx resolution=1m continuous` (devplan/io.md §13.1).
+ *
+ * @par Thread Safety
+ * A plain value.
+ */
+struct IoRmtSetup {
+                /** @brief Room for `parse()`'s reason, NUL included. */
+                static constexpr size_t ReasonBytes = IoUartSetup::ReasonBytes;
+
+                static constexpr uint32_t MinResolution = 10000;    ///< The coarsest `resolution=`, Hz.
+                static constexpr uint32_t MaxResolution = 80000000; ///< The finest.
+                static constexpr uint32_t MinBuffer = 64;           ///< The smallest `buffer=`, symbols.
+                static constexpr uint32_t MaxBuffer = 16384;        ///< The largest.
+                static constexpr uint32_t MaxGlitchNs = 3000;       ///< `min=`: the hardware filter's reach.
+                static constexpr uint32_t MaxTicks = 32767;         ///< A duration's most ticks (15 bits).
+
+                int8_t   pin = -1;             ///< `pin=`: its pad.
+                bool     receive = false;      ///< `dir=rx` (else `dir=tx`).
+                uint32_t resolution = 1000000; ///< `resolution=`, ticks a second.
+                bool     idleHigh = false;     ///< `idle=high`: a sender rests high.
+                bool     invert = false;       ///< `invert`: the pad inverted.
+                bool     continuous = false;   ///< `continuous`: a sender fills a dry ring with idle.
+                uint32_t buffer = 1024;        ///< `buffer=`: the ring, in symbols.
+                uint32_t minNs = 0;            ///< `min=`: a receiver drops shorter pulses (0: none).
+                uint32_t maxNs = 0;            ///< `max=`: a level longer ends a run (0: the longest counted).
+                bool     monitor = false;      ///< `monitor`: a receiver reads a pad it doesn't take.
+                bool     force = false;        ///< `force`: its pin taken from its holder.
+
+                /**
+                 * @brief Parses @p text for @p chip: words known, a pad that exists, `dir=`; a
+                 *        sender's words not on a receiver and the other way; `max=` within 32767
+                 *        ticks of the resolution.
+                 * @param[out] why Why it is refused, for people, or "".
+                 * @return `Ok`, or `Invalid`.
+                 */
+                Error parse(const IoChip &chip, StringView text, char (&why)[ReasonBytes]);
+
+                /** @brief `max=` in ticks: the longest level a run takes (32767 when not given). */
+                uint32_t maxTicks() const;
+
+                /** @brief True if @p other sets the port up the same way. */
+                bool operator==(const IoRmtSetup &other) const;
 };
 
 BMDS_NAMESPACE_END

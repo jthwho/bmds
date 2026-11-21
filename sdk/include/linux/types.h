@@ -15,6 +15,11 @@
 #ifndef BMDS_LINUX_TYPES_H
 #define BMDS_LINUX_TYPES_H
 
+#ifdef __linux__
+/* Compiled on Linux (a host's tests): Linux's own, which the C library's headers include too. */
+#include_next <linux/types.h>
+#else
+
 #include <stdint.h>
 
 typedef int8_t   __s8;
@@ -45,5 +50,7 @@ typedef __u32 __bitwise __wsum;
 #define __aligned_le64 __le64 __attribute__((aligned(8)))
 
 typedef unsigned __bitwise __poll_t;
+
+#endif /* __linux__ */
 
 #endif /* BMDS_LINUX_TYPES_H */

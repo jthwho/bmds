@@ -1149,3 +1149,14 @@ _Static_assert(offsetof(bmds_gpio_line_info_changed_t, timestamp_ns) == 256 &&
                        offsetof(bmds_gpio_line_info_changed_t, event_type) == 264 &&
                        sizeof(bmds_gpio_line_info_changed_t) == 288,
                "ABI: bmds_gpio_line_info_changed_t (Linux's gpio_v2_line_info_changed)");
+/* RMT: /dev/rmtN (devplan/io.md §13.1, 2026-11-20). */
+_Static_assert(BMDS_SYS_RMT_CTL == 142, "ABI: slot RMT_CTL");
+_Static_assert(BMDS_RMT_INFO == 0 && BMDS_RMT_RECEIVE == 1 && BMDS_RMT_RUNNING == 2 && BMDS_RMT_SENDING == 4 &&
+                       BMDS_RMT_CONTINUOUS == 8 && BMDS_RMT_IDLE_HIGH == 0x10 && BMDS_RMT_HEADER == 0 && BMDS_RMT_MAX_TICKS == 32767 &&
+                       BMDS_RMT_SYMBOL(1, 5, 0, 7) == 0x00078005u && BMDS_RMT_DURATION1(0x00078005u) == 7,
+               "ABI: rmt_ctl ops, flags, the symbol word");
+_Static_assert(offsetof(bmds_rmt_info_t, channel) == 8 && offsetof(bmds_rmt_info_t, resolution_hz) == 16 &&
+                       offsetof(bmds_rmt_info_t, overruns) == 32 && offsetof(bmds_rmt_info_t, start_ns) == 40 &&
+                       offsetof(bmds_rmt_info_t, symbols) == 48 && offsetof(bmds_rmt_info_t, ticks) == 56 &&
+                       offsetof(bmds_rmt_info_t, filler_ticks) == 64 && sizeof(bmds_rmt_info_t) == 72,
+               "ABI: bmds_rmt_info_t");

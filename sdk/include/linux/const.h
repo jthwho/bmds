@@ -14,6 +14,11 @@
 #ifndef BMDS_LINUX_CONST_H
 #define BMDS_LINUX_CONST_H
 
+#ifdef __linux__
+/* Compiled on Linux (a host's tests): Linux's own, which the C library's headers include too. */
+#include_next <linux/const.h>
+#else
+
 #define _AC(X, Y) (X##Y)
 #define _AT(T, X) ((T)(X))
 #define _UL(x) (_AC(x, UL))
@@ -24,5 +29,7 @@
 #define __ALIGN_KERNEL(x, a) __ALIGN_KERNEL_MASK(x, (__typeof__(x))(a) - 1)
 #define __ALIGN_KERNEL_MASK(x, mask) (((x) + (mask)) & ~(mask))
 #define __KERNEL_DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
+
+#endif /* __linux__ */
 
 #endif /* BMDS_LINUX_CONST_H */

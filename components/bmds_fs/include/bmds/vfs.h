@@ -456,7 +456,7 @@ namespace Vfs {
         };
 
         /** @brief The most files `addDeviceFile()` takes. */
-        inline constexpr size_t MaxDeviceFiles = 48; // 32 until the I/O ports (devplan/io.md §11.1, §11.5)
+        inline constexpr size_t MaxDeviceFiles = 56; // 32 until the I/O ports (devplan/io.md §11.1, §11.5, §13.1)
 
         /**
          * @brief Adds @p file to `/dev` (its name and calls kept: static), for

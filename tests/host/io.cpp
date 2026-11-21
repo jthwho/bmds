@@ -826,3 +826,63 @@ TEST_CASE("IoLine: a line request's config, Linux's rules") {
                 CHECK(L::resolve(c, 1, s) == Error::Invalid);
         }
 }
+
+TEST_CASE("IoRmtSetup: io/rmtN's value") {
+        using bmds::IoRmtSetup;
+        const IoChip &chip = bmds::ioChip();
+        IoRmtSetup    r;
+        char          why[IoRmtSetup::ReasonBytes];
+
+        SUBCASE("the defaults, and every word") {
+                REQUIRE(r.parse(chip, "pin=46 dir=tx", why).isOk());
+                CHECK(r.pin == 46);
+                CHECK_FALSE(r.receive);
+                CHECK(r.resolution == 1000000);
+                CHECK(r.buffer == 1024);
+                CHECK(r.maxTicks() == 32767);
+                REQUIRE(r.parse(chip, "pin=GPIO47 dir=tx resolution=10m idle=high invert continuous buffer=4096 force",
+                                why)
+                                .isOk());
+                CHECK(r.resolution == 10000000);
+                CHECK(r.idleHigh);
+                CHECK(r.invert);
+                CHECK(r.continuous);
+                CHECK(r.buffer == 4096);
+                CHECK(r.force);
+                REQUIRE(r.parse(chip, "pin=46 dir=rx min=500 max=20000000 monitor", why).isOk());
+                CHECK(r.receive);
+                CHECK(r.minNs == 500);
+                CHECK(r.maxTicks() == 20000); // 20 ms at 1 MHz
+                CHECK(r.monitor);
+        }
+
+        SUBCASE("refused, with the reason") {
+                CHECK(r.parse(chip, "dir=tx", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "an RMT port needs pin=") == 0);
+                CHECK(r.parse(chip, "pin=46", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "an RMT port needs dir=tx or dir=rx") == 0);
+                CHECK(r.parse(chip, "pin=46 dir=both", why) == Error::Invalid);
+                CHECK(r.parse(chip, "pin=99 dir=tx", why) == Error::Invalid);
+                CHECK(r.parse(chip, "pin=46 dir=tx resolution=5k", why) == Error::Invalid);
+                CHECK(r.parse(chip, "pin=46 dir=tx resolution=81m", why) == Error::Invalid);
+                CHECK(r.parse(chip, "pin=46 dir=tx buffer=10", why) == Error::Invalid);
+                CHECK(r.parse(chip, "pin=46 dir=tx idle=middle", why) == Error::Invalid);
+                CHECK(r.parse(chip, "pin=46 dir=rx continuous", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "idle= and continuous are a sender's (dir=tx)") == 0);
+                CHECK(r.parse(chip, "pin=46 dir=tx monitor", why) == Error::Invalid);
+                CHECK(r.parse(chip, "pin=46 dir=rx min=5000", why) == Error::Invalid);
+                CHECK(r.parse(chip, "pin=46 dir=rx monitor force", why) == Error::Invalid);
+                CHECK(r.parse(chip, "pin=46 dir=rx max=40000000", why) == Error::Invalid); // 40000 ticks
+                CHECK(std::strcmp(why, "max is at most 32767 ticks: 32767000 ns at this resolution") == 0);
+                CHECK(r.parse(chip, "pin=46 dir=tx carrier=38k", why) == Error::Invalid);
+        }
+
+        SUBCASE("compared") {
+                IoRmtSetup other;
+                REQUIRE(r.parse(chip, "pin=46 dir=tx", why).isOk());
+                REQUIRE(other.parse(chip, "dir=tx pin=46 resolution=1m buffer=1024", why).isOk());
+                CHECK(r == other);
+                REQUIRE(other.parse(chip, "dir=tx pin=46 continuous", why).isOk());
+                CHECK_FALSE(r == other);
+        }
+}

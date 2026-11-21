@@ -858,6 +858,15 @@ until silicon v3; then test again.
   - **Unaligned pieces cost a quarter more:** 16,000-byte writes of a file take 26% longer than
     16 KB ones (a single-sector write for the partial sectors each time); gather them
     (`BlockWriter`).
+- **`rmt_transmit()` starts the hardware at its end, about 73 µs after it is called:** it first
+  fills the channel's memory through the encoder. A stream's start stamped before the call was
+  80 µs early against what a receiver measured back; stamped when it returns, 7 µs (the
+  receiver's interrupt and a tick). `rmtports.cpp`, `devplan/io.md` §13.2.
+- **ESP-IDF's partial RMT receive hands a block over one block late:** with the buffer half the
+  channel's memory, the callback for a block comes at the next threshold, just before the
+  driver copies the block after it; the time of that callback is when the *next* block ended,
+  so a block's first edge is the previous callback's time less its ticks, and a run's first
+  block waits for the second (or the run's end, less the quiet time) to be timed.
 - **ESP-IDF's SPI master with DMA allocates per transaction unless buffers are whole cache
   lines:** a buffer must be DMA-capable and aligned to the cache line (64 bytes here) in address
   *and length*, or `setup_priv_desc()` takes a `heap_caps_aligned_alloc()` bounce buffer for that

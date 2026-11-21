@@ -25,6 +25,7 @@ class GpioChip;
 class GpioLines;
 class I2cClient;
 class SpiDevice;
+class RmtChannel;
 class MidiFile;
 class PtpClock;
 class Pty;
@@ -223,6 +224,9 @@ class Stream {
 
                 /** @brief Returns this as an SPI device's file (`/dev/spidevB.C`: `devplan/io.md` §11.5), or null. */
                 virtual SpiDevice *spiDevice() { return nullptr; }
+
+                /** @brief Returns this as an RMT port's stream (`/dev/rmtN`: `devplan/io.md` §13.1), or null. */
+                virtual RmtChannel *rmtChannel() { return nullptr; }
 
                 /**
                  * @brief Returns the stream's whole contents where they lie, if it has them at an

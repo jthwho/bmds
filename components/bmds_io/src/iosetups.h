@@ -42,6 +42,9 @@ namespace IoSetups {
         /** @brief The SPI ports (`io/spi2`, `io/spi3`: devplan/io.md §11.5); `startPorts()` calls it. */
         Error startSpiPorts();
 
+        /** @brief The RMT ports (`io/rmt0` .. `io/rmt7`: devplan/io.md §13.1); `startPorts()` calls it. */
+        Error startRmtPorts();
+
 } // namespace IoSetups
 
 BMDS_NAMESPACE_END

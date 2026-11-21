@@ -228,6 +228,7 @@ static inline int bmds_sys_has(uint32_t n) {
 #define BMDS_SYS_GPIO_CTL 139u   /**< `int32_t gpio_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/gpiochipN`. */
 #define BMDS_SYS_I2C_CTL 140u    /**< `int32_t i2c_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/i2c-N`. */
 #define BMDS_SYS_SPI_CTL 141u    /**< `int32_t spi_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/spidevB.C`. */
+#define BMDS_SYS_RMT_CTL 142u    /**< `int32_t rmt_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/rmtN`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -2095,6 +2096,52 @@ typedef struct bmds_spi_transfer_t {
 } bmds_spi_transfer_t;
 
 /*
+ * RMT (slot 142, appended 2026-11-20, devplan/io.md §13.1): `/dev/rmtN`, an RMT port (`io/rmtN`).
+ * A sender's `write()` takes whole symbols, sent with no gap while they come; a receiver's
+ * `read()` gives words: symbols, and before each run a header (`BMDS_RMT_HEADER` then the 64-bit
+ * monotonic time, low word first, of the run's first edge). Both `poll()`.
+ */
+
+/** @brief A symbol's fields (the hardware's word): two durations in ticks, each with its level. */
+#define BMDS_RMT_DURATION0(s) ((uint32_t)(s) & 0x7fffu)
+#define BMDS_RMT_LEVEL0(s) (((uint32_t)(s) >> 15) & 1u)
+#define BMDS_RMT_DURATION1(s) (((uint32_t)(s) >> 16) & 0x7fffu)
+#define BMDS_RMT_LEVEL1(s) (((uint32_t)(s) >> 31) & 1u)
+#define BMDS_RMT_SYMBOL(level0, ticks0, level1, ticks1)                                                                \
+        (((uint32_t)(ticks0) & 0x7fffu) | ((uint32_t)(level0) & 1u) << 15 | ((uint32_t)(ticks1) & 0x7fffu) << 16 |     \
+         ((uint32_t)(level1) & 1u) << 31)
+#define BMDS_RMT_MAX_TICKS 32767u /**< A duration's most ticks; 0 ends a run. */
+#define BMDS_RMT_HEADER 0u        /**< A received word that starts a header: two words of time follow. */
+
+/** @brief `rmt_ctl` operations. */
+#define BMDS_RMT_INFO 0u /**< `bmds_rmt_info_t *`: the port and its counts. */
+
+/** @brief `bmds_rmt_info_t::flags`. */
+#define BMDS_RMT_RECEIVE 0x1u    /**< A receiver (else a sender). */
+#define BMDS_RMT_RUNNING 0x2u    /**< Its port runs. */
+#define BMDS_RMT_SENDING 0x4u    /**< A sender's stream is going out. */
+#define BMDS_RMT_CONTINUOUS 0x8u /**< A sender fills a dry ring with idle, counted. */
+#define BMDS_RMT_IDLE_HIGH 0x10u  /**< A sender rests high (else low). */
+
+/** @brief An RMT port (`BMDS_RMT_INFO`). */
+typedef struct bmds_rmt_info_t {
+                uint32_t size;          /**< Set by the caller: `sizeof(bmds_rmt_info_t)`. */
+                uint32_t port;          /**< N of `/dev/rmtN`. */
+                int32_t  channel;       /**< The hardware channel it got, or -1. */
+                uint32_t flags;         /**< `BMDS_RMT_...`. */
+                uint32_t resolution_hz; /**< Ticks a second. */
+                uint32_t source_hz;     /**< The RMT's source clock (the ticks are it divided). */
+                uint32_t buffer;        /**< Its ring, in symbols. */
+                uint32_t underruns;     /**< A continuous sender: times its ring ran dry. */
+                uint32_t overruns;      /**< A receiver: blocks dropped (its ring was full). */
+                uint32_t reserved;      /**< Zero. */
+                int64_t start_ns; /**< A sender: when its stream started (monotonic); symbol N goes out after the ticks before it. */
+                uint64_t symbols;      /**< Sent (handed to the hardware), or received. */
+                uint64_t ticks;        /**< A sender: ticks handed over since the start, filler included. */
+                uint64_t filler_ticks; /**< A continuous sender: idle filler sent, in ticks. */
+} bmds_rmt_info_t;
+
+/*
  * Surfaces (slots 117-121, appended 2026-10-14, devplan/games.md §11): a picture a program draws
  * with the CPU into its own buffers and presents, in a window or full screen (the user's setting
  * per application, the program's suggestion its default, Alt+Enter between them); its events read
@@ -2870,6 +2917,7 @@ typedef int32_t (*bmds_sys_file_unmap_fn)(void *addr);
 typedef int32_t (*bmds_sys_gpio_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_i2c_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_spi_ctl_fn)(int32_t fd, uint32_t op, void *arg);
+typedef int32_t (*bmds_sys_rmt_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -4394,6 +4442,17 @@ static inline int32_t bmds_i2c_ctl(int32_t fd, uint32_t op, void *arg) {
 static inline int32_t bmds_spi_ctl(int32_t fd, uint32_t op, void *arg) {
         if (!bmds_sys_has(BMDS_SYS_SPI_CTL)) return -BMDS_ENOSYS;
         return ((bmds_sys_spi_ctl_fn)bmds_sys->slot[BMDS_SYS_SPI_CTL])(fd, op, arg);
+}
+
+/**
+ * @brief Operates on RMT port file @p fd (`/dev/rmtN`): `BMDS_RMT_...` with @p arg as each says
+ *        (slot 142, appended 2026-11-20, devplan/io.md §13.1).
+ * @return 0, or `-BMDS_ENOTTY` (not an RMT port), `-BMDS_EBADF`, `-BMDS_EINVAL` (an op, a
+ *         `size`), `-BMDS_EFAULT`, `-BMDS_ENOSYS`.
+ */
+static inline int32_t bmds_rmt_ctl(int32_t fd, uint32_t op, void *arg) {
+        if (!bmds_sys_has(BMDS_SYS_RMT_CTL)) return -BMDS_ENOSYS;
+        return ((bmds_sys_rmt_ctl_fn)bmds_sys->slot[BMDS_SYS_RMT_CTL])(fd, op, arg);
 }
 
 /**

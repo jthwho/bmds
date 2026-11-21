@@ -1039,3 +1039,108 @@ tools and `i2c-tools`, which test both halves.
   `i2cdump`; `i2cset` to nothing: `Write failed`. Both package (`bmds-dist package`).
 - **Step 5 is done.** Next: step 6, the RMT (§3.7).
 
+
+## 13. Step 6: the RMT (design, 2026-11-20)
+
+In parts, each checked on the board before the next: **6a** RMT ports streaming through the
+channels' own memory, timestamps, and an LTC example (generator and reader); **6b** DMA on the
+channels that have it, TX channels started in sync, what a flash write does to a stream
+(measured), and the clock trimmed if the hardware allows (§3.7).
+
+### 13.1 6a: RMT ports
+
+- **`io/rmt0` .. `io/rmt7`** (sysconf, empty: off): `pin=46 dir=tx|rx [resolution=1m]
+  [idle=low|high] [invert] [continuous] [buffer=SYMBOLS] [min=NS] [max=NS] [monitor] [force]`.
+  A port is numbered by its key, not by the hardware channel: ESP-IDF picks a free channel of
+  the direction (on the P4, 0-3 send and 4-7 receive), and the port claims the one it got
+  (`rmt_get_channel_id()`), so `io resources` shows the truth; `/dev/rmtN` is port N. `idle`
+  is the level a sender rests at; `invert` inverts the pad; `buffer` the ring in symbols (1024).
+  For a receiver, `min` drops pulses shorter (a glitch filter), `max` ends a run when a level
+  lasts longer (the input went quiet); `monitor` reads a pad another port or driver drives
+  without taking it (an input buffer on, nothing else): a sender's output measured back, with no
+  wires. Owner `rmtN`.
+- **A symbol** is the hardware's 32-bit word: bits 0-14 the first duration in ticks, 15 its
+  level, 16-30 the second duration, 31 its level. A duration of 0 ends a run.
+- **Sending** (`write()` of whole symbols): a ring in PSRAM, drained by ESP-IDF's simple
+  encoder, whose callback runs in the RMT interrupt and fills the channel's memory as it empties:
+  one transaction that lasts while there are symbols, so frame after frame goes out with no gap
+  (ESP-IDF's `rmt_transmit()` per buffer would stop between them). When the ring runs dry, by
+  default the transaction ends and the pad rests at `idle` (a burst: IR codes); with
+  `continuous` the channel keeps sending `idle` in short pieces, counted (`filler_ticks`,
+  `underruns`), so a stream's timing never slips: symbol N goes out at the stream's start plus
+  the ticks before it. `write()` waits while the ring is full; `poll()` sees room.
+- **Receiving** (`read()`): partial receive into a block of half the channel's memory; each
+  block the interrupt hands over goes into a ring in PSRAM. What `read()` gives is a stream of
+  words: symbols, and before each run (the first symbols after a start, after a quiet input or
+  after a lost block) a header: a word 0 and the 64-bit monotonic time of the run's first edge.
+  Words 0 never come from the hardware mid-run (a 0 duration ends a run), so the stream needs no
+  other framing. A full ring drops the newest block (`overruns`), and the next block starts a
+  run with a header again.
+- **Time:** ESP-IDF calls back when a block is handed over, just after it copies the next half
+  of the channel's memory out; that copy's last symbol ended about then. So a block's first edge
+  is the previous callback's time less the first part's ticks, known once the block arrives; a
+  run's first block, which has no previous callback, is held one block and its time worked back
+  from the second (or from the run's end: the quiet time, `max`, before the callback). A sender's
+  stream start is taken when the transaction is started. The RMT's clock and the monotonic clock
+  come from the same crystal, so ticks and nanoseconds keep step; `rmt_ctl` gives the resolution
+  and the clock source's rate.
+- **`rmt_ctl(fd, op, arg)`** (slot 142): `BMDS_RMT_INFO` (the port, its channel, direction,
+  resolution, the source clock, the ring's size; a sender's stream start, symbols and ticks
+  sent, filler ticks, underruns; a receiver's symbols received, overruns). More (DMA, sync
+  starts, carrier, a clock trim) come as appended ops.
+- **The example** (`sdk/examples/ltc`): an LTC generator (SMPTE 12M biphase mark, 24, 25 or 30
+  frames a second, the time of day, ticks kept exact with a fractional count) writing a
+  `continuous` port, and a reader on a `monitor` port of the same pad decoding the frames back
+  and timing each frame's sync word from the headers.
+
+### 13.2 As built: 6a (2026-11-20)
+
+- `IoRmtSetup` (`bmds/ioport.h`, host-tested); `rmtports.cpp`: `io/rmt0`..`7`, a channel per
+  port from ESP-IDF, the hardware channel it got claimed (`rmt_get_channel_id()`), the pad saved
+  and put back (a monitor's isn't taken, and a pad running an IO_MUX function is refused for it:
+  ESP-IDF's receiver selects the GPIO function); `RmtChannel` (`bmds/rmtchannel.h`), the
+  stream; `Stream::rmtChannel()`; `rmt_ctl` (slot 142, `BMDS_RMT_INFO`), the symbol macros,
+  ABI-locked; `sdk/examples/ltc`. `Vfs::MaxDeviceFiles` 48 → 56.
+- **The SDK's new Linux headers step aside on Linux:** compiled on a Linux host (the ABI's
+  host test), glibc's own headers include `<linux/ioctl.h>` and `<linux/types.h>` and found the
+  SDK's (5c's), missing what Linux's carry; there (`__linux__`, which the SDK's compiler doesn't
+  define) they `#include_next` Linux's.
+- **Measured on bmds0** (an LTC sender on GPIO46, a monitor receiver of it, no wires):
+  `rmt_transmit()` takes about 73 µs, filling the channel's memory through the encoder before
+  the hardware starts, so the stream's start is stamped when it returns (stamped before, frame
+  0's first edge read back 80 µs late; after, 7 µs, the receiver's interrupt latency and a
+  tick). Frames read back 1/25 s and 1/30 s apart within the 1/3 tick of 30 fps's 208 1/3-tick
+  half bits; 100 frames at 25 and 120 at 30, no underrun, no overrun; a continuous stream kept
+  its start across three programs (counted filler between), a burst port started a stream each
+  time. Each burst's last frame isn't read back: its last bit ends at the idle level, with no
+  edge to close it, as on any LTC line that stops.
+- **Size:** about 10 KB of code (the ports 9.5, `rmt_ctl` 0.6); ESP-IDF's RMT driver about 20
+  KB more (the firmware grew 33 KB); 2.5 KB of PSRAM for the ports' state, the rings (4 bytes a
+  symbol) while a port runs.
+
+### 13.3 6b: frame marks and a timed pulse (design, 2026-11-20)
+
+The user's use (their words): an LTC frame written at a time, an interrupt at frame rate to
+update a HH:MM:SS:FF seven-segment display through shift registers, latched by a GPIO pulse at
+bit 0's edge. So 6b adds, before DMA and the rest of §13's list:
+
+- **Marks:** a word 0 written to a sender (never data: a 0 duration ends a transmission) marks
+  the stream there; the kernel takes it out. When the hardware has sent up to it, the fd gives a
+  record (the mark's number, and the monotonic time of the edge after it: the stream's start plus
+  the ticks before it, exact while the stream has no gap) and `poll()` sees it readable: a
+  program's wake at frame rate, the frame's time with it.
+- **A timed pulse:** `pulse=PIN [pulse-width=US] [pulse-low]` on a sender: at each mark's edge
+  the kernel pulses PIN (high for 10 µs unless asked otherwise), from a hardware timer's alarm
+  set for the mark's time, not from the program: a few µs from the edge (the interrupt's
+  latency), whenever the program wakes. The display's latch, with the program shifting the next
+  frame's digits out (an SPI port, `io/spi2`) between marks.
+- **The example:** `ltc send` writes a mark before each frame and, given a display, shifts the
+  next frame's digits out after each mark (latched by `pulse=`).
+- **Steering by duration** (the user's: ticks added to or taken from LTC pulses to keep with the
+  timecode): the program writes every duration, so steering is its own; a mark's time already
+  counts its adjustments (start plus every tick before it). Two checks: the RMT's ticks against
+  the monotonic clock over ten minutes (both from the 40 MHz crystal, so expected to keep step
+  exactly: then marks are exact for hours, and only PTP or a foreign timecode needs steering),
+  and frames lengthened and shortened by a few ticks read back where the marks said.
+- Then DMA, sync starts (for edges tick-exact across channels), a flash write's effect on a
+  stream measured, and a clock trim.

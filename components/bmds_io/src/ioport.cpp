@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * A port's setup, parsed (devplan/io.md §11.1, §11.5).
+ * A port's setup, parsed (devplan/io.md §11.1, §11.5, §13.1).
  */
 
 #include <cstdarg>
@@ -223,6 +223,101 @@ Error IoSpiSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonB
                 for (size_t k = i + 1; k < n; ++k)
                         if (pins[i] >= 0 && pins[i] == pins[k])
                                 return refuse(why, Error::Invalid, "GPIO%d is given twice", int(pins[i]));
+        return Error::Ok;
+}
+
+bool IoRmtSetup::operator==(const IoRmtSetup &o) const {
+        return pin == o.pin && receive == o.receive && resolution == o.resolution && idleHigh == o.idleHigh &&
+               invert == o.invert && continuous == o.continuous && buffer == o.buffer && minNs == o.minNs &&
+               maxNs == o.maxNs && monitor == o.monitor && force == o.force;
+}
+
+uint32_t IoRmtSetup::maxTicks() const {
+        if (maxNs == 0) return MaxTicks;
+        const uint64_t t = uint64_t(maxNs) * resolution / 1000000000u;
+        return t == 0 ? 1 : t > MaxTicks ? MaxTicks : uint32_t(t);
+}
+
+Error IoRmtSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonBytes]) {
+        why[0] = '\0';
+        *this = IoRmtSetup();
+        bool dirGiven = false;
+        bool sendWord = false, receiveWord = false;
+        while (!text.isEmpty()) {
+                StringView word = take(text, ' ');
+                if (word.isEmpty()) continue;
+                const size_t     eq = word.indexOf('=');
+                const StringView key = eq == StringView::NPos ? word : word.left(eq);
+                const StringView value = eq == StringView::NPos ? StringView() : word.mid(eq + 1);
+                if (key == "pin") {
+                        if (!pad(chip, value, pin))
+                                return refuse(why, Error::Invalid, "pin: '%.*s' isn't a pin of the chip's",
+                                              int(value.size()), value.data());
+                } else if (key == "dir") {
+                        if (value != "tx" && value != "rx")
+                                return refuse(why, Error::Invalid, "dir is tx or rx, not '%.*s'", int(value.size()),
+                                              value.data());
+                        receive = value == "rx";
+                        dirGiven = true;
+                } else if (key == "resolution") {
+                        uint32_t r = 0;
+                        if (!clockOf(value, r) || r < MinResolution || r > MaxResolution)
+                                return refuse(why, Error::Invalid,
+                                              "resolution is 10k to 80m (ticks a second, or with k or m), not '%.*s'",
+                                              int(value.size()), value.data());
+                        resolution = r;
+                } else if (key == "idle") {
+                        if (value != "low" && value != "high")
+                                return refuse(why, Error::Invalid, "idle is low or high, not '%.*s'", int(value.size()),
+                                              value.data());
+                        idleHigh = value == "high";
+                        sendWord = true;
+                } else if (key == "buffer") {
+                        uint32_t b = 0;
+                        if (!number(value, b) || b < MinBuffer || b > MaxBuffer)
+                                return refuse(why, Error::Invalid, "buffer is %u to %u symbols, not '%.*s'",
+                                              unsigned(MinBuffer), unsigned(MaxBuffer), int(value.size()),
+                                              value.data());
+                        buffer = b;
+                } else if (key == "min") {
+                        uint32_t n = 0;
+                        if (!number(value, n) || n > MaxGlitchNs)
+                                return refuse(why, Error::Invalid,
+                                              "min is 0 to %u ns (the hardware's filter), not '%.*s'",
+                                              unsigned(MaxGlitchNs), int(value.size()), value.data());
+                        minNs = n;
+                        receiveWord = true;
+                } else if (key == "max") {
+                        uint32_t n = 0;
+                        if (!number(value, n) || n == 0)
+                                return refuse(why, Error::Invalid, "max is a time in ns, not '%.*s'", int(value.size()),
+                                              value.data());
+                        maxNs = n;
+                        receiveWord = true;
+                } else if (word == "invert") {
+                        invert = true;
+                } else if (word == "continuous") {
+                        continuous = true;
+                        sendWord = true;
+                } else if (word == "monitor") {
+                        monitor = true;
+                        receiveWord = true;
+                } else if (word == "force") {
+                        force = true;
+                } else {
+                        return refuse(why, Error::Invalid, "'%.*s' isn't a word an RMT port knows", int(word.size()),
+                                      word.data());
+                }
+        }
+        if (pin < 0) return refuse(why, Error::Invalid, "an RMT port needs pin=");
+        if (!dirGiven) return refuse(why, Error::Invalid, "an RMT port needs dir=tx or dir=rx");
+        if (receive && sendWord) return refuse(why, Error::Invalid, "idle= and continuous are a sender's (dir=tx)");
+        if (!receive && receiveWord)
+                return refuse(why, Error::Invalid, "min=, max= and monitor are a receiver's (dir=rx)");
+        if (monitor && force) return refuse(why, Error::Invalid, "monitor takes nothing: force has nothing to take");
+        if (maxNs != 0 && uint64_t(maxNs) * resolution / 1000000000u > MaxTicks)
+                return refuse(why, Error::Invalid, "max is at most %u ticks: %u ns at this resolution",
+                              unsigned(MaxTicks), unsigned(uint64_t(MaxTicks) * 1000000000u / resolution));
         return Error::Ok;
 }
 

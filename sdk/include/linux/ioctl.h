@@ -16,6 +16,11 @@
 #ifndef BMDS_LINUX_IOCTL_H
 #define BMDS_LINUX_IOCTL_H
 
+#ifdef __linux__
+/* Compiled on Linux (a host's tests): Linux's own, which the C library's headers include too. */
+#include_next <linux/ioctl.h>
+#else
+
 #include <sys/ioctl.h>
 
 #ifndef _IOC_NRBITS
@@ -51,5 +56,7 @@
 #define IOC_INOUT ((_IOC_WRITE | _IOC_READ) << _IOC_DIRSHIFT)
 #define IOCSIZE_MASK (_IOC_SIZEMASK << _IOC_SIZESHIFT)
 #define IOCSIZE_SHIFT (_IOC_SIZESHIFT)
+
+#endif /* __linux__ */
 
 #endif /* BMDS_LINUX_IOCTL_H */
