@@ -54,6 +54,12 @@ size_t ioRouteText(const IoChip &chip, unsigned pad, const IoPadState &state, Sp
                    size_t size);
 
 /**
+ * @brief True if a peripheral switches the pad's output (an IO_MUX peripheral
+ *        function, or a matrix signal whose peripheral has the output enable).
+ */
+bool ioPeripheralDriven(const IoChip &chip, unsigned pad, const IoPadState &state);
+
+/**
  * @brief The pad's direction: `in`, `out`, `in/out`, `periph` (the
  *        peripheral switches its output), or `-` (neither); `,od` after for
  *        open drain.

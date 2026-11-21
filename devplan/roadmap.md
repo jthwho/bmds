@@ -287,15 +287,21 @@ Plan: [`input.md`](input.md).
 - [ ] I/O (`io.md`, planned 2026-11-20, the user's request): every pad of the chip known in three
   layers (the chip's IO_MUX functions and matrix signals generated from ESP-IDF's `soc` headers,
   the board's wiring and connectors in `boarddef.h`, run-time claims by owner), every driver
-  claiming its pins; `/bin/io`, a window with the pins' owners, routing and live levels, GPIO and
-  muxing on free pins, UART/I²C/SPI ports on chosen pins with their `/dev` nodes and a tool each;
-  `io`, the command; `gpio_ctl`/`i2c_ctl`/`spi_ctl` for programs with Linux's ioctls translated.
-  Decided (§7): built in; Linux's names and ioctls; ports and pin setups are sysconf parameters;
-  System pins only with `--force`; the RMT (LTC) and DMA paths designed in. Step 1 built (§8,
+  claiming its pins; `ioman` (bmds-apps), a window with the pins' owners, routing and live
+  levels, GPIO and muxing on free pins, UART/I²C/SPI ports on chosen pins with their `/dev` nodes
+  and a tool each; `io`, the command; `gpio_ctl`/`i2c_ctl`/`spi_ctl` for programs with Linux's
+  ioctls translated. Decided (§7): built in; Linux's names and ioctls; ports and pin setups are
+  sysconf parameters; System pins only with `--force`; the RMT (LTC) and DMA paths designed in;
+  the window an app in bmds-apps. Step 1 built (§8,
   2026-11-20): `bmds_io` (the P4's table generated from ESP-IDF, the registry, pad reads),
   the board's pin and connector tables checked at compile time, claims by the I²C buses, the
   SD card, audio, Ethernet and USB host, `io`; host-tested; checked on bmds0 against ESP-IDF's
-  own dump (`io dump`), all 55 pads alike. Next: step 2 (the window, read-only).
+  own dump (`io dump`), all 55 pads alike. Step 2 built (§9, 2026-11-20): the window is
+  `ioman` in bmds-apps (the user's call), so `/dev/gpiochip0` and `gpio_ctl`'s reads came now
+  (slot 139: chip and line info, Linux's translated in `linux/gpio.h`; pads' state and details;
+  the connectors), ABI-locked, `sdk/examples/gpioinfo`; `io` and `gpio_ctl` answer from the same
+  `bmds/iopin.h`; host-tested; not yet checked on the board. Next: step 3 (GPIO and muxing
+  through sysconf).
 
 ## Phase 6 — Graphics
 

@@ -14,10 +14,11 @@
 
 #include <cstdio>
 #include <cstring>
+#include <new>
 #include <driver/gpio.h>
-#include <bmds/board.h>
 #include <bmds/command.h>
 #include <bmds/io.h>
+#include <bmds/memory.h>
 #include <bmds/shell.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -29,9 +30,6 @@ namespace {
         // The input signals' sources (Io::readInputSources()): read once per command.
         constexpr size_t MaxInputs = 256;
 
-        // Input signals one pad feeds, at most (a pad usually feeds none or one).
-        constexpr size_t MaxPadInputs = 8;
-
         struct Sources {
                         int16_t source[MaxInputs] = {};
                         size_t  count = 0;
@@ -42,46 +40,7 @@ namespace {
                                 Io::readInputSources(Span<int16_t>(source, count));
                                 return;
                         }
-
-                        // The input signals pad @p pad feeds through the matrix.
-                        size_t inputsOf(unsigned pad, uint16_t (&out)[MaxPadInputs]) const {
-                                size_t n = 0;
-                                for (size_t i = 0; i < count && n < MaxPadInputs; ++i) {
-                                        if (source[i] == static_cast<int16_t>(pad)) out[n++] = static_cast<uint16_t>(i);
-                                }
-                                return n;
-                        }
         };
-
-        const BoardPin *boardPin(unsigned pad) {
-                for (const BoardPin &p : board().pins) {
-                        if (p.gpio >= 0 && static_cast<unsigned>(p.gpio) == pad) return &p;
-                }
-                return nullptr;
-        }
-
-        // Where the board brings @p pad out: `UEXT.3` (the first connector that has it), or "".
-        void whereText(unsigned pad, char *out, size_t size) {
-                out[0] = '\0';
-                for (const BoardConnector &c : board().connectors) {
-                        for (size_t i = 0; i < c.pins.size(); ++i) {
-                                if (c.pins[i].gpio >= 0 && static_cast<unsigned>(c.pins[i].gpio) == pad) {
-                                        std::snprintf(out, size, "%s.%u", c.name, static_cast<unsigned>(i + 1));
-                                        return;
-                                }
-                        }
-                }
-                return;
-        }
-
-        // The level worth showing: the pad's when its input is on, else the output latch's when it
-        // drives, else none.
-        char levelChar(const IoPadState &s) {
-                if (s.lpIo) return '?';
-                if (s.inputEnabled) return s.level ? '1' : '0';
-                if (s.outputEnabled) return s.outputLevel ? '1' : '0';
-                return '-';
-        }
 
         // A pad number: `14`, `GPIO14`, `gpio14`.
         bool parsePad(const char *text, unsigned &out) {
@@ -102,92 +61,59 @@ namespace {
         }
 
         int showTable(CommandContext &ctx) {
-                const IoChip &chip = ioChip();
-                Sources       sources;
-                sources.read();
+                const size_t padCount = ioChip().padCount();
+                // In PSRAM: every pad's row (~140 bytes each) is more than a shell's stack wants.
+                auto *rows = static_cast<IoPinRow *>(Memory::alloc(MemSpace::Psram, padCount * sizeof(IoPinRow)));
+                if (rows == nullptr) {
+                        ctx.eprintf("io: out of memory\n");
+                        return Shell::ExitFailure;
+                }
+                for (size_t i = 0; i < padCount; ++i) ::new (&rows[i]) IoPinRow();
+                const size_t n = Io::readPins(0, Span<IoPinRow>(rows, padCount));
                 ctx.printf("%-6s %-3s %-6s %-8s %-26s %-22s %-9s %-7s %s\n", "GPIO", "LVL", "CLASS", "OWNER",
                            "FUNCTION", "ROUTE", "DIR", "PULL", "WHERE");
-                for (unsigned pad = 0; pad < chip.padCount(); ++pad) {
-                        if (ctx.isInterrupted()) return Shell::ExitInterrupted;
-                        IoPadState s;
-                        (void)Io::readPad(pad, s);
-                        uint16_t     inputs[MaxPadInputs];
-                        const size_t inputCount = sources.inputsOf(pad, inputs);
-                        char         route[IoRouteTextBytes];
-                        (void)ioRouteText(chip, pad, s, Span<const uint16_t>(inputs, inputCount), route, sizeof(route));
-                        IoHolder h;
-                        (void)Io::registry().holder(pad, h);
-                        const BoardPin *bp = boardPin(pad);
-                        const char     *function = h.isHeld() && h.role[0] != '\0' ? h.role
-                                                   : bp != nullptr                 ? bp->label
-                                                                                   : "";
-                        char            where[16];
-                        whereText(pad, where, sizeof(where));
-                        char name[8];
-                        (void)chip.resourceName(pad, name, sizeof(name));
-                        ctx.printf("%-6s %-3c %-6s %-8s %-26.26s %-22.22s %-9s %-7s %s\n", name, levelChar(s),
-                                   ioClassName(h.resourceClass), h.isHeld() ? h.owner : "-",
-                                   function[0] != '\0' ? function : "-", route, ioDirectionText(chip, pad, s),
-                                   ioPullText(s), where[0] != '\0' ? where : "-");
+                int status = Shell::ExitSuccess;
+                for (size_t i = 0; i < n; ++i) {
+                        if (ctx.isInterrupted()) {
+                                status = Shell::ExitInterrupted;
+                                break;
+                        }
+                        const IoPinRow &r = rows[i];
+                        ctx.printf("%-6s %-3c %-6s %-8s %-26.26s %-22.22s %-9s %-7s %s\n", r.name, r.level,
+                                   ioClassName(r.resourceClass), r.owner[0] != '\0' ? r.owner : "-",
+                                   r.function[0] != '\0' ? r.function : "-", r.route, r.direction, r.pull,
+                                   r.where[0] != '\0' ? r.where : "-");
                 }
-                return Shell::ExitSuccess;
+                Memory::free(rows);
+                return status;
         }
 
         int showPin(CommandContext &ctx, unsigned pad) {
-                const IoChip    &chip = ioChip();
-                const IoPadInfo &info = chip.pads[pad];
-                Sources          sources;
-                sources.read();
-                IoPadState s;
-                (void)Io::readPad(pad, s);
-                IoHolder h;
-                (void)Io::registry().holder(pad, h);
-                const BoardPin *bp = boardPin(pad);
-                char            where[16];
-                whereText(pad, where, sizeof(where));
-                char name[8];
-                (void)chip.resourceName(pad, name, sizeof(name));
-
-                ctx.printf("%s\n", name);
-                ctx.printf("  Board:     %s%s%s%s\n", bp != nullptr && bp->label[0] != '\0' ? bp->label : "-",
-                           where[0] != '\0' ? " (" : "", where, where[0] != '\0' ? ")" : "");
-                if (bp != nullptr && bp->note[0] != '\0') ctx.printf("  Note:      %s\n", bp->note);
-                ctx.printf("  Class:     %s\n", ioClassName(h.resourceClass));
-                if (h.isHeld())
-                        ctx.printf("  Owner:     %s%s%s\n", h.owner, h.role[0] != '\0' ? " as " : "", h.role);
-                else
-                        ctx.printf("  Owner:     -\n");
-                if (h.isForced())
-                        ctx.printf("  Forced:    from %s%s%s\n", h.lender, h.lenderRole[0] != '\0' ? " (" : "",
-                                   h.lenderRole[0] != '\0' ? h.lenderRole : "");
-                ctx.printf("  Chip:      %s%s", info.is(IoPadInfo::Strapping) ? "strapping " : "",
-                           info.lpIo >= 0 ? "LP IO " : "");
-                if (info.lpIo >= 0) ctx.printf("%d ", info.lpIo);
-                if (info.analog[0] != '\0') ctx.printf("(%s) ", info.analog);
-                if (info.note[0] != '\0') ctx.printf("- %s", info.note);
-                ctx.printf("\n");
-                ctx.printf("  Functions:");
-                for (const IoMuxFunction &f : chip.padFunctions(pad))
-                        ctx.printf(" %s%u %s", f.index == s.function ? "*" : "", f.index, f.name);
-                ctx.printf("\n");
-                uint16_t     inputs[MaxPadInputs];
-                const size_t inputCount = sources.inputsOf(pad, inputs);
-                char         route[IoRouteTextBytes];
-                (void)ioRouteText(chip, pad, s, Span<const uint16_t>(inputs, inputCount), route, sizeof(route));
-                ctx.printf("  Route:     %s\n", route);
-                ctx.printf("  Direction: %s\n", ioDirectionText(chip, pad, s));
-                const char *out = chip.outputName(s.outputSignal);
-                ctx.printf("  Output:    signal %u (%s), enable %u, by peripheral %u, latch %u, open drain %u\n",
-                           static_cast<unsigned>(s.outputSignal), out != nullptr ? out : "?", s.outputEnabled ? 1u : 0u,
-                           s.outputByPeripheral ? 1u : 0u, s.outputLevel ? 1u : 0u, s.openDrain ? 1u : 0u);
-                ctx.printf("  Input:     enable %u, level %u, signals", s.inputEnabled ? 1u : 0u, s.level ? 1u : 0u);
-                if (inputCount == 0) ctx.printf(" -");
-                for (size_t i = 0; i < inputCount; ++i) ctx.printf(" %s", chip.inputName(inputs[i]));
-                ctx.printf("\n");
-                ctx.printf("  Pull:      %s\n", ioPullText(s));
-                ctx.printf("  Drive:     %u\n", static_cast<unsigned>(s.drive));
-                ctx.printf("  LP IO:     %s\n", s.lpIo ? "yes" : "no");
-                return Shell::ExitSuccess;
+                // In PSRAM: the details are ~1.8 KB.
+                auto *d = static_cast<IoPinDetail *>(Memory::alloc(MemSpace::Psram, sizeof(IoPinDetail)));
+                if (d == nullptr) {
+                        ctx.eprintf("io: out of memory\n");
+                        return Shell::ExitFailure;
+                }
+                ::new (d) IoPinDetail();
+                const Error err = Io::readPin(pad, *d);
+                if (err.isOk()) {
+                        ctx.printf("%s\n", d->name);
+                        for (size_t f = 0; f < IoPinFieldCount; ++f) {
+                                const auto field = static_cast<IoPinField>(f);
+                                // Note and Forced are shown only when there is one.
+                                if ((field == IoPinField::Note || field == IoPinField::Forced) &&
+                                    d->at(field)[0] == '\0')
+                                        continue;
+                                char label[16];
+                                std::snprintf(label, sizeof(label), "%s:", ioPinFieldName(field));
+                                ctx.printf("  %-10s %s\n", label, d->at(field));
+                        }
+                } else {
+                        ctx.eprintf("io: GPIO%u: %s\n", pad, err.name());
+                }
+                Memory::free(d);
+                return err.isOk() ? Shell::ExitSuccess : Shell::ExitFailure;
         }
 
         int showResources(CommandContext &ctx) {
@@ -312,7 +238,7 @@ namespace {
                         }
                         IoPadState s;
                         (void)Io::readPad(pad, s);
-                        const char level = levelChar(s);
+                        const char level = ioLevelChar(s);
                         if (level == '-' || level == '?') {
                                 ctx.eprintf("io: GPIO%u has no level to read (%s)\n", pad,
                                             s.lpIo ? "the LP IO domain has it" : "its input and output are off");

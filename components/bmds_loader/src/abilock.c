@@ -986,3 +986,62 @@ _Static_assert(offsetof(bmds_screen_copy_t, from) == 0 && offsetof(bmds_screen_c
 _Static_assert(BMDS_SYSCONF_FIELD_SECRET == 6, "ABI: BMDS_SYSCONF_FIELD_SECRET");
 /* Optional client certificates (libtls's verify_client_optional, 2026-11-17). */
 _Static_assert(BMDS_TLS_CLIENT_CERT_OPTIONAL == 8, "ABI: BMDS_TLS_CLIENT_CERT_OPTIONAL");
+/* GPIO: /dev/gpiochip0 (devplan/io.md §3.9, 2026-11-20). */
+_Static_assert(BMDS_SYS_GPIO_CTL == 139, "ABI: slot GPIO_CTL");
+_Static_assert(BMDS_GPIO_CHIP_INFO == 0 && BMDS_GPIO_LINE_INFO == 1 && BMDS_GPIO_PINS == 2 &&
+                       BMDS_GPIO_PIN_DETAIL == 3 && BMDS_GPIO_CONNECTOR == 4 && BMDS_GPIO_CONNECTOR_PIN == 5 &&
+                       BMDS_GPIO_NAME_MAX == 32 && BMDS_GPIO_DETAIL_MAX == 24,
+               "ABI: gpio_ctl ops");
+_Static_assert(BMDS_GPIO_LINE_USED == 0x1 && BMDS_GPIO_LINE_ACTIVE_LOW == 0x2 && BMDS_GPIO_LINE_INPUT == 0x4 &&
+                       BMDS_GPIO_LINE_OUTPUT == 0x8 && BMDS_GPIO_LINE_EDGE_RISING == 0x10 &&
+                       BMDS_GPIO_LINE_EDGE_FALLING == 0x20 && BMDS_GPIO_LINE_OPEN_DRAIN == 0x40 &&
+                       BMDS_GPIO_LINE_OPEN_SOURCE == 0x80 && BMDS_GPIO_LINE_BIAS_PULL_UP == 0x100 &&
+                       BMDS_GPIO_LINE_BIAS_PULL_DOWN == 0x200 && BMDS_GPIO_LINE_BIAS_DISABLED == 0x400,
+               "ABI: BMDS_GPIO_LINE_* (Linux's GPIO_V2_LINE_FLAG_*)");
+_Static_assert(BMDS_GPIO_CLASS_FREE == 0 && BMDS_GPIO_CLASS_FIXED == 1 && BMDS_GPIO_CLASS_SYSTEM == 2 &&
+                       BMDS_GPIO_CLASS_USER == 3,
+               "ABI: BMDS_GPIO_CLASS_*");
+_Static_assert(BMDS_GPIO_PIN_INPUT == 0x1 && BMDS_GPIO_PIN_OUTPUT == 0x2 && BMDS_GPIO_PIN_PERIPHERAL == 0x4 &&
+                       BMDS_GPIO_PIN_OPEN_DRAIN == 0x8 && BMDS_GPIO_PIN_PULL_UP == 0x10 &&
+                       BMDS_GPIO_PIN_PULL_DOWN == 0x20 && BMDS_GPIO_PIN_LP_IO == 0x40 &&
+                       BMDS_GPIO_PIN_STRAPPING == 0x80 && BMDS_GPIO_PIN_FORCED == 0x100 &&
+                       BMDS_GPIO_CONNECTOR_FITTED == 0x1,
+               "ABI: BMDS_GPIO_PIN_*, BMDS_GPIO_CONNECTOR_FITTED");
+_Static_assert(offsetof(bmds_gpio_chip_info_t, lines) == 4 && offsetof(bmds_gpio_chip_info_t, connectors) == 8 &&
+                       offsetof(bmds_gpio_chip_info_t, index) == 12 && offsetof(bmds_gpio_chip_info_t, name) == 16 &&
+                       offsetof(bmds_gpio_chip_info_t, label) == 48 && offsetof(bmds_gpio_chip_info_t, board) == 80 &&
+                       sizeof(bmds_gpio_chip_info_t) == 144,
+               "ABI: bmds_gpio_chip_info_t");
+_Static_assert(offsetof(bmds_gpio_line_info_t, offset) == 4 && offsetof(bmds_gpio_line_info_t, flags) == 8 &&
+                       offsetof(bmds_gpio_line_info_t, debounce_us) == 16 &&
+                       offsetof(bmds_gpio_line_info_t, name) == 24 && offsetof(bmds_gpio_line_info_t, consumer) == 56 &&
+                       sizeof(bmds_gpio_line_info_t) == 88,
+               "ABI: bmds_gpio_line_info_t");
+_Static_assert(offsetof(bmds_gpio_pin_t, flags) == 4 && offsetof(bmds_gpio_pin_t, pin_class) == 8 &&
+                       offsetof(bmds_gpio_pin_t, level) == 9 && offsetof(bmds_gpio_pin_t, function) == 10 &&
+                       offsetof(bmds_gpio_pin_t, drive) == 11 && offsetof(bmds_gpio_pin_t, name) == 12 &&
+                       offsetof(bmds_gpio_pin_t, owner) == 20 && offsetof(bmds_gpio_pin_t, use) == 36 &&
+                       offsetof(bmds_gpio_pin_t, route) == 68 && offsetof(bmds_gpio_pin_t, direction) == 116 &&
+                       offsetof(bmds_gpio_pin_t, pull) == 128 && offsetof(bmds_gpio_pin_t, where) == 136 &&
+                       sizeof(bmds_gpio_pin_t) == 152,
+               "ABI: bmds_gpio_pin_t");
+_Static_assert(offsetof(bmds_gpio_detail_line_t, text) == 16 && sizeof(bmds_gpio_detail_line_t) == 128,
+               "ABI: bmds_gpio_detail_line_t");
+_Static_assert(offsetof(bmds_gpio_pin_detail_t, offset) == 4 && offsetof(bmds_gpio_pin_detail_t, count) == 8 &&
+                       offsetof(bmds_gpio_pin_detail_t, lines) == 16 && sizeof(bmds_gpio_pin_detail_t) == 16 + 24 * 128,
+               "ABI: bmds_gpio_pin_detail_t");
+_Static_assert(offsetof(bmds_gpio_connector_t, index) == 4 && offsetof(bmds_gpio_connector_t, pins) == 8 &&
+                       offsetof(bmds_gpio_connector_t, columns) == 12 && offsetof(bmds_gpio_connector_t, flags) == 16 &&
+                       offsetof(bmds_gpio_connector_t, name) == 24 &&
+                       offsetof(bmds_gpio_connector_t, description) == 40 && sizeof(bmds_gpio_connector_t) == 104,
+               "ABI: bmds_gpio_connector_t");
+_Static_assert(offsetof(bmds_gpio_connector_pin_t, connector) == 4 && offsetof(bmds_gpio_connector_pin_t, pin) == 8 &&
+                       offsetof(bmds_gpio_connector_pin_t, gpio) == 12 &&
+                       offsetof(bmds_gpio_connector_pin_t, label) == 16 && sizeof(bmds_gpio_connector_pin_t) == 32,
+               "ABI: bmds_gpio_connector_pin_t");
+#if UINTPTR_MAX == 0xffffffffu // (a pointer inside)
+_Static_assert(offsetof(bmds_gpio_pins_t, first) == 4 && offsetof(bmds_gpio_pins_t, count) == 8 &&
+                       offsetof(bmds_gpio_pins_t, pin_size) == 12 && offsetof(bmds_gpio_pins_t, pins) == 16 &&
+                       sizeof(bmds_gpio_pins_t) == 24,
+               "ABI: bmds_gpio_pins_t");
+#endif

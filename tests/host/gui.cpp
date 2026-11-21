@@ -1332,6 +1332,54 @@ TEST_CASE("ListItemModel: names, icons by size, columns") {
         CHECK(m.columnAlign(2) == bmds::ItemModel::Align::Left);
 }
 
+TEST_CASE("ListItemModel: a row's texts replaced in place, the store compacted") {
+        bmds::ListItemModel    m;
+        const uint32_t         px = 0;
+        const bmds::Icon       icon{16, 16, &px};
+        const bmds::StringView a[] = {"system", "eth0: RMII TXD1"};
+        const bmds::StringView b[] = {"free", ""};
+        REQUIRE(m.add("GPIO35", &icon, nullptr, a).isOk());
+        REQUIRE(m.add("GPIO36", nullptr, nullptr, b).isOk());
+        char buf[32];
+
+        SUBCASE("shorter and longer texts; columns not given empty; the icon kept") {
+                const bmds::StringView c[] = {"user", "a much longer owner than before"};
+                REQUIRE(m.setRow(0, "GPIO35", c).isOk());
+                CHECK(m.text(0) == "GPIO35");
+                CHECK(m.columnText(0, 1, buf) == "user");
+                CHECK(m.columnText(0, 2, buf) == "a much longer owner than before");
+                CHECK(m.icon(0, 16) == &icon);
+                REQUIRE(m.setRow(0, "GPIO35").isOk());
+                CHECK(m.columnText(0, 1, buf).isEmpty());
+                CHECK(m.columnText(0, 2, buf).isEmpty());
+                CHECK(m.text(1) == "GPIO36"); // the other row untouched
+                CHECK(m.columnText(1, 1, buf) == "free");
+        }
+
+        SUBCASE("no such row, a text too long") {
+                CHECK(m.setRow(2, "x") == bmds::Error::Invalid);
+                const std::string long_(70000, 'x');
+                CHECK(m.setRow(0, bmds::StringView(long_.data(), long_.size())) == bmds::Error::Invalid);
+                CHECK(m.columnText(0, 1, buf) == "system"); // as it was
+        }
+
+        SUBCASE("changed often: the texts stay right, and their store doesn't grow for good") {
+                char name[32], owner[32];
+                for (int i = 0; i < 5000; ++i) {
+                        std::snprintf(name, sizeof(name), "GPIO%d", i % 2 == 0 ? 35 : 1234567);
+                        std::snprintf(owner, sizeof(owner), "owner %d%s", i, i % 3 == 0 ? " and more words" : "");
+                        const bmds::StringView c[] = {"system", owner};
+                        REQUIRE(m.setRow(size_t(i % 2), name, c).isOk());
+                        CHECK(m.text(size_t(i % 2)) == bmds::StringView(name));
+                        CHECK(m.columnText(size_t(i % 2), 2, buf) == bmds::StringView(owner));
+                }
+                m.removeAt(0);
+                CHECK(m.count() == 1);
+                CHECK(m.text(0) == "GPIO1234567");
+                CHECK(m.columnText(0, 2, buf) == "owner 4999");
+        }
+}
+
 TEST_CASE("ItemSelection: a Shift range by a grid's rectangle, not the rows' order") {
         using bmds::IconLayout;
         using Cell = bmds::IconGrid::Cell;

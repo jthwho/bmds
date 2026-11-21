@@ -121,8 +121,20 @@ class ListItemModel : public ItemModel {
                 Error add(StringView name, const Icon *small, const Icon *large,
                           Span<const StringView> columnTexts = Span<const StringView>());
 
-                /** @brief Removes row @p row (its texts' bytes kept until the model is emptied). */
+                /** @brief Removes row @p row (its texts' bytes reclaimed by a later compaction). */
                 void removeAt(size_t row);
+
+                /**
+                 * @brief Sets row @p row's name and the other columns' texts (those not given
+                 *        empty), its icons kept: a row changed in place, the view's scroll and
+                 *        selection untouched. A text that fits where the old one was is written
+                 *        there; the rest are stored again, and the bytes left behind reclaimed
+                 *        once they outweigh the live ones.
+                 * @return `Ok`, `Invalid` (no such row, a text past 64 KiB) or `NoMem` (the row
+                 *         then as it was).
+                 */
+                Error setRow(size_t row, StringView name,
+                             Span<const StringView> columnTexts = Span<const StringView>());
 
                 /** @brief Sets row @p row's icons. */
                 void setIcons(size_t row, const Icon *small, const Icon *large);
@@ -153,6 +165,7 @@ class ListItemModel : public ItemModel {
 
                 StringView view(const Text &t) const { return StringView(_texts.data() + t.at, t.length); }
                 Error      store(StringView s, Text &out);
+                void       compact();
 
                 List<Row>  _rows{MemSpace::Psram};
                 List<char> _texts{MemSpace::Psram};
@@ -161,6 +174,7 @@ class ListItemModel : public ItemModel {
                 uint16_t   _widths[MaxColumns] = {};
                 Align      _aligns[MaxColumns] = {};
                 size_t     _columns = 0;
+                size_t     _dead = 0; // bytes of _texts no row uses (removed or replaced texts)
 };
 
 BMDS_NAMESPACE_END

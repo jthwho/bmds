@@ -1004,6 +1004,20 @@ gallery's Dialogs tab answer label tells its own clicks (on the board: "Clicked 
 `classes.def`, `gui.lock` and angel's `api.lock` (a line each). A `Label` keeps at most 63 bytes
 of text (`MaxText`), so a long topic is cut in that bar.
 
+### 4x. A details view's row in place (the I/O Manager's, 2026-11-20)
+
+bmds-apps' I/O Manager shows every pin with its live level and refreshes ten times a second; a
+`DetailsView` could only be cleared and filled again, which scrolls it to the top, so the table
+wouldn't stay scrolled (the user's report) and was drawn again whenever anything moved.
+Appended: **`DetailsView.setRow(Int row, List texts)`**: the row's columns' texts as `addRow`
+takes them (those not given empty), its icon kept; only the view is drawn again, its scroll,
+current row and selection as they were. Natively `ListItemModel::setRow()`: a text that fits
+where the old one was is written there, the rest stored again; the bytes left behind (and a
+removed row's, which before stayed until the model emptied) are reclaimed by compacting the
+texts once they pass 1 KB and half the store, so a row changed ten times a second can't grow it
+for good. `classes.def`, `gui.lock` (a line each), the wrappers and `docs/gui-classes.md`
+generated; host-tested (`tests/host/gui.cpp`).
+
 ## 5. Budget (estimates)
 
 - **Firmware:** the toolkit 10 to 15 KB, the panel 5 KB, the window manager's additions 4 KB, the

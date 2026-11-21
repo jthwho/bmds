@@ -1629,6 +1629,20 @@ namespace {
                 refresh(o);
                 return Ok;
         }
+        // A row's texts replaced in place (devplan/gui.md §4x): the view drawn again, its scroll,
+        // current row and selection as they were.
+        GuiStatus call_DetailsView_setRow(GuiObject &o, Args args, Value &) {
+                if (args[0].number < 0 || args[0].number >= int64_t(model(o)->count())) return BadValue;
+                StringView texts[ListItemModel::MaxColumns];
+                size_t     count = 0;
+                if (!readStrings(args[1], texts, ListItemModel::MaxColumns, count) || count == 0) return BadValue;
+                const Error err = model(o)->setRow(size_t(args[0].number), texts[0],
+                                                   Span<const StringView>(texts + 1, count - 1));
+                if (err == Error::NoMem) return NoMem;
+                if (err.isError()) return BadValue;
+                itemView(o)->update();
+                return Ok;
+        }
         GuiStatus call_DetailsView_setColumnWidth(GuiObject &o, Args args, Value &) {
                 if (args[0].number < 0 || args[0].number >= int64_t(model(o)->columns())) return BadValue;
                 if (args[1].number < 0 || args[1].number > 1280) return BadValue;

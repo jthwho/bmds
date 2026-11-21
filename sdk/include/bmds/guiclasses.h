@@ -1498,6 +1498,10 @@ static inline int bmds_line_edit_get_paste_lines(bmds_gui_t *gui, uint32_t id, b
 }
 #define BMDS_GUI_LINE_EDIT_PASTE_REQUESTED "pasteRequested" /**< LineEdit's event (String). */
 #define BMDS_GUI_LABEL_CLICKED "clicked" /**< Label's event (Int). */
+static inline int bmds_details_view_set_row(bmds_gui_t *gui, uint32_t id, int32_t a0, const char *const *a1, uint32_t a1_count) {
+        const bmds_gui_value_t args[] = {bmds_gui_int(a0), bmds_gui_strings(gui, a1, a1_count)};
+        return bmds_gui_call_named(gui, id, "setRow", args, 2, NULL);
+}
 
 #ifdef __cplusplus
 }

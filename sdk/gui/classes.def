@@ -506,3 +506,9 @@ GUI_EVENT(LineEdit, pasteRequested, On, String)
  * program listens (off by default: most labels are text): clicked(clicks), 1 for a left click, 2
  * for a double click (a channel's topic opens its settings) */
 GUI_EVENT(Label, clicked, Off, Int)
+
+/* ---- 2026-11-20 (devplan/gui.md §4x, for bmds-apps' I/O Manager): a details view's row replaced
+ * in place: setRow(row, texts), the columns' texts as addRow takes them (those not given empty), its
+ * icon kept; the view's scroll, current row and selection stay (a rebuild with clear and addRow
+ * scrolls to the top). A monitor that changes rows ten times a second uses it */
+GUI_METHOD(DetailsView, setRow, None, Int, List)

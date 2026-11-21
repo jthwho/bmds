@@ -32,6 +32,9 @@ namespace {
                 return IoBoardUse::None;
         }
 
+        // The matrix's input signals a chip may have (256 on the P4).
+        constexpr size_t MaxInputs = 256;
+
 } // namespace
 
 namespace Io {
@@ -126,6 +129,64 @@ namespace Io {
                         out[i] =
                                 ioChip().inputName(i) != nullptr ? static_cast<int16_t>(IoChipOps::inputSource(i)) : -1;
                 return;
+        }
+
+        IoPinBoard boardOf(unsigned pad) {
+                IoPinBoard out;
+                for (const BoardPin &p : board().pins) {
+                        if (p.gpio >= 0 && static_cast<unsigned>(p.gpio) == pad) {
+                                out.label = p.label;
+                                out.note = p.note;
+                                break;
+                        }
+                }
+                // Its first connector pin: `UEXT.3`.
+                for (const BoardConnector &c : board().connectors) {
+                        for (size_t i = 0; i < c.pins.size(); ++i) {
+                                if (c.pins[i].gpio >= 0 && static_cast<unsigned>(c.pins[i].gpio) == pad) {
+                                        std::snprintf(out.where, sizeof(out.where), "%s.%u", c.name,
+                                                      static_cast<unsigned>(i + 1));
+                                        return out;
+                                }
+                        }
+                }
+                return out;
+        }
+
+        size_t readPins(unsigned first, Span<IoPinRow> out) {
+                if (!isReady()) return 0;
+                const IoChip &chip = ioChip();
+                int16_t       sources[MaxInputs];
+                const size_t  inputCount = chip.inputSignals.size() < MaxInputs ? chip.inputSignals.size() : MaxInputs;
+                readInputSources(Span<int16_t>(sources, inputCount));
+                size_t n = 0;
+                for (unsigned p = first; p < chip.padCount() && n < out.size(); ++p, ++n) {
+                        IoPadState s;
+                        (void)readPad(p, s);
+                        IoHolder h;
+                        (void)theRegistry->holder(p, h);
+                        uint16_t     inputs[IoMaxPadInputs];
+                        const size_t k = ioPadInputs(Span<const int16_t>(sources, inputCount), p, inputs);
+                        ioPinRow(chip, p, s, Span<const uint16_t>(inputs, k), h, boardOf(p), out[n]);
+                }
+                return n;
+        }
+
+        Error readPin(unsigned pad, IoPinDetail &out) {
+                if (!isReady()) return Error::NotReady;
+                const IoChip &chip = ioChip();
+                if (pad >= chip.padCount()) return Error::Invalid;
+                int16_t      sources[MaxInputs];
+                const size_t inputCount = chip.inputSignals.size() < MaxInputs ? chip.inputSignals.size() : MaxInputs;
+                readInputSources(Span<int16_t>(sources, inputCount));
+                IoPadState s;
+                (void)readPad(pad, s);
+                IoHolder h;
+                (void)theRegistry->holder(pad, h);
+                uint16_t     inputs[IoMaxPadInputs];
+                const size_t k = ioPadInputs(Span<const int16_t>(sources, inputCount), pad, inputs);
+                ioPinDetail(chip, pad, s, Span<const uint16_t>(inputs, k), h, boardOf(pad), out);
+                return Error::Ok;
         }
 
 } // namespace Io

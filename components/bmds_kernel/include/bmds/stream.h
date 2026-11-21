@@ -21,6 +21,7 @@ BMDS_NAMESPACE_BEGIN
 class AudioFile;
 class DecodedFile;
 class FileHandle;
+class GpioChip;
 class MidiFile;
 class PtpClock;
 class Pty;
@@ -207,6 +208,9 @@ class Stream {
 
                 /** @brief Returns this as a PTP clock (`/dev/ptp0`), or null. */
                 virtual PtpClock *ptpClock() { return nullptr; }
+
+                /** @brief Returns this as a GPIO chip (`/dev/gpiochip0`: `devplan/io.md` §3.9), or null. */
+                virtual GpioChip *gpioChip() { return nullptr; }
 
                 /**
                  * @brief Returns the stream's whole contents where they lie, if it has them at an

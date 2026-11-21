@@ -63,18 +63,24 @@ size_t ioRouteText(const IoChip &chip, unsigned pad, const IoPadState &state, Sp
         return n;
 }
 
+bool ioPeripheralDriven(const IoChip &chip, unsigned pad, const IoPadState &state) {
+        if (state.lpIo) return false;
+        // An IO_MUX peripheral function drives the output enable itself; so does a matrix signal
+        // whose peripheral has the enable.
+        if (!isGpio(chip, state)) {
+                const IoMuxFunction *f = chip.function(pad, state.function);
+                return f != nullptr && f->peripheral;
+        }
+        return state.outputByPeripheral && state.outputSignal != chip.gpioOutputSignal;
+}
+
 const char *ioDirectionText(const IoChip &chip, unsigned pad, const IoPadState &state) {
         // [mode][open drain]
         static constexpr const char *Texts[5][2] = {
                 {"-", "-,od"}, {"in", "in,od"}, {"out", "out,od"}, {"in/out", "in/out,od"}, {"periph", "periph,od"},
         };
         size_t mode = 0;
-        // An IO_MUX peripheral function drives the output enable itself; so does a matrix signal
-        // whose peripheral has the enable.
-        const IoMuxFunction *f = isGpio(chip, state) ? nullptr : chip.function(pad, state.function);
-        const bool peripheral = (f != nullptr && f->peripheral) || (isGpio(chip, state) && state.outputByPeripheral &&
-                                                                    state.outputSignal != chip.gpioOutputSignal);
-        if (peripheral && !state.lpIo)
+        if (ioPeripheralDriven(chip, pad, state))
                 mode = 4;
         else if (state.inputEnabled && state.outputEnabled)
                 mode = 3;

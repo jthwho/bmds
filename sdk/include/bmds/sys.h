@@ -225,6 +225,7 @@ static inline int bmds_sys_has(uint32_t n) {
         136u /**< `int32_t gui_screen_capture(int32_t conn, bmds_screen_capture_t *capture)`. */
 #define BMDS_SYS_FILE_MAP 137u   /**< `int32_t file_map(int32_t fd, int64_t offset, uint32_t length, void **addr)`. */
 #define BMDS_SYS_FILE_UNMAP 138u /**< `int32_t file_unmap(void *addr)`. */
+#define BMDS_SYS_GPIO_CTL 139u   /**< `int32_t gpio_ctl(int32_t fd, uint32_t op, void *arg)`: `/dev/gpiochipN`. */
 
 /* --- Constants ------------------------------------------------------- */
 
@@ -1654,6 +1655,151 @@ typedef struct bmds_ptp_offset_t {
 } bmds_ptp_offset_t;
 
 /*
+ * GPIO (slot 139, appended 2026-11-20, devplan/io.md §3.9): `/dev/gpiochip0`, the chip's pads,
+ * operated on by `gpio_ctl`. Linux's GPIO character device (`linux/gpio.h`) is carried out on it by
+ * the SDK's `ioctl()`; the `BMDS_GPIO_PIN...` and `BMDS_GPIO_CONNECTOR...` operations add what
+ * Linux has no words for: each pad's class and holder, what the IO_MUX and the GPIO matrix route
+ * through it, its level without taking it, and the board's connectors.
+ */
+
+/** @brief `gpio_ctl` operations on a GPIO chip's fd (`/dev/gpiochip0`). */
+#define BMDS_GPIO_CHIP_INFO 0u     /**< `bmds_gpio_chip_info_t *`: the chip. */
+#define BMDS_GPIO_LINE_INFO 1u     /**< `bmds_gpio_line_info_t *` (`offset` set): a line, as Linux says it. */
+#define BMDS_GPIO_PINS 2u          /**< `bmds_gpio_pins_t *`: pads' state; returns how many were read. */
+#define BMDS_GPIO_PIN_DETAIL 3u    /**< `bmds_gpio_pin_detail_t *` (`offset` set): one pad, every detail. */
+#define BMDS_GPIO_CONNECTOR 4u     /**< `bmds_gpio_connector_t *` (`index` set): a connector of the board's. */
+#define BMDS_GPIO_CONNECTOR_PIN 5u /**< `bmds_gpio_connector_pin_t *` (`connector`, `pin` set): one of its pins. */
+
+/** @brief Room for a GPIO chip's or line's name (Linux's `GPIO_MAX_NAME_SIZE`), NUL included. */
+#define BMDS_GPIO_NAME_MAX 32u
+
+/** @brief A GPIO chip (`BMDS_GPIO_CHIP_INFO`). */
+typedef struct bmds_gpio_chip_info_t {
+                uint32_t size;                     /**< Set by the caller: `sizeof(bmds_gpio_chip_info_t)`. */
+                uint32_t lines;                    /**< Its lines (pads): offsets 0 to `lines` - 1, the GPIO numbers. */
+                uint32_t connectors;               /**< The board's connectors (`BMDS_GPIO_CONNECTOR`). */
+                uint32_t index;                    /**< N of `/dev/gpiochipN`. */
+                char     name[BMDS_GPIO_NAME_MAX]; /**< `gpiochip0`. */
+                char     label[BMDS_GPIO_NAME_MAX]; /**< The chip: `ESP32-P4`. */
+                char     board[64];                 /**< The board's name. */
+} bmds_gpio_chip_info_t;
+
+/** @brief `bmds_gpio_line_info_t::flags`: Linux's `GPIO_V2_LINE_FLAG_...`, bit for bit. */
+#define BMDS_GPIO_LINE_USED 0x1ull             /**< Held (by a driver or a program), or wired to something fixed. */
+#define BMDS_GPIO_LINE_ACTIVE_LOW 0x2ull       /**< Active low. */
+#define BMDS_GPIO_LINE_INPUT 0x4ull            /**< An input. */
+#define BMDS_GPIO_LINE_OUTPUT 0x8ull           /**< An output. */
+#define BMDS_GPIO_LINE_EDGE_RISING 0x10ull     /**< Rising edges are watched. */
+#define BMDS_GPIO_LINE_EDGE_FALLING 0x20ull    /**< Falling edges are watched. */
+#define BMDS_GPIO_LINE_OPEN_DRAIN 0x40ull      /**< Open drain. */
+#define BMDS_GPIO_LINE_OPEN_SOURCE 0x80ull     /**< Open source. */
+#define BMDS_GPIO_LINE_BIAS_PULL_UP 0x100ull   /**< Pulled up. */
+#define BMDS_GPIO_LINE_BIAS_PULL_DOWN 0x200ull /**< Pulled down. */
+#define BMDS_GPIO_LINE_BIAS_DISABLED 0x400ull  /**< Neither pull. */
+
+/** @brief A line as Linux describes it (`BMDS_GPIO_LINE_INFO`; Linux's `gpio_v2_line_info`). */
+typedef struct bmds_gpio_line_info_t {
+                uint32_t size;                         /**< Set by the caller: `sizeof(bmds_gpio_line_info_t)`. */
+                uint32_t offset;                       /**< Set by the caller: the line (its GPIO number). */
+                uint64_t flags;                        /**< `BMDS_GPIO_LINE_...`. */
+                uint32_t debounce_us;                  /**< Its debounce period, or 0. */
+                uint32_t reserved;                     /**< Zero. */
+                char     name[BMDS_GPIO_NAME_MAX];     /**< The board's name for it, else `GPIO14`. */
+                char     consumer[BMDS_GPIO_NAME_MAX]; /**< Who holds it (`eth0`), or "". */
+} bmds_gpio_line_info_t;
+
+/** @brief `bmds_gpio_pin_t::pin_class`: who may change the pad (devplan/io.md §3.2). */
+#define BMDS_GPIO_CLASS_FREE 0u   /**< Nobody holds it, and the board leaves it to the user. */
+#define BMDS_GPIO_CLASS_FIXED 1u  /**< The board wires it to something a change would break. */
+#define BMDS_GPIO_CLASS_SYSTEM 2u /**< A driver holds it, or the board wires it to an on-board device. */
+#define BMDS_GPIO_CLASS_USER 3u   /**< The user holds it (a setup, a program's line). */
+
+/** @brief `bmds_gpio_pin_t::flags`. */
+#define BMDS_GPIO_PIN_INPUT 0x1u  /**< Its input buffer is on. */
+#define BMDS_GPIO_PIN_OUTPUT 0x2u /**< Its output driver is on. */
+#define BMDS_GPIO_PIN_PERIPHERAL                                                                                       \
+        0x4u /**< A peripheral drives it (an IO_MUX function, or its matrix signal's enable). */
+#define BMDS_GPIO_PIN_OPEN_DRAIN 0x8u /**< Open drain. */
+#define BMDS_GPIO_PIN_PULL_UP 0x10u   /**< The weak pull-up is on. */
+#define BMDS_GPIO_PIN_PULL_DOWN 0x20u /**< The weak pull-down is on. */
+#define BMDS_GPIO_PIN_LP_IO 0x40u     /**< The LP IO domain has it (its level is the LP core's). */
+#define BMDS_GPIO_PIN_STRAPPING 0x80u /**< A strapping pin: read at reset. */
+#define BMDS_GPIO_PIN_FORCED 0x100u   /**< Taken with force from its holder (devplan/io.md §3.3). */
+
+/**
+ * @brief One pad's state, as a table of every pad shows it (`BMDS_GPIO_PINS`): its numbers and
+ *        flags, and its words made by the system (the chip's signal names, the board's labels).
+ */
+typedef struct bmds_gpio_pin_t {
+                uint32_t offset;    /**< Its line: the GPIO number. */
+                uint32_t flags;     /**< `BMDS_GPIO_PIN_...`. */
+                uint8_t  pin_class; /**< `BMDS_GPIO_CLASS_...`. */
+                char     level;     /**< `1`, `0`; `-` (neither input nor output on), `?` (the LP IO domain's). */
+                uint8_t  function;  /**< The IO_MUX function selected. */
+                uint8_t  drive;     /**< Drive strength, 0 (weakest) to 3. */
+                char     name[8];   /**< `GPIO14`. */
+                char     owner[16]; /**< Who holds it (`eth0`), or "". */
+                char     use[32];   /**< Its holder's use of it (`RMII TXD1`), else the board's label, or "". */
+                char     route
+                        [48]; /**< What drives and reads it: `GPIO`, `UART0_TXD (IO_MUX)`, `I2C0_SDA`, `LP IO`, `-`. */
+                char direction[12]; /**< `in`, `out`, `in/out`, `periph`, `-`; `,od` after for open drain. */
+                char pull[8];       /**< `up`, `down`, `up+down`, `-`. */
+                char where[16];     /**< The connector pin it is brought out to (`UEXT.3`), or "". */
+} bmds_gpio_pin_t;
+
+/** @brief Pads' state (`BMDS_GPIO_PINS`): `count` from `first`, one read of the chip for all. */
+typedef struct bmds_gpio_pins_t {
+                uint32_t         size;     /**< Set by the caller: `sizeof(bmds_gpio_pins_t)`. */
+                uint32_t         first;    /**< The first pad's offset. */
+                uint32_t         count;    /**< Room in `pins`; fewer are read past the last pad. */
+                uint32_t         pin_size; /**< `sizeof(bmds_gpio_pin_t)` as the caller has it. */
+                bmds_gpio_pin_t *pins;     /**< Where they go. */
+                uint32_t         reserved; /**< Zero. */
+} bmds_gpio_pins_t;
+
+/** @brief The most lines `BMDS_GPIO_PIN_DETAIL` gives. */
+#define BMDS_GPIO_DETAIL_MAX 24u
+
+/** @brief One line of a pad's details: `Functions`, `0 GPIO35_0 *1 GPIO 2 SPI2_IO5 ...`. */
+typedef struct bmds_gpio_detail_line_t {
+                char label[16]; /**< What it is: `Board`, `Owner`, `Route`, `Output`... */
+                char text[112]; /**< Its words. */
+} bmds_gpio_detail_line_t;
+
+/** @brief Everything about one pad (`BMDS_GPIO_PIN_DETAIL`), as `io pin N` prints it. */
+typedef struct bmds_gpio_pin_detail_t {
+                uint32_t                size;     /**< Set by the caller: `sizeof(bmds_gpio_pin_detail_t)`. */
+                uint32_t                offset;   /**< Set by the caller: the pad. */
+                uint32_t                count;    /**< The lines given. */
+                uint32_t                reserved; /**< Zero. */
+                bmds_gpio_detail_line_t lines[BMDS_GPIO_DETAIL_MAX]; /**< In the order shown. */
+} bmds_gpio_pin_detail_t;
+
+/** @brief `bmds_gpio_connector_t::flags`. */
+#define BMDS_GPIO_CONNECTOR_FITTED 0x1u /**< The header is fitted (else a footprint only). */
+
+/** @brief A connector the board brings pads out to (`BMDS_GPIO_CONNECTOR`). */
+typedef struct bmds_gpio_connector_t {
+                uint32_t size;            /**< Set by the caller: `sizeof(bmds_gpio_connector_t)`. */
+                uint32_t index;           /**< Set by the caller: 0 to `connectors` - 1. */
+                uint32_t pins;            /**< Its pins. */
+                uint32_t columns;         /**< Pins across a row: pin 1 first, across. */
+                uint32_t flags;           /**< `BMDS_GPIO_CONNECTOR_...`. */
+                uint32_t reserved;        /**< Zero. */
+                char     name[16];        /**< Its silkscreen name: `UEXT`. */
+                char     description[64]; /**< What it is, for people. */
+} bmds_gpio_connector_t;
+
+/** @brief One pin of a connector (`BMDS_GPIO_CONNECTOR_PIN`). */
+typedef struct bmds_gpio_connector_pin_t {
+                uint32_t size;      /**< Set by the caller: `sizeof(bmds_gpio_connector_pin_t)`. */
+                uint32_t connector; /**< Set by the caller: the connector's index. */
+                uint32_t pin;       /**< Set by the caller: 0 for pin 1. */
+                int32_t  gpio;      /**< The pad on it, or -1 (a supply or another signal). */
+                char     label[16]; /**< For a pin without a pad: `3.3V`, `GND`, `EN`; else "". */
+} bmds_gpio_connector_pin_t;
+
+/*
  * Surfaces (slots 117-121, appended 2026-10-14, devplan/games.md §11): a picture a program draws
  * with the CPU into its own buffers and presents, in a window or full screen (the user's setting
  * per application, the program's suggestion its default, Alt+Enter between them); its events read
@@ -2426,6 +2572,7 @@ typedef int32_t (*bmds_sys_tls_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 typedef int32_t (*bmds_sys_gui_screen_capture_fn)(int32_t conn, bmds_screen_capture_t *capture);
 typedef int32_t (*bmds_sys_file_map_fn)(int32_t fd, int64_t offset, uint32_t length, void **addr);
 typedef int32_t (*bmds_sys_file_unmap_fn)(void *addr);
+typedef int32_t (*bmds_sys_gpio_ctl_fn)(int32_t fd, uint32_t op, void *arg);
 
 /** @brief Ends the program with @p status (0-255; its exit status in the shell). */
 static inline void bmds_exit(int32_t status) {
@@ -3905,6 +4052,19 @@ static inline int32_t bmds_file_map(int32_t fd, int64_t offset, uint32_t length,
 static inline int32_t bmds_file_unmap(void *addr) {
         if (!bmds_sys_has(BMDS_SYS_FILE_UNMAP)) return -BMDS_ENOSYS;
         return ((bmds_sys_file_unmap_fn)bmds_sys->slot[BMDS_SYS_FILE_UNMAP])(addr);
+}
+
+/**
+ * @brief Operates on GPIO chip fd @p fd (`/dev/gpiochip0`): `BMDS_GPIO_...` with @p arg as each
+ *        says (slot 139, appended 2026-11-20, devplan/io.md §3.9). Reading changes nothing: no
+ *        line is taken.
+ * @return 0 (`BMDS_GPIO_PINS`: the pads read), or `-BMDS_ENOTTY` (not a GPIO chip),
+ *         `-BMDS_EBADF`, `-BMDS_EINVAL` (an op, a `size`, an offset or index past the end),
+ *         `-BMDS_EFAULT`, `-BMDS_ENOSYS`.
+ */
+static inline int32_t bmds_gpio_ctl(int32_t fd, uint32_t op, void *arg) {
+        if (!bmds_sys_has(BMDS_SYS_GPIO_CTL)) return -BMDS_ENOSYS;
+        return ((bmds_sys_gpio_ctl_fn)bmds_sys->slot[BMDS_SYS_GPIO_CTL])(fd, op, arg);
 }
 
 /**

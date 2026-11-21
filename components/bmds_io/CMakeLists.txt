@@ -1,6 +1,6 @@
 # bmds_io — the system's I/O (devplan/io.md): every pad and peripheral instance of the chip, who
 # holds it (drivers claim what they use through Io::claim()), the board's wiring, the pads' state
-# read from the hardware, and the `io` command.
+# read from the hardware, the `io` command, and `/dev/gpiochip0` (gpio_ctl's, in bmds_loader).
 #
 # The chip's table is generated from ESP-IDF's soc headers by tools/gen-iochip.py into
 # chips/<target>/iochipdef.cpp (checked in); chips/<target>/iochipops.cpp reads the chip's pad
@@ -15,6 +15,7 @@
 set(BMDS_IO_PURE_SRCS
         src/iochip.cpp
         src/iopad.cpp
+        src/iopin.cpp
         src/ioregistry.cpp)
 
 include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/bmds.cmake)
@@ -28,12 +29,13 @@ if(COMMAND idf_component_register)
         idf_component_register(SRCS ${BMDS_IO_PURE_SRCS}
                                     ${BMDS_IO_CHIP}/iochipdef.cpp
                                     ${BMDS_IO_CHIP}/iochipops.cpp
+                                    src/gpiochip.cpp
                                     src/io.cpp
                                     src/iocommand.cpp
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS src
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_board bmds_shell esp_driver_gpio hal soc
+                               PRIV_REQUIRES bmds_board bmds_fs bmds_shell esp_driver_gpio hal soc
                                WHOLE_ARCHIVE)
         bmds_target_options(${COMPONENT_LIB})
 else()

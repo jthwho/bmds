@@ -14,6 +14,7 @@
 #include <cstring>
 #include <bmds/iochip.h>
 #include <bmds/iopad.h>
+#include <bmds/iopin.h>
 #include <bmds/ioregistry.h>
 
 using bmds::Error;
@@ -26,6 +27,10 @@ using bmds::IoKind;
 using bmds::IoOwnerKind;
 using bmds::IoPadInfo;
 using bmds::IoPadState;
+using bmds::IoPinBoard;
+using bmds::IoPinDetail;
+using bmds::IoPinField;
+using bmds::IoPinRow;
 using bmds::IoRegistry;
 using bmds::IoResource;
 using bmds::IoUse;
@@ -352,5 +357,113 @@ TEST_CASE("IoPadState: words") {
                 s.function = 0;
                 CHECK(ioRouteText(chip, 37, s, Span<const uint16_t>(), small, sizeof(small)) == 5);
                 CHECK(std::strcmp(small, "UART0") == 0);
+        }
+}
+
+TEST_CASE("IoPinRow, IoPinDetail: a pad as people are shown it") {
+        const IoChip &chip = bmds::ioChip();
+        IoRegistry    registry(chip);
+        REQUIRE(registry.setBoardUse(35, IoBoardUse::Device).isOk());
+        const IoUse uses[] = {{35, "RMII TXD1"}};
+        auto [claim, err] = registry.claim("eth0", IoOwnerKind::System, uses, 0, nullptr);
+        REQUIRE(err.isOk());
+        IoHolder holder;
+        REQUIRE(registry.holder(35, holder).isOk());
+        IoPinBoard board;
+        board.label = "RMII TXD1";
+        board.note = "also BOOT";
+        std::strcpy(board.where, "EXT1.9");
+
+        SUBCASE("levels: the input's, else the latch's, else none") {
+                IoPadState s;
+                CHECK(bmds::ioLevelChar(s) == '-');
+                s.outputEnabled = true;
+                s.outputLevel = true;
+                CHECK(bmds::ioLevelChar(s) == '1');
+                s.inputEnabled = true;
+                CHECK(bmds::ioLevelChar(s) == '0');
+                s.lpIo = true;
+                CHECK(bmds::ioLevelChar(s) == '?');
+        }
+
+        SUBCASE("the inputs a pad feeds") {
+                const int16_t sources[] = {-1, 7, 3, 7, 0x3e};
+                uint16_t      out[bmds::IoMaxPadInputs];
+                CHECK(bmds::ioPadInputs(sources, 7, out) == 2);
+                CHECK(out[0] == 1);
+                CHECK(out[1] == 3);
+                CHECK(bmds::ioPadInputs(sources, 9, out) == 0);
+                uint16_t one[1];
+                CHECK(bmds::ioPadInputs(sources, 7, one) == 1);
+        }
+
+        SUBCASE("a held pad's row: the holder's role over the board's label") {
+                IoPadState s;
+                s.function = chip.gpioFunction;
+                s.outputSignal = chip.gpioOutputSignal;
+                s.outputEnabled = true;
+                IoPinRow r;
+                bmds::ioPinRow(chip, 35, s, Span<const uint16_t>(), holder, board, r);
+                CHECK(r.pad == 35);
+                CHECK(std::strcmp(r.name, "GPIO35") == 0);
+                CHECK(r.resourceClass == IoClass::System);
+                CHECK(r.level == '0');
+                CHECK(std::strcmp(r.owner, "eth0") == 0);
+                CHECK(std::strcmp(r.function, "RMII TXD1") == 0);
+                CHECK(std::strcmp(r.route, "GPIO") == 0);
+                CHECK(std::strcmp(r.direction, "out") == 0);
+                CHECK(std::strcmp(r.where, "EXT1.9") == 0);
+        }
+
+        SUBCASE("a free pad's row: the board's label") {
+                IoHolder   free;
+                IoPinBoard b;
+                b.label = "status LED";
+                IoPinRow r;
+                bmds::ioPinRow(chip, 14, IoPadState(), Span<const uint16_t>(), free, b, r);
+                CHECK(r.owner[0] == '\0');
+                CHECK(std::strcmp(r.function, "status LED") == 0);
+                CHECK(r.where[0] == '\0');
+        }
+
+        SUBCASE("details") {
+                IoPadState s;
+                s.function = chip.gpioFunction;
+                s.outputSignal = chip.gpioOutputSignal;
+                s.inputEnabled = true;
+                s.pullUp = true;
+                s.drive = 2;
+                const uint16_t inputs[] = {10}; // UART0_RXD
+                IoPinDetail    d;
+                bmds::ioPinDetail(chip, 35, s, inputs, holder, board, d);
+                CHECK(std::strcmp(d.name, "GPIO35") == 0);
+                CHECK(std::strcmp(d.at(IoPinField::Board), "RMII TXD1 (EXT1.9)") == 0);
+                CHECK(std::strcmp(d.at(IoPinField::Note), "also BOOT") == 0);
+                CHECK(std::strcmp(d.at(IoPinField::Class), "system") == 0);
+                CHECK(std::strcmp(d.at(IoPinField::Owner), "eth0 as RMII TXD1") == 0);
+                CHECK(d.at(IoPinField::Forced)[0] == '\0');
+                CHECK(std::strstr(d.at(IoPinField::Chip), "strapping") != nullptr);
+                CHECK(std::strstr(d.at(IoPinField::Functions), "*1 GPIO 2 ") != nullptr);
+                CHECK(std::strcmp(d.at(IoPinField::Route), "UART0_RXD") == 0);
+                CHECK(std::strcmp(d.at(IoPinField::Direction), "in") == 0);
+                CHECK(std::strcmp(d.at(IoPinField::Input), "enable 1, level 0, signals UART0_RXD") == 0);
+                CHECK(std::strncmp(d.at(IoPinField::Output), "signal 256 (", 12) == 0);
+                CHECK(std::strcmp(d.at(IoPinField::Pull), "up") == 0);
+                CHECK(std::strcmp(d.at(IoPinField::Drive), "2") == 0);
+                CHECK(std::strcmp(d.at(IoPinField::LpIo), "no") == 0);
+                CHECK(std::strcmp(bmds::ioPinFieldName(IoPinField::LpIo), "LP IO") == 0);
+        }
+
+        SUBCASE("a forced pad's details name the lender") {
+                const IoUse take[] = {{35, "probe"}};
+                auto [user, uerr] = registry.claim("io", IoOwnerKind::User, take, IoRegistry::Force, nullptr);
+                REQUIRE(uerr.isOk());
+                IoHolder h;
+                REQUIRE(registry.holder(35, h).isOk());
+                IoPinDetail d;
+                bmds::ioPinDetail(chip, 35, IoPadState(), Span<const uint16_t>(), h, board, d);
+                CHECK(std::strcmp(d.at(IoPinField::Owner), "io as probe") == 0);
+                CHECK(std::strcmp(d.at(IoPinField::Forced), "from eth0 (RMII TXD1)") == 0);
+                CHECK(std::strcmp(d.at(IoPinField::Class), "user") == 0);
         }
 }

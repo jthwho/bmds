@@ -35,6 +35,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/timex.h>
+#include <linux/gpio.h>
 #include <linux/ptp_clock.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
@@ -985,6 +986,83 @@ static long ptp_ioctl(long fd, unsigned long request, void *arg) {
         }
 }
 
+/* /dev/gpiochip0's requests (linux/gpio.h) on gpio_ctl. */
+static long gpio_ctl(long fd, uint32_t op, void *arg) {
+        return (long)bmds_gpio_ctl((int32_t)fd, op, arg);
+}
+
+static void gpio_name(char *out, const char *in) {
+        strncpy(out, in, GPIO_MAX_NAME_SIZE - 1);
+        out[GPIO_MAX_NAME_SIZE - 1] = '\0';
+        return;
+}
+
+static long gpio_ioctl(long fd, unsigned long request, void *arg) {
+        if (arg == NULL) return -EFAULT;
+        switch (request) {
+                case GPIO_GET_CHIPINFO_IOCTL: {
+                        bmds_gpio_chip_info_t c = {.size = sizeof(c)};
+                        const long            r = gpio_ctl(fd, BMDS_GPIO_CHIP_INFO, &c);
+                        if (r < 0) return r;
+                        struct gpiochip_info *out = arg;
+                        memset(out, 0, sizeof(*out));
+                        gpio_name(out->name, c.name);
+                        gpio_name(out->label, c.label);
+                        out->lines = c.lines;
+                        return 0;
+                }
+                case GPIO_GET_LINEINFO_IOCTL: {
+                        struct gpioline_info *out = arg;
+                        bmds_gpio_line_info_t l = {.size = sizeof(l), .offset = out->line_offset};
+                        const long            r = gpio_ctl(fd, BMDS_GPIO_LINE_INFO, &l);
+                        if (r < 0) return r;
+                        uint32_t f = 0;
+                        if (l.flags & BMDS_GPIO_LINE_USED) f |= GPIOLINE_FLAG_KERNEL;
+                        if (l.flags & BMDS_GPIO_LINE_OUTPUT) f |= GPIOLINE_FLAG_IS_OUT;
+                        if (l.flags & BMDS_GPIO_LINE_ACTIVE_LOW) f |= GPIOLINE_FLAG_ACTIVE_LOW;
+                        if (l.flags & BMDS_GPIO_LINE_OPEN_DRAIN) f |= GPIOLINE_FLAG_OPEN_DRAIN;
+                        if (l.flags & BMDS_GPIO_LINE_OPEN_SOURCE) f |= GPIOLINE_FLAG_OPEN_SOURCE;
+                        if (l.flags & BMDS_GPIO_LINE_BIAS_PULL_UP) f |= GPIOLINE_FLAG_BIAS_PULL_UP;
+                        if (l.flags & BMDS_GPIO_LINE_BIAS_PULL_DOWN) f |= GPIOLINE_FLAG_BIAS_PULL_DOWN;
+                        if (l.flags & BMDS_GPIO_LINE_BIAS_DISABLED) f |= GPIOLINE_FLAG_BIAS_DISABLE;
+                        out->flags = f;
+                        gpio_name(out->name, l.name);
+                        gpio_name(out->consumer, l.consumer);
+                        return 0;
+                }
+                case GPIO_V2_GET_LINEINFO_IOCTL: {
+                        struct gpio_v2_line_info *out = arg;
+                        /* As Linux: everything but the offset zero. */
+                        const uint32_t offset = out->offset;
+                        out->offset = 0;
+                        int clean = 1;
+                        for (size_t i = 0; i < sizeof(*out); i++)
+                                if (((const uint8_t *)out)[i] != 0) clean = 0;
+                        out->offset = offset;
+                        if (!clean) return -EINVAL;
+                        bmds_gpio_line_info_t l = {.size = sizeof(l), .offset = offset};
+                        const long            r = gpio_ctl(fd, BMDS_GPIO_LINE_INFO, &l);
+                        if (r < 0) return r;
+                        gpio_name(out->name, l.name);
+                        gpio_name(out->consumer, l.consumer);
+                        out->flags = l.flags;
+                        if (l.debounce_us != 0) {
+                                out->attrs[0].id = GPIO_V2_LINE_ATTR_ID_DEBOUNCE;
+                                out->attrs[0].debounce_period_us = l.debounce_us;
+                                out->num_attrs = 1;
+                        }
+                        return 0;
+                }
+                default: {
+                        /* Not a GPIO chip: ENOTTY; a chip's other requests (taking lines, watching):
+                           not provided yet (devplan/io.md §6, step 3). */
+                        bmds_gpio_chip_info_t c = {.size = sizeof(c)};
+                        const long            r = gpio_ctl(fd, BMDS_GPIO_CHIP_INFO, &c);
+                        return r < 0 ? r : -EOPNOTSUPP;
+                }
+        }
+}
+
 static long do_ioctl(long fd, unsigned long request, void *arg) {
         /* OSS: /dev/dsp's 'P' requests and /dev/mixer's 'M' (oss.c). */
         const unsigned long type = request >> 8 & 0xff;
@@ -996,6 +1074,7 @@ static long do_ioctl(long fd, unsigned long request, void *arg) {
                 return 0;
         }
         if (type == PTP_CLK_MAGIC) return ptp_ioctl(fd, request, arg);
+        if (type == GPIO_IOC_MAGIC) return gpio_ioctl(fd, request, arg);
         switch (request) {
                 case TCGETS: return tc_get(fd, arg);
                 case TCSETS:

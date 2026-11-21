@@ -23,6 +23,7 @@
 #include <bmds/filehandle.h>
 #include <bmds/i2cbus.h>
 #include <bmds/input.h>
+#include <bmds/gpiochip.h>
 #include <bmds/io.h>
 #include <bmds/pads.h>
 #include <bmds/programcontrols.h>
@@ -100,6 +101,7 @@ namespace {
                  bmds::PsramWindow::init}, // the PSRAM addresses after the heap's: large blocks, programs' pages
                 {"i2c", bmds::I2cBus::init},
                 {"vfs", bmds::Vfs::init},
+                {"gpio", bmds::GpioChip::addFiles},   // /dev/gpiochip0 (devplan/io.md §3.9)
                 {"flash", bmds::FlashDisk::init},     // /flash: the board's own files, the update's records
                 {"recovery", bmds::Update::watch},    // crashes in a row, Esc at power on: to recovery
                 {"rom", bmds::RomDisk::init},         // /rom: the files that come with the firmware

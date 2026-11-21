@@ -8,6 +8,7 @@
  * A plain item model (devplan/filebrowser.md §4g).
  */
 
+#include <utility>
 #include <bmds/itemmodel.h>
 
 BMDS_NAMESPACE_BEGIN
@@ -34,13 +35,69 @@ Error ListItemModel::store(StringView s, Text &out) {
 void ListItemModel::clear() {
         _rows.clear();
         _texts.clear();
+        _dead = 0;
         return;
 }
 
 void ListItemModel::removeAt(size_t row) {
         if (row >= _rows.size()) return;
+        for (const Text &t : _rows[row].text) _dead += t.length;
         _rows.removeAt(row);
-        if (_rows.isEmpty()) _texts.clear(); // its texts' bytes stay until then
+        if (_rows.isEmpty()) {
+                _texts.clear();
+                _dead = 0;
+        } else {
+                compact();
+        }
+        return;
+}
+
+Error ListItemModel::setRow(size_t row, StringView name, Span<const StringView> columnTexts) {
+        if (row >= _rows.size()) return Error::Invalid;
+        StringView want[MaxColumns];
+        want[0] = name;
+        for (size_t c = 0; c < columnTexts.size() && c + 1 < MaxColumns; ++c) want[c + 1] = columnTexts[c];
+        for (const StringView &w : want)
+                if (w.size() > UINT16_MAX) return Error::Invalid;
+        // Room first for every text that doesn't fit where its old one is: all or nothing.
+        size_t grow = 0;
+        for (size_t c = 0; c < MaxColumns; ++c)
+                if (want[c].size() > _rows[row].text[c].length) grow += want[c].size();
+        if (grow > 0 && roomFor(_texts, _texts.size() + grow).isError()) return Error::NoMem;
+        Row &r = _rows[row];
+        for (size_t c = 0; c < MaxColumns; ++c) {
+                Text            &t = r.text[c];
+                const StringView w = want[c];
+                if (view(t) == w) continue;
+                if (w.size() <= t.length) {
+                        // In its old place (no row shares a text's bytes).
+                        for (size_t i = 0; i < w.size(); ++i) _texts[t.at + i] = w[i];
+                        _dead += t.length - w.size();
+                        t.length = static_cast<uint16_t>(w.size());
+                } else {
+                        _dead += t.length;
+                        (void)store(w, t); // reserved
+                }
+        }
+        compact();
+        return Error::Ok;
+}
+
+// The texts again without the bytes no row uses, once those outweigh the rest: a row changed
+// often (a monitor's) can't grow the store for good.
+void ListItemModel::compact() {
+        if (_dead < 1024 || _dead * 2 < _texts.size()) return;
+        List<char> kept(MemSpace::Psram);
+        if (kept.reserve(_texts.size() - _dead).isError()) return; // later, then
+        for (Row &r : _rows) {
+                for (Text &t : r.text) {
+                        const uint32_t at = static_cast<uint32_t>(kept.size());
+                        for (uint16_t i = 0; i < t.length; ++i) (void)kept.append(_texts[t.at + i]); // reserved
+                        t.at = at;
+                }
+        }
+        _texts = std::move(kept);
+        _dead = 0;
         return;
 }
 

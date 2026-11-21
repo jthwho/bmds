@@ -430,6 +430,7 @@ Made by `Create`; also has the entries of [ItemView](#itemview), [Widget](#widge
 | `addRow` | List | none |
 | `setColumnWidth` | Int, Int | none |
 | `setSortIndicator` | Int, Bool | none |
+| `setRow` | Int, List | none |
 
 | Event | Values | Sent |
 |---|---|---|

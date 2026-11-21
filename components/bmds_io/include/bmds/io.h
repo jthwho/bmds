@@ -24,6 +24,7 @@
 #include <bmds/error.h>
 #include <bmds/iochip.h>
 #include <bmds/iopad.h>
+#include <bmds/iopin.h>
 #include <bmds/ioregistry.h>
 #include <bmds/result.h>
 #include <bmds/span.h>
@@ -90,6 +91,29 @@ namespace Io {
          * @nonblocking
          */
         void readInputSources(Span<int16_t> out);
+
+        /**
+         * @brief What the board says of pad @p pad: its label and note
+         *        (`BoardPin`), and the first connector pin it is brought out to.
+         * @nonblocking
+         */
+        IoPinBoard boardOf(unsigned pad);
+
+        /**
+         * @brief Pads' rows (`ioPinRow()`) from pad @p first, into @p out: one
+         *        reading of the matrix's inputs for all.
+         * @return How many pads were read (at most `out.size()`; none past the
+         *         last pad); 0 before `init()`.
+         * @blocking Waits for the registry's lock, once per pad.
+         */
+        size_t readPins(unsigned first, Span<IoPinRow> out);
+
+        /**
+         * @brief Pad @p pad's details (`ioPinDetail()`).
+         * @return `Ok`, `Invalid` (not a pad), or `NotReady` before `init()`.
+         * @blocking Waits for the registry's lock.
+         */
+        Error readPin(unsigned pad, IoPinDetail &out);
 
 } // namespace Io
 

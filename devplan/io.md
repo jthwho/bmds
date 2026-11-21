@@ -12,10 +12,10 @@ RMT (pulses) for an LTC timecode generator and reader to come.
 
 One place that knows every pad of the chip: what the board wired it to, which subsystem holds it,
 what the IO_MUX and the GPIO matrix route through it right now, and its live level. On top of
-that, an application (`/bin/io`, the I/O window) and a shell command (`io`) that show all of it and
-let the user take free pins: drive and read GPIO, change muxing, and stand up a UART, an I²C bus or
-an SPI bus on chosen pins in a few clicks, then talk to the device on it from the same window or
-from any program through `/dev`.
+that, an application (`/bin/ioman`, the I/O Manager) and a shell command (`io`) that show all of
+it and let the user take free pins: drive and read GPIO, change muxing, and stand up a UART, an
+I²C bus or an SPI bus on chosen pins in a few clicks, then talk to the device on it from the same
+window or from any program through `/dev`.
 
 The kernel's side is the larger part and is useful without the window: today no subsystem records
 which pins it uses, nothing stops two from taking the same one, and programs (in U-mode since
@@ -70,8 +70,8 @@ without the user's `--force` (§3.3).
 ### 3.1 Layers
 
 ```
- ┌──── /bin/io (the window) ─── io (the command) ─── programs: /dev/gpiochip0, /dev/i2c-N ... ──┐
- │                                     IoService (bmds_io)                                      │
+ ┌─── /bin/ioman (the window) ─── io (the command) ─── programs: /dev/gpiochip0, /dev/i2c-N ... ┐
+ │                                         Io (bmds_io)                                         │
  │  claims & ownership · pad state · ports (UART/I²C/SPI/RMT on chosen pins, DMA) · events      │
  ├──────────────────────────────┬───────────────────────────────────────────────────────────────┤
  │ IoChip (per chip, generated) │ BoardPins (per board, boarddef.h)                             │
@@ -102,7 +102,7 @@ without the user's `--force` (§3.3).
   layout (rows × columns, power and ground pins) for the window's drawing. The existing per-device
   fields stay the drivers' source; a host test checks the two agree, so the pin table can't drift
   from what the drivers use.
-- **Ownership** (`IoService`, run time, in `bmds_io`): one byte of owner and a few of state per
+- **Ownership** (`Io`, run time, in `bmds_io`): one byte of owner and a few of state per
   pad (55 pads: ~250 B of internal RAM, allocated once at boot).
 
 ### 3.2 Claims
@@ -205,7 +205,7 @@ io/rmt0    = pin=14 dir=tx resolution=1m
 io/gpio    = 14=out,high 15=in,pull-up 16=od,low
 ```
 
-A watcher in `IoService` applies a change at once: checks it (the pins exist, the instance can
+A watcher in `Io` applies a change at once: checks it (the pins exist, the instance can
 reach them, the pins are free or the value says `force`), claims, routes, starts the ESP-IDF
 driver, adds the node; an empty value tears it down. A bad value is refused by the parameter's
 check, so `sysconf set` reports why. `sysconf save` keeps it, and the boot applies saved values
@@ -293,11 +293,12 @@ ioctls onto them, so ported code calls Linux's API unchanged.
 The struct sizes and op numbers go into the ABI lock tests as they ship. Commits touching them
 carry `ABI:` lines.
 
-### 3.10 The window (`/bin/io`)
+### 3.10 The window (`ioman`, in bmds-apps)
 
-An ordinary toolkit program, built into the firmware like sysmon (`sysmon.md` §3.5): nothing in the
-OS knows it, it reaches the kernel through `IoService`'s public classes, and a second start raises
-the first (service `io`).
+An ordinary SDK program in the bmds-apps repository (§7, decision 6; its design is bmds-apps'
+`devplan/ioman.md`): nothing in the OS knows it, it reaches the kernel through `gpio_ctl` on
+`/dev/gpiochip0` (§3.9) and the GUI service's classes, and a second start raises the first
+(service `ioman`). Not `io`: the shell finds its own `io` before any program of that name.
 
 ```
 ┌ I/O ──────────────────────────────────────────────────────────────────────────────────────┐
@@ -367,7 +368,7 @@ way they do on Linux.
 | Ownership and state | internal RAM, boot | ~250 B |
 | `bmds_io` code | flash | 8-12 KB |
 | Edge rings | PSRAM, per claimed input line | 64 events × 16 B |
-| `/bin/io` | flash | 30-45 KB |
+| `gpio_ctl`, `/dev/gpiochip0` | flash | 3.7 KB measured (`ioman` itself is a package on the card) |
 | A port's DMA rings | internal RAM | per port, from its setup; none until started |
 | A refresh of all pads | CPU, only while shown | < 50 µs, 10 Hz |
 
@@ -377,12 +378,15 @@ way they do on Linux.
    against the headers), `BoardPins` for the Olimex board (host test against the device fields),
    claims taken by every existing driver, `io` / `io pin N`. Check every pad's reading against
    `gpio_dump_io_configuration()` on the board.
-2. **The window, read-only.** Pins and Board tabs, the inspector, live levels while shown.
+2. **The window, read-only.** Pins and Board tabs, the inspector, live levels while shown; as a
+   bmds-apps package (§7, 6), so with `/dev/gpiochip0` and `gpio_ctl`'s reads (chip and line
+   info, Linux's translated; pads' state and details, connectors), ABI-locked, and an SDK example.
 3. **GPIO and muxing.** `io/gpio` and raw routing through sysconf, forced claims with saved and
    restored pad state (§3.3), edges with timestamps; the inspector writing them; `io get|pulse`.
 4. **Ports.** UART, I²C, SPI on chosen pins from `io/<instance>`, their `/dev` nodes, `/dev/i2c-0`
    on the system bus; the Ports tab's tools. FIFO data paths first, measured.
-5. **Programs.** `gpio_ctl`, `i2c_ctl`, `spi_ctl` slots, the Linux headers and ioctl translation,
+5. **Programs.** `gpio_ctl`'s line requests (its reads came with step 2), `i2c_ctl`, `spi_ctl`
+   slots, the Linux headers and ioctl translation,
    ABI lock tests, `dist/` recipes for libgpiod's tools and `i2c-tools`; an SDK example.
 6. **The RMT** (§3.7): `/dev/rmtN`, `rmt_ctl`, streaming TX and RX with timestamps, DMA on its
    channels; an SDK example sending and capturing an LTC-shaped stream, ready for the user's
@@ -393,7 +397,7 @@ way they do on Linux.
 
 ## 7. Decisions (the user's, 2026-11-20)
 
-1. **Built into the firmware:** `/bin/io`, like sysmon.
+1. **Built into the firmware:** `/bin/io`, like sysmon. Revised by 6.
 2. **Linux's names and API:** `/dev/gpiochip0`, `/dev/i2c-N`, `/dev/spidevB.C`, `/dev/ttySN`, with
    Linux's ioctls: "as compatible as possible with the Linux API so porting applications is
    possible" (§3.6, §3.9).
@@ -403,6 +407,10 @@ way they do on Linux.
    it would probably break existing hardware (§3.3).
 5. **The right way, no shortcuts:** proper kernel interfaces; DMA-driven paths and the RMT (for
    the user's LTC timecode generator and reader) designed in now (§3.7, §3.8).
+6. **The window lives in bmds-apps** (the user, 2026-11-20, after step 2's built-in window: "We
+   can make the ioman app live in the bmds-apps repo"), so the read half of `gpio_ctl` (§3.9)
+   comes with step 2 rather than step 5 (the user chose that over keeping the window built in
+   until step 5, or doing step 3 first).
 
 ## 8. As built: step 1, the model (2026-11-20)
 
@@ -444,8 +452,8 @@ way they do on Linux.
   `eth0` (RMII, MDC/MDIO, PHY reset, PPS out, `emac0`), `usb0` (the hub reset). The status LED,
   the BOOT button's GPIO35 (Ethernet's) and the sense lines aren't driven by anything: Free (35
   is Ethernet's).
-- **Cost:** 14.4 KB of flash (`libbmds_io.a`: 8.3 KB code, 6.2 KB rodata, with `io dump`), 4 B of internal RAM,
-  the registry ~3.3 KB of PSRAM.
+- **Cost:** 14.4 KB of flash (`libbmds_io.a`: 8.3 KB code, 6.2 KB rodata, with `io dump`), 4 B
+  of internal RAM, the registry ~3.3 KB of PSRAM.
 - **Checked on the board (bmds0, 2026-11-20):**
   - All 55 pads' readings against `io dump`, field by field (a host script over both outputs):
     pulls, drive, input and output enable (the peripheral's enable included), open drain, IO_MUX
@@ -462,3 +470,46 @@ way they do on Linux.
     `MTMS`, `MTDO`), 37 and 38 in UART0's (the ROM's console, with pull-ups), the rest unused
     at function 0; RMII, SD and MDC through IO_MUX; I²C, I²S, MDIO through the matrix.
 
+
+## 9. As built: step 2, the window, read-only (2026-11-20)
+
+The window was first built into the firmware (`/bin/ioman`, a toolkit program like sysmon); the
+user then moved it to bmds-apps (§7, 6), so it was rebuilt there on the SDK's GUI classes and
+the kernel gained the program interface it reads through. What this repository has:
+
+- **`/dev/gpiochip0` and `gpio_ctl`** (slot 139; `bmds/sys.h`; the kernel's in
+  `bmds_loader/src/gpiocalls.cpp`, the device file `GpioChip` in `bmds_io`, added by the boot
+  stage `gpio` after `vfs`). Reading takes nothing and changes nothing. Operations:
+  - `BMDS_GPIO_CHIP_INFO`: lines (pads), connectors, `gpiochipN`, the chip's and board's names.
+  - `BMDS_GPIO_LINE_INFO`: a line as Linux says it (`GPIO_V2_LINE_FLAG_*` bit for bit; the
+    board's label as its name, else `GPIO14`; the holder as its consumer; USED for any pad
+    that isn't Free).
+  - `BMDS_GPIO_PINS`: pads' state from a first one, one read of the chip for all (the matrix's
+    256 input selectors once): number, class, level, IO_MUX function, drive, flags (input,
+    output, peripheral-driven, open drain, pulls, LP IO, strapping, forced), and the words
+    `io` prints (owner, use, route, direction, pull, connector pin). `pin_size` lets the
+    record grow.
+  - `BMDS_GPIO_PIN_DETAIL`: one pad's every detail as labelled lines (`io pin N`'s), at most
+    24, as many as the caller's `size` has room for.
+  - `BMDS_GPIO_CONNECTOR`, `BMDS_GPIO_CONNECTOR_PIN`: the board's connectors and their pins.
+  - Every struct starts with its `size` (or carries `pin_size`); offsets and sizes are in
+    `abilock.c`.
+- **Linux's GPIO character device** (`sdk/include/linux/gpio.h`, Linux's layouts and numbers;
+  `crt/linux.c`): `GPIO_GET_CHIPINFO_IOCTL`, `GPIO_GET_LINEINFO_IOCTL`,
+  `GPIO_V2_GET_LINEINFO_IOCTL` (what `gpiodetect` and `gpioinfo` ask). The rest (line requests,
+  watches) fail with `EOPNOTSUPP` until step 3.
+- **`sdk/examples/gpioinfo`:** every line through Linux's ioctls, as libgpiod's `gpioinfo`
+  prints it; `-b` for `BMDS_GPIO_PINS`' table.
+- **Shared with `io`:** a pad's row and details are made in one place, `bmds/iopin.h` (pure,
+  host-tested): `IoPinRow` (a table's texts and the pad's state) and `IoPinDetail` (labelled
+  lines by `IoPinField`); `Io::boardOf()`, `Io::readPins(first, ...)`, `Io::readPin()` on the
+  system. `io`, `io pin N` and `gpio_ctl` all answer from them. `ioPeripheralDriven()` says
+  whether a peripheral switches a pad's output (what `periph` means).
+- **The window** is `ioman` in bmds-apps (its `devplan/ioman.md`): Pins (the table with each
+  pad's class colour and level as its icon, filtered by class or connector, sortable; the chosen
+  pin's details beside it) and Board (the connectors as their headers are laid out, then every
+  pad; a click opens the pin on Pins), refreshed ten times a second while shown and not
+  minimized, sending only what changed. Its package needs a BMDS newer than 0.4.0.
+- **Cost:** `gpio_ctl` 3.3 KB of flash (`gpiocalls.cpp`), the device file 0.4 KB and 4 B of
+  internal RAM; `libbmds_io.a` is 16.0 KB (the shared rows and details included, 1.6 KB more
+  than step 1). A `BMDS_GPIO_PINS` call borrows ~9 KB of PSRAM for its rows while it runs.
