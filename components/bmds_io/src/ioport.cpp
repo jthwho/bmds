@@ -229,7 +229,8 @@ Error IoSpiSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonB
 bool IoRmtSetup::operator==(const IoRmtSetup &o) const {
         return pin == o.pin && receive == o.receive && resolution == o.resolution && idleHigh == o.idleHigh &&
                invert == o.invert && continuous == o.continuous && buffer == o.buffer && minNs == o.minNs &&
-               maxNs == o.maxNs && monitor == o.monitor && force == o.force;
+               maxNs == o.maxNs && monitor == o.monitor && force == o.force && pulsePin == o.pulsePin &&
+               pulseWidthUs == o.pulseWidthUs && pulseLow == o.pulseLow;
 }
 
 uint32_t IoRmtSetup::maxTicks() const {
@@ -294,6 +295,21 @@ Error IoRmtSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonB
                                               value.data());
                         maxNs = n;
                         receiveWord = true;
+                } else if (key == "pulse") {
+                        if (!pad(chip, value, pulsePin))
+                                return refuse(why, Error::Invalid, "pulse: '%.*s' isn't a pin of the chip's",
+                                              int(value.size()), value.data());
+                        sendWord = true;
+                } else if (key == "pulse-width") {
+                        uint32_t w = 0;
+                        if (!number(value, w) || w == 0 || w > MaxPulseUs)
+                                return refuse(why, Error::Invalid, "pulse-width is 1 to %u us, not '%.*s'",
+                                              unsigned(MaxPulseUs), int(value.size()), value.data());
+                        pulseWidthUs = w;
+                        sendWord = true;
+                } else if (word == "pulse-low") {
+                        pulseLow = true;
+                        sendWord = true;
                 } else if (word == "invert") {
                         invert = true;
                 } else if (word == "continuous") {
@@ -311,9 +327,11 @@ Error IoRmtSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonB
         }
         if (pin < 0) return refuse(why, Error::Invalid, "an RMT port needs pin=");
         if (!dirGiven) return refuse(why, Error::Invalid, "an RMT port needs dir=tx or dir=rx");
-        if (receive && sendWord) return refuse(why, Error::Invalid, "idle= and continuous are a sender's (dir=tx)");
+        if (receive && sendWord)
+                return refuse(why, Error::Invalid, "idle=, continuous and pulse= are a sender's (dir=tx)");
         if (!receive && receiveWord)
                 return refuse(why, Error::Invalid, "min=, max= and monitor are a receiver's (dir=rx)");
+        if (pulsePin >= 0 && pulsePin == pin) return refuse(why, Error::Invalid, "GPIO%d is given twice", int(pin));
         if (monitor && force) return refuse(why, Error::Invalid, "monitor takes nothing: force has nothing to take");
         if (maxNs != 0 && uint64_t(maxNs) * resolution / 1000000000u > MaxTicks)
                 return refuse(why, Error::Invalid, "max is at most %u ticks: %u ns at this resolution",

@@ -1144,3 +1144,34 @@ bit 0's edge. So 6b adds, before DMA and the rest of §13's list:
   and frames lengthened and shortened by a few ticks read back where the marks said.
 - Then DMA, sync starts (for edges tick-exact across channels), a flash write's effect on a
   stream measured, and a clock trim.
+
+### 13.4 As built: 6b's marks and pulse (2026-11-20)
+
+- **Marks:** `write()` takes a word 0 as a mark at that point (`BMDS_RMT_MARK`): its place goes in
+  a queue of 32 before the symbols after it; the encoder notes the ticks before it as it hands the
+  symbols over (or as the ring runs dry); its time is the stream's start plus those ticks, once the
+  start is known (marks handed over inside `rmt_transmit()` are timed when it returns). One
+  `gptimer` for every port, at 1 MHz from the crystal, is armed for the soonest mark or pulse end;
+  its alarm makes each mark a `bmds_rmt_mark_t` to read (32 kept, the oldest dropped, counted) and
+  turns the `pulse=` pin on for `pulse-width=`. A sender's `read()` gives marks, not behind a
+  `write()` waiting for room (a lock of its own); `poll()` sees them. Marks are numbered from the
+  port's start: `marks_written` (appended to `bmds_rmt_info_t` with `marks`, `marks_lost`,
+  `pulse_pin`) tells a program its first, and any below it are an earlier program's.
+- **The timer's interrupt at level 3:** at the default level the pulses came 2 to 19 µs after
+  their marks, at 3 mostly 2 to 8 (the receiver's 3 µs taken off); the worst seen, 31 µs, in the
+  first half minute after a boot. Frame 0's pulse came 50 µs late when the stream started with it
+  (its time known only as `rmt_transmit()` returned): the example starts a stream with 1 ms of
+  idle, and frame 0 is on time as the rest.
+- **Measured on bmds0** (LTC on GPIO46 with marks, `pulse=47`; monitors of both): marks against
+  the frames read back, 3 µs (the receiver's latency) in every frame, with `-j 7` moving frames by
+  7 ticks and the marks with them; over ten minutes of one continuous stream, frames timed afresh
+  at the start, at 5 and at 10 minutes against the times the marks predict: 3, 4 and 3 µs. The
+  RMT's ticks and the monotonic clock keep step within a µs in ten minutes (both from the 40 MHz
+  crystal): marks are good for hours, and only PTP or a foreign timecode needs steering.
+- **Found:** marks were numbered from the port's start but read as if from a program's, so a
+  second program on a running continuous port printed every frame 75 off (the first had written
+  75): `marks_written` added. A monitor port keeps receiving while nobody reads: a reader starts
+  with what its ring holds (a reader wanting only what is new drains it first).
+- **Size:** the RMT code 12.6 KB (3 KB more), ESP-IDF's gptimer driver; the firmware 5 KB more.
+- **Next (6c):** DMA on the channels that have it, sync starts, a flash write's effect on a stream
+  (the RMT's and the timer's interrupts run from flash), and a clock trim.

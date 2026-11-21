@@ -16,6 +16,9 @@
 #include "running.h"
 #include "structcopy.h"
 
+static_assert(sizeof(bmds_rmt_mark_t) == sizeof(bmds::RmtChannel::Mark) && BMDS_RMT_MARK == bmds::RmtChannel::MarkWord,
+              "a sender's mark records are the ABI's");
+
 using bmds::KernelCall;
 using bmds::RmtChannel;
 using bmds::detail::copyIn;
@@ -43,6 +46,10 @@ namespace {
                 i.symbols = in.symbols;
                 i.ticks = in.ticks;
                 i.filler_ticks = in.fillerTicks;
+                i.marks = in.marks;
+                i.marks_lost = in.marksLost;
+                i.pulse_pin = in.pulsePin;
+                i.marks_written = in.marksWritten;
                 return copyOut(i, arg);
         }
 

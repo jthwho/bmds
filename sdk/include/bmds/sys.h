@@ -2096,10 +2096,12 @@ typedef struct bmds_spi_transfer_t {
 } bmds_spi_transfer_t;
 
 /*
- * RMT (slot 142, appended 2026-11-20, devplan/io.md §13.1): `/dev/rmtN`, an RMT port (`io/rmtN`).
- * A sender's `write()` takes whole symbols, sent with no gap while they come; a receiver's
- * `read()` gives words: symbols, and before each run a header (`BMDS_RMT_HEADER` then the 64-bit
- * monotonic time, low word first, of the run's first edge). Both `poll()`.
+ * RMT (slot 142, appended 2026-11-20, devplan/io.md §13.1, §13.3): `/dev/rmtN`, an RMT port
+ * (`io/rmtN`). A sender's `write()` takes whole symbols, sent with no gap while they come, and
+ * `BMDS_RMT_MARK` words that mark the stream; its `read()` gives a `bmds_rmt_mark_t` as the wire
+ * reaches each mark (and pulses `pulse=`'s pin then). A receiver's `read()` gives words: symbols,
+ * and before each run a header (`BMDS_RMT_HEADER` then the 64-bit monotonic time, low word first,
+ * of the run's first edge). Both `poll()`.
  */
 
 /** @brief A symbol's fields (the hardware's word): two durations in ticks, each with its level. */
@@ -2112,6 +2114,7 @@ typedef struct bmds_spi_transfer_t {
          ((uint32_t)(level1) & 1u) << 31)
 #define BMDS_RMT_MAX_TICKS 32767u /**< A duration's most ticks; 0 ends a run. */
 #define BMDS_RMT_HEADER 0u        /**< A received word that starts a header: two words of time follow. */
+#define BMDS_RMT_MARK 0u /**< A word written to a sender that marks the stream there (not sent; appended 2026-11-20). */
 
 /** @brief `rmt_ctl` operations. */
 #define BMDS_RMT_INFO 0u /**< `bmds_rmt_info_t *`: the port and its counts. */
@@ -2139,7 +2142,24 @@ typedef struct bmds_rmt_info_t {
                 uint64_t symbols;      /**< Sent (handed to the hardware), or received. */
                 uint64_t ticks;        /**< A sender: ticks handed over since the start, filler included. */
                 uint64_t filler_ticks; /**< A continuous sender: idle filler sent, in ticks. */
+                /* Appended 2026-11-20 (devplan/io.md §13.3): a sender's marks. */
+                uint64_t marks;      /**< Marks the wire has reached. */
+                uint32_t marks_lost; /**< Of them, dropped unread (more than 32 waited), or never timed. */
+                int32_t  pulse_pin;  /**< `pulse=`'s pin, pulsed at each mark, or -1. */
+                uint64_t
+                        marks_written; /**< Marks written since the port started: the number the next takes (a program's first, if it reads this before writing; any below are an earlier program's). */
 } bmds_rmt_info_t;
+
+/**
+ * @brief A mark the wire has reached, as reading a sender gives them (whole records, waiting
+ *        while there are none; 32 kept): written as `BMDS_RMT_MARK` before the symbols it marks.
+ */
+typedef struct bmds_rmt_mark_t {
+                uint32_t number;   /**< Marks written since the port started, from 0. */
+                uint32_t reserved; /**< Zero. */
+                int64_t time_ns; /**< When the edge after it went out (monotonic): the stream's start plus the ticks before it. */
+                uint64_t ticks; /**< The ticks before it since the stream's start, filler included. */
+} bmds_rmt_mark_t;
 
 /*
  * Surfaces (slots 117-121, appended 2026-10-14, devplan/games.md §11): a picture a program draws

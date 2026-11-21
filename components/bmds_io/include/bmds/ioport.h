@@ -114,6 +114,7 @@ struct IoRmtSetup {
                 static constexpr uint32_t MaxBuffer = 16384;        ///< The largest.
                 static constexpr uint32_t MaxGlitchNs = 3000;       ///< `min=`: the hardware filter's reach.
                 static constexpr uint32_t MaxTicks = 32767;         ///< A duration's most ticks (15 bits).
+                static constexpr uint32_t MaxPulseUs = 100000;      ///< `pulse-width=`'s longest.
 
                 int8_t   pin = -1;             ///< `pin=`: its pad.
                 bool     receive = false;      ///< `dir=rx` (else `dir=tx`).
@@ -125,6 +126,9 @@ struct IoRmtSetup {
                 uint32_t minNs = 0;            ///< `min=`: a receiver drops shorter pulses (0: none).
                 uint32_t maxNs = 0;            ///< `max=`: a level longer ends a run (0: the longest counted).
                 bool     monitor = false;      ///< `monitor`: a receiver reads a pad it doesn't take.
+                int8_t   pulsePin = -1;        ///< `pulse=`: a sender's pad pulsed at each mark, or -1.
+                uint32_t pulseWidthUs = 10;    ///< `pulse-width=`, µs.
+                bool     pulseLow = false;     ///< `pulse-low`: the pulse goes low (it rests high).
                 bool     force = false;        ///< `force`: its pin taken from its holder.
 
                 /**

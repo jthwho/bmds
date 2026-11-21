@@ -1158,5 +1158,12 @@ _Static_assert(BMDS_RMT_INFO == 0 && BMDS_RMT_RECEIVE == 1 && BMDS_RMT_RUNNING =
 _Static_assert(offsetof(bmds_rmt_info_t, channel) == 8 && offsetof(bmds_rmt_info_t, resolution_hz) == 16 &&
                        offsetof(bmds_rmt_info_t, overruns) == 32 && offsetof(bmds_rmt_info_t, start_ns) == 40 &&
                        offsetof(bmds_rmt_info_t, symbols) == 48 && offsetof(bmds_rmt_info_t, ticks) == 56 &&
-                       offsetof(bmds_rmt_info_t, filler_ticks) == 64 && sizeof(bmds_rmt_info_t) == 72,
+                       offsetof(bmds_rmt_info_t, filler_ticks) == 64,
                "ABI: bmds_rmt_info_t");
+_Static_assert(BMDS_RMT_MARK == 0 && offsetof(bmds_rmt_info_t, marks) == 72 &&
+                       offsetof(bmds_rmt_info_t, marks_lost) == 80 && offsetof(bmds_rmt_info_t, pulse_pin) == 84 &&
+                       offsetof(bmds_rmt_info_t, marks_written) == 88 && sizeof(bmds_rmt_info_t) == 96,
+               "ABI: bmds_rmt_info_t's marks (appended)");
+_Static_assert(offsetof(bmds_rmt_mark_t, time_ns) == 8 && offsetof(bmds_rmt_mark_t, ticks) == 16 &&
+                       sizeof(bmds_rmt_mark_t) == 24,
+               "ABI: bmds_rmt_mark_t");

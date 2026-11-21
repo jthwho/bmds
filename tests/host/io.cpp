@@ -848,6 +848,13 @@ TEST_CASE("IoRmtSetup: io/rmtN's value") {
                 CHECK(r.invert);
                 CHECK(r.continuous);
                 CHECK(r.buffer == 4096);
+                CHECK(r.pulsePin == -1);
+                REQUIRE(r.parse(chip, "pin=46 dir=tx pulse=47 pulse-width=25 pulse-low", why).isOk());
+                CHECK(r.pulsePin == 47);
+                CHECK(r.pulseWidthUs == 25);
+                CHECK(r.pulseLow);
+                REQUIRE(r.parse(chip, "pin=46 dir=tx resolution=10m idle=high invert continuous buffer=4096 force", why)
+                                .isOk());
                 CHECK(r.force);
                 REQUIRE(r.parse(chip, "pin=46 dir=rx min=500 max=20000000 monitor", why).isOk());
                 CHECK(r.receive);
@@ -868,7 +875,12 @@ TEST_CASE("IoRmtSetup: io/rmtN's value") {
                 CHECK(r.parse(chip, "pin=46 dir=tx buffer=10", why) == Error::Invalid);
                 CHECK(r.parse(chip, "pin=46 dir=tx idle=middle", why) == Error::Invalid);
                 CHECK(r.parse(chip, "pin=46 dir=rx continuous", why) == Error::Invalid);
-                CHECK(std::strcmp(why, "idle= and continuous are a sender's (dir=tx)") == 0);
+                CHECK(std::strcmp(why, "idle=, continuous and pulse= are a sender's (dir=tx)") == 0);
+                CHECK(r.parse(chip, "pin=46 dir=rx pulse=47", why) == Error::Invalid);
+                CHECK(r.parse(chip, "pin=46 dir=tx pulse=46", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "GPIO46 is given twice") == 0);
+                CHECK(r.parse(chip, "pin=46 dir=tx pulse=47 pulse-width=0", why) == Error::Invalid);
+                CHECK(r.parse(chip, "pin=46 dir=tx pulse=47 pulse-width=100001", why) == Error::Invalid);
                 CHECK(r.parse(chip, "pin=46 dir=tx monitor", why) == Error::Invalid);
                 CHECK(r.parse(chip, "pin=46 dir=rx min=5000", why) == Error::Invalid);
                 CHECK(r.parse(chip, "pin=46 dir=rx monitor force", why) == Error::Invalid);

@@ -324,7 +324,10 @@ Plan: [`input.md`](input.md).
   on bmds0. Step 5 done. Step 6a built (§13.2): RMT ports, `io/rmt0`..`7` → `/dev/rmtN`,
   gapless sending from a ring, received runs with their first edge's time, `rmt_ctl` (slot 142),
   an LTC generator and reader (`sdk/examples/ltc`), timed back within 7 µs; checked on bmds0.
-  Next: 6b (DMA, sync starts, a flash write's effect measured, a clock trim).
+  Step 6b built (§13.4): frame marks (each one's time read back as the wire reaches it) and a
+  `pulse=` pin pulsed at each by a hardware timer (a display's latch: 2 to 8 µs), the RMT and
+  monotonic clocks shown to keep step over ten minutes; checked on bmds0. Next: 6c (DMA, sync
+  starts, a flash write's effect measured, a clock trim).
 
 ## Phase 6 — Graphics
 

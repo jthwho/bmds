@@ -5,17 +5,19 @@
  * SPDX-License-Identifier: MIT
  * See LICENSE file in the project root folder for license information.
  *
- * RMT ports (devplan/io.md §13.1): `io/rmt0` .. `io/rmt7`, checked, started and stopped as
- * they change, `/dev/rmtN` while one runs. Built on ESP-IDF's RMT driver: a sender is one
+ * RMT ports (devplan/io.md §13.1, §13.3): `io/rmt0` .. `io/rmt7`, checked, started and stopped
+ * as they change, `/dev/rmtN` while one runs. Built on ESP-IDF's RMT driver: a sender is one
  * transaction fed from a ring by the simple encoder's callback (the RMT interrupt), so a stream
  * has no gaps; a receiver takes blocks by partial receive into a ring, each run behind a header
- * with the time of its first edge.
+ * with the time of its first edge. A sender's marks are timed from the ticks before them and
+ * fired by a hardware timer's alarm at that time: a record to read, a `pulse=` pin pulsed.
  */
 
 #include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <driver/gptimer.h>
 #include <driver/rmt_rx.h>
 #include <driver/rmt_tx.h>
 #include <esp_clk_tree.h>
@@ -49,6 +51,7 @@ namespace RmtPorts {
         constexpr size_t   MemSymbols = 48;        // a channel's own memory (SOC_RMT_MEM_WORDS_PER_CHANNEL)
         constexpr size_t   Block = MemSymbols / 2; // a receiver's block: half the memory (its ping-pong)
         constexpr uint32_t FillerUs = 100;         // a continuous sender's idle filler, each half of a symbol
+        constexpr size_t   MaxMarks = 32;          // marks waiting for the wire, and reached unread, a port
 
         // A symbol's ticks: both halves, up to a 0 duration (a run's end).
         uint32_t ticksOf(uint32_t s, bool &ended) {
@@ -107,6 +110,34 @@ namespace RmtPorts {
                         std::atomic<uint64_t> fillerTotal{0};
                         std::atomic<uint32_t> underruns{0};
 
+                        // A sender's marks (devplan/io.md §13.3). Where: the symbol count before each
+                        // (writer → encoder). When: its ticks, then its time once the stream's start
+                        // is known (encoder → timer, under `marksLock`). Reached: records to read
+                        // (timer → reader).
+                        uint32_t              markAt[MaxMarks] = {};
+                        uint32_t              markNumber[MaxMarks] = {};
+                        std::atomic<uint32_t> markHead{0};
+                        std::atomic<uint32_t> markTail{0};
+                        uint32_t              marksWritten = 0;
+                        struct Due {
+                                        uint32_t number = 0;
+                                        uint64_t ticks = 0;
+                                        int64_t  timeNs = 0;
+                                        bool     timed = false; // its stream's start was known
+                        };
+                        Due              due[MaxMarks];
+                        size_t           dueCount = 0;
+                        bool             startKnown = false; // the running stream's start is set
+                        RmtChannel::Mark reached[MaxMarks];
+                        uint32_t         reachedHead = 0; // under marksLock
+                        uint32_t         reachedTail = 0;
+                        uint64_t         marksReached = 0;
+                        uint32_t         marksLost = 0;
+                        bool             pulsing = false; // a pulse is on
+                        int64_t          pulseOffNs = 0;
+                        IoChipOps::Saved pulseSaved;
+                        bool             pulsePadSaved = false;
+
                         // A receiver.
                         rmt_receive_config_t  receiveConfig = {};
                         uint32_t              block[Block] = {};
@@ -129,7 +160,13 @@ namespace RmtPorts {
                         }
                         void wake() {
                                 stream->_moved.release();
+                                stream->_marked.release();
                                 stream->_pollers.notify();
+                                return;
+                        }
+                        void wakeMarkFromIsr() {
+                                stream->_marked.releaseFromIsr();
+                                stream->_pollers.notifyFromIsr();
                                 return;
                         }
                         Mutex   &streamLock() { return stream->_lock; }
@@ -169,6 +206,151 @@ namespace RmtPorts {
 
         constinit PsramObject<State> state;
 
+        // ---- Marks' times: one hardware timer for every port, armed for the soonest mark or pulse end
+
+        // The timer and the marks' state (every port's `due`, `reached`, pulses): the RMT's and
+        // the timer's interrupts and the tasks, on either core.
+        constinit SpinLock         marksLock;
+        constinit gptimer_handle_t markTimer = nullptr;
+        constinit int64_t          timerOffsetUs = 0; // monotonic µs = the timer's count + this
+
+        // The pulse pin's level for on (else its resting level).
+        void setPulse(Port &p, bool on) {
+                IoChipOps::setLevel(unsigned(p.setup.pulsePin), on != p.setup.pulseLow);
+                return;
+        }
+
+        // The timer armed for the soonest thing to do (none: left). `marksLock` held.
+        void armLocked() {
+                if (markTimer == nullptr || !state.isCreated()) return;
+                int64_t next = INT64_MAX;
+                for (Port &p : state->ports) {
+                        if (!p.running || p.setup.receive) continue;
+                        for (size_t i = 0; i < p.dueCount; ++i)
+                                if (p.due[i].timed && p.due[i].timeNs < next) next = p.due[i].timeNs;
+                        if (p.pulsing && p.pulseOffNs < next) next = p.pulseOffNs;
+                }
+                if (next == INT64_MAX) return;
+                uint64_t count = 0;
+                (void)gptimer_get_raw_count(markTimer, &count);
+                // Not in the past: the alarm compares as the count passes it.
+                int64_t at = next / 1000 - timerOffsetUs;
+                if (at < int64_t(count) + 2) at = int64_t(count) + 2;
+                gptimer_alarm_config_t a = {};
+                a.alarm_count = uint64_t(at);
+                (void)gptimer_set_alarm_action(markTimer, &a);
+                return;
+        }
+
+        // The alarm: every mark due fired (a record, the pulse on), every pulse due ended.
+        bool onAlarm(gptimer_handle_t, const gptimer_alarm_event_data_t *, void *) {
+                const int64_t now = Detail::monotonicUs() * 1000 + 1000; // and what falls in the next µs
+                marksLock.lockFromIsr();
+                for (Port &p : state->ports) {
+                        if (!p.running || p.setup.receive) continue;
+                        if (p.pulsing && p.pulseOffNs <= now) {
+                                setPulse(p, false);
+                                p.pulsing = false;
+                        }
+                        bool   told = false;
+                        size_t keep = 0;
+                        for (size_t i = 0; i < p.dueCount; ++i) {
+                                const Port::Due &d = p.due[i];
+                                if (!d.timed || d.timeNs > now) {
+                                        p.due[keep++] = d;
+                                        continue;
+                                }
+                                if (p.setup.pulsePin >= 0) {
+                                        setPulse(p, true);
+                                        p.pulsing = true;
+                                        p.pulseOffNs = d.timeNs + int64_t(p.setup.pulseWidthUs) * 1000;
+                                }
+                                if (p.reachedHead - p.reachedTail == MaxMarks) {
+                                        ++p.reachedTail; // the oldest unread goes
+                                        ++p.marksLost;
+                                }
+                                RmtChannel::Mark &m = p.reached[p.reachedHead++ % MaxMarks];
+                                m.number = d.number;
+                                m.reserved = 0;
+                                m.timeNs = d.timeNs;
+                                m.ticks = d.ticks;
+                                ++p.marksReached;
+                                told = true;
+                        }
+                        p.dueCount = keep;
+                        if (told) p.wakeMarkFromIsr();
+                }
+                armLocked();
+                marksLock.unlockFromIsr();
+                return false;
+        }
+
+        // The timer, made by the first sender and kept (it counts µs from the crystal, as the
+        // monotonic clock does).
+        Error makeTimer() {
+                if (markTimer != nullptr) return Error::Ok;
+                gptimer_config_t c = {};
+                c.clk_src = GPTIMER_CLK_SRC_DEFAULT;
+                c.direction = GPTIMER_COUNT_UP;
+                c.resolution_hz = 1000000;
+                // Level 3 (the highest a C handler takes): at the default level, pulses came 2 to 19
+                // µs after their marks; at 3, 2 to 6 (devplan/io.md §13.4).
+                c.intr_priority = 3;
+                gptimer_handle_t t = nullptr;
+                if (gptimer_new_timer(&c, &t) != ESP_OK) return Error::IoError;
+                gptimer_event_callbacks_t cb = {};
+                cb.on_alarm = onAlarm;
+                if (gptimer_register_event_callbacks(t, &cb, nullptr) != ESP_OK || gptimer_enable(t) != ESP_OK ||
+                    gptimer_start(t) != ESP_OK) {
+                        (void)gptimer_del_timer(t);
+                        return Error::IoError;
+                }
+                uint64_t count = 0;
+                (void)gptimer_get_raw_count(t, &count);
+                const int64_t now = Detail::monotonicUs();
+                marksLock.lock();
+                timerOffsetUs = now - int64_t(count);
+                markTimer = t;
+                marksLock.unlock();
+                return Error::Ok;
+        }
+
+        // A mark the encoder has handed over: its ticks, its time if its stream's start is known.
+        // `marksLock` held.
+        void dueLocked(Port &p, uint32_t number, uint64_t ticks) {
+                if (p.dueCount == MaxMarks) { // more than 32 ahead of the wire: the oldest unfired goes
+                        for (size_t i = 1; i < MaxMarks; ++i) p.due[i - 1] = p.due[i];
+                        --p.dueCount;
+                        ++p.marksLost;
+                }
+                Port::Due &d = p.due[p.dueCount++];
+                d.number = number;
+                d.ticks = ticks;
+                d.timed = p.startKnown;
+                d.timeNs = p.startKnown ? p.startNs + p.ticksNs(ticks) : 0;
+                return;
+        }
+
+        // Marks at or before symbol @p index (counted from the port's start), handed over with
+        // @p ticks before them. In the encoder (the RMT interrupt).
+        void passMarks(Port &p, uint32_t index, uint64_t ticks) {
+                uint32_t       t = p.markTail.load(std::memory_order_relaxed);
+                const uint32_t h = p.markHead.load(std::memory_order_acquire);
+                if (t == h || int32_t(p.markAt[t % MaxMarks] - index) > 0) return;
+                marksLock.lockFromIsr();
+                bool any = false;
+                while (t != h && int32_t(p.markAt[t % MaxMarks] - index) <= 0) {
+                        dueLocked(p, p.markNumber[t % MaxMarks], ticks);
+                        ++t;
+                        any = true;
+                }
+                if (any) armLocked();
+                marksLock.unlockFromIsr();
+                p.markTail.store(t, std::memory_order_release);
+                p.wakeFromIsr(); // room for marks
+                return;
+        }
+
         // ---- A sender: the encoder's callback, in the RMT interrupt
 
         size_t encode(const void *, size_t, size_t, size_t symbolsFree, rmt_symbol_word_t *symbols, bool *done,
@@ -177,9 +359,11 @@ namespace RmtPorts {
                 const uint32_t t = p.tail.load(std::memory_order_relaxed);
                 const uint32_t have = p.head.load(std::memory_order_acquire) - t;
                 const size_t   take = have < symbolsFree ? have : symbolsFree;
+                const uint64_t base = p.ticks.load(std::memory_order_relaxed);
                 if (take > 0) {
                         uint64_t ticks = 0;
                         for (size_t i = 0; i < take; ++i) {
+                                passMarks(p, t + uint32_t(i), base + ticks); // a mark before this symbol
                                 const uint32_t s = p.ring[(t + i) % p.capacity];
                                 std::memcpy(&symbols[i], &s, sizeof(s));
                                 bool ended = false;
@@ -192,7 +376,9 @@ namespace RmtPorts {
                         p.wakeFromIsr();
                         return take;
                 }
-                // Dry. A burst (or a stop) ends here, against a write that may just have come.
+                // Dry: a mark after the last symbol is here. A burst (or a stop) ends here, against
+                // a write that may just have come.
+                passMarks(p, t, base);
                 p.txLock.lockFromIsr();
                 const bool empty = p.head.load(std::memory_order_acquire) == t;
                 const bool end = empty && (!p.setup.continuous || p.stopping);
@@ -282,6 +468,9 @@ namespace RmtPorts {
                 txOn = true;
                 txEnding = false;
                 txLock.unlock();
+                marksLock.lock();
+                startKnown = false; // marks handed over in rmt_transmit() wait for the start
+                marksLock.unlock();
                 ticks.store(0);
                 fillerTotal.store(0);
                 // The encoder ignores its data (it reads the ring); ESP-IDF keeps the pointer.
@@ -293,8 +482,19 @@ namespace RmtPorts {
                         return Error::IoError;
                 }
                 // The hardware starts at the end of rmt_transmit(), after the encoder has filled
-                // the channel's memory (about 73 µs): the stream's start is when it returns.
-                startNs = Detail::monotonicUs() * 1000;
+                // the channel's memory (about 73 µs): the stream's start is when it returns. Marks
+                // already handed over are timed from it.
+                const int64_t now = Detail::monotonicUs() * 1000;
+                marksLock.lock();
+                startNs = now;
+                startKnown = true;
+                for (size_t i = 0; i < dueCount; ++i)
+                        if (!due[i].timed) {
+                                due[i].timeNs = startNs + ticksNs(due[i].ticks);
+                                due[i].timed = true;
+                        }
+                armLocked();
+                marksLock.unlock();
                 return Error::Ok;
         }
 
@@ -312,8 +512,15 @@ namespace RmtPorts {
                 handle = nullptr;
                 encoder = nullptr;
                 channel = -1;
+                marksLock.lock();
+                dueCount = 0; // marks not reached never will be
+                pulsing = false;
+                running = false; // the timer leaves it
+                marksLock.unlock();
                 if (padSaved) IoChipOps::restorePad(unsigned(setup.pin), saved);
                 padSaved = false;
+                if (pulsePadSaved) IoChipOps::restorePad(unsigned(setup.pulsePin), pulseSaved);
+                pulsePadSaved = false;
                 claim.reset();
                 running = false;
                 txOn = false;
@@ -327,10 +534,11 @@ namespace RmtPorts {
                 IoClaim got;
                 if (!s.monitor) {
                         IoResource  blocked = NoIoResource;
-                        const IoUse use{IoResource(s.pin), s.receive ? "RX" : "TX"};
-                        auto [c, cerr] =
-                                Io::registry().claim(StringView(owner), IoOwnerKind::User, Span<const IoUse>(&use, 1),
-                                                     s.force ? IoRegistry::Force : 0u, &blocked);
+                        const IoUse uses[] = {{IoResource(s.pin), s.receive ? "RX" : "TX"},
+                                              {IoResource(s.pulsePin), "mark pulse"}};
+                        auto [c, cerr] = Io::registry().claim(StringView(owner), IoOwnerKind::User,
+                                                              Span<const IoUse>(uses, s.pulsePin >= 0 ? 2u : 1u),
+                                                              s.force ? IoRegistry::Force : 0u, &blocked);
                         if (cerr.isError()) {
                                 char busy[160];
                                 (void)Io::busyText(blocked, busy, sizeof(busy));
@@ -398,6 +606,28 @@ namespace RmtPorts {
                         sent.store(0);
                         underruns.store(0);
                         startNs = 0;
+                        markHead.store(0);
+                        markTail.store(0);
+                        marksWritten = 0;
+                        marksLock.lock();
+                        dueCount = 0;
+                        startKnown = false;
+                        reachedHead = reachedTail = 0;
+                        marksReached = 0;
+                        marksLost = 0;
+                        pulsing = false;
+                        marksLock.unlock();
+                        if (err == ESP_OK && makeTimer().isError()) err = ESP_FAIL;
+                        if (s.pulsePin >= 0) {
+                                // The pulse pin rests away from its pulse.
+                                IoChipOps::savePad(unsigned(s.pulsePin), pulseSaved);
+                                pulsePadSaved = true;
+                                IoPinSetup pin;
+                                pin.pad = uint8_t(s.pulsePin);
+                                pin.mode = IoPinSetup::Mode::Output;
+                                pin.high = s.pulseLow;
+                                IoChipOps::configurePad(unsigned(s.pulsePin), pin);
+                        }
                 } else {
                         rmt_rx_channel_config_t c = {};
                         c.gpio_num = gpio_num_t(s.pin);
@@ -444,6 +674,8 @@ namespace RmtPorts {
                         encoder = nullptr;
                         if (padSaved) IoChipOps::restorePad(unsigned(s.pin), saved);
                         padSaved = false;
+                        if (pulsePadSaved) IoChipOps::restorePad(unsigned(s.pulsePin), pulseSaved);
+                        pulsePadSaved = false;
                         Memory::free(ring);
                         ring = nullptr;
                         return Error::IoError;
@@ -552,7 +784,10 @@ namespace RmtPorts {
         void putBackAtRestart() {
                 if (!state.isCreated()) return;
                 for (Port &p : state->ports)
-                        if (p.running && p.padSaved) IoChipOps::restorePad(unsigned(p.setup.pin), p.saved);
+                        if (p.running) {
+                                if (p.padSaved) IoChipOps::restorePad(unsigned(p.setup.pin), p.saved);
+                                if (p.pulsePadSaved) IoChipOps::restorePad(unsigned(p.setup.pulsePin), p.pulseSaved);
+                        }
                 return;
         }
 
@@ -594,6 +829,10 @@ Error RmtChannel::info(Info &out) const {
                 out.ticks = p.ticks.load();
                 out.fillerTicks = p.fillerTotal.load();
                 out.underruns = p.underruns.load();
+                out.marks = p.marksReached;
+                out.marksLost = p.marksLost;
+                out.pulsePin = p.setup.pulsePin;
+                out.marksWritten = p.marksWritten;
         }
         return Error::Ok;
 }
@@ -608,18 +847,33 @@ Result<size_t> RmtChannel::write(ByteSpan data, unsigned int timeoutMs) {
         const size_t total = data.size() / sizeof(uint32_t);
         size_t       done = 0;
         while (done < total) {
-                const uint32_t room = p.room();
-                const size_t   n = room < total - done ? room : total - done;
-                if (n > 0) {
-                        uint32_t h = p.head.load(std::memory_order_relaxed);
-                        for (size_t i = 0; i < n; ++i) {
-                                uint32_t s;
-                                std::memcpy(&s, data.data() + (done + i) * sizeof(uint32_t), sizeof(s));
-                                p.ring[h++ % p.capacity] = s;
+                // Symbols while there is room; a mark (word 0) where it falls, while there is room
+                // for one. Each mark goes in before the symbols after it are seen.
+                uint32_t h = p.head.load(std::memory_order_relaxed);
+                bool     full = false;
+                while (done < total) {
+                        uint32_t w;
+                        std::memcpy(&w, data.data() + done * sizeof(uint32_t), sizeof(w));
+                        if (w == MarkWord) {
+                                const uint32_t m = p.markHead.load(std::memory_order_relaxed);
+                                if (m - p.markTail.load(std::memory_order_acquire) == RmtPorts::MaxMarks) {
+                                        full = true;
+                                        break;
+                                }
+                                p.head.store(h, std::memory_order_release); // the symbols before it first
+                                p.markAt[m % RmtPorts::MaxMarks] = h;
+                                p.markNumber[m % RmtPorts::MaxMarks] = p.marksWritten++;
+                                p.markHead.store(m + 1, std::memory_order_release);
+                        } else {
+                                if (h - p.tail.load(std::memory_order_acquire) == p.capacity) {
+                                        full = true;
+                                        break;
+                                }
+                                p.ring[h++ % p.capacity] = w;
                         }
-                        p.head.store(h, std::memory_order_release);
-                        done += n;
+                        ++done;
                 }
+                p.head.store(h, std::memory_order_release);
                 // Sending, or started: a burst that ended (or is ending) starts again once it has.
                 p.txLock.lock();
                 const bool start = !p.txOn || p.txEnding;
@@ -628,7 +882,7 @@ Result<size_t> RmtChannel::write(ByteSpan data, unsigned int timeoutMs) {
                         (void)rmt_tx_wait_all_done(p.handle, -1);
                         if (p.startTransaction().isError()) return makeError<size_t>(Error::IoError);
                 }
-                if (done == total) break;
+                if (!full) break;
                 // Full: wait for the interrupt to make room.
                 const Error err = Interrupt::waitCurrent(_moved, deadline);
                 if (err.isError()) {
@@ -640,14 +894,38 @@ Result<size_t> RmtChannel::write(ByteSpan data, unsigned int timeoutMs) {
         return makeResult(done * sizeof(uint32_t));
 }
 
+// A sender's read: the marks the wire has reached, whole records, waiting while there are none.
+static Result<size_t> readMarks(Port &p, WritableByteSpan buf, unsigned int timeoutMs, Semaphore &marked) {
+        if (buf.size() < sizeof(RmtChannel::Mark)) return makeError<size_t>(Error::Invalid);
+        Deadline deadline(timeoutMs);
+        for (;;) {
+                size_t n = 0;
+                RmtPorts::marksLock.lock();
+                while (p.reachedTail != p.reachedHead && n + sizeof(RmtChannel::Mark) <= buf.size()) {
+                        const RmtChannel::Mark m = p.reached[p.reachedTail++ % RmtPorts::MaxMarks];
+                        std::memcpy(buf.data() + n, &m, sizeof(m));
+                        n += sizeof(m);
+                }
+                RmtPorts::marksLock.unlock();
+                if (n > 0) return makeResult(n);
+                if (!p.running) return makeError<size_t>(Error::NotExist);
+                const Error err = Interrupt::waitCurrent(marked, deadline);
+                if (err.isError()) return makeError<size_t>(err);
+        }
+}
+
 Result<size_t> RmtChannel::read(WritableByteSpan buf, unsigned int timeoutMs) {
         if (buf.size() < sizeof(uint32_t)) return makeError<size_t>(Error::Invalid);
+        if (!_port.running) return makeError<size_t>(Error::NotExist);
+        if (!_port.setup.receive) {
+                // A sender: its marks, not behind a write waiting for room.
+                Mutex::Locker marks(_markLock, WaitForever);
+                return readMarks(_port, buf, timeoutMs, _marked);
+        }
         Mutex::Locker lock(_lock, WaitForever);
         Port         &p = _port;
-        if (!p.running) return makeError<size_t>(Error::NotExist);
-        if (!p.setup.receive) return makeError<size_t>(Error::NotSupported);
-        Deadline     deadline(timeoutMs);
-        const size_t room = buf.size() / sizeof(uint32_t);
+        Deadline      deadline(timeoutMs);
+        const size_t  room = buf.size() / sizeof(uint32_t);
         for (;;) {
                 uint32_t       t = p.tail.load(std::memory_order_relaxed);
                 const uint32_t h = p.head.load(std::memory_order_acquire);
@@ -679,7 +957,10 @@ uint8_t RmtChannel::readiness() {
         const Port &p = _port;
         if (!p.running) return Readable | Writable; // a call says it stopped
         if (p.setup.receive) return p.head.load() != p.tail.load() ? Readable : 0;
-        return p.room() > 0 ? Writable : 0;
+        RmtPorts::marksLock.lock();
+        const bool marks = p.reachedTail != p.reachedHead;
+        RmtPorts::marksLock.unlock();
+        return uint8_t((p.room() > 0 ? Writable : 0) | (marks ? Readable : 0));
 }
 
 namespace IoSetups {

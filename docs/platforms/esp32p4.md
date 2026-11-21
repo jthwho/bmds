@@ -862,6 +862,12 @@ until silicon v3; then test again.
   fills the channel's memory through the encoder. A stream's start stamped before the call was
   80 µs early against what a receiver measured back; stamped when it returns, 7 µs (the
   receiver's interrupt and a tick). `rmtports.cpp`, `devplan/io.md` §13.2.
+- **The RMT's ticks and the monotonic clock keep step:** both come from the 40 MHz crystal (the
+  RMT through PLL_F80M, the systimer directly); a stream's frames timed afresh after ten minutes
+  sat where its tick count said within a µs. A `gptimer` at 1 MHz keeps step with both too.
+- **A `gptimer` alarm at interrupt level 1 lands 2 to 19 µs late; at level 3, 2 to 8** (31 µs
+  once, in the first half minute after a boot). Timed outputs (the RMT's mark pulse) ask for 3, the
+  highest a C handler may take (`devplan/io.md` §13.4).
 - **ESP-IDF's partial RMT receive hands a block over one block late:** with the buffer half the
   channel's memory, the callback for a block comes at the next threshold, just before the
   driver copies the block after it; the time of that callback is when the *next* block ended,
