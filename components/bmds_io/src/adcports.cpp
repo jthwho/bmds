@@ -19,6 +19,7 @@
 #include <esp_adc/adc_cali_scheme.h>
 #include <esp_adc/adc_continuous.h>
 #include <esp_adc/adc_oneshot.h>
+#include <esp_private/adc_share_hw_ctrl.h>
 #include <esp_private/periph_ctrl.h>
 #include <soc/lpperi_struct.h>
 #include <bmds/adcdevice.h>
@@ -39,6 +40,7 @@
 #include <bmds/string.h>
 #include <bmds/sysconf.h>
 #include <bmds/system.h>
+#include <bmds/task.h>
 #include <bmds/vfs.h>
 
 #include "iochipops.h"
@@ -73,10 +75,18 @@ namespace AdcPorts {
                         int64_t                 startNs = 0;
                         std::atomic<uint64_t>   frames{0}; // done, those dropped counted
                         std::atomic<uint64_t>   dropped{0};
-                        uint64_t                taken = 0; // bytes read from the pool
+                        // Frames in (those dropped not) when a read last found the pool empty: more since
+                        // is what readiness() says can be read. Not bytes taken against frames in: those
+                        // ran a frame or more apart, readable for ever, a non-blocking read waiting.
+                        uint64_t drainedAt = 0;
         };
 
         constinit PsramObject<State> state;
+
+        // The stream's frames in the pool so far, those dropped not counted. @isrsafe
+        uint64_t framesIn(const State &s) {
+                return s.frames.load(std::memory_order_acquire) - s.dropped.load(std::memory_order_relaxed);
+        }
 
         // The driver wants its callbacks' argument in internal RAM.
         DRAM_ATTR State *stateRef = nullptr;
@@ -129,13 +139,42 @@ namespace AdcPorts {
         }
 
         // The stream stopped and given back, the one-shot units back. The lock held.
+        // ESP-IDF's continuous start takes each of its units' locks (`adc_lock_acquire()`: a
+        // FreeRTOS mutex, given back only by the task that took it) and its stop gives them back.
+        // A stream starts on its reader's first read() and stops on whatever task changes io/adc0
+        // or closes the file: a stop on another task failed FreeRTOS's assert in
+        // xTaskPriorityDisinherit(), the system down (devplan/io.md §15.9). The locks are
+        // handed over instead: given back by the starting task once started, taken by the
+        // stopping one before the stop. Nothing else takes them meanwhile: the one-shot units,
+        // their only other user, are closed while a stream runs (the lock held for both).
+        void unitLocks(const bool units[2], bool take) {
+                for (int u = 0; u < 2; ++u)
+                        if (units[u]) {
+                                if (take)
+                                        (void)adc_lock_acquire(adc_unit_t(u));
+                                else
+                                        (void)adc_lock_release(adc_unit_t(u));
+                        }
+                return;
+        }
+
+        // The stream stopped and its driver deleted. ESP-IDF's stop only sets the DMA channel's stop
+        // bit (gdma_stop(): no reset, its interrupt still on), and the channel finishes the frame it
+        // is in: its deinit, which frees the frames' buffer and descriptors before it deletes the
+        // channel, left the DMA writing a frame into freed memory, and whatever took it next was
+        // overwritten (a window closed as its stream stopped: the GUI's paint faulted on its
+        // widgets, devplan/io.md §15.9). So the reader is let go first (the interrupt's callback
+        // then wakes nobody), and a frame's time is waited out between the stop and the deinit.
         void stopStream() {
                 State &s = *state;
                 if (s.stream == nullptr) return;
+                s.streamer = nullptr;
+                unitLocks(s.unitStreams, true); // this task's, for the stop to give back
                 (void)adc_continuous_stop(s.stream);
+                const uint64_t frameMs = uint64_t(s.frameBytes / ConvBytes) * 1000 / (s.setup.rate ? s.setup.rate : 1);
+                Task::sleep(unsigned(frameMs) + 2);
                 (void)adc_continuous_deinit(s.stream);
                 s.stream = nullptr;
-                s.streamer = nullptr;
                 s.unitStreams[0] = s.unitStreams[1] = false;
                 FlashWrites::release();
                 if (s.running && openOneshot() != ESP_OK) bmdsWarn("io: adc0: no readings after the stream");
@@ -188,7 +227,7 @@ namespace AdcPorts {
                 if (err == ESP_OK) err = adc_continuous_register_event_callbacks(s.stream, &cbs, &stateRef);
                 s.frames.store(0);
                 s.dropped.store(0);
-                s.taken = 0;
+                s.drainedAt = 0;
                 s.streamer = reader;
                 s.frameBytes = frame;
                 s.poolBytes = pool;
@@ -211,6 +250,7 @@ namespace AdcPorts {
                 }
                 s.unitStreams[0] = units[0];
                 s.unitStreams[1] = units[1];
+                unitLocks(s.unitStreams, false); // not this task's to keep (above)
                 // /flash's writes wait while it streams: the pool can't cover an erase at speed.
                 FlashWrites::hold();
                 return Error::Ok;
@@ -420,9 +460,12 @@ Result<size_t> AdcDevice::read(WritableByteSpan buf, unsigned int timeoutMs) {
                         const uint32_t ask =
                                 uint32_t((want < AdcPorts::ReadConversions ? want : AdcPorts::ReadConversions) *
                                          AdcPorts::ConvBytes);
-                        uint32_t got = 0;
-                        if (adc_continuous_read(s.stream, raw, ask, &got, 0) == ESP_OK && got > 0) {
-                                s.taken += got;
+                        uint32_t        got = 0;
+                        const esp_err_t readErr = adc_continuous_read(s.stream, raw, ask, &got, 0);
+                        // Less than asked: all it had. (A frame in between the read and this is
+                        // read with the next one, a frame later: never lost, never waited for.)
+                        if (got < ask) s.drainedAt = AdcPorts::framesIn(s);
+                        if (readErr == ESP_OK && got > 0) {
                                 adc_continuous_data_t parsed[AdcPorts::ReadConversions];
                                 uint32_t              n = 0;
                                 (void)adc_continuous_parse_data(s.stream, raw, got, parsed, &n);
@@ -455,11 +498,13 @@ Result<size_t> AdcDevice::read(WritableByteSpan buf, unsigned int timeoutMs) {
 }
 
 uint8_t AdcDevice::readiness() {
+        // Readable when a read() wouldn't wait (POSIX's poll()): one that starts the stream (its
+        // samples within a frame, 10 ms) or answers at once (another's stream, no rate=, no pins).
+        // A non-blocking read is a poll then a read (the SDK's O_NONBLOCK): 0 here would leave it
+        // EAGAIN for ever, the stream never started.
         State &s = *AdcPorts::state;
-        if (s.stream == nullptr || s.streamer != this) return 0;
-        const uint64_t in =
-                (s.frames.load(std::memory_order_acquire) - s.dropped.load(std::memory_order_relaxed)) * s.frameBytes;
-        return in > s.taken ? Readable : 0;
+        if (s.stream == nullptr || s.streamer != this) return Readable;
+        return AdcPorts::framesIn(s) > s.drainedAt ? Readable : 0;
 }
 
 void AdcDevice::handleClosed(uint8_t mode) {

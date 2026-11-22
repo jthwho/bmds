@@ -1558,4 +1558,35 @@ strip, a second chip, each when asked for.
   counters: none lost), as does a sender alone (8 MB in 0.88 s on the new, 0.89 on the old). 8c's
   "rates up to the hardware's" held for those runs, not as a rule: 10 MHz at 4 lines is what the
   loopback holds; faster wants a bigger ring (`buffer=`) or a reader that wakes less often.
+- **Streams found by ioman's ADC tool** (bmds-apps, 2026-11-21: a reader that polls, then closes
+  as its window does), three faults, each fixed in `adcports.cpp`:
+  - **A non-blocking reader never started a stream:** the SDK's `O_NONBLOCK` is a `poll()` then the
+    read, and `readiness()` said nothing to read until a stream ran, which only a read starts:
+    `EAGAIN` for ever. It counted bytes taken against frames in, a frame or more apart, so once
+    started a non-blocking read waited ~9.5 ms a frame for the next instead. Readable now means a
+    read won't wait: one that starts the stream (its first frame within 20 ms), one answered at
+    once (another's stream, no `rate=`), or frames in since a read last found the pool empty. A
+    test reading 128 at a time took a frame as 128 and 64, then `EAGAIN`, `poll()` waking a frame
+    later; none lost. (A frame landing between the driver's read and the mark is read with the
+    next one: late by a frame, never waited for.)
+  - **A setting changed mid-stream took the system down:** ESP-IDF's continuous start takes its
+    units' locks (`adc_lock_acquire()`, a FreeRTOS mutex) and its stop gives them back, but the
+    stream starts on the reader's task and a change stops it on the setter's: FreeRTOS's assert
+    in `xTaskPriorityDisinherit()` (`adc stream` running, `sysconf set io/adc0 ...`, every time).
+    The locks are handed over: given back by the starting task once started, taken by the
+    stopping one before the stop (their only other user, the one-shot units, closed meanwhile).
+  - **A window closed as its stream stopped faulted the GUI's paint** (a closing window's tab
+    bar, its widget's font garbage), three times in three, never with a stream stopped 0.3 s
+    before: ESP-IDF's stop only sets the DMA channel's stop bit (`gdma_stop()`; the channel
+    finishes its frame, its interrupt still on) and the deinit frees the frames' buffer and
+    descriptors before it deletes the channel, so the DMA wrote a frame into freed memory that
+    the window's teardown had just taken. `stopStream()` now lets the reader go first and waits
+    a frame's time (10 ms; longer at low rates with many pins) between the stop and the deinit:
+    four closes mid-stream since, none faulted.
+- **What a stream reads depends on the source's impedance:** GPIO20 (the board's VBAT divider)
+  reads 675 mV one-shot, 435 mV mean streamed at 1000 a second and 14 mV at 20000; floating pads
+  read ~45 mV streamed against ~700 one-shot (the SDK's `adc stream` the same as ioman's). The
+  sampling capacitor doesn't charge from a high-impedance source between conversions at speed: a
+  driven pad reads right (GPIO16 high, above). Not a fault; a source to stream wants a low
+  impedance, or a buffer.
 

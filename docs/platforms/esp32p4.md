@@ -930,6 +930,19 @@ until silicon v3; then test again.
   The same driver takes one attenuation a unit (two give `ESP_ERR_INVALID_ARG`), asserts unless
   `conv_frame_size` is whole 64-byte cache lines (it checks only whole 4-byte conversions), and
   shares no unit with one-shot mode.
+- **ESP-IDF's ADC continuous driver, start and stop:** (`devplan/io.md` §15.9, 2026-11-21)
+  - `adc_continuous_start()` takes each unit's `adc_lock_acquire()` lock, a FreeRTOS mutex, and
+    `adc_continuous_stop()` gives it back: stopped on another task than the one that started it,
+    FreeRTOS's assert in `xTaskPriorityDisinherit()` takes the system down. Give the locks back
+    on the starting task once started, and take them on the stopping task before the stop.
+  - `adc_continuous_stop()` on the P4 only sets the GDMA channel's stop bit (`gdma_stop()`: no
+    reset, its interrupt left on), and the channel finishes the frame it is in; `deinit()` frees
+    the frames' buffer and descriptors before it deletes the channel. A deinit straight after the
+    stop let the DMA write up to a frame into freed memory (a GUI window's widgets, taken next,
+    corrupted). Wait a frame's time between the two.
+  - Streamed values sag with the source's impedance (a high-value divider, a floating pad):
+    20000 conversions a second read a divider's 675 mV as 14 mV, 1000 a second as 435. One-shot
+    readings aren't affected.
 - **ESP-IDF's PARLIO receiver leaves its input signals routed** when deleted (a pad still read
   as `PARLIO_RX_DATAn`): keep their selectors and put them back (`parlioports.cpp`).
 - **PARLIO's receiver ring since ESP-IDF v6.1-dev-9279:** nodes of 4032 and, for the rest over
