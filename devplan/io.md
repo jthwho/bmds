@@ -1583,6 +1583,17 @@ strip, a second chip, each when asked for.
     the window's teardown had just taken. `stopStream()` now lets the reader go first and waits
     a frame's time (10 ms; longer at low rates with many pins) between the stop and the deinit:
     four closes mid-stream since, none faulted.
+- **A PARLIO port's own clock has a floor** (found by ioman's PARLIO tool, 2026-11-21): ESP-IDF
+  divides PLL_F160M by an integer of 256 at most and asserts past it (`parlio_ll.h`:
+  `_parlio_ll_tx_set_clock_div`), so `clock=20k` without `clk-in=` took the system down as the
+  port started. `IoParlioSetup::parse()` refuses an own clock under 625k (160 MHz / 256), in
+  words; an external clock (`clk-in=`) may still be slower (host-tested; on bmds0, `sysconf set`
+  says why and the system stays up).
+- **Seen once, not explained:** ESP-IDF's PSRAM controller interrupt (`esp_psram_mspi.c`: an
+  MSPI PSRAM error, which it answers with `abort()`) took bmds0 down at 18:49:45 on 2026-11-21,
+  5 ms after an `scp` of a screenshot from the board ended, during ioman's RMT tests. Its message
+  (which error) goes to the USB console only, which wasn't captured; the same steps repeated
+  about sixty times since, with the console watched, did nothing. Watch for it.
 - **What a stream reads depends on the source's impedance:** GPIO20 (the board's VBAT divider)
   reads 675 mV one-shot, 435 mV mean streamed at 1000 a second and 14 mV at 20000; floating pads
   read ~45 mV streamed against ~700 one-shot (the SDK's `adc stream` the same as ioman's). The

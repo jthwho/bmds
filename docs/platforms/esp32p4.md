@@ -930,6 +930,10 @@ until silicon v3; then test again.
   The same driver takes one attenuation a unit (two give `ESP_ERR_INVALID_ARG`), asserts unless
   `conv_frame_size` is whole 64-byte cache lines (it checks only whole 4-byte conversions), and
   shares no unit with one-shot mode.
+- **PARLIO's clock divider is an integer of 256 at most** (`PARLIO_LL_TX/RX_MAX_CLK_INT_DIV`,
+  0x100) and ESP-IDF asserts past it rather than failing: from PLL_F160M, an internal clock below
+  625 kHz takes the system down when the unit is made. BMDS refuses such a setting
+  (`IoParlioSetup::MinOwnClock`); slower wants an external clock (`devplan/io.md` §15.9).
 - **ESP-IDF's ADC continuous driver, start and stop:** (`devplan/io.md` §15.9, 2026-11-21)
   - `adc_continuous_start()` takes each unit's `adc_lock_acquire()` lock, a FreeRTOS mutex, and
     `adc_continuous_stop()` gives it back: stopped on another task than the one that started it,

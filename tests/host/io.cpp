@@ -1162,6 +1162,12 @@ TEST_CASE("IoParlioSetup: io/parlioN's value") {
                 CHECK(p.parse(chip, "dir=rx data=46 buffer=65536", why) == Error::Invalid);
                 REQUIRE(p.parse(chip, "dir=rx data=46 buffer=65472", why).isOk());
                 CHECK(p.parse(chip, "dir=rx data=46 clock=90m", why) == Error::Invalid);
+                // Its own clock no slower than PLL_F160M / 256 (ESP-IDF asserted at 20k); an external one may be.
+                CHECK(p.parse(chip, "dir=tx data=46 clock=20k", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "its own clock is 625k at least (160m / 256); slower needs clk-in=") == 0);
+                CHECK(p.parse(chip, "dir=rx data=46 clock=624999", why) == Error::Invalid);
+                REQUIRE(p.parse(chip, "dir=tx data=46 clock=625k", why).isOk());
+                REQUIRE(p.parse(chip, "dir=rx data=46 clk-in=17 clock=20k", why).isOk());
                 CHECK(p.parse(chip, "dir=rx data=46 monitor force", why) == Error::Invalid);
                 CHECK(p.parse(chip, "dir=rx data=46 valid=47", why) == Error::Invalid);
                 CHECK(std::strcmp(why, "'valid=47' isn't a word a PARLIO port knows") == 0);

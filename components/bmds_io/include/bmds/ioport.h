@@ -269,6 +269,9 @@ struct IoParlioSetup {
                 static constexpr size_t   MaxData = 16;        ///< Data lines at most.
                 static constexpr uint32_t MinClock = 1000;     ///< The slowest `clock=`.
                 static constexpr uint32_t MaxClock = 80000000; ///< The fastest (the hardware may refuse less).
+                /// The slowest the port's own clock makes: PLL_F160M divided by 256 at most (ESP-IDF
+                /// asserts past that, the system down); slower wants an external clock (`clk-in=`).
+                static constexpr uint32_t MinOwnClock = 625000;
                 static constexpr uint32_t MinBuffer = 4096;    ///< A receiver's smallest `buffer=`.
                 static constexpr uint32_t MaxBuffer =
                         65472; ///< Its largest (one frame of the hardware's, whole cache lines).

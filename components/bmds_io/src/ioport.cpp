@@ -644,6 +644,8 @@ Error IoParlioSetup::parse(const IoChip &chip, StringView text, char (&why)[Reas
                 return refuse(why, Error::Invalid, "buffer= and monitor are a receiver's (dir=rx)");
         if (receive && clk >= 0 && clkIn >= 0)
                 return refuse(why, Error::Invalid, "a receiver gives its clock out (clk=) only from its own clock");
+        if (clkIn < 0 && clock < MinOwnClock)
+                return refuse(why, Error::Invalid, "its own clock is 625k at least (160m / 256); slower needs clk-in=");
         if (idle >= (uint64_t(1) << width()))
                 return refuse(why, Error::Invalid, "idle is more than %u lines hold", unsigned(width()));
         if (monitor && force) return refuse(why, Error::Invalid, "monitor takes nothing: force has nothing to take");

@@ -347,8 +347,10 @@ Plan: [`input.md`](input.md).
   the battery sense's divider) calibrated on bmds0. ESP-IDF moved to v6.1-dev-9279
   (`devplan/esp-idf.md`: mbedTLS 4, GCC 16, a lost cross-core interrupt found and fixed), and ADC
   streaming on (§15.9: an order of writes in ESP-IDF's start, worked around); PARLIO's receiver
-  fixed for the new driver's ring (A/B against the old ESP-IDF, §15.9). Next: a longer logic strip,
-  a second chip.
+  fixed for the new driver's ring (A/B against the old ESP-IDF, §15.9). The I/O Manager's Ports
+  tab has a tool for every port (bmds-apps' `ioman.md` §5: PWM, counters, the ADC, the RMT's and
+  PARLIO's waveforms); on the way, three ADC stream faults fixed and a PARLIO clock too slow for
+  its divider refused instead of asserting (§15.9). Next: a longer logic strip, a second chip.
 
 ## Phase 6 — Graphics
 
