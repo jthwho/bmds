@@ -541,14 +541,14 @@ Error Scanout::buildList() {
         hw.list.release();
         hw.list = fresh;
         dw_gdma_block_transfer_config_t block = {};
-        block.src.burst_mode = _dark ? DW_GDMA_BURST_MODE_FIXED : DW_GDMA_BURST_MODE_INCREMENT;
-        block.src.burst_items = DW_GDMA_BURST_ITEMS_512;
-        block.src.burst_len = 16;
+        block.src.addr_inc_mode = _dark ? DW_GDMA_ADDR_INC_MODE_FIXED : DW_GDMA_ADDR_INC_MODE_INCREMENT;
+        block.src.burst_size = DW_GDMA_BURST_SIZE_512;
+        block.src.axi_burst_len = 16;
         block.src.width = DW_GDMA_TRANS_WIDTH_64;
         block.dst.addr = MIPI_DSI_BRG_MEM_BASE;
-        block.dst.burst_mode = DW_GDMA_BURST_MODE_FIXED;
-        block.dst.burst_items = DW_GDMA_BURST_ITEMS_256;
-        block.dst.burst_len = 16;
+        block.dst.addr_inc_mode = DW_GDMA_ADDR_INC_MODE_FIXED;
+        block.dst.burst_size = DW_GDMA_BURST_SIZE_256;
+        block.dst.axi_burst_len = 16;
         block.dst.width = DW_GDMA_TRANS_WIDTH_64;
         block.size = _blockBytes / 8;
         const uint8_t *shown = _surface->shown();
@@ -639,10 +639,10 @@ Error Scanout::startLink() {
 #else
         const mipi_dsi_phy_pllref_clock_source_t pllRef = MIPI_DSI_PHY_PLLREF_CLK_SRC_DEFAULT;
 #endif
-        Error err = espError(esp_clk_tree_enable_src(static_cast<soc_module_clk_t>(pllRef), true));
+        Error err = espError(esp_clk_tree_acquire_src(static_cast<soc_module_clk_t>(pllRef), nullptr));
         if (err.isOk())
-                err = espError(
-                        esp_clk_tree_enable_src(static_cast<soc_module_clk_t>(MIPI_DSI_PHY_CFG_CLK_SRC_DEFAULT), true));
+                err = espError(esp_clk_tree_acquire_src(static_cast<soc_module_clk_t>(MIPI_DSI_PHY_CFG_CLK_SRC_DEFAULT),
+                                                        nullptr));
         uint32_t refHz = 0;
         if (err.isOk())
                 err = espError(esp_clk_tree_src_get_freq_hz(static_cast<soc_module_clk_t>(pllRef),
@@ -715,7 +715,7 @@ Error Scanout::startDpi() {
                 return Error::NotSupported;
         }
         hw.pixelHz = t.pixelKhz * 1000;
-        Error err = espError(esp_clk_tree_enable_src(static_cast<soc_module_clk_t>(dpiSource), true));
+        Error err = espError(esp_clk_tree_acquire_src(static_cast<soc_module_clk_t>(dpiSource), nullptr));
         if (err.isError()) return err;
         PERIPH_RCC_ATOMIC() {
                 mipi_dsi_ll_set_dpi_clock_source(_bus, dpiSource);
@@ -762,7 +762,7 @@ Error Scanout::startDpi() {
         mipi_dsi_host_ll_dpi_enable_lp_vertical_timing(host, false, false, false, false);
         mipi_dsi_host_ll_dpi_enable_lp_command(host, false);
         mipi_dsi_host_ll_dpi_enable_frame_ack(host, _config.frameAck);
-        mipi_dsi_host_ll_dpi_set_video_burst_type(host, MIPI_DSI_LL_VIDEO_BURST_WITH_SYNC_PULSES);
+        mipi_dsi_host_ll_dpi_set_video_burst_type(host, MIPI_DSI_VIDEO_BURST_WITH_SYNC_PULSES);
         mipi_dsi_host_ll_dpi_set_video_packet_pixel_num(host, t.hActive);
         mipi_dsi_host_ll_dpi_set_trunks_num(host, 0);
         mipi_dsi_host_ll_dpi_set_null_packet_size(host, 0);
@@ -1264,8 +1264,8 @@ void Scanout::changeDark() {
 // Every descriptor's source: one word read again and again (dark) or a block's bytes in turn. Only
 // while the stream is stopped.
 void Scanout::setSourceMode() {
-        const dw_gdma_burst_mode_t mode = _dark ? DW_GDMA_BURST_MODE_FIXED : DW_GDMA_BURST_MODE_INCREMENT;
-        for (uint32_t k = 0; k < _items; ++k) dw_gdma_ll_lli_set_src_burst_mode(ScanoutIsr::item(*this, k), mode);
+        const dw_gdma_addr_inc_mode_t mode = _dark ? DW_GDMA_ADDR_INC_MODE_FIXED : DW_GDMA_ADDR_INC_MODE_INCREMENT;
+        for (uint32_t k = 0; k < _items; ++k) dw_gdma_ll_lli_set_src_addr_inc_mode(ScanoutIsr::item(*this, k), mode);
         return;
 }
 

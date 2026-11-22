@@ -138,9 +138,9 @@ namespace {
                 esp_err_t                       e = dw_gdma_channel_register_event_callbacks(chan, &cbs, &done);
                 dw_gdma_block_transfer_config_t block = {};
                 block.src.addr = reinterpret_cast<uint32_t>(from);
-                block.src.burst_mode = DW_GDMA_BURST_MODE_INCREMENT;
+                block.src.addr_inc_mode = DW_GDMA_ADDR_INC_MODE_INCREMENT;
                 block.src.width = DW_GDMA_TRANS_WIDTH_64;
-                block.src.burst_items = DW_GDMA_BURST_ITEMS_4;
+                block.src.burst_size = DW_GDMA_BURST_SIZE_4;
                 block.dst = block.src;
                 block.dst.addr = reinterpret_cast<uint32_t>(to);
                 block.size = Bytes / 8;

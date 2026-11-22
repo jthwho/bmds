@@ -1507,7 +1507,7 @@ strip, a second chip, each when asked for.
 - **Readings, checked** on bmds0: GPIO16 driven high (`io/gpio`, `force`) 3393 mV, low 4 mV; a
   PWM's pin caught at either level (3390, 4 mV); 6 dB on GPIO20 shown through its divider; a pin
   not `io/adc0`'s `ENODEV`. Calibrated by ESP-IDF's curve fitting from eFuse, per pin.
-- **Streaming: built, refused.** ESP-IDF v6.1-dev-1's continuous driver hands over zeros on this
+- **Streaming: built, refused** (on, and the cause found: §15.9). ESP-IDF v6.1-dev-1's continuous driver hands over zeros on this
   P4 (v1.3): its stock `continuous_read` example, flashed in place of BMDS's app and BMDS put back
   from a backup (the flash read whole first, `ota_0` written back and compared), read 0 too; the
   same example built with ESP-IDF v6.1-dev-9279 streamed the right values on the same board
@@ -1519,3 +1519,43 @@ strip, a second chip, each when asked for.
   whole rounds of the pins and whole 64-byte lines. Its one-shot and continuous modes don't share
   a unit: the one-shot units close while a stream runs. And PARLIO's receiver (8c) left its input
   signals routed when ESP-IDF deleted it: their selectors are now kept and put back.
+
+### 15.9 8d continued: streaming, on ESP-IDF v6.1-dev-9279 (2026-11-21)
+
+- **The zeros were not the version's.** On the new ESP-IDF BMDS's stream still read 0, every word
+  (the channel field too) at the right rate. The ADC's DMA buffer held zeros in memory, and
+  `LP_ADC.meas1_mux` read 0 right after `adc_continuous_start()`: the units weren't the digital
+  controller's. ESP-IDF's start writes that (`set_controller`) before it turns on `LP_ADC`'s
+  register clock (`ck_en_lp_adc`, with the power setting, later in the start), so with the clock
+  off the write is lost; a deleted one-shot unit turns it off, and BMDS's boot entropy
+  (`fillBootEntropy()`: `bootloader_random_enable()`/`disable()`) left it so. `startStream()` turns
+  the clock on first. Streams then read right: GPIO16 driven high 3399 mV, a 25 % PWM on GPIO17
+  between 0 and 3398 mV, 20k and 83k conversions a second with none lost, readings again after.
+- **One attenuation a unit:** ESP-IDF's continuous driver refuses two on one unit, so a setting
+  with `rate=` and two on a unit is refused in words (`IoAdcSetup::parse()`, host-tested).
+- **PARLIO on the new ESP-IDF, by A/B** (8d's commit built with v6.1-dev-1 in worktrees and put
+  on bmds0, then this build; the same `parlio loop`): the old passed every run (4 lines at 1, 10
+  and 20 MHz, six each; 2 and 1 lines; 8 and 16 KB), so the non-blocking writes are not at fault.
+  Registers and descriptors dumped on both while a receiver ran showed:
+  - **Nodes off cache lines:** the new driver splits a 16 KB ring 4032 × 3 + 2144 × 2 (the old
+    3264 × 4 + 3328), so two nodes share a line, and `received()`'s sync of such a node was
+    refused (not whole lines; its result was ignored): the node's lines stayed the lap before's.
+    A capture found exactly that, data one ring back. The sync now covers the whole lines round a
+    node (the ring is the DMA's alone, never dirty). Most failures went.
+  - **The receive edge was backwards before:** v6.1-dev-1 wrote the clock inversion equal to the
+    enum, v6.1-dev-9279 inverts for falling (`rx_clk_cfg` 0 then, 0xC0000000 now). Measured with
+    two LEDC channels a quarter period apart (data low at the clock's rise, high at its fall):
+    `edge=falling` now reads all ones, `rising` all zeros. So 8c's receivers sampled on the rise;
+    `edge=` now means what it says.
+  - **No bursts** (`dma_burst_size = 1`), as the old driver had it; no difference measured.
+- **After the fix:** 4 lines at 10 MHz passed 12 runs in 12 (and 1 MHz, 1, 2 and 8 lines, a
+  24 KB ring). **20 MHz is past what BMDS's reader holds, on either ESP-IDF:** `loop`'s one thread
+  takes a whole core there (`top`: 99 %), its failures report the bytes lost (an overrun, the data
+  resuming thousands of samples on), and the old ESP-IDF failed one run in three of a second
+  batch (its first six had passed). A plain reader (`head` from `/dev/parlio1`, a PWM's 20 MHz
+  clock) lost 4.2 to 11 MB of 34 on the old and 9.9 on the new: a reader woken a node at a time
+  with a 16 KB ring (1.6 ms at 10 MB/s) falls behind at times. The receiver itself keeps up (its
+  counters: none lost), as does a sender alone (8 MB in 0.88 s on the new, 0.89 on the old). 8c's
+  "rates up to the hardware's" held for those runs, not as a rule: 10 MHz at 4 lines is what the
+  loopback holds; faster wants a bigger ring (`buffer=`) or a reader that wakes less often.
+

@@ -22,9 +22,9 @@
 #include <esp_cache.h>
 #include <hal/dma_types.h>
 #include <soc/axi_dma_struct.h>
-#include <soc/ext_mem_defs.h>
-#include <soc/gdma_channel.h>
-#include <soc/parlio_periph.h>
+#include <soc/soc.h>
+#include <hal/gdma_channel.h>
+#include <hal/parlio_periph.h>
 #include <bmds/deadline.h>
 #include <bmds/detail/platform.h>
 #include <bmds/flashwrites.h>
@@ -155,7 +155,14 @@ namespace ParlioPorts {
                         if (d.dw0.owner != DMA_DESCRIPTOR_BUFFER_OWNER_CPU) break;
                         const uint32_t size = p.nodeSize[p.cursor];
                         if (d.dw0.length != size) ++p.oddNodes;
-                        (void)esp_cache_msync(d.buffer, size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                        // Whole lines round it: since ESP-IDF v6.1-dev-9279 two nodes can share one (the
+                        // ring's last 4288 bytes split 2144 and 2144), and a sync not of whole lines is
+                        // refused, which left a node's lines as the lap before's (devplan/io.md §15.9).
+                        // The ring is the DMA's alone: its lines are never dirty, so a neighbour's
+                        // part only drops from the cache.
+                        const uintptr_t from = uintptr_t(d.buffer) & ~uintptr_t(CacheLine - 1);
+                        const uintptr_t to = (uintptr_t(d.buffer) + size + CacheLine - 1) & ~uintptr_t(CacheLine - 1);
+                        (void)esp_cache_msync(reinterpret_cast<void *>(from), to - from, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
                         d.dw0.owner = DMA_DESCRIPTOR_BUFFER_OWNER_DMA;
                         moved += size;
                         p.cursor = (p.cursor + 1) % p.nodeCount;
@@ -194,7 +201,7 @@ namespace ParlioPorts {
                 unsigned       n = 0;
                 for (uint32_t a = first; n < MaxNodes; ++n) {
                         addr[n] = a;
-                        const auto *d = reinterpret_cast<const dma_descriptor_t *>(a + SOC_NON_CACHEABLE_OFFSET);
+                        const auto *d = reinterpret_cast<const dma_descriptor_t *>(a + SOC_NON_CACHEABLE_OFFSET_SRAM);
                         a = uint32_t(uintptr_t(d->next));
                         if (a == first) {
                                 ++n;
@@ -206,14 +213,14 @@ namespace ParlioPorts {
                 // Rotated so the node at the buffer's start is 0, and checked to tile the buffer.
                 unsigned zero = n;
                 for (unsigned i = 0; i < n; ++i)
-                        if (reinterpret_cast<const dma_descriptor_t *>(addr[i] + SOC_NON_CACHEABLE_OFFSET)->buffer ==
-                            p.ring)
+                        if (reinterpret_cast<const dma_descriptor_t *>(addr[i] + SOC_NON_CACHEABLE_OFFSET_SRAM)
+                                    ->buffer == p.ring)
                                 zero = i;
                 if (zero == n) return false;
                 uint32_t offset = 0;
                 for (unsigned i = 0; i < n; ++i) {
                         const uint32_t a = addr[(zero + i) % n];
-                        auto          *d = reinterpret_cast<dma_descriptor_t *>(a + SOC_NON_CACHEABLE_OFFSET);
+                        auto          *d = reinterpret_cast<dma_descriptor_t *>(a + SOC_NON_CACHEABLE_OFFSET_SRAM);
                         if (d->buffer != p.ring + offset) return false;
                         p.nodes[i] = d;
                         p.nodeAddr[i] = a;
@@ -342,7 +349,8 @@ namespace ParlioPorts {
                         c.trans_queue_depth = TxPieces;
                         c.max_transfer_size = TxPiece;
                         c.dma_burst_size = 32;
-                        c.sample_edge = edge;
+                        // Sampled on the rising edge: shifted out on the falling one.
+                        c.shift_edge = s.rising ? PARLIO_SHIFT_EDGE_NEG : PARLIO_SHIFT_EDGE_POS;
                         c.bit_pack_order = order;
                         if (err == ESP_OK) err = parlio_new_tx_unit(&c, &tx);
                         parlio_tx_event_callbacks_t cb = {};
@@ -366,7 +374,7 @@ namespace ParlioPorts {
                         }
                 } else {
                         // Its input signals' selectors kept, to put back after the driver's done.
-                        const auto &sig = parlio_periph_signals.groups[0].rx_units[0];
+                        const auto &sig = soc_parlio_signals[0].rx_units[0];
                         inCount = 0;
                         for (int i = 0; i < width; ++i) {
                                 inSignals[inCount] = uint16_t(sig.data_sigs[i]);
@@ -381,6 +389,9 @@ namespace ParlioPorts {
                         parlio_rx_unit_config_t c = {};
                         c.trans_queue_depth = 1;
                         c.max_recv_size = s.buffer;
+                        // No DMA bursts, as ESP-IDF v6.1-dev-1's driver had it (its later one bursts 32
+                        // bytes unless told): the receiver as 8c checked it (devplan/io.md §15.9).
+                        c.dma_burst_size = 1;
                         c.data_width = size_t(width);
                         c.clk_src = s.clkIn >= 0 ? PARLIO_CLK_SRC_EXTERNAL : PARLIO_CLK_SRC_DEFAULT;
                         c.ext_clk_freq_hz = s.clkIn >= 0 ? s.clock : 0;

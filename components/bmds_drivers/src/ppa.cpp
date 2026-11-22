@@ -109,7 +109,7 @@ struct PpaIsr {
                 static void prepare(dma2d_channel_handle_t chan, const dma2d_trigger_t &trigger) {
                         (void)dma2d_connect(chan, &trigger);
                         dma2d_transfer_ability_t ability = {};
-                        ability.data_burst_length = DMA2D_DATA_BURST_LENGTH_128;
+                        ability.data_burst_length = 128;
                         ability.desc_burst_en = true;
                         ability.mb_size = DMA2D_MACRO_BLOCK_SIZE_NONE;
                         (void)dma2d_set_transfer_ability(chan, &ability);
@@ -253,11 +253,11 @@ Error Ppa::start() {
                 return Error::fromEspErr(err);
         }
         ppa_dev_t *dev = &PPA;
-        ppa_ll_blend_enable_clut_mem(dev);
+        ppa_ll_enable_clut_mem(dev);
         ppa_ll_configure_clut_access_mode(dev, false); // memory mode: entries by index
-        ppa_ll_blend_reset_rx_bg_clut_mem(dev);
+        ppa_ll_reset_clut_fifo_ptr(dev, PPA_CLUT_BLEND_BG);
         for (size_t i = 0; i < PaletteSize; ++i)
-                ppa_ll_blend_wr_rx_bg_clut_data_by_mem(dev, static_cast<uint32_t>(i), 0xff000000u);
+                ppa_ll_wr_clut_data_by_mem(dev, PPA_CLUT_BLEND_BG, static_cast<uint32_t>(i), 0xff000000u);
         hw.config.user_config = this;
         hw.config.on_job_picked = PpaIsr::picked;
         return Error::Ok;
@@ -269,7 +269,7 @@ void Ppa::stop() {
         Hardware &hw = *_hw;
         if (hw.pool != nullptr) (void)dma2d_release_pool(hw.pool);
         if (hw.clock) {
-                ppa_ll_blend_disable_clut_mem(&PPA);
+                ppa_ll_disable_clut_mem(&PPA);
                 PERIPH_RCC_ATOMIC() {
                         ppa_ll_enable_bus_clock(false);
                 }
@@ -287,7 +287,8 @@ void Ppa::stop() {
 void Ppa::setPalette(const uint32_t *rgb, size_t first, size_t count) {
         if (_hw == nullptr) return;
         for (size_t i = 0; i < count && first + i < PaletteSize; ++i)
-                ppa_ll_blend_wr_rx_bg_clut_data_by_mem(&PPA, static_cast<uint32_t>(first + i), 0xff000000u | rgb[i]);
+                ppa_ll_wr_clut_data_by_mem(&PPA, PPA_CLUT_BLEND_BG, static_cast<uint32_t>(first + i),
+                                           0xff000000u | rgb[i]);
         return;
 }
 

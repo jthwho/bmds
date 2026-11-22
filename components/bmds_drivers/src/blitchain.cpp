@@ -94,7 +94,7 @@ struct BlitChainIsr {
                         trigger.periph_sel_id = SOC_DMA2D_TRIG_PERIPH_M2M_RX;
                         (void)dma2d_connect(rx, &trigger);
                         dma2d_transfer_ability_t ability = {};
-                        ability.data_burst_length = DMA2D_DATA_BURST_LENGTH_128;
+                        ability.data_burst_length = 128;
                         ability.desc_burst_en = true;
                         ability.mb_size = DMA2D_MACRO_BLOCK_SIZE_NONE;
                         (void)dma2d_set_transfer_ability(tx, &ability);

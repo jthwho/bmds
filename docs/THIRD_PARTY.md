@@ -11,9 +11,9 @@ anything, add it here, and give its licence a way onto the board.
 
 | Software | Where | Licence | Used for |
 |---|---|---|---|
-| ESP-IDF v6.1-dev (`ff97953b32a`) | toolchain, `IDF_PATH` | Apache-2.0 | drivers, the bootloader, build system |
+| ESP-IDF v6.1-dev (`827cc6229fb`) | toolchain, `IDF_PATH` | Apache-2.0 | drivers, the bootloader, build system |
 | FreeRTOS kernel | ESP-IDF | MIT | the kernel |
-| Mbed TLS | ESP-IDF | Apache-2.0 | ESP-IDF's crypto (linked by IDF components) |
+| Mbed TLS 4.1 (with TF-PSA-Crypto) | ESP-IDF | Apache-2.0 | TLS and its crypto (PSA), ESP-IDF's and `bmds_net`'s |
 | newlib | Espressif's GCC toolchain | BSD-style (`COPYING.NEWLIB`) | the firmware's C library |
 | GCC runtime (libgcc, libstdc++) | the toolchain | GPL-3.0 with the GCC Runtime Library Exception | no notice needed for binaries |
 | lwIP | `thirdparty/lwip` | BSD-3-Clause | the network stack |

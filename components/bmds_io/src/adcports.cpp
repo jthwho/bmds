@@ -19,6 +19,8 @@
 #include <esp_adc/adc_cali_scheme.h>
 #include <esp_adc/adc_continuous.h>
 #include <esp_adc/adc_oneshot.h>
+#include <esp_private/periph_ctrl.h>
+#include <soc/lpperi_struct.h>
 #include <bmds/adcdevice.h>
 #include <bmds/board.h>
 #include <bmds/deadline.h>
@@ -51,10 +53,6 @@ namespace AdcPorts {
         constexpr size_t   ReadConversions = 128;                        // a read's piece
         constexpr uint32_t CacheLine = 64;                               // the L1's
         constexpr uint32_t MaxFrame = 4032;                              // a DMA descriptor's, whole lines
-        // ESP-IDF v6.1-dev-1's continuous driver hands over zeros on this P4 (its own example too;
-        // a later ESP-IDF's streams right on the same board: devplan/io.md §15.8). Streaming waits
-        // for BMDS's move to it; readings work.
-        constexpr bool StreamWorks = false;
 
         struct State {
                         SysConf::Watcher          watcher;
@@ -194,6 +192,13 @@ namespace AdcPorts {
                 s.streamer = reader;
                 s.frameBytes = frame;
                 s.poolBytes = pool;
+                // ESP-IDF's start gives the units to the digital controller (LP_ADC's measure mux)
+                // before it turns on LP_ADC's register clock (with the units' power, later in the
+                // start): with that clock off, as a deleted one-shot unit leaves it, the write is
+                // lost and the controller's conversions all read 0 (devplan/io.md §15.8). On first.
+                PERIPH_RCC_ATOMIC() {
+                        LPPERI.clk_en.ck_en_lp_adc = 1;
+                }
                 if (err == ESP_OK) err = adc_continuous_start(s.stream);
                 s.startNs = Detail::monotonicUs() * 1000;
                 if (err != ESP_OK) {
@@ -268,9 +273,6 @@ namespace AdcPorts {
                 }
                 bmdsInfo("io: io/adc0: /dev/adc0, %u pins%s", unsigned(a.pinCount),
                          a.rate ? ", streaming on reading" : "");
-                if (a.rate != 0 && !StreamWorks)
-                        bmdsWarn("io: io/adc0: rate= can't stream with this ESP-IDF (its continuous driver reads 0 on "
-                                 "the P4): readings only");
                 return;
         }
 
@@ -408,7 +410,6 @@ Result<size_t> AdcDevice::read(WritableByteSpan buf, unsigned int timeoutMs) {
                         Mutex::Locker lock(s.lock, WaitForever);
                         if (!s.running) return makeError<size_t>(Error::NotExist);
                         if (s.setup.rate == 0) return makeError<size_t>(Error::Invalid); // readings only
-                        if (!AdcPorts::StreamWorks) return makeError<size_t>(Error::NotSupported);
                         if (s.stream == nullptr)
                                 if (const Error err = AdcPorts::startStream(this); err.isError())
                                         return makeError<size_t>(err);

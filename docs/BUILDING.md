@@ -3,8 +3,9 @@
 ## Prerequisites
 
 - **ESP-IDF v6.1** (currently developed against a v6.1-dev checkout at `~/esp/esp-idf`). Releases
-  are built with commit `ff97953b32a32e44f507593320b50d728eea3f06` (`v6.1-dev-1-gff97953b32a`), unmodified:
-  `git -C ~/esp/esp-idf checkout ff97953b32a3 && ~/esp/esp-idf/install.sh esp32p4`.
+  are built with commit `827cc6229fb01c6ecf6362b4840ef27d62d2138e` (`v6.1-dev-9279-g827cc6229fb`), unmodified:
+  `git -C ~/esp/esp-idf checkout 827cc6229fb0 && git -C ~/esp/esp-idf submodule update --init --recursive
+  && ~/esp/esp-idf/install.sh esp32p4` (its toolchain is GCC 16.1, `esp-16.1.0_20260609`).
 - A host C++20 compiler and CMake ≥ 3.22 for host-side unit tests.
 - An Olimex ESP32-P4-PC connected over its USB-C port.
 

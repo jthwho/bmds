@@ -18,12 +18,12 @@
 #include <esp_private/esp_clk_tree_common.h>
 #include <esp_private/gdma.h>
 #include <esp_private/periph_ctrl.h>
-#include <esp_private/uart_share_hw_ctrl.h>
+#include <esp_private/periph_ctrl.h>
 #include <hal/dma_types.h>
 #include <hal/uart_ll.h>
 #include <hal/uhci_ll.h>
-#include <soc/ext_mem_defs.h>
-#include <soc/uart_periph.h>
+#include <soc/soc.h>
+#include <hal/uart_periph.h>
 #include <bmds/deadline.h>
 #include <bmds/flashcache.h>
 #include <bmds/interrupt.h>
@@ -161,30 +161,30 @@ Error UartConsole::start(const IoUartSetup &line) {
         uint32_t    sourceHz = 0;
         if (esp_clk_tree_src_get_freq_hz(Source, ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &sourceHz) != ESP_OK)
                 return Error::Invalid;
-        if (esp_clk_tree_enable_src(Source, true) != ESP_OK) return Error::Invalid;
+        if (esp_clk_tree_acquire_src(Source, nullptr) != ESP_OK) return Error::Invalid;
         // ESP-IDF's own bring-up order (uart.c: uart_module_enable(), uart_param_config()).
-        HP_UART_BUS_CLK_ATOMIC() {
+        PERIPH_RCC_ATOMIC() {
                 uart_ll_enable_bus_clock(uart_port_t(_port), true);
                 uart_ll_reset_register(uart_port_t(_port));
         }
-        HP_UART_SRC_CLK_ATOMIC() {
+        PERIPH_RCC_ATOMIC() {
                 uart_ll_sclk_enable(hw);
         }
         uart_ll_set_mode(hw, UART_MODE_UART);
         uart_ll_set_tx_idle_num(hw, 0);
         bool rateOk = false;
-        HP_UART_SRC_CLK_ATOMIC() {
+        PERIPH_RCC_ATOMIC() {
                 uart_ll_set_sclk(hw, Source);
                 rateOk = uart_ll_set_baudrate(hw, line.baud, sourceHz);
         }
         if (!rateOk) {
-                HP_UART_SRC_CLK_ATOMIC() {
+                PERIPH_RCC_ATOMIC() {
                         uart_ll_sclk_disable(hw);
                 }
-                HP_UART_BUS_CLK_ATOMIC() {
+                PERIPH_RCC_ATOMIC() {
                         uart_ll_enable_bus_clock(uart_port_t(_port), false);
                 }
-                (void)esp_clk_tree_enable_src(Source, false);
+                (void)esp_clk_tree_release_src(Source);
                 return Error::Invalid;
         }
         uart_ll_set_data_bit_num(hw, uart_word_length_t(line.dataBits - 5));
@@ -274,7 +274,7 @@ Error UartConsole::startDma() {
         for (uint32_t at = 0; at < DmaPieces * DmaPiece; at += DmaPiece)
                 (void)esp_cache_msync(buf + at, DmaPiece,
                                       ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
-        auto *desc = reinterpret_cast<dma_descriptor_t *>(uintptr_t(descBus) + SOC_NON_CACHEABLE_OFFSET);
+        auto *desc = reinterpret_cast<dma_descriptor_t *>(uintptr_t(descBus) + SOC_NON_CACHEABLE_OFFSET_SRAM);
         for (uint32_t i = 0; i < DmaPieces; ++i) {
                 desc[i].dw0.size = DmaPiece;
                 desc[i].dw0.length = 0;
@@ -292,9 +292,8 @@ Error UartConsole::startDma() {
 
         gdma_channel_handle_t       chan = nullptr;
         gdma_channel_alloc_config_t alloc = {};
-        alloc.direction = GDMA_CHANNEL_DIRECTION_RX;
         alloc.flags.isr_cache_safe = 1; // it runs while the flash is busy, then defers (dmaFromIsr())
-        if (gdma_new_ahb_channel(&alloc, &chan) != ESP_OK) {
+        if (gdma_new_ahb_channel(&alloc, nullptr, &chan) != ESP_OK) {
                 stopDma();
                 return Error::Busy;
         }
@@ -324,7 +323,7 @@ Error UartConsole::startDma() {
         uhci_ll_attach_uart_port(uhci, int(_port));
         uhci_seper_chr_t noSeparator = {};
         uhci_ll_set_seper_chr(uhci, &noSeparator); // ESP-IDF: else UHCI loses data
-        uhci_ll_rx_set_eof_mode(uhci, UHCI_RX_IDLE_EOF);
+        uhci_ll_rx_enable_eof_modes(uhci, UHCI_RX_IDLE_EOF, true);
         // Idle after ten symbols' time, as the FIFO's timeout (bit times).
         uart_ll_set_rx_idle_thr(_stash->hw, RxIdleSymbols * 10u);
         (void)gdma_start(chan, intptr_t(descBus));
@@ -378,13 +377,13 @@ void UartConsole::stop() {
         }
         const bool was = _running.exchange(false, std::memory_order_acq_rel);
         if (was) {
-                HP_UART_SRC_CLK_ATOMIC() {
+                PERIPH_RCC_ATOMIC() {
                         uart_ll_sclk_disable(hw);
                 }
-                HP_UART_BUS_CLK_ATOMIC() {
+                PERIPH_RCC_ATOMIC() {
                         uart_ll_enable_bus_clock(uart_port_t(_port), false);
                 }
-                (void)esp_clk_tree_enable_src(Source, false);
+                (void)esp_clk_tree_release_src(Source);
         }
         // A reader or a writer waiting: told the port went.
         _rxReady.release();

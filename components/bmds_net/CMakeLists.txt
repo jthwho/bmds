@@ -94,7 +94,7 @@ if(COMMAND idf_component_register)
                                INCLUDE_DIRS include
                                PRIV_INCLUDE_DIRS ${BMDS_LWIP_INCLUDES}
                                REQUIRES bmds_core bmds_kernel
-                               PRIV_REQUIRES bmds_bench bmds_board bmds_fs bmds_io bmds_shell bmds_sysconf esp_driver_gpio esp_driver_gptimer esp_hw_support esp_mm
+                               PRIV_REQUIRES bmds_bench bmds_board bmds_fs bmds_io bmds_shell bmds_sysconf esp_driver_gpio esp_driver_gptimer esp_hal_emac esp_hw_support esp_mm
                                              mbedtls
                                              hal soc
                                WHOLE_ARCHIVE)

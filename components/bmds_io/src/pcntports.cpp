@@ -21,7 +21,7 @@
 #include <esp_rom_gpio.h>
 #include <hal/pcnt_ll.h>
 #include <soc/gpio_pins.h>
-#include <soc/pcnt_periph.h>
+#include <hal/pcnt_periph.h>
 #include <bmds/counterchip.h>
 #include <bmds/deadline.h>
 #include <bmds/detail/platform.h>
@@ -51,7 +51,7 @@ namespace PcntPorts {
 
         constexpr unsigned Units = CounterChip::Counts;
         constexpr int      Limit = 32767; // the counter's window: ±Limit, reset to 0 at either
-        static_assert(Units <= SOC_PCNT_ATTR(UNITS_PER_INST), "a unit each");
+        static_assert(Units <= PCNT_LL_UNITS_PER_INST, "a unit each");
 
         using Function = IoPcntSetup::Function;
         using Action = IoPcntSetup::Action;

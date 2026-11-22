@@ -918,13 +918,50 @@ until silicon v3; then test again.
 - **`restorePad()` must not cut a monitor's input:** a pad's saved input enable put back while
   another peripheral still reads it through the matrix took its signal away; a pad some input
   signal still selects keeps its input on (`iochipops.cpp`).
-- **ESP-IDF v6.1-dev-1's ADC continuous mode reads 0 on this P4 (v1.3):** its own
-  `continuous_read` example too; built with v6.1-dev-9279 it streams the right values on the same
-  board. One-shot reads are right with either. Its continuous driver also asserts unless
+- **ADC continuous mode reads all zeros when `LP_ADC`'s register clock is off at its start:**
+  `adc_continuous_start()` gives the units to the digital controller (`LP_ADC.meas1_mux`
+  `sar1_dig_force`, `set_controller`) before it turns on `LPPERI.clk_en.ck_en_lp_adc` (with the
+  units' power, in `adc_hal_digi_controller_config()`), and with that clock off the write is lost:
+  the DMA runs at the right rate, every word 0, the channel field too. A deleted one-shot unit
+  turns the clock off (`ADC_LL_POWER_SW_OFF`), and BMDS's boot entropy left it so too; ESP-IDF's
+  stock example happened to start with it on. Found by reading the registers either side of the
+  start (`meas1_mux` 3 before, 0 after; `clk_en` bit 23 off before, on after) and setting the bit
+  by hand. BMDS turns the clock on before the start (`adcports.cpp`, `devplan/io.md` §15.9).
+  The same driver takes one attenuation a unit (two give `ESP_ERR_INVALID_ARG`), asserts unless
   `conv_frame_size` is whole 64-byte cache lines (it checks only whole 4-byte conversions), and
-  one-shot and continuous mode can't share a unit (`adcports.cpp`, `devplan/io.md` §15.8).
+  shares no unit with one-shot mode.
 - **ESP-IDF's PARLIO receiver leaves its input signals routed** when deleted (a pad still read
   as `PARLIO_RX_DATAn`): keep their selectors and put them back (`parlioports.cpp`).
+- **PARLIO's receiver ring since ESP-IDF v6.1-dev-9279:** nodes of 4032 and, for the rest over
+  one node, two halves (16 KB: 2144 and 2144), so nodes can share a cache line; `esp_cache_msync()`
+  refuses a range not of whole lines (and refuses `UNALIGNED` for M2C), so sync the whole lines
+  round a node yourself. Its DMA bursts 32 bytes unless `dma_burst_size` (v6.1-dev-1: none).
+- **PARLIO's receive edge was inverted before ESP-IDF v6.1-dev-9279** (`rx_clk_i_inv = edge`, so
+  `PARLIO_SAMPLE_EDGE_NEG` sampled on the rise); v6.1-dev-9279 inverts for NEG. Measured with two
+  LEDC channels a quarter period apart: falling now reads the data high at the clock's fall.
+  The transmit side's register is the same in both (`tx_clk_*_inv = edge`).
+- **Moving to ESP-IDF v6.1-dev-9279** (from v6.1-dev-1, 2026-11-21; `devplan/esp-idf.md`) needed,
+  besides renames:
+  - **Kconfig defaults flipped:** pre-v3.0 silicon (`ESP32P4_SELECTS_REV_LESS_V3`) and newlib are
+    no longer the defaults (v3.1 on, picolibc). An `sdkconfig` made fresh, as `tools/release` and
+    `idf.py set-target` make one, built images this board refuses ("an app image isn't for this
+    chip's revision"): both are in `sdkconfig.defaults` now. The PSRAM supply is 1.8 V (1.9 is
+    gone): `memtest` and the PSRAM benchmarks show no change.
+  - **Clock sources are counted:** `esp_clk_tree_enable_src()` became `esp_clk_tree_acquire_src()`
+    / `release_src()`, and a source is gated when the last holder releases it (v6.1-dev-1 never
+    gated one). Every acquire needs its release.
+  - **Start-up hooks moved into their own files** (`esp_sys_event`): `crosscore_int.c` now installs
+    its interrupt from a pre-scheduler handler in the same file, so a `--wrap` of
+    `esp_crosscore_int_init()` no longer takes, and with BMDS's senders wrapped the file isn't
+    linked at all: no cross-core interrupt. BMDS registers its own (`crosscore.cpp`). Check after
+    any ESP-IDF move: every `--wrap` target still called from another file (`objdump -d` for calls
+    to the real symbol), and the image's `_esysev_*` registrations against ESP-IDF's.
+  - **mbedTLS 4.1:** the crypto is PSA's (`psa_hash_compute`, `psa_aead_encrypt`,
+    `psa_generate_key`); the RNG is PSA's own (no `f_rng` arguments); ESP-IDF's PSA AES-GCM driver
+    still calls `esp_aes_gcm_crypt_and_tag()`, so BMDS's 8-bit-GHASH wrap still sits on TLS's path.
+  - **HAL split into `esp_hal_*` components** (headers `soc/*_periph.h` → `hal/*_periph.h`, GDMA
+    allocation one call for both directions, DW-GDMA's `burst_mode` → `addr_inc_mode`, `burst_items`
+    → `burst_size`, `burst_len` → `axi_burst_len`, `SOC_NON_CACHEABLE_OFFSET` → `_SRAM`, TCM → SPM).
 - **Trying a stock ESP-IDF example on a BMDS board** without losing it: read the whole flash first
   (`esptool read-flash 0 0x1000000`, 75 s over USB), write only the example's app at `ota_0`
   (0x10000; the partition table, otadata and `/flash` untouched, BMDS's bootloader boots it if built
@@ -997,7 +1034,8 @@ until silicon v3; then test again.
   sector erases and with IDF's suspend-status check and a 100 µs tSUS too; idle, 20 writes passed.
   Off (IDF's default): none in 12 under the same load. Off since 2026-10-14
   (`devplan/update.md` §16): flash writes pause everything not in internal RAM, audio included.
-- **The second-stage bootloader can't fall back to `ota_1` on this IDF (v6.1-dev, ff97953b):**
+- **The second-stage bootloader can't fall back to `ota_1` on ESP-IDF v6.1-dev-1 (ff97953b)**
+  (fixed in v6.1-dev-9279's: a board has the fix once an update carries the bootloader):
   `bootloader_flash_read_allow_decrypt()` invalidates the cache at `FLASH_MMAP_VADDR` after moving
   its read window, which is at `FLASH_READ_VADDR`. With `ota_0`'s first page zeroed, `ota_1`'s
   header was read from the cache as zeros ("invalid magic byte"), though the flash held `e9`.

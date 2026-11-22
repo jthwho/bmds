@@ -156,12 +156,8 @@ namespace {
                 dma.tail = dma.head + Line;
                 dma.blockBytes = total;
                 dmaDone.create(1u, 0u);
-                gdma_channel_alloc_config_t txConfig = {};
-                txConfig.direction = GDMA_CHANNEL_DIRECTION_TX;
-                gdma_channel_alloc_config_t rxConfig = {};
-                rxConfig.direction = GDMA_CHANNEL_DIRECTION_RX;
-                if (gdma_new_axi_channel(&txConfig, &dma.tx) != ESP_OK) return false;
-                if (gdma_new_axi_channel(&rxConfig, &dma.rx) != ESP_OK) return false;
+                gdma_channel_alloc_config_t config = {};
+                if (gdma_new_axi_channel(&config, &dma.tx, &dma.rx) != ESP_OK) return false;
                 gdma_transfer_config_t transfer = {};
                 transfer.max_data_burst_size = 16;
                 transfer.access_ext_mem = true;

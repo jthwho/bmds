@@ -77,9 +77,9 @@ bmds_trap_exception:
          * esp32p4.md §5a). Such an SP goes to bmds_trap_bad_sp instead. Stacks can be in TCM, in
          * PSRAM, in internal RAM past IRAM's code, or in LP RAM (the RTC heap): in address order.
          * (An SP wrongly called bad would come back from a harmless trap on the emergency stack.) */
-        li      t0, SOC_TCM_LOW
+        li      t0, SOC_SPM_LOW
         bleu    sp, t0, bmds_trap_bad_sp
-        li      t0, SOC_TCM_HIGH
+        li      t0, SOC_SPM_HIGH
         bleu    sp, t0, 2f
         li      t0, SOC_EXTRAM_LOW
         bleu    sp, t0, bmds_trap_bad_sp

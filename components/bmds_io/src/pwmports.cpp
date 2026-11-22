@@ -82,7 +82,7 @@ namespace PwmPorts {
         constinit PsramObject<State> state;
 
         ledc_dev_t *hw() {
-                return LEDC_LL_GET_HW();
+                return LEDC_LL_GET_HW(0);
         }
 
         // ---- LEDC
@@ -93,17 +93,17 @@ namespace PwmPorts {
                 if (s.running++ > 0) return Error::Ok;
                 uint32_t hz = 0;
                 if (esp_clk_tree_src_get_freq_hz(Source, ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &hz) != ESP_OK ||
-                    hz == 0 || 1000000000000ull % hz != 0 || esp_clk_tree_enable_src(Source, true) != ESP_OK) {
+                    hz == 0 || 1000000000000ull % hz != 0 || esp_clk_tree_acquire_src(Source, nullptr) != ESP_OK) {
                         --s.running;
                         return Error::Invalid;
                 }
                 s.sourceHz = hz;
                 PERIPH_RCC_ATOMIC() {
-                        ledc_ll_enable_bus_clock(true);
-                        ledc_ll_enable_reset_reg(false);
+                        ledc_ll_enable_bus_clock(0, true);
+                        ledc_ll_reset_register(0);
                 }
                 PERIPH_RCC_ATOMIC() {
-                        ledc_ll_enable_clock(hw(), true);
+                        ledc_ll_enable_clock(0, true);
                         ledc_ll_set_slow_clk_sel(hw(), LEDC_SLOW_CLK_PLL_DIV);
                 }
                 IoUse uses[Timers];
@@ -123,13 +123,12 @@ namespace PwmPorts {
                 if (s.running == 0 || --s.running > 0) return;
                 for (unsigned t = 0; t < Timers; ++t) ledc_ll_timer_pause(hw(), Mode, ledc_timer_t(t));
                 PERIPH_RCC_ATOMIC() {
-                        ledc_ll_enable_clock(hw(), false);
+                        ledc_ll_enable_clock(0, false);
                 }
                 PERIPH_RCC_ATOMIC() {
-                        ledc_ll_enable_bus_clock(false);
-                        ledc_ll_enable_reset_reg(true);
+                        ledc_ll_enable_bus_clock(0, false);
                 }
-                (void)esp_clk_tree_enable_src(Source, false);
+                (void)esp_clk_tree_release_src(Source);
                 s.timerClaim.reset();
                 return;
         }

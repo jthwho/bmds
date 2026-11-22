@@ -144,7 +144,7 @@ namespace {
                 const Entry layout[Entries] = {
                         {napot(0, SOC_CPU_SUBSYSTEM_LOW), PMA_NAPOT | None}, // 0: null and below
                         {tor(SOC_CPU_SUBSYSTEM_HIGH), None},                 // 1: base
-                        {tor(SOC_TCM_LOW), PMA_TOR | None},                  // 2: CPU subsystem to TCM
+                        {tor(SOC_SPM_LOW), PMA_TOR | None},                  // 2: CPU subsystem to TCM
                         {tor(CPU_PERIPH_HIGH), None},                        // 3: base
                         {tor(SOC_IROM_LOW), PMA_TOR | None},                 // 4: CPU peripherals to flash
                         {tor(flashTextEnd), PMA_TOR | Rx},                   // 5: flash text
@@ -155,8 +155,8 @@ namespace {
                         {tor(iramEnd), PMA_TOR | Rx},                        // 10: IRAM text
                         {tor(SOC_DRAM_HIGH), PMA_TOR | Rw},                  // 11: the rest of internal RAM
                         {tor(SOC_PERIPHERAL_LOW), PMA_TOR | None},           // 12: internal RAM to peripherals
-                        {napot(SOC_IROM_LOW, SOC_PERIPHERAL_LOW - SOC_IROM_LOW), PMA_NAPOT | Rwx}, // 13: cacheable
-                        {tor(uint32_t(SOC_DRAM_HIGH) + uint32_t(SOC_NON_CACHEABLE_OFFSET)), None}, // 14: base
+                        {napot(SOC_IROM_LOW, SOC_PERIPHERAL_LOW - SOC_IROM_LOW), PMA_NAPOT | Rwx},      // 13: cacheable
+                        {tor(uint32_t(SOC_DRAM_HIGH) + uint32_t(SOC_NON_CACHEABLE_OFFSET_SRAM)), None}, // 14: base
                         {tor(UINT32_MAX), PMA_TOR | None}, // 15: uncached internal RAM to the top
                 };
 

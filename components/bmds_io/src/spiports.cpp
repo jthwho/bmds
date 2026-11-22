@@ -97,6 +97,7 @@ namespace SpiPorts {
                         // whose cache lines are synced whole whatever a piece's length.
                         spi_hal_context_t    hal = {};
                         intr_handle_t        intr = nullptr;
+                        bool                 sourceHeld = false; // SPI_CLK_SRC_DEFAULT acquired
                         Semaphore            dmaDone{1, 0};
                         uint8_t             *dtx = nullptr;
                         uint8_t             *drx = nullptr;
@@ -166,6 +167,9 @@ namespace SpiPorts {
                                         if (intr != nullptr) esp_intr_free(intr);
                                         intr = nullptr;
                                         spi_hal_deinit(&hal);
+                                        if (sourceHeld)
+                                                (void)esp_clk_tree_release_src(soc_module_clk_t(SPI_CLK_SRC_DEFAULT));
+                                        sourceHeld = false;
                                         Memory::free(dtx);
                                         Memory::free(drx);
                                         dtx = drx = nullptr;
@@ -243,7 +247,7 @@ namespace SpiPorts {
                                    &intr) != ESP_OK)
                         return Error::IoError;
                 spi_hal_init(&hal, uint32_t(host()));
-                spi_hal_config_io_default_level(&hal, false);
+                spi_hal_set_data_pin_idle_level(&hal, false);
                 spi_ll_clear_int_stat(hal.hw);
                 (void)dmaDone.tryAcquire();
                 esp_intr_enable(intr);
@@ -257,8 +261,11 @@ namespace SpiPorts {
                 if (applied == &d && appliedMode == mode && appliedHz == hz) return Error::Ok;
                 const spi_clock_source_t src = SPI_CLK_SRC_DEFAULT;
                 uint32_t                 srcHz = 0;
-                if (esp_clk_tree_enable_src(soc_module_clk_t(src), true) != ESP_OK ||
-                    esp_clk_tree_src_get_freq_hz(soc_module_clk_t(src), ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED,
+                if (!sourceHeld) {
+                        if (esp_clk_tree_acquire_src(soc_module_clk_t(src), nullptr) != ESP_OK) return Error::IoError;
+                        sourceHeld = true;
+                }
+                if (esp_clk_tree_src_get_freq_hz(soc_module_clk_t(src), ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED,
                                                  &srcHz) != ESP_OK)
                         return Error::IoError;
                 const uint32_t         preDiv = preDivFor(srcHz, hz);
@@ -332,13 +339,13 @@ namespace SpiPorts {
                         spi_hal_push_tx_buffer(&hal, &f);
                         spi_hal_enable_data_line(hal.hw, (!halDev.half_duplex && to != nullptr) || !readOnly,
                                                  to != nullptr);
-                        spi_hal_user_start(&hal);
+                        spi_hal_user_start(&hal, false);
                         if (dmaDone.acquire(timeoutMs).isError()) {
                                 bmdsWarn("io: %s: a transfer didn't end", owner);
                                 return Error::IoError;
                         }
                         if (to != nullptr) {
-                                spi_hal_fetch_result(&hal);
+                                spi_hal_get_result(&hal, rx, n * 8);
                                 std::memcpy(to, rx, n);
                         }
                         return Error::Ok;
@@ -372,13 +379,13 @@ namespace SpiPorts {
                 t.rcv_buffer = receive;
                 spi_hal_setup_trans(&hal, &halDev, &t);
                 if (receive != nullptr) {
-                        spicommon_dma_desc_setup_link(ctx->dmadesc_rx, receive, int(n), true);
+                        spicommon_dma_desc_setup_link(ctx, 0, receive, int(n), true, nullptr);
                         gdma_reset(ctx->rx_dma_chan);
                         spi_hal_hw_prepare_rx(hal.hw);
                         gdma_start(ctx->rx_dma_chan, intptr_t(ctx->dmadesc_rx));
                 }
                 if (send != nullptr) {
-                        spicommon_dma_desc_setup_link(ctx->dmadesc_tx, send, int(n), false);
+                        spicommon_dma_desc_setup_link(ctx, 0, send, int(n), false, nullptr);
                         gdma_reset(ctx->tx_dma_chan);
                         spi_hal_hw_prepare_tx(hal.hw);
                         gdma_start(ctx->tx_dma_chan, intptr_t(ctx->dmadesc_tx));
@@ -388,7 +395,7 @@ namespace SpiPorts {
                 if (send == nullptr) spi_ll_dma_tx_enable(hal.hw, false);
                 spi_hal_enable_data_line(hal.hw, (!halDev.half_duplex && receive != nullptr) || send != nullptr,
                                          receive != nullptr);
-                spi_hal_user_start(&hal);
+                spi_hal_user_start(&hal, false);
                 if (dmaDone.acquire(timeoutMs).isError()) {
                         bmdsWarn("io: %s: a DMA transfer didn't end", owner);
                         return Error::IoError;

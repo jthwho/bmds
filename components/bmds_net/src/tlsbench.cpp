@@ -17,8 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <aes/esp_aes_gcm.h>
-#include <mbedtls/chachapoly.h>
-#include <mbedtls/gcm.h>
+#include <psa/crypto.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <bmds/bench.h>
@@ -40,6 +39,7 @@ BMDS_NAMESPACE_BEGIN
 namespace {
 
         constexpr size_t RecordBytes = 16384;
+        constexpr size_t TagBytes = 16;
         constexpr int    Records = 64; // 1 MB a run
 
         struct Buffers {
@@ -53,7 +53,7 @@ namespace {
 
         Error allocate(Buffers &b, MemSpace space) {
                 b.in = static_cast<uint8_t *>(Memory::alloc(space, RecordBytes));
-                b.out = static_cast<uint8_t *>(Memory::alloc(space, RecordBytes));
+                b.out = static_cast<uint8_t *>(Memory::alloc(space, RecordBytes + TagBytes)); // PSA: text and tag
                 if (b.in == nullptr || b.out == nullptr) return Error::NoMem;
                 for (size_t i = 0; i < RecordBytes; ++i) b.in[i] = static_cast<uint8_t>(i * 7);
                 return Error::Ok;
@@ -77,14 +77,15 @@ namespace {
                 uint8_t              iv[12] = {}, aad[13] = {}, tag[16];
                 esp_gcm_context      gcm;
                 esp_aes_gcm_init(&gcm);
-                Error err = esp_aes_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, Key, 128) == 0 ? Error::Ok : Error::IoError;
+                Error err = esp_aes_gcm_setkey(&gcm, 2 /* MBEDTLS_CIPHER_ID_AES */, Key, 128) == 0 ? Error::Ok
+                                                                                                   : Error::IoError;
                 if (err.isOk()) {
                         err = mbPerS(ctx, metric, [&] {
                                 ++iv[11];
-                                return espIdf ? __real_esp_aes_gcm_crypt_and_tag(&gcm, MBEDTLS_GCM_ENCRYPT, RecordBytes,
-                                                                                 iv, sizeof(iv), aad, sizeof(aad), b.in,
+                                return espIdf ? __real_esp_aes_gcm_crypt_and_tag(&gcm, ESP_AES_ENCRYPT, RecordBytes, iv,
+                                                                                 sizeof(iv), aad, sizeof(aad), b.in,
                                                                                  b.out, sizeof(tag), tag)
-                                              : esp_aes_gcm_crypt_and_tag(&gcm, MBEDTLS_GCM_ENCRYPT, RecordBytes, iv,
+                                              : esp_aes_gcm_crypt_and_tag(&gcm, ESP_AES_ENCRYPT, RecordBytes, iv,
                                                                           sizeof(iv), aad, sizeof(aad), b.in, b.out,
                                                                           sizeof(tag), tag);
                         });
@@ -100,17 +101,24 @@ namespace {
                 {
                         Buffers b;
                         if (Error err = allocate(b, MemSpace::Psram); err.isError()) return err;
-                        static const uint8_t       Key[32] = {1, 2, 3};
-                        uint8_t                    nonce[12] = {}, aad[13] = {}, tag[16];
-                        mbedtls_chachapoly_context cc;
-                        mbedtls_chachapoly_init(&cc);
-                        (void)mbedtls_chachapoly_setkey(&cc, Key);
+                        // Through PSA, as TLS's records go (a key slot looked up each call).
+                        static const uint8_t Key[32] = {1, 2, 3};
+                        uint8_t              nonce[12] = {}, aad[13] = {};
+                        psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+                        psa_set_key_type(&attributes, PSA_KEY_TYPE_CHACHA20);
+                        psa_set_key_bits(&attributes, 256);
+                        psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_ENCRYPT);
+                        psa_set_key_algorithm(&attributes, PSA_ALG_CHACHA20_POLY1305);
+                        psa_key_id_t key = 0;
+                        if (psa_import_key(&attributes, Key, sizeof(Key), &key) != PSA_SUCCESS) return Error::IoError;
                         const Error err = mbPerS(ctx, "chacha20_poly1305", [&] {
                                 ++nonce[11];
-                                return mbedtls_chachapoly_encrypt_and_tag(&cc, RecordBytes, nonce, aad, sizeof(aad),
-                                                                          b.in, b.out, tag);
+                                size_t written = 0;
+                                return int(psa_aead_encrypt(key, PSA_ALG_CHACHA20_POLY1305, nonce, sizeof(nonce), aad,
+                                                            sizeof(aad), b.in, RecordBytes, b.out,
+                                                            RecordBytes + TagBytes, &written));
                         });
-                        mbedtls_chachapoly_free(&cc);
+                        (void)psa_destroy_key(key);
                         if (err.isError()) return err;
                 }
                 {

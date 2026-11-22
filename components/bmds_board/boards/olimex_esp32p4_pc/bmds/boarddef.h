@@ -120,7 +120,7 @@ namespace Detail {
                                 {.heapCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT},
                                 {.heapCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT},
                                 {.heapCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_CACHE_ALIGNED},
-                                {.heapCaps = MALLOC_CAP_TCM},
+                                {.heapCaps = MALLOC_CAP_SPM},
                         },
                 .i2c =
                         {

@@ -54,7 +54,7 @@ if(COMMAND idf_component_register)
                                     src/waketimer.cpp
                                INCLUDE_DIRS include
                                REQUIRES bmds_core bmds_board freertos
-                               PRIV_REQUIRES app_update bootloader_support esp_app_format esp_driver_gptimer esp_hw_support esp_mm esp_psram esp_system esp_timer hal heap log
+                               PRIV_REQUIRES app_update bootloader_support esp_app_format esp_driver_gptimer esp_hw_support esp_mm esp_psram esp_system esp_hal_systimer esp_timer hal heap log
                                LDFRAGMENTS linker.lf)
         bmds_target_options(${COMPONENT_LIB})
         # memory.cpp reads the PSRAM heap's TLSF bitmaps (IDF's private heap list).
@@ -73,8 +73,7 @@ if(COMMAND idf_component_register)
                                                          "-Wl,--wrap=vPortExitCriticalMultiCore"
                                                          "-Wl,--wrap=xPortInIsrContext")
         # IDF's cross-core interrupt is crosscore.cpp's: its reasons atomic, not behind a spinlock (§18).
-        target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_crosscore_int_init"
-                                                         "-Wl,--wrap=esp_crosscore_int_send_yield"
+        target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_crosscore_int_send_yield"
                                                          "-Wl,--wrap=esp_crosscore_int_send_freq_switch"
                                                          "-Wl,--wrap=esp_crosscore_int_send_gdb_call"
                                                          "-Wl,--wrap=esp_crosscore_int_send_print_backtrace"

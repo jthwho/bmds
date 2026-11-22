@@ -21,8 +21,9 @@ import re
 import sys
 
 # Per chip: where its headers are, and its resources after the pads (devplan/io.md §3.2), in
-# order. Each kind: (IoKind, name, first instance, count, soc_caps macro the count is checked
-# against or None). Counts ESP-IDF no longer states in soc_caps.h say where they come from.
+# order. Each kind: (IoKind, name, first instance, count, the macro the count is checked against or
+# None). A macro is soc_caps.h's, or "HEADER:MACRO" with HEADER under ESP-IDF's components (where
+# a later ESP-IDF moved it); counts ESP-IDF doesn't state say where they come from.
 CHIPS = {
     "esp32p4": {
         "name": "ESP32-P4",
@@ -40,23 +41,26 @@ CHIPS = {
             ("Spi", "spi", 2, 2, None),
             # hal/esp32p4/include/hal/i2s_ll.h: I2S_LL_GET_HW(0..2).
             ("I2s", "i2s", 0, 3, None),
-            ("Rmt", "rmt", 0, 8, "SOC_RMT_CHANNELS_PER_GROUP"),
+            ("Rmt", "rmt", 0, 8, "esp_hal_rmt/esp32p4/include/hal/rmt_ll.h:RMT_LL_CHANS_PER_INST"),
             ("Ledc", "ledc", 0, 8, "SOC_LEDC_CHANNEL_NUM"),
             ("LedcTimer", "ledc-timer", 0, 4, "SOC_LEDC_TIMER_NUM"),
             # TRM, PCNT: four units in the one group (pcnt_ll.h: PCNT_LL_GET_HW(0)).
             ("Pcnt", "pcnt", 0, 4, None),
-            ("Mcpwm", "mcpwm", 0, 2, "SOC_MCPWM_GROUPS"),
+            ("Mcpwm", "mcpwm", 0, 2, "esp_hal_mcpwm/esp32p4/include/hal/mcpwm_ll.h:MCPWM_LL_GROUP_NUM"),
             ("Twai", "twai", 0, 3, "SOC_TWAI_CONTROLLER_NUM"),
             ("Sdmmc", "sdmmc", 0, 2, "SOC_SDMMC_NUM_SLOTS"),
             ("Emac", "emac", 0, 1, None),
-            ("Uhci", "uhci", 0, 1, "SOC_UHCI_NUM"),
-            ("Parlio", "parlio", 0, 1, "SOC_PARLIO_GROUPS"),
+            ("Uhci", "uhci", 0, 1, "esp_hal_uart/esp32p4/include/hal/uhci_ll.h:UHCI_LL_NUM"),
+            ("Parlio", "parlio", 0, 1, "esp_hal_parlio/esp32p4/include/hal/parlio_ll.h:PARLIO_LL_INST_NUM"),
             ("UsbSerialJtag", "usb-serial-jtag", 0, 1, None),
         ],
         # Signal groups whose first word isn't the peripheral's own name.
         "group_names": {"PWM0": "MCPWM0", "PWM1": "MCPWM1", "SD": "SDMMC", "CORE": "DEDIC_GPIO",
                         "SIG": "LOOPBACK", "HP": "PROBE", "MII": "EMAC"},
         "gpio_function": 1,
+        # The datasheet's Boot Configurations. ESP-IDF's GPIO page listed them till v6.1-dev-9279,
+        # which points to the datasheet instead; any the page still marks are added.
+        "strapping": [34, 35, 36, 37, 38],
     },
 }
 
@@ -73,11 +77,18 @@ def read(path):
         fail("%s: %s" % (path, e.strerror))
 
 
-def caps_value(caps, macro):
-    m = re.search(r"^#define\s+%s\s+\(?\s*(\d+)\s*U?\s*\)?" % re.escape(macro), caps, re.M)
+def caps_value(caps, macro, where="soc_caps.h"):
+    m = re.search(r"^#define\s+%s\s+\(?\s*(\d+)\s*U?L?\s*\)?" % re.escape(macro), caps, re.M)
     if not m:
-        fail("soc_caps.h has no %s" % macro)
+        fail("%s has no %s" % (where, macro))
     return int(m.group(1))
+
+
+def count_of(idf, caps, macro):
+    if ":" not in macro:
+        return caps_value(caps, macro)
+    header, name = macro.split(":", 1)
+    return caps_value(read(os.path.join(idf, "components", header)), name, header)
 
 
 def io_mux_functions(text, pads):
@@ -147,7 +158,7 @@ def signals(text):
     return inputs, outputs, gpio_out
 
 
-def doc_pads(text, pads):
+def doc_pads(text, pads, known_strapping=()):
     # The pin table: rows of "* - GPIOn", "- analog", "- LP GPIO", "- comments".
     rows = {}
     body = text.split(".. list-table::", 1)
@@ -173,10 +184,10 @@ def doc_pads(text, pads):
             cells.append("")
         rows[int(m.group(1))] = cells
         i = j
-    strapping = set()
+    strapping = set(known_strapping)
     m = re.search(r"Strapping pin:? (.*?) are strapping pins", text)
     if m:
-        strapping = {int(n) for n in re.findall(r"GPIO(\d+)", m.group(1))}
+        strapping |= {int(n) for n in re.findall(r"GPIO(\d+)", m.group(1))}
     out = []
     for pad in range(pads):
         analog, lp, note = rows.get(pad, ["", "", ""])
@@ -211,8 +222,8 @@ def generate(idf, target):
     pads = caps_value(caps, chip["pads"])
     lp_count = caps_value(caps, chip["lp_io"])
     for kind, name, first, count, macro in chip["kinds"]:
-        if macro is not None and caps_value(caps, macro) != count:
-            fail("%s: %d in the script, %s says %d" % (name, count, macro, caps_value(caps, macro)))
+        if macro is not None and count_of(idf, caps, macro) != count:
+            fail("%s: %d in the script, %s says %d" % (name, count, macro, count_of(idf, caps, macro)))
     muxes = [io_mux_functions(read(os.path.join(soc, p)), pads) for p in chip["io_mux"]]
     for other, path in zip(muxes[1:], chip["io_mux"][1:]):
         if other != muxes[0]:
@@ -227,7 +238,7 @@ def generate(idf, target):
     const0 = int(re.search(r"GPIO_MATRIX_CONST_ZERO_INPUT\s+\((0x[0-9A-Fa-f]+|\d+)\)", sig_header).group(1), 0)
     const1 = int(re.search(r"GPIO_MATRIX_CONST_ONE_INPUT\s+\((0x[0-9A-Fa-f]+|\d+)\)", sig_header).group(1), 0)
     docs = doc_pads(read(os.path.join(idf, "docs", "en", "api-reference", "peripherals", "gpio", target + ".inc")),
-                    pads)
+                    pads, chip.get("strapping", ()))
     if sum(1 for d in docs if d["lp"] >= 0) != lp_count:
         fail("the GPIO doc names %d LP IOs, %s says %d" %
              (sum(1 for d in docs if d["lp"] >= 0), chip["lp_io"], lp_count))

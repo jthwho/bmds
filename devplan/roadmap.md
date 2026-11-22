@@ -344,9 +344,11 @@ Plan: [`input.md`](input.md).
   interrupt is late); loopback exact to 20 MB/s on bmds0. Found: the SDK's `O_NONBLOCK` blocked a
   write larger than the room: fixed (programs.md §22: `write_now`, slot 146, streams' rooms).
   Step 8d built (§15.8): ADC readings (`io/adc0`, `/dev/adc0`, `adc_ctl` slot 147, `io adc`,
-  the battery sense's divider) calibrated on bmds0; streaming built but refused: ESP-IDF
-  v6.1-dev-1's continuous driver reads 0 on the P4 (a later ESP-IDF's doesn't). Next: a later
-  ESP-IDF (then ADC streaming), a longer logic strip, a second chip.
+  the battery sense's divider) calibrated on bmds0. ESP-IDF moved to v6.1-dev-9279
+  (`devplan/esp-idf.md`: mbedTLS 4, GCC 16, a lost cross-core interrupt found and fixed), and ADC
+  streaming on (§15.9: an order of writes in ESP-IDF's start, worked around); PARLIO's receiver
+  fixed for the new driver's ring (A/B against the old ESP-IDF, §15.9). Next: a longer logic strip,
+  a second chip.
 
 ## Phase 6 — Graphics
 

@@ -1191,16 +1191,18 @@ TEST_CASE("IoAdcSetup: io/adc0's value") {
                 CHECK(a.channel[0] == 4);
                 CHECK(a.atten[0] == A::Db12);
                 CHECK(a.rate == 0);
-                REQUIRE(a.parse(chip, "pins=20,16:6,49:2.5db atten=0 rate=10k buffer=8192 force", why).isOk());
+                REQUIRE(a.parse(chip, "pins=20,16:6,49:2.5db atten=0 force", why).isOk());
                 CHECK(a.pinCount == 3);
                 CHECK(a.atten[0] == A::Db0);
                 CHECK(a.atten[1] == A::Db6);
                 CHECK(a.unit[2] == 1);
                 CHECK(a.channel[2] == 0);
                 CHECK(a.atten[2] == A::Db2_5);
+                CHECK(a.force);
+                // A stream: one attenuation a unit (ADC2's own may differ).
+                REQUIRE(a.parse(chip, "pins=20,16,49:2.5db atten=6 rate=10k buffer=8192", why).isOk());
                 CHECK(a.rate == 10000);
                 CHECK(a.buffer == 8192);
-                CHECK(a.force);
                 CHECK(a.indexOf(49) == 2);
                 CHECK(a.indexOf(17) == -1);
                 CHECK(IoAdcSetup::centiDb(A::Db2_5) == 250);
@@ -1225,6 +1227,8 @@ TEST_CASE("IoAdcSetup: io/adc0's value") {
                 CHECK(std::strcmp(why, "buffer= is a stream's: it needs rate=") == 0);
                 CHECK(a.parse(chip, "pins=20 rate=1k buffer=100", why) == Error::Invalid);
                 CHECK(a.parse(chip, "pins=20 bits=12", why) == Error::Invalid);
+                CHECK(a.parse(chip, "pins=20,16:6 rate=10k", why) == Error::Invalid);
+                CHECK(std::strcmp(why, "a stream takes one attenuation a unit: GPIO20 and GPIO16 differ") == 0);
         }
 
         SUBCASE("equality") {

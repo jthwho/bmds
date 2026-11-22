@@ -646,7 +646,7 @@ namespace {
                 if (ctx.shell().launcher() == nullptr) return report(ctx, Error::NotSupported);
                 auto [before, berr] = wm.windows();
                 if (berr.isError()) return report(ctx, berr);
-                char                at[8];
+                char at[12];
                 std::snprintf(at, sizeof(at), "%ld", 32 + 32 * number);
                 const StringView argv[] = {"terminal", at, at};
                 List<String>     env;

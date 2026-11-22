@@ -69,7 +69,7 @@ DEFAULT_REPO = "jthwho/bmds"
 
 # The chip variants (release.md §3a): the settings each adds to sdkconfig.defaults.
 VARIANTS = {
-    "p4r1": [],  # silicon before v3.0: IDF's default (ESP32P4_SELECTS_REV_LESS_V3)
+    "p4r1": [],  # silicon before v3.0: sdkconfig.defaults' (ESP32P4_SELECTS_REV_LESS_V3)
     "p4r3": ["CONFIG_ESP32P4_SELECTS_REV_LESS_V3=n"],  # v3.0 on: not published yet (untested)
 }
 

@@ -31,7 +31,7 @@
 #include <freertos/task.h>
 #include <hal/emac_hal.h>
 #include <hal/emac_ll.h>
-#include <soc/emac_periph.h>
+#include <hal/emac_periph.h>
 #include <soc/emac_reg.h>
 #include <soc/ext_mem_defs.h>
 #include <soc/interrupts.h>
@@ -59,7 +59,7 @@ namespace {
         using RxDesc = eth_dma_rx_descriptor_t;
         using TxDesc = eth_dma_tx_descriptor_t;
 
-        constexpr size_t DescBytes = EMAC_HAL_DMA_DESC_SIZE; // one cache line each
+        constexpr size_t DescBytes = 32;                     // packed (reached uncached, so no line each)
         constexpr size_t CacheLine = 128;                    // the largest line (L2)
         static_assert(sizeof(RxDesc) == DescBytes && sizeof(TxDesc) == DescBytes);
         static_assert(EthernetDevice::BufferBytes % CacheLine == 0);
@@ -197,15 +197,16 @@ namespace {
         }
 
         // The CPU reaches the descriptors through internal RAM's uncached view (address +
-        // SOC_NON_CACHEABLE_OFFSET, as ESP-IDF's GDMA lists do): no cache operation for them, each
+        // SOC_NON_CACHEABLE_OFFSET_SRAM, as ESP-IDF's GDMA lists do): no cache operation for them, each
         // of which cost 4-5 µs with interrupts masked (devplan/network.md §30). The DMA is given the
         // ordinary addresses. Nothing may touch them through the cache after start().
         template <typename T> T *uncached(T *p) {
-                return reinterpret_cast<T *>(reinterpret_cast<uintptr_t>(p) + SOC_NON_CACHEABLE_OFFSET);
+                return reinterpret_cast<T *>(reinterpret_cast<uintptr_t>(p) + SOC_NON_CACHEABLE_OFFSET_SRAM);
         }
 
         template <typename T> uint32_t busAddress(T *uncachedPointer) {
-                return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(uncachedPointer) - SOC_NON_CACHEABLE_OFFSET);
+                return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(uncachedPointer) -
+                                             SOC_NON_CACHEABLE_OFFSET_SRAM);
         }
 
         // Orders the CPU's writes to descriptors (the owner bit last) and the DMA's poll demand.
@@ -639,7 +640,7 @@ void EthernetDevice::run() {
                         SpinLock::Locker lock(_stateLock);
                         if (status != 0) ++_counters.interrupts;
                         if (status & EMAC_LL_DMA_RECEIVE_BUFF_UNAVAILABLE_INTR) ++_counters.rxNoBuffer;
-                        if (status & EMAC_LL_DMA_FATAL_BUS_ERROR_INRT) bmdsErr("%s: DMA bus error", _name);
+                        if (status & EMAC_LL_DMA_FATAL_BUS_ERROR_INTR) bmdsErr("%s: DMA bus error", _name);
                         const uint32_t missed = EMAC_DMA.dmamissedfr.val; // clears on read
                         _counters.rxMissed += missed & 0xffff;
                         _counters.rxOverflow += (missed >> 17) & 0x7ff;

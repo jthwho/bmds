@@ -10,15 +10,18 @@
  * and switches tasks on the way out of it. IDF keeps each core's reasons behind a spinlock, taken
  * by the sender and again by the handler: two critical sections a switch, ~360 cycles of a
  * same-core switch's ~3,400. Here the reasons are an atomic word (amoor to send, amoswap to
- * take). These replace esp_crosscore_int_init() and the senders (-Wl,--wrap, CMakeLists.txt), so
- * IDF's handler is never installed; the interrupt and its register are IDF's own, which
- * vPortYield() reads while it waits for the switch.
+ * take). These replace the senders (-Wl,--wrap, CMakeLists.txt) and the handler: IDF's file is
+ * then never linked, and with it goes its pre-scheduler handler that installs its own (since
+ * ESP-IDF v6.1-dev-9279; before, its init was called from elsewhere and wrapped), so ours is
+ * registered the same way. The interrupt and its register are IDF's own, which vPortYield() reads
+ * while it waits for the switch.
  */
 
 #include <esp_attr.h>
 #include <esp_cpu.h>
 #include <esp_debug_helpers.h>
 #include <esp_intr_alloc.h>
+#include <esp_private/esp_sys_event_app_init.h>
 #include <esp_err.h>
 #include <freertos/FreeRTOS.h>
 #include <hal/crosscore_int_ll.h>
@@ -62,7 +65,11 @@ namespace {
 
 } // namespace
 
-extern "C" void __wrap_esp_crosscore_int_init(void) {
+// Each core's handler, before its scheduler starts: ESP-IDF's esp_crosscore_int_init() did it (it
+// still would, but its file, which registers it, is linked only for the senders replaced here).
+ESP_PRE_SCHEDULER_HANDLER_REGISTER_PER_CPU(bmdsCrosscoreInit, 120) {
+        (void)user_arg;
+        (void)ctx;
         const int core = int(esp_cpu_get_core_id());
         __atomic_store_n(&reasons[core], 0u, __ATOMIC_RELEASE);
         int flags = 0;
@@ -70,8 +77,7 @@ extern "C" void __wrap_esp_crosscore_int_init(void) {
         flags |= ESP_INTR_FLAG_IRAM;
 #endif
         const int source = core == 0 ? SYS_CPU_INTR_FROM_CPU_0_SOURCE : SYS_CPU_INTR_FROM_CPU_1_SOURCE;
-        ESP_ERROR_CHECK(esp_intr_alloc(source, flags, handler, &reasons[core], nullptr));
-        return;
+        return esp_intr_alloc(source, flags, handler, &reasons[core], nullptr);
 }
 
 extern "C" IRAM_ATTR void __wrap_esp_crosscore_int_send_yield(int core) {

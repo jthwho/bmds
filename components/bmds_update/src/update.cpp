@@ -16,7 +16,7 @@
 #include <esp_attr.h>
 #include <esp_chip_info.h>
 #include <esp_flash.h>
-#include <esp_flash_internal.h>
+#include <esp_private/esp_flash_internal.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <esp_system.h>

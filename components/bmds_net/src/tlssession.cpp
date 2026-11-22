@@ -16,13 +16,12 @@
 #include <new>
 #include <esp_crt_bundle.h>
 #include <esp_log.h>
-#include <esp_random.h>
 #include <mbedtls/net_sockets.h>
 #include <mbedtls/pk.h>
-#include <mbedtls/sha256.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509.h>
 #include <mbedtls/x509_crt.h>
+#include <psa/crypto.h>
 #include <bmds/clock.h>
 #include <bmds/datetime.h>
 #include <bmds/memory.h>
@@ -72,11 +71,6 @@ struct TlsSession::Impl {
 };
 
 namespace {
-
-        int random(void *, unsigned char *out, size_t bytes) {
-                esp_fill_random(out, bytes);
-                return 0;
-        }
 
         // What `NoVerify` and a refusal report: mbedTLS's flags as ours.
         uint32_t verifyBits(uint32_t flags) {
@@ -149,7 +143,8 @@ namespace {
                         *flags &= ~uint32_t(MBEDTLS_X509_BADCERT_NOT_TRUSTED | MBEDTLS_X509_BADCERT_BAD_MD);
                 if (depth != 0) return 0;
                 TlsSession::Peer &p = *static_cast<TlsSession::Peer *>(arg);
-                (void)mbedtls_sha256(crt->raw.p, crt->raw.len, p.sha256, 0);
+                size_t            hashed = 0;
+                (void)psa_hash_compute(PSA_ALG_SHA_256, crt->raw.p, crt->raw.len, p.sha256, sizeof(p.sha256), &hashed);
                 if (mbedtls_x509_dn_gets(p.subject, sizeof(p.subject), &crt->subject) < 0) p.subject[0] = '\0';
                 if (mbedtls_x509_dn_gets(p.issuer, sizeof(p.issuer), &crt->issuer) < 0) p.issuer[0] = '\0';
                 p.notBefore = unixSeconds(crt->valid_from);
@@ -163,7 +158,8 @@ namespace {
         int verifyClient(void *arg, mbedtls_x509_crt *crt, int depth, uint32_t *) {
                 if (depth != 0) return 0;
                 TlsSession::Peer &p = *static_cast<TlsSession::Peer *>(arg);
-                (void)mbedtls_sha256(crt->raw.p, crt->raw.len, p.sha256, 0);
+                size_t            hashed = 0;
+                (void)psa_hash_compute(PSA_ALG_SHA_256, crt->raw.p, crt->raw.len, p.sha256, sizeof(p.sha256), &hashed);
                 if (mbedtls_x509_dn_gets(p.subject, sizeof(p.subject), &crt->subject) < 0) p.subject[0] = '\0';
                 if (mbedtls_x509_dn_gets(p.issuer, sizeof(p.issuer), &crt->issuer) < 0) p.issuer[0] = '\0';
                 p.notBefore = unixSeconds(crt->valid_from);
@@ -214,10 +210,9 @@ namespace {
         }
 
         int parseKey(mbedtls_pk_context &key, ByteSpan data) {
-                if (!isPem(data))
-                        return mbedtls_pk_parse_key(&key, data.data(), data.size(), nullptr, 0, random, nullptr);
+                if (!isPem(data)) return mbedtls_pk_parse_key(&key, data.data(), data.size(), nullptr, 0);
                 return withPem(data, [&](const unsigned char *p, size_t n) {
-                        return mbedtls_pk_parse_key(&key, p, n, nullptr, 0, random, nullptr);
+                        return mbedtls_pk_parse_key(&key, p, n, nullptr, 0);
                 });
         }
 
@@ -319,7 +314,7 @@ Result<TlsSession *> TlsSession::create(Socket &socket, const Config &config, St
                                                      certPem.size() + 1);
                 if (ret == 0)
                         ret = mbedtls_pk_parse_key(&m->key, reinterpret_cast<const unsigned char *>(keyPem.cStr()),
-                                                   keyPem.size() + 1, nullptr, 0, random, nullptr);
+                                                   keyPem.size() + 1, nullptr, 0);
                 if (!keyPem.isEmpty()) std::memset(const_cast<char *>(keyPem.cStr()), 0, keyPem.size());
                 if (ret != 0) {
                         if (err.isOk()) (void)why.append("the board's TLS certificate doesn't parse");
@@ -338,7 +333,6 @@ Result<TlsSession *> TlsSession::create(Socket &socket, const Config &config, St
                 mbedtls_ssl_conf_authmode(&m->conf, !clientCert            ? MBEDTLS_SSL_VERIFY_NONE
                                                     : noVerify || optional ? MBEDTLS_SSL_VERIFY_OPTIONAL
                                                                            : MBEDTLS_SSL_VERIFY_REQUIRED);
-                mbedtls_ssl_conf_rng(&m->conf, random, nullptr);
                 if (clientCert && !config.ca.isEmpty()) mbedtls_ssl_conf_ca_chain(&m->conf, &m->roots, nullptr);
                 mbedtls_ssl_conf_verify(&m->conf, verifyClient, &m->session._peer);
                 mbedtls_ssl_conf_ciphersuites(&m->conf, Suites);
@@ -347,7 +341,6 @@ Result<TlsSession *> TlsSession::create(Socket &socket, const Config &config, St
                 // `NoVerify`: the chain is still checked, so `verifyFlags()` says what passed.
                 mbedtls_ssl_conf_authmode(&m->conf,
                                           noVerify ? MBEDTLS_SSL_VERIFY_OPTIONAL : MBEDTLS_SSL_VERIFY_REQUIRED);
-                mbedtls_ssl_conf_rng(&m->conf, random, nullptr);
                 ret = esp_crt_bundle_attach(&m->conf) == ESP_OK ? 0 : MBEDTLS_ERR_SSL_ALLOC_FAILED;
         }
         if (ret == 0) {

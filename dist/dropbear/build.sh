@@ -11,8 +11,9 @@ for f in monocypher monocypher-ed25519; do
 done
 "$AR" rcs libmonocypher.a monocypher.o monocypher-ed25519.o
 # musl has a fork() that fails: Dropbear must take its no-fork paths. Its log goes to syslog(),
-# so /dev/log and the system log (devplan/logging.md).
-ac_cv_func_fork=no CPPFLAGS="-I$MONO" "$SRC/configure" --host=riscv32-unknown-elf CC="$CC" AR="$AR" RANLIB="$AR s" \
+# so /dev/log and the system log (devplan/logging.md). GCC 16 finds scp.c's statbytes set and not
+# used: it feeds the progress meter, compiled out here.
+ac_cv_func_fork=no CPPFLAGS="-I$MONO" CFLAGS="-Wno-unused-but-set-variable" "$SRC/configure" --host=riscv32-unknown-elf CC="$CC" AR="$AR" RANLIB="$AR s" \
         --enable-static --enable-bundled-libtom --disable-harden --disable-zlib \
         --disable-lastlog --disable-utmp --disable-utmpx --disable-wtmp --disable-wtmpx \
         --disable-loginfunc --disable-pututline --disable-pututxline > configure.log

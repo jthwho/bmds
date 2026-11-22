@@ -13,10 +13,9 @@
 #include <cstdio>
 #include <cstring>
 #include <esp_random.h>
-#include <mbedtls/ecp.h>
 #include <mbedtls/pk.h>
-#include <mbedtls/sha256.h>
 #include <mbedtls/x509_crt.h>
+#include <psa/crypto.h>
 #include <bmds/clock.h>
 #include <bmds/datetime.h>
 #include <bmds/log.h>
@@ -43,11 +42,6 @@ namespace TlsServerKeys {
                 Mutex &lock() {
                         static Mutex m;
                         return m;
-                }
-
-                int random(void *, unsigned char *out, size_t bytes) {
-                        esp_fill_random(out, bytes);
-                        return 0;
                 }
 
                 Error readWhole(StringView path, String &out) {
@@ -131,11 +125,20 @@ namespace TlsServerKeys {
                         mbedtls_x509write_crt_init(&crt);
                         auto *keyPem = static_cast<unsigned char *>(Memory::alloc(MemSpace::Psram, 2 * MaxFileBytes));
                         unsigned char *certPem = keyPem != nullptr ? keyPem + MaxFileBytes : nullptr;
-                        int            ret = keyPem != nullptr ? 0 : MBEDTLS_ERR_PK_ALLOC_FAILED;
-                        if (ret == 0) ret = mbedtls_pk_setup(&key, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY));
-                        if (ret == 0)
-                                ret = mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(key), random,
-                                                          nullptr);
+                        int            ret = keyPem != nullptr ? 0 : PSA_ERROR_INSUFFICIENT_MEMORY;
+                        // A P-256 pair made by PSA, copied out for writing (and the certificate's
+                        // signature), the PSA key gone.
+                        if (ret == 0) {
+                                psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+                                psa_set_key_type(&attributes, PSA_KEY_TYPE_ECC_KEY_PAIR(PSA_ECC_FAMILY_SECP_R1));
+                                psa_set_key_bits(&attributes, 256);
+                                psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_EXPORT | PSA_KEY_USAGE_SIGN_HASH);
+                                psa_set_key_algorithm(&attributes, PSA_ALG_ECDSA(PSA_ALG_SHA_256));
+                                psa_key_id_t pair = 0;
+                                ret = psa_generate_key(&attributes, &pair);
+                                if (ret == 0) ret = mbedtls_pk_copy_from_psa(pair, &key);
+                                if (pair != 0) (void)psa_destroy_key(pair);
+                        }
                         if (ret == 0) ret = mbedtls_pk_write_key_pem(&key, keyPem, MaxFileBytes);
 
                         // The certificate: CN the host name, SANs NAME and NAME.local, ten years from
@@ -175,7 +178,7 @@ namespace TlsServerKeys {
                         if (ret == 0)
                                 ret = mbedtls_x509write_crt_set_key_usage(&crt, MBEDTLS_X509_KU_DIGITAL_SIGNATURE);
                         if (ret == 0) ret = mbedtls_x509write_crt_set_subject_alternative_name(&crt, sans);
-                        if (ret == 0) ret = mbedtls_x509write_crt_pem(&crt, certPem, MaxFileBytes, random, nullptr);
+                        if (ret == 0) ret = mbedtls_x509write_crt_pem(&crt, certPem, MaxFileBytes);
                         mbedtls_x509write_crt_free(&crt);
                         mbedtls_pk_free(&key);
                         Error err = ret == 0                             ? Error::Ok
@@ -256,7 +259,9 @@ namespace TlsServerKeys {
                 const int ret = mbedtls_x509_crt_parse(&crt, reinterpret_cast<const unsigned char *>(cert.cStr()),
                                                        cert.size() + 1);
                 if (ret == 0) {
-                        (void)mbedtls_sha256(crt.raw.p, crt.raw.len, out.sha256, 0);
+                        size_t hashed = 0;
+                        (void)psa_hash_compute(PSA_ALG_SHA_256, crt.raw.p, crt.raw.len, out.sha256, sizeof(out.sha256),
+                                               &hashed);
                         if (mbedtls_x509_dn_gets(out.subject, sizeof(out.subject), &crt.subject) < 0)
                                 out.subject[0] = '\0';
                         out.notBefore = unixSeconds(crt.valid_from);

@@ -782,6 +782,13 @@ Error IoAdcSetup::parse(const IoChip &chip, StringView text, char (&why)[ReasonB
         for (size_t i = 0; i < pinCount; ++i)
                 if (!own[i]) atten[i] = all;
         if (buffer != 0 && rate == 0) return refuse(why, Error::Invalid, "buffer= is a stream's: it needs rate=");
+        // ESP-IDF's continuous driver takes one attenuation a unit (its config refuses two).
+        for (size_t i = 0; rate != 0 && i < pinCount; ++i)
+                for (size_t j = 0; j < i; ++j)
+                        if (unit[j] == unit[i] && atten[j] != atten[i])
+                                return refuse(why, Error::Invalid,
+                                              "a stream takes one attenuation a unit: GPIO%d and GPIO%d differ",
+                                              int(pins[j]), int(pins[i]));
         return Error::Ok;
 }
 

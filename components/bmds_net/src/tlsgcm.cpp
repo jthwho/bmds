@@ -15,7 +15,7 @@
 #include <aes/esp_aes.h>
 #include <aes/esp_aes_gcm.h>
 #include <esp_memory_utils.h>
-#include <mbedtls/gcm.h>
+#include <psa/crypto.h>
 #include <bmds/ghash.h>
 #include <bmds/mutex.h>
 #include <bmds/psramobject.h>
@@ -86,7 +86,7 @@ namespace {
                   size_t tag_len, unsigned char *tag) {
                 if (tag_len < 4 || tag_len > 16 || (aad_len > 0 && aad == nullptr) ||
                     (length > 0 && (input == nullptr || output == nullptr)))
-                        return MBEDTLS_ERR_GCM_BAD_INPUT;
+                        return PSA_ERROR_INVALID_ARGUMENT;
                 // H (from the engine, once a context) and J0.
                 int ret = esp_aes_gcm_starts(ctx, mode, iv, iv_len);
                 if (ret != 0) return ret;
@@ -97,7 +97,7 @@ namespace {
                         Mutex::Locker lock(cache->lock, WaitForever);
                         const Ghash  &g = tablesFor(*cache, ctx->H);
                         g.update(y, aad, aad_len);
-                        if (mode == MBEDTLS_GCM_DECRYPT) g.update(y, input, length);
+                        if (mode == ESP_AES_DECRYPT) g.update(y, input, length);
                 }
                 uint8_t counter[16];
                 std::memcpy(counter, j0, sizeof(counter));
@@ -117,7 +117,7 @@ namespace {
                 {
                         Mutex::Locker lock(cache->lock, WaitForever);
                         const Ghash  &g = tablesFor(*cache, ctx->H);
-                        if (mode == MBEDTLS_GCM_ENCRYPT) g.update(y, output, length);
+                        if (mode == ESP_AES_ENCRYPT) g.update(y, output, length);
                         g.update(y, lengths, sizeof(lengths));
                 }
                 // The tag: E(J0) ^ GHASH, cut to tag_len.
@@ -154,15 +154,14 @@ int __wrap_esp_aes_gcm_auth_decrypt(esp_gcm_context *ctx, size_t length, const u
                 return __real_esp_aes_gcm_auth_decrypt(ctx, length, iv, iv_len, aad, aad_len, tag, tag_len, input,
                                                        output);
         uint8_t   check[16];
-        const int ret =
-                crypt(ctx, MBEDTLS_GCM_DECRYPT, length, iv, iv_len, aad, aad_len, input, output, tag_len, check);
+        const int ret = crypt(ctx, ESP_AES_DECRYPT, length, iv, iv_len, aad, aad_len, input, output, tag_len, check);
         if (ret != 0) return ret;
         // Compared in constant time; a forgery's text is not given out.
         uint8_t diff = 0;
         for (size_t i = 0; i < tag_len; ++i) diff |= static_cast<uint8_t>(tag[i] ^ check[i]);
         if (diff != 0) {
                 std::memset(output, 0, length);
-                return MBEDTLS_ERR_GCM_AUTH_FAILED;
+                return PSA_ERROR_INVALID_SIGNATURE; // as ESP-IDF's own
         }
         return 0;
 }
